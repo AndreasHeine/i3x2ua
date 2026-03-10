@@ -1,5 +1,23 @@
 # TODO i3x2ua
 
+## Bereits erledigt
+
+- [x] Projektgrundstruktur mit FastAPI, async OPC-UA-Client, Mapper und Model-Builder aufgebaut
+- [x] i3X Model API implementiert (GET /model, GET /model/{id}, GET /model/{id}/children)
+- [x] i3X Data API implementiert (GET /data/{propertyId}, POST /data/query)
+- [x] i3X Action API implementiert (POST /action/{actionId}/invoke)
+- [x] OPC-UA Browsing, Value-Read und Method-Call in Client-Schicht implementiert
+- [x] OPC UA -> i3X Basis-Mapping (Object/Variable/Method/EventNotifier) implementiert
+- [x] Startup-Model-Preload und Model-Cache umgesetzt
+- [x] Browse-Prozess parallelisiert (konfigurierbare Concurrency)
+- [x] Basis-Tests (Mapper und API) erstellt und lauffaehig
+- [x] Test-HTTP-Client fuer Model/Children/Data-Pfade erstellt
+
+## Teilweise erledigt
+
+- [ ] Logging-Konzept erweitern (Basis-Logs vorhanden; strukturierte Logs/Korrelations-ID noch offen)
+- [ ] Integrationstests mit realem OPC-UA-Server aufsetzen (manuell validiert, aber noch nicht als automatisierte Testsuite)
+
 ## Offene Kernfeatures (nicht optional)
 
 - [ ] i3X-Konformitaet der Modellstruktur vollstaendig absichern (Assets, Properties, Actions, EventSources inkl. Feldsemantik)

@@ -1,0 +1,208 @@
+{
+  "meta": {
+    "created_at": "2026-03-10T17:20:07.049007+00:00",
+    "base_url": "http://127.0.0.1:8000",
+    "timeout": 10.0,
+    "retries": 2,
+    "retry_delay": 1.0,
+    "max_root_children": 1,
+    "max_data_reads": 3
+  },
+  "connectivity": {
+    "docs_status_code": 200
+  },
+  "model": {
+    "root_item_count": 1,
+    "root": {
+      "items": [
+        {
+          "id": "asset-b97786d5399de9da",
+          "name": "Objects",
+          "kind": "asset",
+          "type": null,
+          "children": [
+            "asset-0379dc3caf9ef305",
+            "eventSource-6074bd8179fa12d0",
+            "asset-648024049c7a88c0",
+            "asset-e7eca517ce6dd7d6",
+            "asset-d7f99a9171906b31",
+            "asset-9eb02761d3bafa6d",
+            "eventSource-d5e7670caf57e875",
+            "asset-982b1c1bad4883f4",
+            "asset-49f0e7ef0340dfdf",
+            "asset-8608bba01050bb21"
+          ],
+          "source_node_id": "i=85"
+        }
+      ]
+    },
+    "children_parent_count": 1,
+    "children_total_count": 10,
+    "children_by_parent": {
+      "asset-b97786d5399de9da": {
+        "count": 10,
+        "items": [
+          {
+            "id": "asset-0379dc3caf9ef305",
+            "name": "Locations",
+            "kind": "asset",
+            "type": null,
+            "children": [],
+            "source_node_id": "i=31915"
+          },
+          {
+            "id": "eventSource-6074bd8179fa12d0",
+            "name": "Server",
+            "kind": "eventSource",
+            "type": null,
+            "children": [
+              "action-c4346167b3a88346",
+              "action-9b876f5889f497d5",
+              "action-ebb310b77c24d8cf",
+              "property-dc5c4188c0ac6244",
+              "property-abbdd7972781d71a",
+              "property-207035485d1ffb34",
+              "property-cb41f9d4785d7f21",
+              "property-c1f1257245a974bd",
+              "property-cdab297a668296ac",
+              "property-2216b52141620d5b",
+              "property-aff427fe2df4ab02",
+              "asset-ce3e214f211480cc",
+              "asset-44a4451aceb229f7",
+              "asset-066bd11add3beac3",
+              "asset-6d4fc4db4b7d9a50",
+              "asset-fefa5abede2f7cd2",
+              "action-9b155d8b7de05298",
+              "asset-9b343035cd8c4710",
+              "asset-8428cb12e70ac61a",
+              "asset-ee4fd5b97732ac60",
+              "asset-33a458fa001e7f39",
+              "asset-1c2dd317476c9a2f",
+              "asset-f887724bf095d035",
+              "asset-1172a95a1b4ce559",
+              "asset-a8f5f675158a569a",
+              "eventSource-1084452434d405e8",
+              "eventSource-b0d30cd0a44edf84"
+            ],
+            "source_node_id": "i=2253"
+          },
+          {
+            "id": "asset-648024049c7a88c0",
+            "name": "Aliases",
+            "kind": "asset",
+            "type": null,
+            "children": [
+              "action-751d20a36b390880",
+              "property-f2a6b923a3b74967",
+              "asset-7227b3ab181779ff",
+              "asset-badf2e2664b24a44"
+            ],
+            "source_node_id": "i=23470"
+          },
+          {
+            "id": "asset-e7eca517ce6dd7d6",
+            "name": "DeviceSet",
+            "kind": "asset",
+            "type": null,
+            "children": [
+              "asset-e28d41d11e46982a",
+              "asset-0a10ab9fa1b8b95f",
+              "asset-f920b33765fd36e1",
+              "asset-9708c558da23b227",
+              "asset-1cfe8bde9eba477d",
+              "asset-74534a6d555a116a"
+            ],
+            "source_node_id": "ns=2;i=5001"
+          },
+          {
+            "id": "asset-d7f99a9171906b31",
+            "name": "NetworkSet",
+            "kind": "asset",
+            "type": null,
+            "children": [],
+            "source_node_id": "ns=2;i=6078"
+          },
+          {
+            "id": "asset-9eb02761d3bafa6d",
+            "name": "DeviceTopology",
+            "kind": "asset",
+            "type": null,
+            "children": [
+              "property-8ab6374944606566"
+            ],
+            "source_node_id": "ns=2;i=6094"
+          },
+          {
+            "id": "eventSource-d5e7670caf57e875",
+            "name": "Machines",
+            "kind": "eventSource",
+            "type": null,
+            "children": [
+              "asset-44f3d3937ecb9ac2",
+              "asset-300f8c01c0f78f8b",
+              "asset-089cc160d74394cb",
+              "asset-fdf5051f26859384",
+              "asset-92b1b231909c8117",
+              "asset-eabac903894eabf4",
+              "asset-50dfd3040531a556",
+              "asset-a6810f35a7a80415",
+              "asset-360313723f4ad263",
+              "asset-bad41800cabc09ec",
+              "asset-cff178f5d1bdef02",
+              "asset-22f458ea445a66f1",
+              "asset-3670aa7b32cb7a40",
+              "asset-3f9005ed9e975cf1",
+              "eventSource-c7ac6157296b6c1d",
+              "asset-7e5bcc4df0e140d4",
+              "asset-a1f70fa5addf7472",
+              "asset-cae1c0a859b04907",
+              "asset-2ffb3bbcd408574f"
+            ],
+            "source_node_id": "ns=3;i=1001"
+          },
+          {
+            "id": "asset-982b1c1bad4883f4",
+            "name": "Contributors",
+            "kind": "asset",
+            "type": null,
+            "children": [
+              "asset-9b0948b63897b174",
+              "asset-97860da73b411aae",
+              "asset-31df68db27037bf8",
+              "asset-bccfc02165bd151e",
+              "asset-0659961c4c38353d"
+            ],
+            "source_node_id": "ns=1;i=1004"
+          },
+          {
+            "id": "asset-49f0e7ef0340dfdf",
+            "name": "Showcases",
+            "kind": "asset",
+            "type": null,
+            "children": [
+              "asset-e446c9f06478b731",
+              "asset-d4c204a5b8a45717"
+            ],
+            "source_node_id": "ns=1;i=1025"
+          },
+          {
+            "id": "asset-8608bba01050bb21",
+            "name": "DEV",
+            "kind": "asset",
+            "type": null,
+            "children": [],
+            "source_node_id": "ns=1;i=1427"
+          }
+        ]
+      }
+    }
+  },
+  "data": {
+    "discovered_property_count": 0,
+    "selected_property_ids": [],
+    "single_reads": {},
+    "batch_reads": {
+      "values": []
+    }
+  }
+}

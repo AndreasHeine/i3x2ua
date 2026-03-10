@@ -1,0 +1,41 @@
+[project]
+name = "i3x2ua"
+version = "0.1.0"
+description = "i3X REST server backed by OPC UA"
+requires-python = ">=3.10"
+dependencies = [
+    "asyncua>=1.1.5",
+    "fastapi>=0.115.0",
+    "pydantic>=2.8.0",
+    "pydantic-settings>=2.3.0",
+    "uvicorn>=0.30.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "httpx>=0.27.0",
+    "mypy>=1.10.0",
+    "pytest>=8.2.0",
+    "pytest-asyncio>=0.23.0",
+    "ruff>=0.5.0",
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+ignore = ["B008"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+ignore_missing_imports = true

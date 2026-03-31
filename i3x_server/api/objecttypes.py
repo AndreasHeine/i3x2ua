@@ -15,13 +15,8 @@ class ObjectTypeItem(BaseModel):
     display_name: str
 
 
-class ObjectTypesResponse(BaseModel):
-    count: int
-    items: list[ObjectTypeItem]
-
-
-@router.get("", response_model=ObjectTypesResponse)
-async def get_object_types(opcua_client: OpcUaClientProtocol = Depends(get_opcua_client)) -> ObjectTypesResponse:
+@router.get("", response_model=list[ObjectTypeItem])
+async def get_object_types(opcua_client: OpcUaClientProtocol = Depends(get_opcua_client)) -> list[ObjectTypeItem]:
     try:
         object_types = await opcua_client.get_object_types()
     except Exception as exc:
@@ -32,15 +27,12 @@ async def get_object_types(opcua_client: OpcUaClientProtocol = Depends(get_opcua
             {"cause": str(exc)},
         ) from exc
 
-    return ObjectTypesResponse(
-        count=len(object_types),
-        items=[
-            ObjectTypeItem(
-                node_id=item.node_id,
-                parent_node_id=item.parent_node_id,
-                browse_name=item.browse_name,
-                display_name=item.display_name,
-            )
-            for item in object_types
-        ],
-    )
+    return [
+        ObjectTypeItem(
+            node_id=item.node_id,
+            parent_node_id=item.parent_node_id,
+            browse_name=item.browse_name,
+            display_name=item.display_name,
+        )
+        for item in object_types
+    ]

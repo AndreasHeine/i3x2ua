@@ -12,6 +12,7 @@ from i3x_server.api.action import router as action_router
 from i3x_server.api.data import router as data_router
 from i3x_server.api.model import router as model_router
 from i3x_server.api.namespaces import router as namespaces_router
+from i3x_server.api.objects import router as objects_router
 from i3x_server.api.objecttypes import router as objecttypes_router
 from i3x_server.config.settings import settings
 from i3x_server.model.builder import ModelBuilder
@@ -94,6 +95,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 def create_app() -> FastAPI:
     app = FastAPI(title="i3X OPC UA Provider", version="0.1.0", lifespan=lifespan)
     app.include_router(namespaces_router)
+    app.include_router(objects_router)
     app.include_router(objecttypes_router)
     app.include_router(model_router)
     app.include_router(data_router)

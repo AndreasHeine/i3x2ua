@@ -23,8 +23,22 @@ class OpcUaNodeInfo:
     event_notifier: bool
 
 
+@dataclass(slots=True)
+class OpcUaObjectTypeInfo:
+    node_id: str
+    parent_node_id: str | None
+    browse_name: str
+    display_name: str
+
+
 class OpcUaClientProtocol(Protocol):
     async def browse_tree(self) -> list[OpcUaNodeInfo]:
+        ...
+
+    async def get_namespaces(self) -> list[str]:
+        ...
+
+    async def get_object_types(self) -> list[OpcUaObjectTypeInfo]:
         ...
 
     async def read_value(self, node_id: str) -> Any:
@@ -129,6 +143,76 @@ class OpcUaClient:
             perf_counter() - started,
         )
         return output
+
+    async def get_namespaces(self) -> list[str]:
+        started = perf_counter()
+        try:
+            raw = await self._client.nodes.namespace_array.read_value()
+            namespaces = [str(item) for item in raw] if isinstance(raw, list) else []
+            logger.info(
+                "OPC UA namespaces read ok endpoint=%s count=%d duration_s=%.3f",
+                self._endpoint,
+                len(namespaces),
+                perf_counter() - started,
+            )
+            return namespaces
+        except Exception:
+            logger.exception(
+                "OPC UA namespaces read failed endpoint=%s duration_s=%.3f",
+                self._endpoint,
+                perf_counter() - started,
+            )
+            raise
+
+    async def get_object_types(self) -> list[OpcUaObjectTypeInfo]:
+        started = perf_counter()
+        root = self._client.nodes.object_types
+        output: list[OpcUaObjectTypeInfo] = []
+        stack: list[tuple[Any, str | None]] = [(root, None)]
+        visited: set[str] = set()
+
+        try:
+            while stack:
+                node, parent_node_id = stack.pop()
+                node_id = node.nodeid.to_string()
+                if node_id in visited:
+                    continue
+                visited.add(node_id)
+
+                browse_name_obj, display_name_obj, node_class_obj = await asyncio.gather(
+                    node.read_browse_name(),
+                    node.read_display_name(),
+                    node.read_node_class(),
+                )
+
+                if node_class_obj == NodeClass.ObjectType:
+                    output.append(
+                        OpcUaObjectTypeInfo(
+                            node_id=node_id,
+                            parent_node_id=parent_node_id,
+                            browse_name=browse_name_obj.Name,
+                            display_name=display_name_obj.Text,
+                        )
+                    )
+
+                children = await node.get_children()
+                for child in children:
+                    stack.append((child, node_id))
+
+            logger.info(
+                "OPC UA object types read ok endpoint=%s count=%d duration_s=%.3f",
+                self._endpoint,
+                len(output),
+                perf_counter() - started,
+            )
+            return output
+        except Exception:
+            logger.exception(
+                "OPC UA object types read failed endpoint=%s duration_s=%.3f",
+                self._endpoint,
+                perf_counter() - started,
+            )
+            raise
 
     async def read_value(self, node_id: str) -> Any:
         started = perf_counter()

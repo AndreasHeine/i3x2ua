@@ -110,3 +110,7 @@ uv run pytest -q
 ## Hinweis
 
 Wenn du den Server in Produktion betreibst, sollten TLS, SecurityMode, Authentifizierung und Rollenmodell gemaess Zielumgebung konfiguriert werden.
+
+## Conformance Notes
+
+Details zu i3X Pflichtendpunkten und optionalen Diagnoseendpunkten (inkl. `/namespaces`) stehen in `I3X_CONFORMANCE.md`.

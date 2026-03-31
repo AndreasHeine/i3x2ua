@@ -1,26 +1,24 @@
-from fastapi import APIRouter, Depends, Request
+from urllib.parse import urlparse
+
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from i3x_server.dependencies import get_opcua_client
 from i3x_server.errors import i3x_http_error
-from i3x_server.opcua.client import OpcUaClientProtocol
+from i3x_server.opcua.client import OpcUaClientProtocol, OpcUaNamespaceInfo
 
 router = APIRouter(prefix="/namespaces", tags=["namespaces"])
 
 
-class NamespacesResponse(BaseModel):
-    count: int
-    items: list[str]
+class NamespaceItem(BaseModel):
+    uri: str
+    displayName: str
 
 
-@router.get("", response_model=NamespacesResponse)
-async def get_namespaces(
-    request: Request,
-    opcua_client: OpcUaClientProtocol = Depends(get_opcua_client),
-) -> NamespacesResponse:
-    _ = request
+@router.get("", response_model=list[NamespaceItem])
+async def get_namespaces(opcua_client: OpcUaClientProtocol = Depends(get_opcua_client)) -> list[NamespaceItem]:
     try:
-        namespaces = await opcua_client.get_namespaces()
+        namespace_infos = await opcua_client.get_namespace_infos()
     except Exception as exc:
         raise i3x_http_error(
             502,
@@ -28,4 +26,35 @@ async def get_namespaces(
             "Failed to read OPC UA namespaces",
             {"cause": str(exc)},
         ) from exc
-    return NamespacesResponse(count=len(namespaces), items=namespaces)
+    return [_to_namespace_item(item) for item in namespace_infos]
+
+
+def _to_namespace_item(item: OpcUaNamespaceInfo) -> NamespaceItem:
+    display_name = item.display_name or _display_name_for_uri(item.uri)
+    return NamespaceItem(uri=item.uri, displayName=display_name)
+
+
+def _display_name_for_uri(uri: str) -> str:
+    lower = uri.lower()
+    if "cesmii.org/i3x" in lower:
+        return "I3X"
+    if "isa.org/isa95" in lower:
+        return "ISA95"
+    if "abelara.com" in lower and lower.rstrip("/").endswith("/equipment"):
+        return "Abelara Equipment"
+    if "thinkiq.com" in lower and lower.rstrip("/").endswith("/equipment"):
+        return "ThinkIQ Equipment"
+
+    parsed = urlparse(uri)
+    path_parts = [part for part in parsed.path.split("/") if part]
+    if path_parts:
+        token = path_parts[-1].replace("-", " ").replace("_", " ")
+        if any(ch.isdigit() for ch in token):
+            return token.upper()
+        return token.title()
+
+    host = parsed.netloc or uri
+    base = host.split(":", 1)[0].split(".")
+    if not base:
+        return uri
+    return base[0].title()

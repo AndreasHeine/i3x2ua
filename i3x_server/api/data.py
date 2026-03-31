@@ -35,5 +35,35 @@ async def query_data_values(
     request: Request,
     model: BuildResult = Depends(get_or_build_model),
 ) -> DataQueryResponse:
-    values = [await _read_property(model, prop_id, request) for prop_id in payload.property_ids]
+    property_ids = payload.property_ids
+    node_ids: list[str] = []
+    for property_id in property_ids:
+        node_id = model.property_to_node.get(property_id)
+        if node_id is None:
+            raise i3x_http_error(404, "PropertyNotFound", f"Property id '{property_id}' does not exist")
+        node_ids.append(node_id)
+
+    opcua_client = get_opcua_client(request)
+    try:
+        raw_values = await opcua_client.read_values(node_ids)
+    except Exception as exc:
+        raise i3x_http_error(
+            502,
+            "OpcUaReadError",
+            "Failed to batch-read OPC UA properties",
+            {"cause": str(exc)},
+        ) from exc
+
+    if len(raw_values) != len(property_ids):
+        raise i3x_http_error(
+            502,
+            "OpcUaReadError",
+            "Batch read returned inconsistent number of values",
+            {"requested": len(property_ids), "received": len(raw_values)},
+        )
+
+    values = [
+        DataValueResponse(property_id=property_id, value=value)
+        for property_id, value in zip(property_ids, raw_values, strict=True)
+    ]
     return DataQueryResponse(values=values)

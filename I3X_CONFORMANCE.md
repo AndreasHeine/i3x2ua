@@ -22,31 +22,41 @@ These endpoints represent the required functional contract for model, data acces
 Endpoints outside the core contract can be exposed for diagnostics and interoperability support.
 
 - `GET /namespaces`
+- `GET /objecttypes`
+- `GET /objects?includeMetadata=false`
 
-`/namespaces` is not part of the i3X core contract in this project. It is a helper endpoint for OPC UA transparency and debugging.
+These endpoints are not part of the strict i3X core contract in this project. They are helper/compatibility endpoints for OPC UA transparency, frontend integration, and debugging.
 
 ## What `/namespaces` Should Return from OPC UA
 
-The endpoint should return the OPC UA `NamespaceArray` in index order.
+The endpoint should return namespace entries derived from OPC UA namespace information in index order.
 
 Expected behavior:
 
 - Preserve order exactly as defined by the OPC UA server (`ns=0`, `ns=1`, ...).
-- Return stable URI strings that can be used to interpret NodeIds.
+- Return stable URI strings that can be used to interpret NodeIds (`uri`).
+- Return a readable namespace label (`displayName`) preferably from OPC UA namespace metadata (`i=11715`), with a deterministic fallback strategy.
 - Handle unavailable namespace reads with a clear provider error response.
 
 Example response:
 
 ```json
-{
-  "count": 3,
-  "items": [
-    "http://opcfoundation.org/UA/",
-    "urn:vendor:server",
-    "http://example.org/custom"
-  ]
-}
+[
+  {
+    "uri": "http://opcfoundation.org/UA/",
+    "displayName": "OPC UA"
+  },
+  {
+    "uri": "urn:vendor:server",
+    "displayName": "Vendor"
+  }
+]
 ```
+
+## What `/objecttypes` and `/objects` Return
+
+- `GET /objecttypes`: Top-level array of object type entries from OPC UA ObjectTypes hierarchy.
+- `GET /objects`: Compatibility projection used by frontend consumers, exposing `elementId`, `displayName`, `namespaceUri`, and `schema`.
 
 ## Why This Matters for i3X Mapping
 
@@ -61,4 +71,4 @@ Even though `/namespaces` is optional, NamespaceArray visibility improves:
 Implemented and available:
 
 - Core i3X endpoints for model, data, and action
-- Optional diagnostic endpoint: `GET /namespaces`
+- Optional/helper endpoints: `GET /namespaces`, `GET /objecttypes`, `GET /objects`

@@ -4,6 +4,12 @@ Ein asynchroner i3X-REST-Server mit OPC-UA-Backend.
 
 Der Server stellt i3X-konforme Endpunkte bereit und nutzt einen OPC-UA-Server als Datenquelle.
 
+Die Dokumentation ist auf drei Dateien verteilt:
+
+- `README.md`: Einstieg, Betrieb, Konfiguration, API-Ueberblick
+- `I3X_CONFORMANCE.md`: API-Vertrag und Conformance-Einordnung
+- `TODO.md`: Roadmap und offene Arbeitspakete
+
 ## Features
 
 - i3X Model API
@@ -15,11 +21,26 @@ Der Server stellt i3X-konforme Endpunkte bereit und nutzt einen OPC-UA-Server al
   - POST /data/query
 - i3X Action API
   - POST /action/{actionId}/invoke
+- Diagnose-/Kompatibilitaets-APIs
+  - GET /namespaces
+  - GET /objecttypes
+  - GET /objects?includeMetadata=false
 - OPC-UA Browsing und Mapping
   - Object -> Asset
   - Variable -> Property
   - Method -> Action
   - EventNotifier -> EventSource
+
+## Status
+
+Bereits umgesetzt:
+
+- Kern-Endpoints fuer Model, Data und Action
+- Startup-Preload fuer Model-Cache
+- Batch-Reads in `/data/query` mit `MaxNodesPerRead`
+- Batch-Browse mit `MaxNodesPerBrowse` fuer `browse_tree()` und `objecttypes`
+- Namespace-Metadaten ueber OPC UA Namespaces-Object (`i=11715`)
+- Erweiterte Browse-/Read-Logs mit Item-Counts
 
 ## Voraussetzungen
 
@@ -65,9 +86,32 @@ Wichtige Variablen:
 
 - I3X_OPCUA_ENDPOINT (Default: opc.tcp://localhost:4840)
 - I3X_OPCUA_SECURITY_MODE (Default: None)
+- I3X_OPCUA_BROWSE_CONCURRENCY (Default: 16)
+- I3X_OPCUA_METADATA_CACHE_TTL_SECONDS (Default: 300)
 - I3X_MODEL_REFRESH_INTERVAL_SECONDS (Default: 60)
+- I3X_MODEL_PRELOAD_ON_STARTUP (Default: true)
+- I3X_FAIL_STARTUP_ON_MODEL_PRELOAD_ERROR (Default: false)
 - I3X_LOG_LEVEL (Default: INFO)
 - I3X_SKIP_OPCUA_CONNECT (nur fuer lokale Tests)
+
+## API Ueberblick
+
+Kern:
+
+- GET /model
+- GET /model/{id}
+- GET /model/{id}/children
+- GET /data/{propertyId}
+- POST /data/query
+- POST /action/{actionId}/invoke
+
+Diagnose/Kompatibilitaet:
+
+- GET /namespaces
+- GET /objecttypes
+- GET /objects?includeMetadata=false
+
+Hinweis: Die exakte Semantik und Conformance-Einordnung steht in `I3X_CONFORMANCE.md`.
 
 ## Projektstruktur
 
@@ -111,6 +155,7 @@ uv run pytest -q
 
 Wenn du den Server in Produktion betreibst, sollten TLS, SecurityMode, Authentifizierung und Rollenmodell gemaess Zielumgebung konfiguriert werden.
 
-## Conformance Notes
+## Weiterfuehrende Dokumente
 
-Details zu i3X Pflichtendpunkten und optionalen Diagnoseendpunkten (inkl. `/namespaces`) stehen in `I3X_CONFORMANCE.md`.
+- Conformance und API-Vertrag: `I3X_CONFORMANCE.md`
+- Offene Punkte / Roadmap: `TODO.md`

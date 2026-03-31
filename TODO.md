@@ -1,17 +1,8 @@
 # TODO i3x2ua
 
-## Bereits erledigt
+Diese Datei enthaelt nur offene bzw. teilweise offene Arbeitspakete.
 
-- [x] Projektgrundstruktur mit FastAPI, async OPC-UA-Client, Mapper und Model-Builder aufgebaut
-- [x] i3X Model API implementiert (GET /model, GET /model/{id}, GET /model/{id}/children)
-- [x] i3X Data API implementiert (GET /data/{propertyId}, POST /data/query)
-- [x] i3X Action API implementiert (POST /action/{actionId}/invoke)
-- [x] OPC-UA Browsing, Value-Read und Method-Call in Client-Schicht implementiert
-- [x] OPC UA -> i3X Basis-Mapping (Object/Variable/Method/EventNotifier) implementiert
-- [x] Startup-Model-Preload und Model-Cache umgesetzt
-- [x] Browse-Prozess parallelisiert (konfigurierbare Concurrency)
-- [x] Basis-Tests (Mapper und API) erstellt und lauffaehig
-- [x] Test-HTTP-Client fuer Model/Children/Data-Pfade erstellt
+Details zu bereits umgesetzten Punkten stehen in `README.md` unter Status.
 
 ## Teilweise erledigt
 

@@ -265,12 +265,41 @@ class OpcUaClient:
         display_by_uri: dict[str, str] = {}
 
         try:
+            limits = await self.get_operational_limits()
+            max_nodes_per_browse = limits.max_nodes_per_browse or 128
             namespaces_node = self._client.get_node("i=11715")
-            namespace_components = await namespaces_node.get_children()
+            namespace_components_browse = await self._browse_children_descriptions(
+                [namespaces_node],
+                max_nodes_per_browse,
+            )
+            namespace_components = [
+                self._client.get_node(ref.NodeId)
+                for _, refs in namespace_components_browse
+                for ref in refs
+            ]
+            logger.info(
+                "OPC UA namespace metadata components endpoint=%s count=%d",
+                self._endpoint,
+                len(namespace_components),
+            )
 
             for component in namespace_components:
                 component_display = (await component.read_display_name()).Text
-                component_children = await component.get_children()
+                component_children_browse = await self._browse_children_descriptions(
+                    [component],
+                    max_nodes_per_browse,
+                )
+                component_children = [
+                    self._client.get_node(ref.NodeId)
+                    for _, refs in component_children_browse
+                    for ref in refs
+                ]
+                logger.info(
+                    "OPC UA namespace metadata component endpoint=%s node_id=%s children=%d",
+                    self._endpoint,
+                    component.nodeid.to_string(),
+                    len(component_children),
+                )
 
                 for child in component_children:
                     browse_name_obj = await child.read_browse_name()

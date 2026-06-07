@@ -3,15 +3,6 @@ revision = 3
 requires-python = ">=3.10"
 
 [[package]]
-name = "aiofiles"
-version = "25.1.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/41/c3/534eac40372d8ee36ef40df62ec129bee4fdb5ad9706e58a29be53b2c970/aiofiles-25.1.0.tar.gz", hash = "sha256:a8d728f0a29de45dc521f18f07297428d56992a742f0cd2701ba86e44d23d5b2", size = 46354, upload-time = "2025-10-09T20:51:04.358Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/bc/8a/340a1555ae33d7354dbca4faa54948d76d89a27ceef032c8c3bc661d003e/aiofiles-25.1.0-py3-none-any.whl", hash = "sha256:abe311e527c862958650f9438e859c1fa7568a141b22abcd015e120e86a85695", size = 14668, upload-time = "2025-10-09T20:51:03.174Z" },
-]
-
-[[package]]
 name = "aiosqlite"
 version = "0.22.1"
 source = { registry = "https://pypi.org/simple" }
@@ -54,11 +45,11 @@ wheels = [
 
 [[package]]
 name = "asyncua"
-version = "1.1.8"
+version = "2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "aiofiles" },
     { name = "aiosqlite" },
+    { name = "anyio" },
     { name = "cryptography" },
     { name = "pyopenssl" },
     { name = "python-dateutil" },
@@ -67,9 +58,9 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "wait-for2", marker = "python_full_version < '3.12'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/78/47/a141ba533ab4a361238f94ffd3b357dd198cf99a446e91dcbb9175b152c6/asyncua-1.1.8.tar.gz", hash = "sha256:4a348e2b9bdfa7869edaef2d7f1b08920140d01ab79f336744b06e4c692e509d", size = 1050529, upload-time = "2025-09-05T18:23:44.525Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/34/68/45ac78aad9cd723c56bc27877e1a74708e7fe5440688c8601b725351f594/asyncua-2.0.tar.gz", hash = "sha256:a5f7888188846597326be623f32708c3910ab1cd95b2c6aff539b3fabd38fa32", size = 1212573, upload-time = "2026-06-05T09:25:05.201Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/3f/0d/2f8fc320a12b6c8b972568a588ae57f4db7e9f7e7f53d02a24d0cebb17d7/asyncua-1.1.8-py3-none-any.whl", hash = "sha256:40c57151b93537beb77cb3f1a0190d75cef5326e8c40978de28b69e5b41e6ede", size = 1129163, upload-time = "2025-09-05T18:23:42.628Z" },
+    { url = "https://files.pythonhosted.org/packages/56/80/257e1a34f4a398251061427c31aa92a6222fdfe536c89fd4003e5ceda024/asyncua-2.0-py3-none-any.whl", hash = "sha256:503453df9533cbc14cba5792ce2bc7d6648cc66093e7d2652bb4d53e410cfa75", size = 1313180, upload-time = "2026-06-05T09:25:03.042Z" },
 ]
 
 [[package]]
@@ -341,7 +332,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "asyncua", specifier = ">=1.1.5" },
+    { name = "asyncua", specifier = "==2.0.0" },
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10.0" },

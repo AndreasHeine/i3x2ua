@@ -87,7 +87,10 @@ class OpcUaClient:
     async def connect(self) -> None:
         started = perf_counter()
         logger.info("OPC UA connect started endpoint=%s", self._endpoint)
-        await self._client.connect()
+        await self._client.connect(
+            auto_reconnect = True,
+            reconnect_max_delay = 30.0,
+        )
         self._limits_cache = await self.get_operational_limits()
         logger.info(
             "OPC UA limits endpoint=%s max_nodes_per_browse=%s max_nodes_per_read=%s",

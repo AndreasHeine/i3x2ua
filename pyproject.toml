@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "i3X REST server backed by OPC UA"
 requires-python = ">=3.10"
 dependencies = [
-    "asyncua>=1.1.5",
+    "asyncua==2.0.0",
     "fastapi>=0.115.0",
     "pydantic>=2.8.0",
     "pydantic-settings>=2.3.0",
@@ -23,6 +23,9 @@ dev = [
 [build-system]
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["i3x_server*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

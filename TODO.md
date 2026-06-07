@@ -1,42 +1,42 @@
 # TODO i3x2ua
 
-Diese Datei enthaelt nur offene bzw. teilweise offene Arbeitspakete.
+This file contains only open or partially completed work items.
 
-Details zu bereits umgesetzten Punkten stehen in `README.md` unter Status.
+Details about implemented items are listed in the status section of `README.md`.
 
-## Teilweise erledigt
+## Partially Completed
 
-- [ ] Integrationstests mit realem OPC-UA-Server aufsetzen (manuell validiert, aber noch nicht als automatisierte Testsuite)
-- [ ] Strukturierte Logs und Korrelations-ID fuer `/v1`-Requests ergaenzen
+- [ ] Add integration tests with a real OPC UA server (manually validated so far, but not yet automated)
+- [ ] Add structured logs and correlation IDs for `/v1` requests
 
-## Offene Beta-Kernfeatures
+## Open Beta Core Features
 
-- [ ] `POST /v1/objects/history` fachlich implementieren oder bewusst als nicht unterstuetzt markieren
-- [ ] `GET /v1/objects/{elementId}/history` und `PUT /v1/objects/{elementId}/history` umsetzen oder finalisieren
-- [ ] `PUT /v1/objects/{elementId}/value` implementieren, falls Schreibrechte im Zielsystem vorgesehen sind
-- [ ] Subscription-Lifecycle unter `/v1/subscriptions/*` implementieren
-- [ ] Stream-/SSE-Ausgabe fuer Subscriptions implementieren
-- [ ] History- und Update-Capabilities in `GET /v1/info` an den realen Funktionsumfang koppeln
-- [ ] Fehlerformatierung weiter auf das Beta-Schema haerten
-- [ ] OpenAPI-Dokumentation mit Beispielen und Fehlerfaellen vervollstaendigen
+- [ ] Move `POST /v1/objects/history` from `501` to functional implementation (if required)
+- [ ] Move `GET /v1/objects/{elementId}/history` and `PUT /v1/objects/{elementId}/history` from `501` to functional implementation (if required)
+- [ ] Implement `PUT /v1/objects/{elementId}/value` if write access is required in the target system
+- [ ] Move the subscription lifecycle under `/v1/subscriptions/*` from `501` to functional implementation
+- [ ] Implement stream/SSE output for subscriptions
+- [ ] Align history/update capabilities in `GET /v1/info` with actual runtime support
+- [ ] Harden error formatting against the Beta schema
+- [ ] Complete OpenAPI documentation with examples and error cases
 
-## Optionale Features aus Lastenheft
+## Optional Features from Requirements
 
-- [ ] History-Schreib-/Lese-Features fuer Objekte und Werte ausbauen
-- [ ] Rollenmodell fuer Zugriffssteuerung
+- [ ] Extend history read/write features for objects and values
+- [ ] Authorization model for access control
 - [ ] OPC-UA User Authentication (Client-Auth)
-- [ ] Multi-Server-Unterstuetzung (mehrere OPC-UA-Backends)
-- [ ] Dockerfile und optional Docker-Compose bereitstellen
+- [ ] Multi-server support (multiple OPC UA backends)
+- [ ] Provide Dockerfile and optional Docker Compose setup
 
-## Sicherheit und Betrieb
+## Security and Operations
 
-- [ ] TLS fuer REST-API aktivieren (Zertifikatskonfiguration, sichere Defaults)
-- [ ] OPC-UA SecurityModes Sign / SignAndEncrypt konfigurierbar und getestet
-- [ ] Health-Endpoints (z. B. /health, /ready) fuer Betrieb/Monitoring bereitstellen
-- [ ] Konfigurierbare Caching-Strategien ausbauen (TTL, Invalidation, Refresh-Strategie)
+- [ ] Enable TLS for the REST API (certificate configuration, secure defaults)
+- [ ] Make OPC UA SecurityModes Sign / SignAndEncrypt configurable and tested
+- [ ] Provide health endpoints (e.g., `/health`, `/ready`) for operations and monitoring
+- [ ] Expand configurable caching strategies (TTL, invalidation, refresh strategy)
 
-## Dokumentation und Lieferumfang
+## Documentation and Delivery
 
-- [ ] Betriebsdokumentation erweitern (Deployment, Security, Monitoring, Troubleshooting)
-- [ ] Konfigurationsbeispiele fuer Dev/Test/Prod bereitstellen
-- [ ] Akzeptanzkriterien als pruefbare Checkliste in Tests abbilden
+- [ ] Expand operational documentation (deployment, security, monitoring, troubleshooting)
+- [ ] Provide configuration examples for dev/test/prod
+- [ ] Map acceptance criteria to a testable checklist in automated tests

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Generator
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -15,6 +16,28 @@ from i3x_server.schemas.state import BuildResult
 class FakeOpcUaClient:
     def __init__(self) -> None:
         self.values: dict[str, Any] = {"ns=2;s=Temperature": 42.5}
+
+    async def get_namespace_infos(self) -> list[SimpleNamespace]:
+        return [
+            SimpleNamespace(uri="http://example.com/i3x", display_name="I3X"),
+            SimpleNamespace(uri="http://example.com/custom", display_name="Custom"),
+        ]
+
+    async def get_object_types(self) -> list[SimpleNamespace]:
+        return [
+            SimpleNamespace(
+                node_id="ns=1;i=1001",
+                parent_node_id=None,
+                browse_name="MachineType",
+                display_name="Machine Type",
+            ),
+            SimpleNamespace(
+                node_id="ns=1;i=1002",
+                parent_node_id="ns=1;i=1001",
+                browse_name="SensorType",
+                display_name="Sensor Type",
+            ),
+        ]
 
     async def read_value(self, node_id: str) -> Any:
         return self.values[node_id]
@@ -71,22 +94,47 @@ def client() -> Generator[TestClient, None, None]:
 
 def test_get_model(client: TestClient) -> None:
     response = client.get("/model")
-    assert response.status_code == 200
-    payload = response.json()
-    assert len(payload["items"]) == 1
+    assert response.status_code == 404
 
 
 def test_get_data_value(client: TestClient) -> None:
     response = client.get("/data/property-abc")
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["property_id"] == "property-abc"
-    assert payload["value"] == 42.5
+    assert response.status_code == 404
 
 
 def test_invoke_action(client: TestClient) -> None:
     response = client.post("/action/action-def/invoke", json={"args": [1, "x"]})
+    assert response.status_code == 404
+
+
+def test_beta_info(client: TestClient) -> None:
+    response = client.get("/v1/info")
     assert response.status_code == 200
     payload = response.json()
-    assert payload["action_id"] == "action-def"
-    assert payload["result"]["args"] == [1, "x"]
+    assert payload["success"] is True
+    assert payload["result"]["specVersion"] == "beta"
+
+
+def test_beta_namespaces(client: TestClient) -> None:
+    response = client.get("/v1/namespaces")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    assert len(payload["result"]) == 2
+
+
+def test_beta_objecttypes(client: TestClient) -> None:
+    response = client.get("/v1/objecttypes")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    assert len(payload["result"]) == 2
+
+
+def test_beta_objects_list(client: TestClient) -> None:
+    response = client.post("/v1/objects/list", json={"elementIds": ["asset-root", "missing"]})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    assert payload["results"][0]["success"] is True
+    assert payload["results"][1]["success"] is False

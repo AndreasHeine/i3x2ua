@@ -6,32 +6,23 @@ Details zu bereits umgesetzten Punkten stehen in `README.md` unter Status.
 
 ## Teilweise erledigt
 
-- [ ] Logging-Konzept erweitern (Basis-Logs vorhanden; strukturierte Logs/Korrelations-ID noch offen)
 - [ ] Integrationstests mit realem OPC-UA-Server aufsetzen (manuell validiert, aber noch nicht als automatisierte Testsuite)
+- [ ] Strukturierte Logs und Korrelations-ID fuer `/v1`-Requests ergaenzen
 
-## Offene Kernfeatures (nicht optional)
+## Offene Beta-Kernfeatures
 
-- [ ] i3X-Konformitaet der Modellstruktur vollstaendig absichern (Assets, Properties, Actions, EventSources inkl. Feldsemantik)
-- [ ] Modell-Refresh umsetzen (zyklisch und/oder on-demand statt nur initialer Cache)
-- [ ] Datentyp-Konvertierung OPC UA -> JSON robust erweitern (komplexe Typen, Enums, ByteStrings, DateTime, LocalizedText)
-- [ ] Fehlerformatierung weiter auf i3X-Schema haerten (einheitliche Codes, valide Details, konsistente HTTP-Status)
-- [ ] Batch-Reads optimieren (parallelisierte Reads statt strikt sequentieller Verarbeitung)
-- [ ] Methodenparameter automatisch erkennen (Input/Output Argumente aus OPC UA Method Metadata)
-- [ ] Rueckgabewerte von Methodenaufrufen fuer alle relevanten Typen sauber serialisieren
-- [ ] Logging-Konzept erweitern (strukturierte Logs, Fehlerkontext, Korrelations-ID)
-- [ ] Automatische Wiederverbindung bei OPC-UA-Verbindungsabbruch implementieren
-- [ ] API-/Konformitaetstests fuer alle Endpunkte inkl. Fehlerfaelle erweitern
-- [ ] Integrationstests mit realem OPC-UA-Server aufsetzen
-- [ ] Lasttests fuer Read-/Batch-Pfade und Modellaufbau ergaenzen
-- [ ] OpenAPI-Dokumentation fachlich vervollstaendigen (Response-Beispiele, Fehlerbeispiele)
-- [ ] Beispiel-OPC-UA-Mapping als gesonderte Artefakte bereitstellen
+- [ ] `POST /v1/objects/history` fachlich implementieren oder bewusst als nicht unterstuetzt markieren
+- [ ] `GET /v1/objects/{elementId}/history` und `PUT /v1/objects/{elementId}/history` umsetzen oder finalisieren
+- [ ] `PUT /v1/objects/{elementId}/value` implementieren, falls Schreibrechte im Zielsystem vorgesehen sind
+- [ ] Subscription-Lifecycle unter `/v1/subscriptions/*` implementieren
+- [ ] Stream-/SSE-Ausgabe fuer Subscriptions implementieren
+- [ ] History- und Update-Capabilities in `GET /v1/info` an den realen Funktionsumfang koppeln
+- [ ] Fehlerformatierung weiter auf das Beta-Schema haerten
+- [ ] OpenAPI-Dokumentation mit Beispielen und Fehlerfaellen vervollstaendigen
 
 ## Optionale Features aus Lastenheft
 
-- [ ] GET /data/history/{propertyId} (historische Werte)
-- [ ] write_value()-Unterstuetzung mit konfigurierbaren Schreibrechten
-- [ ] Subscription-Manager fuer OPC-UA-Subscriptions
-- [ ] Mapping von Subscriptions auf i3X-Events/EventSources
+- [ ] History-Schreib-/Lese-Features fuer Objekte und Werte ausbauen
 - [ ] Rollenmodell fuer Zugriffssteuerung
 - [ ] OPC-UA User Authentication (Client-Auth)
 - [ ] Multi-Server-Unterstuetzung (mehrere OPC-UA-Backends)

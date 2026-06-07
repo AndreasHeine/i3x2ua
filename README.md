@@ -1,8 +1,8 @@
 # i3x2ua
 
-Ein asynchroner i3X-REST-Server mit OPC-UA-Backend.
+Ein asynchroner i3X-Beta-REST-Server mit OPC-UA-Backend.
 
-Der Server stellt i3X-konforme Endpunkte bereit und nutzt einen OPC-UA-Server als Datenquelle.
+Der Server stellt die in der gelieferten `openapi.json` beschriebenen Endpunkte unter `/v1` bereit und nutzt einen OPC-UA-Server als Datenquelle.
 
 Die Dokumentation ist auf drei Dateien verteilt:
 
@@ -12,19 +12,16 @@ Die Dokumentation ist auf drei Dateien verteilt:
 
 ## Features
 
-- i3X Model API
-  - GET /model
-  - GET /model/{id}
-  - GET /model/{id}/children
-- i3X Data API
-  - GET /data/{propertyId}
-  - POST /data/query
-- i3X Action API
-  - POST /action/{actionId}/invoke
-- Diagnose-/Kompatibilitaets-APIs
-  - GET /namespaces
-  - GET /objecttypes
-  - GET /objects?includeMetadata=false
+- Beta-API unter `/v1`
+  - GET /v1/info
+  - GET /v1/namespaces
+  - GET /v1/objecttypes
+  - POST /v1/objecttypes/query
+  - GET /v1/objects
+  - POST /v1/objects/list
+  - POST /v1/objects/related
+  - POST /v1/objects/value
+- Nicht implementierte Beta-Endpunkte werden als strukturierte 501-Antworten sichtbar gemacht.
 - OPC-UA Browsing und Mapping
   - Object -> Asset
   - Variable -> Property
@@ -35,12 +32,11 @@ Die Dokumentation ist auf drei Dateien verteilt:
 
 Bereits umgesetzt:
 
-- Kern-Endpoints fuer Model, Data und Action
-- Startup-Preload fuer Model-Cache
-- Batch-Reads in `/data/query` mit `MaxNodesPerRead`
-- Batch-Browse mit `MaxNodesPerBrowse` fuer `browse_tree()` und `objecttypes`
-- Namespace-Metadaten ueber OPC UA Namespaces-Object (`i=11715`)
-- Erweiterte Browse-/Read-Logs mit Item-Counts
+- Beta-Kompatibilitaetsschicht unter `/v1`
+- `GET /v1/info`, `GET /v1/namespaces`, `GET /v1/objecttypes`, `POST /v1/objecttypes/query`
+- `GET /v1/objects`, `POST /v1/objects/list`, `POST /v1/objects/related`, `POST /v1/objects/value`
+- Strukturierte 501-Antworten fuer nicht implementierte Beta-Endpunkte
+- OPC-UA-Metadatenzugriff fuer Namespaces und ObjectTypes
 
 ## Voraussetzungen
 
@@ -96,31 +92,25 @@ Wichtige Variablen:
 
 ## API Ueberblick
 
-Kern:
+Die aktive API liegt ausschliesslich unter `/v1`.
 
-- GET /model
-- GET /model/{id}
-- GET /model/{id}/children
-- GET /data/{propertyId}
-- POST /data/query
-- POST /action/{actionId}/invoke
+- GET /v1/info
+- GET /v1/namespaces
+- GET /v1/objecttypes
+- POST /v1/objecttypes/query
+- GET /v1/objects
+- POST /v1/objects/list
+- POST /v1/objects/related
+- POST /v1/objects/value
 
-Diagnose/Kompatibilitaet:
-
-- GET /namespaces
-- GET /objecttypes
-- GET /objects?includeMetadata=false
-
-Hinweis: Die exakte Semantik und Conformance-Einordnung steht in `I3X_CONFORMANCE.md`.
+Hinweis: Die exakte Semantik und der aktuelle Implementierungsstand stehen in `I3X_CONFORMANCE.md`.
 
 ## Projektstruktur
 
 i3x_server/
 - main.py
 - api/
-  - model.py
-  - data.py
-  - action.py
+  - beta.py
 - opcua/
   - client.py
 - model/
@@ -157,5 +147,6 @@ Wenn du den Server in Produktion betreibst, sollten TLS, SecurityMode, Authentif
 
 ## Weiterfuehrende Dokumente
 
-- Conformance und API-Vertrag: `I3X_CONFORMANCE.md`
+- Beta-Kontrakt und Abweichungen: `I3X_CONFORMANCE.md`
+- OpenAPI-Abweichungen und Migrationsplan: `OPENAPI_MIGRATION.md`
 - Offene Punkte / Roadmap: `TODO.md`

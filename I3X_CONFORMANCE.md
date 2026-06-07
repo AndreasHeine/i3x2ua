@@ -1,74 +1,43 @@
-# i3X Conformance Notes
+# i3X Beta Conformance Notes
 
 ## Purpose
 
-This note separates strict i3X API requirements from optional helper endpoints in this OPC UA backed provider.
+This note documents the current Beta contract exposed by this repository under `/v1`.
 
-## Core i3X Endpoints (Required)
+The server is intentionally limited to the OpenAPI-described Beta surface. Legacy root routes are not part of the contract.
 
-The core surface in this project is:
+## Active Beta Endpoints
 
-- `GET /model`
-- `GET /model/{id}`
-- `GET /model/{id}/children`
-- `GET /data/{propertyId}`
-- `POST /data/query`
-- `POST /action/{actionId}/invoke`
+Implemented and available:
 
-These endpoints represent the required functional contract for model, data access, and action invocation.
+- `GET /v1/info`
+- `GET /v1/namespaces`
+- `GET /v1/objecttypes`
+- `POST /v1/objecttypes/query`
+- `GET /v1/objects`
+- `POST /v1/objects/list`
+- `POST /v1/objects/related`
+- `POST /v1/objects/value`
 
-## Optional or Diagnostic Endpoints
+## Behavior Notes
 
-Endpoints outside the core contract can be exposed for diagnostics and interoperability support.
+- `GET /v1/info` returns a server capability summary with `specVersion`, version metadata, and query/update/subscribe capability flags.
+- `GET /v1/namespaces` returns OPC UA namespace entries in server order.
+- `GET /v1/objecttypes` and `POST /v1/objecttypes/query` expose object type projections derived from OPC UA ObjectTypes.
+- `GET /v1/objects`, `POST /v1/objects/list`, `POST /v1/objects/related`, and `POST /v1/objects/value` expose the Beta object explorer surface.
+- Non-implemented Beta operations return structured `501` responses instead of disappearing as `404`.
 
-- `GET /namespaces`
-- `GET /objecttypes`
-- `GET /objects?includeMetadata=false`
+## Contract Scope
 
-These endpoints are not part of the strict i3X core contract in this project. They are helper/compatibility endpoints for OPC UA transparency, frontend integration, and debugging.
+The following are not part of the active contract in this repository:
 
-## What `/namespaces` Should Return from OPC UA
-
-The endpoint should return namespace entries derived from OPC UA namespace information in index order.
-
-Expected behavior:
-
-- Preserve order exactly as defined by the OPC UA server (`ns=0`, `ns=1`, ...).
-- Return stable URI strings that can be used to interpret NodeIds (`uri`).
-- Return a readable namespace label (`displayName`) preferably from OPC UA namespace metadata (`i=11715`), with a deterministic fallback strategy.
-- Handle unavailable namespace reads with a clear provider error response.
-
-Example response:
-
-```json
-[
-  {
-    "uri": "http://opcfoundation.org/UA/",
-    "displayName": "OPC UA"
-  },
-  {
-    "uri": "urn:vendor:server",
-    "displayName": "Vendor"
-  }
-]
-```
-
-## What `/objecttypes` and `/objects` Return
-
-- `GET /objecttypes`: Top-level array of object type entries from OPC UA ObjectTypes hierarchy.
-- `GET /objects`: Compatibility projection used by frontend consumers, exposing `elementId`, `displayName`, `namespaceUri`, and `schema`.
-
-## Why This Matters for i3X Mapping
-
-Even though `/namespaces` is optional, NamespaceArray visibility improves:
-
-- NodeId traceability during mapping and debugging
-- Interoperability checks between server instances
-- Deterministic interpretation of namespaced identifiers
+- root-level `/model`, `/data`, `/action` routes
+- any non-`/v1` helper routes
 
 ## Current Project Status
 
 Implemented and available:
 
-- Core i3X endpoints for model, data, and action
-- Optional/helper endpoints: `GET /namespaces`, `GET /objecttypes`, `GET /objects`
+- Beta API under `/v1`
+- Structured error and bulk-response envelopes for implemented Beta routes
+- OPC UA-backed namespace, object type, and object projections

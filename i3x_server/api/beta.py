@@ -618,7 +618,14 @@ async def query_last_known_values_v1(
     values_by_node_id: dict[str, Any] = {}
     if node_ids:
         try:
-            values_by_node_id = await opcua_client.read_values(node_ids)
+            raw_values = await opcua_client.read_values(node_ids)
+            if isinstance(raw_values, dict):
+                values_by_node_id = {str(key): value for key, value in raw_values.items()}
+            else:
+                values_by_node_id = {
+                    node_id: value
+                    for node_id, value in zip(node_ids, raw_values, strict=False)
+                }
         except Exception as exc:
             raise i3x_http_error(
                 502,

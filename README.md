@@ -148,5 +148,4 @@ If you run this server in production, configure TLS, SecurityMode, authenticatio
 ## Related Documents
 
 - Beta contract and deviations: `I3X_CONFORMANCE.md`
-- OpenAPI deviations and migration plan: `OPENAPI_MIGRATION.md`
 - Open items / roadmap: `TODO.md`

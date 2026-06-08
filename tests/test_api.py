@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import os
 import time
 from collections.abc import Generator
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -170,6 +172,58 @@ def test_beta_objecttypes(client: TestClient) -> None:
     payload = response.json()
     assert payload["success"] is True
     assert len(payload["result"]) == 2
+    first = payload["result"][0]
+    assert first["elementId"].startswith("urn:opcua:objecttype:")
+    assert isinstance(first["displayName"], str)
+    assert isinstance(first["namespaceUri"], str)
+    assert isinstance(first["sourceTypeId"], str)
+    assert isinstance(first["schema"], dict)
+    assert first["schema"]["type"] == "object"
+    assert isinstance(first["schema"]["properties"], dict)
+    assert first["related"] is None
+
+
+def test_beta_objecttypes_query(client: TestClient) -> None:
+    list_response = client.get("/v1/objecttypes")
+    assert list_response.status_code == 200
+    listed = list_response.json()["result"]
+    existing_id = listed[0]["elementId"]
+
+    response = client.post("/v1/objecttypes/query", json={"elementIds": [existing_id, "missing-type"]})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    assert payload["results"][0]["success"] is True
+    assert payload["results"][0]["elementId"] == existing_id
+    assert payload["results"][0]["result"]["elementId"] == existing_id
+    assert payload["results"][1]["success"] is False
+    assert payload["results"][1]["elementId"] == "missing-type"
+    assert payload["results"][1]["error"]["code"] == 404
+
+
+def test_beta_relationshiptypes(client: TestClient) -> None:
+    response = client.get("/v1/relationshiptypes")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    assert len(payload["result"]) >= 4
+    ids = {item["elementId"] for item in payload["result"]}
+    assert "has-component" in ids
+    assert "has-property" in ids
+
+
+def test_beta_relationshiptypes_query(client: TestClient) -> None:
+    response = client.post(
+        "/v1/relationshiptypes/query",
+        json={"elementIds": ["has-component", "missing-relationship"]},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    assert payload["results"][0]["success"] is True
+    assert payload["results"][0]["result"]["relationshipId"] == "HasComponent"
+    assert payload["results"][1]["success"] is False
+    assert payload["results"][1]["error"]["code"] == 404
 
 
 def test_beta_objects_list(client: TestClient) -> None:
@@ -242,3 +296,12 @@ def test_beta_subscription_stream_not_found_with_ack_fields(client: TestClient) 
         json={"subscriptionId": "missing", "lastSequenceNumber": 4},
     )
     assert response_legacy.status_code == 404
+
+
+def test_openapi_json_is_source_of_truth(client: TestClient) -> None:
+    response = client.get("/openapi.json")
+    assert response.status_code == 200
+
+    expected_path = Path(__file__).resolve().parents[1] / "openapi.json"
+    expected = json.loads(expected_path.read_text(encoding="utf-8"))
+    assert response.json() == expected

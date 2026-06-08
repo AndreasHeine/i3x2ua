@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 from time import perf_counter
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 
@@ -96,6 +98,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 def create_app() -> FastAPI:
     app = FastAPI(title="i3X API Beta", version="beta", lifespan=lifespan)
+
+    openapi_doc_path = Path(__file__).resolve().parents[1] / "openapi.json"
+    openapi_override: dict[str, object] | None = None
+
+    def custom_openapi() -> dict[str, object]:
+        nonlocal openapi_override
+        if openapi_override is None:
+            openapi_override = json.loads(openapi_doc_path.read_text(encoding="utf-8"))
+        return openapi_override
+
+    app.openapi = custom_openapi
 
     @app.middleware("http")
     async def log_http_requests(request: Request, call_next: object) -> object:

@@ -139,6 +139,10 @@ class GetObjectTypesRequest(BaseModel):
     elementIds: list[str]
 
 
+class GetRelationshipTypesRequest(BaseModel):
+    elementIds: list[str]
+
+
 class GetObjectsRequest(BaseModel):
     elementIds: list[str]
 
@@ -291,21 +295,78 @@ def _to_element_id(name: str) -> str:
     return compact or "unknown-type"
 
 
+def _to_urn_token(value: str) -> str:
+    lowered = value.lower()
+    token = re.sub(r"[^a-z0-9]+", "-", lowered).strip("-")
+    return token or "unknown"
+
+
+def _object_type_element_id(
+    item: OpcUaObjectTypeInfo,
+    namespace_uri: str,
+) -> str:
+    # Keep element IDs stable, queryable, and unique across namespaces.
+    return ":".join(
+        [
+            "urn",
+            "opcua",
+            "objecttype",
+            _to_urn_token(namespace_uri),
+            _to_urn_token(item.browse_name),
+            _to_urn_token(item.node_id),
+        ]
+    )
+
+
 def _to_object_type(item: OpcUaObjectTypeInfo, namespace_infos: list[OpcUaNamespaceInfo]) -> ObjectTypeResponse:
     namespace_uri = _namespace_uri_for_node_id(item.node_id, namespace_infos)
-    element_id = _to_element_id(item.browse_name)
+    element_id = _object_type_element_id(item, namespace_uri)
+    source_type_id = item.parent_node_id or item.node_id
     return ObjectTypeResponse(
         elementId=element_id,
         displayName=item.display_name,
         namespaceUri=namespace_uri,
-        sourceTypeId=item.node_id,
+        sourceTypeId=source_type_id,
         schema={
             "type": "object",
             "title": item.display_name,
             "properties": {},
         },
-        related={},
+        related=None,
     )
+
+
+def _relationship_type_items() -> list[RelationshipType]:
+    return [
+        RelationshipType(
+            elementId="has-component",
+            displayName="HasComponent",
+            namespaceUri="http://opcfoundation.org/UA/",
+            relationshipId="HasComponent",
+            reverseOf="ComponentOf",
+        ),
+        RelationshipType(
+            elementId="has-property",
+            displayName="HasProperty",
+            namespaceUri="http://opcfoundation.org/UA/",
+            relationshipId="HasProperty",
+            reverseOf="PropertyOf",
+        ),
+        RelationshipType(
+            elementId="has-subtype",
+            displayName="HasSubtype",
+            namespaceUri="http://opcfoundation.org/UA/",
+            relationshipId="HasSubtype",
+            reverseOf="SubtypeOf",
+        ),
+        RelationshipType(
+            elementId="has-type-definition",
+            displayName="HasTypeDefinition",
+            namespaceUri="http://opcfoundation.org/UA/",
+            relationshipId="HasTypeDefinition",
+            reverseOf="TypeDefinitionOf",
+        ),
+    ]
 
 
 def _find_model_node(model: BuildResult, element_id: str) -> ModelNode | None:
@@ -446,73 +507,15 @@ async def query_object_types_v1(
 async def get_relationship_types(
     namespace_uri: str | None = Query(default=None, alias="namespaceUri"),
 ) -> SuccessResponse[list[RelationshipType]]:
-    items = [
-        RelationshipType(
-            elementId="has-component",
-            displayName="HasComponent",
-            namespaceUri="http://opcfoundation.org/UA/",
-            relationshipId="HasComponent",
-            reverseOf="ComponentOf",
-        ),
-        RelationshipType(
-            elementId="has-property",
-            displayName="HasProperty",
-            namespaceUri="http://opcfoundation.org/UA/",
-            relationshipId="HasProperty",
-            reverseOf="PropertyOf",
-        ),
-        RelationshipType(
-            elementId="has-subtype",
-            displayName="HasSubtype",
-            namespaceUri="http://opcfoundation.org/UA/",
-            relationshipId="HasSubtype",
-            reverseOf="SubtypeOf",
-        ),
-        RelationshipType(
-            elementId="has-type-definition",
-            displayName="HasTypeDefinition",
-            namespaceUri="http://opcfoundation.org/UA/",
-            relationshipId="HasTypeDefinition",
-            reverseOf="TypeDefinitionOf",
-        ),
-    ]
+    items = _relationship_type_items()
     if namespace_uri is not None:
         items = [item for item in items if item.namespaceUri == namespace_uri]
     return SuccessResponse(result=items)
 
 
 @router.post("/relationshiptypes/query", response_model=BulkResponse[RelationshipType])
-async def query_relationship_types(body: GetObjectTypesRequest) -> BulkResponse[RelationshipType]:
-    items = {
-        "has-component": RelationshipType(
-            elementId="has-component",
-            displayName="HasComponent",
-            namespaceUri="http://opcfoundation.org/UA/",
-            relationshipId="HasComponent",
-            reverseOf="ComponentOf",
-        ),
-        "has-property": RelationshipType(
-            elementId="has-property",
-            displayName="HasProperty",
-            namespaceUri="http://opcfoundation.org/UA/",
-            relationshipId="HasProperty",
-            reverseOf="PropertyOf",
-        ),
-        "has-subtype": RelationshipType(
-            elementId="has-subtype",
-            displayName="HasSubtype",
-            namespaceUri="http://opcfoundation.org/UA/",
-            relationshipId="HasSubtype",
-            reverseOf="SubtypeOf",
-        ),
-        "has-type-definition": RelationshipType(
-            elementId="has-type-definition",
-            displayName="HasTypeDefinition",
-            namespaceUri="http://opcfoundation.org/UA/",
-            relationshipId="HasTypeDefinition",
-            reverseOf="TypeDefinitionOf",
-        ),
-    }
+async def query_relationship_types(body: GetRelationshipTypesRequest) -> BulkResponse[RelationshipType]:
+    items = {item.elementId: item for item in _relationship_type_items()}
     results: list[BulkResultItem[RelationshipType]] = []
     for element_id in body.elementIds:
         match = items.get(element_id)

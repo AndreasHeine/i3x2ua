@@ -40,7 +40,7 @@ Already implemented:
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.12
 - uv
 - Optional: running OPC UA server
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 import json
 import logging
 import os
@@ -30,6 +31,26 @@ def _configure_logging() -> None:
     )
 
 
+async def _run_model_preload(app: FastAPI) -> None:
+    try:
+        started = asyncio.get_running_loop().time()
+        preload = await app.state.model_builder.build()
+        app.state.model_cache = preload
+        logger.info(
+            "Model preload finished nodes=%d roots=%d properties=%d actions=%d duration_s=%.3f",
+            len(preload.nodes_by_id),
+            len(preload.root_ids),
+            len(preload.property_to_node),
+            len(preload.action_to_method),
+            asyncio.get_running_loop().time() - started,
+        )
+    except Exception:
+        logger.exception("Model preload failed")
+        if settings.fail_startup_on_model_preload_error and settings.model_preload_blocking:
+            raise
+        logger.warning("Continuing without preloaded model; model will build lazily on demand")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _configure_logging()
@@ -57,6 +78,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         interval_seconds=settings.subscription_interval_seconds,
     )
     app.state.model_lock = asyncio.Lock()
+    app.state.model_preload_task = None
     if skip_connect:
         app.state.model_cache = BuildResult(
             nodes_by_id={},
@@ -68,28 +90,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     else:
         app.state.model_cache = None
         if settings.model_preload_on_startup:
-            logger.info("Model preload at startup enabled")
-            try:
-                started = asyncio.get_running_loop().time()
-                preload = await app.state.model_builder.build()
-                app.state.model_cache = preload
-                logger.info(
-                    "Model preload finished nodes=%d roots=%d properties=%d actions=%d duration_s=%.3f",
-                    len(preload.nodes_by_id),
-                    len(preload.root_ids),
-                    len(preload.property_to_node),
-                    len(preload.action_to_method),
-                    asyncio.get_running_loop().time() - started,
-                )
-            except Exception:
-                logger.exception("Model preload failed at startup")
-                if settings.fail_startup_on_model_preload_error:
-                    raise
-                logger.warning("Continuing startup without model cache; first /model request will build lazily")
+            if settings.model_preload_blocking:
+                logger.info("Model preload at startup enabled (blocking)")
+                await _run_model_preload(app)
+            else:
+                logger.info("Model preload at startup enabled (background)")
+                app.state.model_preload_task = asyncio.create_task(_run_model_preload(app))
     try:
         yield
     finally:
         logger.info("App shutdown started")
+        preload_task = getattr(app.state, "model_preload_task", None)
+        if preload_task is not None and not preload_task.done():
+            preload_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await preload_task
         await app.state.subscription_service.close()
         if not skip_connect:
             await opcua_client.disconnect()

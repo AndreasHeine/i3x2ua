@@ -318,10 +318,50 @@ def _object_type_element_id(
     )
 
 
+def _json_schema_for_opcua_type(data_type: str | None) -> dict[str, Any]:
+    if data_type is None:
+        return {"type": "string"}
+
+    normalized = data_type.lower()
+    if normalized.endswith("i=10") or normalized.endswith("i=11"):
+        return {"type": "number"}
+    if any(normalized.endswith(f"i={idx}") for idx in [2, 3, 4, 5, 6, 7, 8, 9]):
+        return {"type": "integer"}
+    if normalized.endswith("i=13"):
+        return {"type": "string", "format": "date-time"}
+
+    if "boolean" in normalized or normalized.endswith("i=1"):
+        return {"type": "boolean"}
+    if any(token in normalized for token in ["double", "float"]):
+        return {"type": "number"}
+    if any(
+        token in normalized
+        for token in [
+            "sbyte",
+            "byte",
+            "int16",
+            "int32",
+            "int64",
+            "uint16",
+            "uint32",
+            "uint64",
+        ]
+    ):
+        return {"type": "integer"}
+    if "datetime" in normalized:
+        return {"type": "string", "format": "date-time"}
+
+    return {"type": "string"}
+
+
 def _to_object_type(item: OpcUaObjectTypeInfo, namespace_infos: list[OpcUaNamespaceInfo]) -> ObjectTypeResponse:
     namespace_uri = _namespace_uri_for_node_id(item.node_id, namespace_infos)
     element_id = _object_type_element_id(item, namespace_uri)
     source_type_id = item.parent_node_id or item.node_id
+    property_schema = {
+        key: _json_schema_for_opcua_type(value)
+        for key, value in item.properties.items()
+    }
     return ObjectTypeResponse(
         elementId=element_id,
         displayName=item.display_name,
@@ -330,7 +370,7 @@ def _to_object_type(item: OpcUaObjectTypeInfo, namespace_infos: list[OpcUaNamesp
         schema={
             "type": "object",
             "title": item.display_name,
-            "properties": {},
+            "properties": property_schema,
         },
         related=None,
     )

@@ -37,12 +37,17 @@ class FakeOpcUaClient:
                 parent_node_id=None,
                 browse_name="MachineType",
                 display_name="Machine Type",
+                properties={
+                    "temperature": "i=11",
+                    "running": "i=1",
+                },
             ),
             SimpleNamespace(
                 node_id="ns=1;i=1002",
                 parent_node_id="ns=1;i=1001",
                 browse_name="SensorType",
                 display_name="Sensor Type",
+                properties={},
             ),
         ]
 
@@ -180,6 +185,8 @@ def test_beta_objecttypes(client: TestClient) -> None:
     assert isinstance(first["schema"], dict)
     assert first["schema"]["type"] == "object"
     assert isinstance(first["schema"]["properties"], dict)
+    assert first["schema"]["properties"]["temperature"]["type"] == "number"
+    assert first["schema"]["properties"]["running"]["type"] == "boolean"
     assert first["related"] is None
 
 

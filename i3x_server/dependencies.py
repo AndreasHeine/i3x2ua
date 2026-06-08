@@ -38,6 +38,14 @@ def get_subscription_service(request: Request) -> SubscriptionService:
 
 
 async def get_or_build_model(request: Request) -> BuildResult:
+    preload_task = cast(asyncio.Task[None] | None, getattr(request.app.state, "model_preload_task", None))
+    if preload_task is not None and not preload_task.done():
+        logger.info("Model preload in progress; waiting for completion")
+        try:
+            await preload_task
+        except Exception:
+            logger.exception("Background model preload failed; falling back to lazy build")
+
     cache = cast(BuildResult | None, getattr(request.app.state, "model_cache", None))
     if cache is not None:
         logger.debug("Model cache hit")

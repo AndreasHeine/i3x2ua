@@ -3,16 +3,18 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from time import perf_counter
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 
 from i3x_server.api.beta import router as beta_router
 from i3x_server.config.settings import settings
 from i3x_server.model.builder import ModelBuilder
 from i3x_server.opcua.client import OpcUaClient
 from i3x_server.schemas.state import BuildResult
+from i3x_server.subscriptions.service import SubscriptionService
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +50,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await opcua_client.connect()
     app.state.opcua_client = opcua_client
     app.state.model_builder = ModelBuilder(opcua_client)
+    app.state.subscription_service = SubscriptionService(
+        opcua_client=opcua_client,
+        interval_seconds=settings.subscription_interval_seconds,
+    )
     app.state.model_lock = asyncio.Lock()
     if skip_connect:
         app.state.model_cache = BuildResult(
@@ -82,6 +88,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         logger.info("App shutdown started")
+        await app.state.subscription_service.close()
         if not skip_connect:
             await opcua_client.disconnect()
         logger.info("App shutdown finished")
@@ -89,6 +96,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 def create_app() -> FastAPI:
     app = FastAPI(title="i3X API Beta", version="beta", lifespan=lifespan)
+
+    @app.middleware("http")
+    async def log_http_requests(request: Request, call_next: object) -> object:
+        started = perf_counter()
+        response = await call_next(request)
+        logger.info(
+            "HTTP request method=%s path=%s status=%s duration_s=%.3f",
+            request.method,
+            request.url.path,
+            response.status_code,
+            perf_counter() - started,
+        )
+        return response
+
     app.include_router(beta_router)
     return app
 

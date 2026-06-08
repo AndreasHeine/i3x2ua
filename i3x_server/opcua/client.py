@@ -43,6 +43,15 @@ class OpcUaOperationalLimits:
     max_nodes_per_read: int | None
 
 
+@dataclass(slots=True)
+class OpcUaSubscriptionCapabilities:
+    max_monitored_items_per_call: int | None
+    max_subscriptions: int | None
+    max_monitored_items: int | None
+    max_subscriptions_per_session: int | None
+    max_monitored_items_per_subscription: int | None
+
+
 class OpcUaClientProtocol(Protocol):
     async def browse_tree(self) -> list[OpcUaNodeInfo]:
         ...
@@ -59,6 +68,9 @@ class OpcUaClientProtocol(Protocol):
     async def get_operational_limits(self) -> OpcUaOperationalLimits:
         ...
 
+    async def get_subscription_capabilities(self) -> OpcUaSubscriptionCapabilities:
+        ...
+
     async def read_value(self, node_id: str) -> Any:
         ...
 
@@ -66,6 +78,15 @@ class OpcUaClientProtocol(Protocol):
         ...
 
     async def call_method(self, object_node_id: str, method_node_id: str, args: list[Any]) -> Any:
+        ...
+
+    async def create_datachange_subscription(self, publishing_interval_ms: float, handler: Any) -> Any:
+        ...
+
+    async def subscribe_data_changes(self, subscription: Any, node_ids: list[str]) -> Any:
+        ...
+
+    async def delete_subscription(self, subscription: Any) -> None:
         ...
 
 
@@ -81,6 +102,7 @@ class OpcUaClient:
         self._metadata_cache_ttl_seconds = max(0, metadata_cache_ttl_seconds)
         self._client = Client(url=endpoint)
         self._limits_cache: OpcUaOperationalLimits | None = None
+        self._subscription_caps_cache: OpcUaSubscriptionCapabilities | None = None
         self._namespace_infos_cache: tuple[float, list[OpcUaNamespaceInfo]] | None = None
         self._object_types_cache: tuple[float, list[OpcUaObjectTypeInfo]] | None = None
 
@@ -106,6 +128,7 @@ class OpcUaClient:
         await self._client.disconnect()
         self._namespace_infos_cache = None
         self._object_types_cache = None
+        self._subscription_caps_cache = None
         logger.info("OPC UA disconnect finished endpoint=%s duration_s=%.3f", self._endpoint, perf_counter() - started)
 
     async def browse_tree(self) -> list[OpcUaNodeInfo]:
@@ -138,12 +161,7 @@ class OpcUaClient:
             if not filtered_entries:
                 continue
 
-            node_infos = await asyncio.gather(
-                *[
-                    self._read_node_info(node=node, parent_node_id=parent_node_id)
-                    for node, parent_node_id in filtered_entries
-                ]
-            )
+            node_infos = await self._read_node_infos_limited(filtered_entries)
             output.extend(node_infos)
 
             nodes = [node for node, _ in filtered_entries]
@@ -185,6 +203,25 @@ class OpcUaClient:
             data_type=data_type,
             event_notifier=event_notifier,
         )
+
+    async def _read_node_infos_limited(self, entries: list[tuple[Any, str | None]]) -> list[OpcUaNodeInfo]:
+        semaphore = asyncio.Semaphore(self._browse_concurrency)
+
+        async def worker(node: Any, parent_node_id: str | None) -> OpcUaNodeInfo | None:
+            async with semaphore:
+                try:
+                    return await self._read_node_info(node=node, parent_node_id=parent_node_id)
+                except Exception:
+                    logger.warning(
+                        "OPC UA node read failed endpoint=%s node_id=%s; skipping node",
+                        self._endpoint,
+                        node.nodeid.to_string(),
+                        exc_info=True,
+                    )
+                    return None
+
+        raw = await asyncio.gather(*[worker(node, parent_node_id) for node, parent_node_id in entries])
+        return [item for item in raw if item is not None]
 
     async def get_operational_limits(self) -> OpcUaOperationalLimits:
         if self._limits_cache is not None:
@@ -230,6 +267,35 @@ class OpcUaClient:
             perf_counter() - started,
         )
         return limits
+
+    async def get_subscription_capabilities(self) -> OpcUaSubscriptionCapabilities:
+        if self._subscription_caps_cache is not None:
+            return self._subscription_caps_cache
+
+        started = perf_counter()
+
+        capabilities = OpcUaSubscriptionCapabilities(
+            max_monitored_items_per_call=await self._read_positive_int("i=11714"),
+            max_subscriptions=await self._read_positive_int("i=24096"),
+            max_monitored_items=await self._read_positive_int("i=24097"),
+            max_subscriptions_per_session=await self._read_positive_int("i=24098"),
+            max_monitored_items_per_subscription=await self._read_positive_int("i=24104"),
+        )
+
+        self._subscription_caps_cache = capabilities
+        logger.info(
+            "OPC UA subscription capabilities resolved endpoint=%s max_items_per_call=%s "
+            "max_subscriptions=%s max_monitored_items=%s max_subscriptions_per_session=%s "
+            "max_items_per_subscription=%s duration_s=%.3f",
+            self._endpoint,
+            capabilities.max_monitored_items_per_call,
+            capabilities.max_subscriptions,
+            capabilities.max_monitored_items,
+            capabilities.max_subscriptions_per_session,
+            capabilities.max_monitored_items_per_subscription,
+            perf_counter() - started,
+        )
+        return capabilities
 
     async def get_namespaces(self) -> list[str]:
         started = perf_counter()
@@ -531,6 +597,27 @@ class OpcUaClient:
                 perf_counter() - started,
             )
             raise
+
+    async def create_datachange_subscription(self, publishing_interval_ms: float, handler: Any) -> Any:
+        return await self._client.create_subscription(publishing_interval_ms, handler)
+
+    async def subscribe_data_changes(self, subscription: Any, node_ids: list[str]) -> Any:
+        nodes = [self._client.get_node(node_id) for node_id in node_ids]
+        return await subscription.subscribe_data_change(nodes)
+
+    async def delete_subscription(self, subscription: Any) -> None:
+        await subscription.delete()
+
+    async def _read_positive_int(self, node_id: str) -> int | None:
+        try:
+            value = await self._client.get_node(node_id).read_value()
+        except Exception:
+            logger.debug("OPC UA subscription capability read failed node_id=%s", node_id, exc_info=True)
+            return None
+
+        if isinstance(value, int) and value > 0:
+            return value
+        return None
 
 
 def _chunked(values: list[str], size: int) -> list[list[str]]:

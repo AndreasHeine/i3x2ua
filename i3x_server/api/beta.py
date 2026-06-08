@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import re
+import json
 from datetime import UTC, datetime
 from typing import Any, Generic, TypeVar
 
 from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel, ConfigDict, Field
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import StreamingResponse
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
-from i3x_server.dependencies import get_opcua_client, get_or_build_model
+from i3x_server.dependencies import get_opcua_client, get_or_build_model, get_subscription_service
 from i3x_server.errors import i3x_http_error
 from i3x_server.opcua.client import (
     OpcUaClientProtocol,
@@ -16,6 +19,7 @@ from i3x_server.opcua.client import (
 )
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
+from i3x_server.subscriptions.service import SubscriptionService
 
 router = APIRouter(prefix="/v1", tags=["beta"])
 
@@ -164,12 +168,13 @@ class RegisterMonitoredItemsRequest(BaseModel):
 
 
 class SyncRequest(BaseModel):
+    clientId: str | None = None
     subscriptionId: str
-    lastSequenceNumber: int | None = None
+    acknowledgeSequence: int = Field(default=0, validation_alias=AliasChoices("acknowledgeSequence", "lastSequenceNumber"))
 
 
 class ListSubscriptionsRequest(BaseModel):
-    subscriptionIds: list[str]
+    subscriptionIds: list[str] = Field(default_factory=list)
 
 
 class DeleteSubscriptionsRequest(BaseModel):
@@ -178,6 +183,11 @@ class DeleteSubscriptionsRequest(BaseModel):
 
 class StreamRequest(BaseModel):
     subscriptionId: str
+    acknowledgeSequence: int = Field(
+        default=0,
+        ge=0,
+        validation_alias=AliasChoices("acknowledgeSequence", "lastSequenceNumber"),
+    )
 
 
 class CreateSubscriptionRequest(BaseModel):
@@ -187,17 +197,22 @@ class CreateSubscriptionRequest(BaseModel):
 
 class CreateSubscriptionResponse(BaseModel):
     subscriptionId: str
+    clientId: str | None = None
+    displayName: str | None = None
 
 
 class SubscriptionDetail(BaseModel):
     subscriptionId: str
+    clientId: str | None = None
     displayName: str | None = None
     monitoredObjects: list[dict[str, Any]] = Field(default_factory=list)
+    mode: str | None = None
 
 
 class SyncUpdate(BaseModel):
     sequenceNumber: int
     elementId: str
+    nodeId: str
     value: Any
     quality: str
     timestamp: str
@@ -216,7 +231,7 @@ def _supported_capabilities() -> ServerCapabilities:
     return ServerCapabilities(
         query=QueryCapabilities(history=False),
         update=UpdateCapabilities(current=False, history=False),
-        subscribe=SubscribeCapabilities(stream=False),
+        subscribe=SubscribeCapabilities(stream=True),
     )
 
 
@@ -680,35 +695,188 @@ async def update_object_value_v1(element_id: str) -> None:
 
 
 @router.post("/subscriptions")
-async def create_subscription_v1(body: CreateSubscriptionRequest) -> None:
-    _not_implemented("Subscriptions")
+async def create_subscription_v1(
+    body: CreateSubscriptionRequest,
+    subscription_service: SubscriptionService = Depends(get_subscription_service),
+) -> SuccessResponse[CreateSubscriptionResponse]:
+    created = await subscription_service.create_subscription(
+        client_id=body.clientId,
+        display_name=body.displayName,
+    )
+    return SuccessResponse(
+        result=CreateSubscriptionResponse(
+            subscriptionId=created.subscription_id,
+            clientId=created.client_id,
+            displayName=created.display_name,
+        )
+    )
 
 
 @router.post("/subscriptions/register")
-async def register_monitored_items_v1(body: RegisterMonitoredItemsRequest) -> None:
-    _not_implemented("Subscription item registration")
+async def register_monitored_items_v1(
+    body: RegisterMonitoredItemsRequest,
+    model: BuildResult = Depends(get_or_build_model),
+    subscription_service: SubscriptionService = Depends(get_subscription_service),
+) -> SuccessResponse[None]:
+    max_depth = body.maxDepth or 1
+    ok = await subscription_service.register_items(
+        subscription_id=body.subscriptionId,
+        element_ids=body.elementIds,
+        max_depth=max_depth,
+        model=model,
+    )
+    if not ok:
+        raise i3x_http_error(
+            404,
+            "SubscriptionNotFound",
+            f"Subscription '{body.subscriptionId}' not found",
+        )
+    return SuccessResponse(result=None)
 
 
 @router.post("/subscriptions/unregister")
-async def remove_monitored_items_v1(body: RegisterMonitoredItemsRequest) -> None:
-    _not_implemented("Subscription item unregistration")
+async def remove_monitored_items_v1(
+    body: RegisterMonitoredItemsRequest,
+    model: BuildResult = Depends(get_or_build_model),
+    subscription_service: SubscriptionService = Depends(get_subscription_service),
+) -> SuccessResponse[None]:
+    ok = await subscription_service.unregister_items(
+        subscription_id=body.subscriptionId,
+        element_ids=body.elementIds,
+        model=model,
+    )
+    if not ok:
+        raise i3x_http_error(
+            404,
+            "SubscriptionNotFound",
+            f"Subscription '{body.subscriptionId}' not found",
+        )
+    return SuccessResponse(result=None)
 
 
 @router.post("/subscriptions/stream")
-async def stream_subscription_v1(body: StreamRequest) -> None:
-    _not_implemented("Subscription streaming")
+async def stream_subscription_v1(
+    body: StreamRequest,
+    subscription_service: SubscriptionService = Depends(get_subscription_service),
+) -> StreamingResponse:
+    acknowledged = await subscription_service.sync(
+        subscription_id=body.subscriptionId,
+        acknowledge_sequence=body.acknowledgeSequence,
+    )
+    if acknowledged is None:
+        raise i3x_http_error(
+            404,
+            "SubscriptionNotFound",
+            f"Subscription '{body.subscriptionId}' not found",
+        )
+
+    async def event_stream() -> Any:
+        last_sequence = body.acknowledgeSequence
+        while True:
+            updates = await subscription_service.wait_for_updates(
+                subscription_id=body.subscriptionId,
+                after_sequence=last_sequence,
+                timeout_seconds=15,
+            )
+
+            if updates is None:
+                yield "event: close\ndata: {}\n\n"
+                return
+
+            if not updates:
+                yield ": keepalive\n\n"
+                continue
+
+            last_sequence = updates[-1].sequence_number
+            payload = [
+                {
+                    "sequenceNumber": item.sequence_number,
+                    "elementId": item.element_id,
+                    "nodeId": item.node_id,
+                    "value": item.value,
+                    "quality": item.quality,
+                    "timestamp": item.timestamp,
+                }
+                for item in updates
+            ]
+            encoded_payload = jsonable_encoder(payload)
+            yield f"data: {json.dumps(encoded_payload)}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 @router.post("/subscriptions/sync")
-async def sync_subscription_v1(body: SyncRequest) -> None:
-    _not_implemented("Subscription sync")
+async def sync_subscription_v1(
+    body: SyncRequest,
+    subscription_service: SubscriptionService = Depends(get_subscription_service),
+) -> SuccessResponse[list[SyncUpdate]]:
+    synced = await subscription_service.sync(
+        subscription_id=body.subscriptionId,
+        acknowledge_sequence=body.acknowledgeSequence,
+    )
+    if synced is None:
+        raise i3x_http_error(
+            404,
+            "SubscriptionNotFound",
+            f"Subscription '{body.subscriptionId}' not found",
+        )
+    return SuccessResponse(
+        result=[
+            SyncUpdate(
+                sequenceNumber=item.sequence_number,
+                elementId=item.element_id,
+                nodeId=item.node_id,
+                value=item.value,
+                quality=item.quality,
+                timestamp=item.timestamp,
+            )
+            for item in synced.updates
+        ]
+    )
 
 
 @router.post("/subscriptions/delete")
-async def delete_subscriptions_v1(body: DeleteSubscriptionsRequest) -> None:
-    _not_implemented("Subscription deletion")
+async def delete_subscriptions_v1(
+    body: DeleteSubscriptionsRequest,
+    subscription_service: SubscriptionService = Depends(get_subscription_service),
+) -> BulkResponse[None]:
+    deleted = await subscription_service.delete_subscriptions(body.subscriptionIds)
+    return BulkResponse(
+        results=[
+            BulkResultItem[None](
+                success=item.success,
+                subscriptionId=item.subscription_id,
+                result=None,
+                error=None if item.error is None else ErrorDetail(**item.error),
+            )
+            for item in deleted
+        ]
+    )
 
 
 @router.post("/subscriptions/list")
-async def list_subscriptions_v1(body: ListSubscriptionsRequest) -> None:
-    _not_implemented("Subscription listing")
+async def list_subscriptions_v1(
+    body: ListSubscriptionsRequest,
+    subscription_service: SubscriptionService = Depends(get_subscription_service),
+) -> SuccessResponse[list[SubscriptionDetail]]:
+    filter_ids = body.subscriptionIds or None
+    subscriptions = await subscription_service.list_subscriptions(filter_ids)
+    return SuccessResponse(
+        result=[
+            SubscriptionDetail(
+                subscriptionId=item.subscription_id,
+                clientId=item.client_id,
+                displayName=item.display_name,
+                monitoredObjects=item.monitored_objects,
+                mode=item.mode,
+            )
+            for item in subscriptions
+        ]
+    )

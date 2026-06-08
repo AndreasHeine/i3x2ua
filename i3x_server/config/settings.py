@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     model_refresh_interval_seconds: int = Field(default=60, ge=0)
     model_preload_on_startup: bool = Field(default=True)
     fail_startup_on_model_preload_error: bool = Field(default=False)
+    subscription_interval_seconds: int = Field(default=5, ge=1)
     log_level: str = Field(default="INFO")
 
 

@@ -11,6 +11,7 @@ from i3x_server.errors import i3x_http_error
 from i3x_server.model.builder import ModelBuilder
 from i3x_server.opcua.client import OpcUaClientProtocol
 from i3x_server.schemas.state import BuildResult
+from i3x_server.subscriptions.service import SubscriptionService
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +28,13 @@ def get_opcua_client(request: Request) -> OpcUaClientProtocol:
     if client is None:
         raise i3x_http_error(500, "InternalError", "OPC UA client not initialized")
     return client
+
+
+def get_subscription_service(request: Request) -> SubscriptionService:
+    service = cast(SubscriptionService | None, getattr(request.app.state, "subscription_service", None))
+    if service is None:
+        raise i3x_http_error(500, "InternalError", "Subscription service not initialized")
+    return service
 
 
 async def get_or_build_model(request: Request) -> BuildResult:

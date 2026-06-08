@@ -14,8 +14,6 @@ Details about implemented items are listed in the status section of `README.md`.
 - [ ] Move `POST /v1/objects/history` from `501` to functional implementation (if required)
 - [ ] Move `GET /v1/objects/{elementId}/history` and `PUT /v1/objects/{elementId}/history` from `501` to functional implementation (if required)
 - [ ] Implement `PUT /v1/objects/{elementId}/value` if write access is required in the target system
-- [ ] Move the subscription lifecycle under `/v1/subscriptions/*` from `501` to functional implementation
-- [ ] Implement stream/SSE output for subscriptions
 - [ ] Align history/update capabilities in `GET /v1/info` with actual runtime support
 - [ ] Harden error formatting against the Beta schema
 - [ ] Complete OpenAPI documentation with examples and error cases

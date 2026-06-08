@@ -94,6 +94,19 @@ class SubscriptionService:
         self._lock = asyncio.Lock()
         self._subscriptions: dict[str, _SubscriptionState] = {}
         self._cache: dict[str, Any] = {}
+        self._opcua_client.add_reconnect_listener(self._handle_client_reconnect)
+
+    async def _handle_client_reconnect(self) -> None:
+        async with self._lock:
+            candidates = [
+                item.subscription_id
+                for item in self._subscriptions.values()
+                if item.mode == "native" and item.monitored_node_ids
+            ]
+
+        for subscription_id in candidates:
+            logger.info("Reconfiguring native subscription after reconnect subscription_id=%s", subscription_id)
+            await self._reconfigure_runtime(subscription_id)
 
     async def close(self) -> None:
         async with self._lock:
@@ -344,6 +357,7 @@ class SubscriptionService:
         state.runtime.polling_task = None
         state.runtime.ua_subscription = None
         state.handle_to_node_id = {}
+        state.mode = "idle"
 
         if polling_task is not None:
             polling_task.cancel()
@@ -353,7 +367,14 @@ class SubscriptionService:
                 pass
 
         if ua_subscription is not None:
-            await self._opcua_client.delete_subscription(ua_subscription)
+            try:
+                await self._opcua_client.delete_subscription(ua_subscription)
+            except Exception:
+                logger.debug(
+                    "Ignoring delete failure for stale OPC UA subscription subscription_id=%s",
+                    state.subscription_id,
+                    exc_info=True,
+                )
 
     async def _polling_loop(self, subscription_id: str) -> None:
         try:

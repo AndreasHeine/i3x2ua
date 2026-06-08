@@ -20,6 +20,7 @@ class FakeOpcUaClient:
     def __init__(self) -> None:
         self.values: dict[str, Any] = {"ns=2;s=Temperature": 42.5}
         self._reads = 0
+        self._listeners: list[Any] = []
 
     async def get_namespace_infos(self) -> list[SimpleNamespace]:
         return [
@@ -73,6 +74,9 @@ class FakeOpcUaClient:
 
     async def delete_subscription(self, subscription: Any) -> None:
         await self._noop_async()
+
+    def add_reconnect_listener(self, listener: Any) -> None:
+        self._listeners.append(listener)
 
     async def call_method(self, object_node_id: str, method_node_id: str, args: list[Any]) -> Any:
         return {"object": object_node_id, "method": method_node_id, "args": args}

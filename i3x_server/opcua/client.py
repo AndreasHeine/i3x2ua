@@ -4,7 +4,7 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from time import perf_counter
-from typing import Any, Protocol
+from typing import Any, Awaitable, Callable, Protocol
 
 from asyncua import Client, ua
 from asyncua.ua import NodeClass
@@ -89,6 +89,9 @@ class OpcUaClientProtocol(Protocol):
     async def delete_subscription(self, subscription: Any) -> None:
         ...
 
+    def add_reconnect_listener(self, listener: Callable[[], Awaitable[None]]) -> None:
+        ...
+
 
 class OpcUaClient:
     def __init__(
@@ -101,6 +104,8 @@ class OpcUaClient:
         self._browse_concurrency = max(1, browse_concurrency)
         self._metadata_cache_ttl_seconds = max(0, metadata_cache_ttl_seconds)
         self._client = Client(url=endpoint)
+        self._reconnect_lock = asyncio.Lock()
+        self._reconnect_listeners: list[Callable[[], Awaitable[None]]] = []
         self._limits_cache: OpcUaOperationalLimits | None = None
         self._subscription_caps_cache: OpcUaSubscriptionCapabilities | None = None
         self._namespace_infos_cache: tuple[float, list[OpcUaNamespaceInfo]] | None = None
@@ -547,7 +552,17 @@ class OpcUaClient:
             value = await node.read_value()
             logger.debug("OPC UA read ok node_id=%s duration_s=%.3f", node_id, perf_counter() - started)
             return value
-        except Exception:
+        except Exception as exc:
+            if self._should_retry_after_disconnect(exc):
+                logger.warning(
+                    "OPC UA read retry after reconnect node_id=%s endpoint=%s",
+                    node_id,
+                    self._endpoint,
+                )
+                await self._reconnect()
+                value = await self._client.get_node(node_id).read_value()
+                logger.debug("OPC UA read ok after reconnect node_id=%s duration_s=%.3f", node_id, perf_counter() - started)
+                return value
             logger.exception("OPC UA read failed node_id=%s duration_s=%.3f", node_id, perf_counter() - started)
             raise
 
@@ -563,7 +578,19 @@ class OpcUaClient:
         values: list[Any] = []
         for batch in _chunked(node_ids, batch_size):
             nodes = [self._client.get_node(node_id) for node_id in batch]
-            batch_values = await self._client.read_values(nodes)
+            try:
+                batch_values = await self._client.read_values(nodes)
+            except Exception as exc:
+                if not self._should_retry_after_disconnect(exc):
+                    raise
+                logger.warning(
+                    "OPC UA batch read retry after reconnect endpoint=%s batch_size=%d",
+                    self._endpoint,
+                    len(batch),
+                )
+                await self._reconnect()
+                retry_nodes = [self._client.get_node(node_id) for node_id in batch]
+                batch_values = await self._client.read_values(retry_nodes)
             values.extend(batch_values)
 
         logger.info(
@@ -588,7 +615,24 @@ class OpcUaClient:
                 perf_counter() - started,
             )
             return result
-        except Exception:
+        except Exception as exc:
+            if self._should_retry_after_disconnect(exc):
+                logger.warning(
+                    "OPC UA method retry after reconnect object_node_id=%s method_node_id=%s",
+                    object_node_id,
+                    method_node_id,
+                )
+                await self._reconnect()
+                retry_object = self._client.get_node(object_node_id)
+                result = await retry_object.call_method(method_node_id, *args)
+                logger.info(
+                    "OPC UA method ok after reconnect object_node_id=%s method_node_id=%s arg_count=%d duration_s=%.3f",
+                    object_node_id,
+                    method_node_id,
+                    len(args),
+                    perf_counter() - started,
+                )
+                return result
             logger.exception(
                 "OPC UA method failed object_node_id=%s method_node_id=%s arg_count=%d duration_s=%.3f",
                 object_node_id,
@@ -597,6 +641,36 @@ class OpcUaClient:
                 perf_counter() - started,
             )
             raise
+
+    async def _reconnect(self) -> None:
+        listeners: list[Callable[[], Awaitable[None]]]
+        async with self._reconnect_lock:
+            logger.info("OPC UA reconnect started endpoint=%s", self._endpoint)
+            try:
+                await self._client.disconnect()
+            except Exception:
+                logger.debug("OPC UA reconnect disconnect step failed endpoint=%s", self._endpoint, exc_info=True)
+            await self._client.connect(
+                auto_reconnect=True,
+                reconnect_max_delay=30.0,
+            )
+            self._limits_cache = None
+            self._subscription_caps_cache = None
+            logger.info("OPC UA reconnect finished endpoint=%s", self._endpoint)
+            listeners = list(self._reconnect_listeners)
+
+        for listener in listeners:
+            try:
+                await listener()
+            except Exception:
+                logger.exception("OPC UA reconnect listener failed endpoint=%s", self._endpoint)
+
+    def _should_retry_after_disconnect(self, exc: Exception) -> bool:
+        text = str(exc).lower()
+        return "connection is closed" in text or "connection is not open" in text
+
+    def add_reconnect_listener(self, listener: Callable[[], Awaitable[None]]) -> None:
+        self._reconnect_listeners.append(listener)
 
     async def create_datachange_subscription(self, publishing_interval_ms: float, handler: Any) -> Any:
         return await self._client.create_subscription(publishing_interval_ms, handler)

@@ -218,6 +218,7 @@ class OpcUaClient:
             auto_reconnect = True,
             reconnect_max_delay = 30.0,
         )
+        await self.load_additional_typedefinitions()
         self._limits_cache = await self.get_operational_limits()
         logger.info(
             "OPC UA limits endpoint=%s max_nodes_per_browse=%s max_nodes_per_read=%s",
@@ -226,6 +227,20 @@ class OpcUaClient:
             self._limits_cache.max_nodes_per_read,
         )
         logger.info("OPC UA connect finished endpoint=%s duration_s=%.3f", self._endpoint, perf_counter() - started)
+
+    async def load_additional_typedefinitions(self) -> None:
+        started = perf_counter()
+        logger.info("OPC UA additional type definitions load started endpoint=%s", self._endpoint)
+        try:
+            await self._client.load_data_type_definitions()
+        except Exception as e:
+            logger.warning("OPC UA additional v1.04 data type definitions load failed endpoint=%s error=%s", self._endpoint, e)
+            try:
+                await self._client.load_type_definitions()
+            except Exception as e:
+                logger.warning("OPC UA additional v1.03 data type definitions load failed endpoint=%s error=%s", self._endpoint, e)
+        else:
+            logger.info("OPC UA additional type definitions load finished endpoint=%s duration_s=%.3f", self._endpoint, perf_counter() - started)
 
     async def disconnect(self) -> None:
         started = perf_counter()
@@ -976,6 +991,7 @@ class OpcUaClient:
                 auto_reconnect=True,
                 reconnect_max_delay=30.0,
             )
+            await self.load_custom_typedefinitions()
             self._limits_cache = None
             self._subscription_caps_cache = None
             logger.info("OPC UA reconnect finished endpoint=%s", self._endpoint)

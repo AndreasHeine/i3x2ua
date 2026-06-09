@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
@@ -296,12 +296,18 @@ class SubscriptionService:
         try:
             await self._start_native_subscription(state)
         except Exception:
-            logger.exception("Native OPC UA subscription failed; switching to polling", extra={"subscription_id": state.subscription_id})
+            logger.exception(
+                "Native OPC UA subscription failed; switching to polling",
+                extra={"subscription_id": state.subscription_id},
+            )
             await self._start_polling(state)
 
     async def _must_use_polling(self, state: _SubscriptionState, caps: OpcUaSubscriptionCapabilities) -> bool:
         node_count = len(state.monitored_node_ids)
-        max_per_subscription = _min_positive(caps.max_monitored_items_per_call, caps.max_monitored_items_per_subscription)
+        max_per_subscription = _min_positive(
+            caps.max_monitored_items_per_call,
+            caps.max_monitored_items_per_subscription,
+        )
         if max_per_subscription is not None and node_count > max_per_subscription:
             return True
 
@@ -419,7 +425,7 @@ class SubscriptionService:
                 node_id=node_id,
                 value=value,
                 quality="Good",
-                timestamp=datetime.now(UTC).isoformat(),
+                timestamp=datetime.now(timezone.utc).isoformat(),
             )
         )
         state.update_event.set()

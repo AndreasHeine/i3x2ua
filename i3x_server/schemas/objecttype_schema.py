@@ -5,7 +5,6 @@ from typing import Any
 
 from i3x_server.opcua.client import OpcUaObjectTypeInfo, OpcUaObjectTypeMemberInfo
 
-
 _MANDATORY_RULES = {"mandatory", "mandatoryplaceholder"}
 
 
@@ -147,11 +146,11 @@ def _schema_for_member(member: OpcUaObjectTypeMemberInfo) -> dict[str, Any]:
 
 def _members(item: OpcUaObjectTypeInfo) -> Iterable[OpcUaObjectTypeMemberInfo]:
     members = getattr(item, "members", None)
-    if members:
+    if isinstance(members, list):
         return members
 
     properties = getattr(item, "properties", None)
-    if properties:
+    if isinstance(properties, Mapping):
         fallback: list[OpcUaObjectTypeMemberInfo] = []
         for name, data_type in properties.items():
             fallback.append(

@@ -1,16 +1,15 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import suppress
 import json
 import logging
 import os
-from time import perf_counter
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
+from time import perf_counter
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 
 from i3x_server.api.beta import router as beta_router
 from i3x_server.config.settings import settings
@@ -133,10 +132,13 @@ def create_app() -> FastAPI:
             openapi_override = json.loads(openapi_doc_path.read_text(encoding="utf-8"))
         return openapi_override
 
-    app.openapi = custom_openapi
+    app.openapi = custom_openapi  # type: ignore[method-assign]
 
     @app.middleware("http")
-    async def log_http_requests(request: Request, call_next: object) -> object:
+    async def log_http_requests(
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
         started = perf_counter()
         response = await call_next(request)
         logger.info(

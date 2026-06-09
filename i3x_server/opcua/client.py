@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from time import perf_counter
-from typing import Any, Awaitable, Callable, Protocol
+from typing import Any, Protocol
 
-from asyncua import Client, ua
+from asyncua import ua
+from asyncua.client.client import Client
 from asyncua.ua import NodeClass
+from asyncua.ua.object_ids import ObjectIds
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +35,7 @@ class OpcUaObjectTypeInfo:
     browse_name: str
     display_name: str
     properties: dict[str, str | None]
-    members: list["OpcUaObjectTypeMemberInfo"] = field(default_factory=list)
+    members: list[OpcUaObjectTypeMemberInfo] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -134,11 +137,19 @@ class OpcUaClient:
         self._username = username.strip() if isinstance(username, str) and username.strip() else None
         self._password = password if isinstance(password, str) and password != "" else None
         self._security_mode = security_mode.strip() if security_mode.strip() else "None"
-        self._security_policy = security_policy.strip() if isinstance(security_policy, str) and security_policy.strip() else None
+        self._security_policy = (
+            security_policy.strip()
+            if isinstance(security_policy, str) and security_policy.strip()
+            else None
+        )
         self._client_cert_path = (
             client_cert_path.strip() if isinstance(client_cert_path, str) and client_cert_path.strip() else None
         )
-        self._client_key_path = client_key_path.strip() if isinstance(client_key_path, str) and client_key_path.strip() else None
+        self._client_key_path = (
+            client_key_path.strip()
+            if isinstance(client_key_path, str) and client_key_path.strip()
+            else None
+        )
         self._client_key_password = client_key_password if client_key_password else None
         self._server_cert_path = (
             server_cert_path.strip() if isinstance(server_cert_path, str) and server_cert_path.strip() else None
@@ -154,7 +165,8 @@ class OpcUaClient:
             self._using_user_auth = True
         elif self._username is not None or self._password is not None:
             logger.warning(
-                "OPC UA auth config incomplete endpoint=%s; both username and password are required. Falling back to anonymous session.",
+                "OPC UA auth config incomplete endpoint=%s; both username and password are "
+                "required. Falling back to anonymous session.",
                 self._endpoint,
             )
         self._reconnect_lock = asyncio.Lock()
@@ -568,7 +580,10 @@ class OpcUaClient:
     async def _read_data_type_or_none(self, node: Any) -> str | None:
         try:
             data_type_obj = await node.read_data_type()
-            return data_type_obj.to_string()
+            data_type = data_type_obj.to_string()
+            if isinstance(data_type, str):
+                return data_type
+            return str(data_type)
         except Exception:
             logger.debug(
                 "OPC UA variable datatype read failed endpoint=%s node_id=%s",
@@ -589,7 +604,9 @@ class OpcUaClient:
                 data_type = await self._read_data_type_or_none(node)
                 return (parent_id, property_name, data_type)
 
-        return await asyncio.gather(*[worker(parent_id, property_name, node) for parent_id, property_name, node in entries])
+        return await asyncio.gather(
+            *[worker(parent_id, property_name, node) for parent_id, property_name, node in entries]
+        )
 
     async def _read_object_type_members_limited(
         self,
@@ -632,7 +649,7 @@ class OpcUaClient:
             browsed = await self._browse_references_descriptions(
                 [node],
                 max_nodes_per_browse=1,
-                reference_type_id=ua.ObjectIds.HasModellingRule,
+                reference_type_id=ObjectIds.HasModellingRule,
             )
             if not browsed:
                 return None
@@ -642,6 +659,8 @@ class OpcUaClient:
                 return None
 
             rule_name = refs[0].BrowseName.Name
+            if not isinstance(rule_name, str):
+                return None
             return rule_name or None
         except Exception:
             logger.debug(
@@ -660,7 +679,7 @@ class OpcUaClient:
         return await self._browse_references_descriptions(
             nodes,
             max_nodes_per_browse=max_nodes_per_browse,
-            reference_type_id=ua.ObjectIds.HierarchicalReferences,
+            reference_type_id=ObjectIds.HierarchicalReferences,
         )
 
     async def _browse_references_descriptions(
@@ -679,7 +698,7 @@ class OpcUaClient:
                 desc = ua.BrowseDescription()
                 desc.NodeId = node.nodeid
                 desc.BrowseDirection = ua.BrowseDirection.Forward
-                desc.ReferenceTypeId = ua.NodeId(reference_type_id)
+                desc.ReferenceTypeId = ua.NodeId(ua.Int32(reference_type_id))
                 desc.IncludeSubtypes = True
                 desc.NodeClassMask = ua.NodeClass.Unspecified
                 desc.ResultMask = ua.BrowseResultMask.All
@@ -754,7 +773,11 @@ class OpcUaClient:
                 )
                 await self._reconnect()
                 value = await self._client.get_node(node_id).read_value()
-                logger.debug("OPC UA read ok after reconnect node_id=%s duration_s=%.3f", node_id, perf_counter() - started)
+                logger.debug(
+                    "OPC UA read ok after reconnect node_id=%s duration_s=%.3f",
+                    node_id,
+                    perf_counter() - started,
+                )
                 return value
             logger.exception("OPC UA read failed node_id=%s duration_s=%.3f", node_id, perf_counter() - started)
             raise
@@ -958,22 +981,28 @@ class OpcUaClient:
                 f"Missing: {', '.join(missing)}"
             )
 
-        cert_path = Path(self._client_cert_path)
-        key_path = Path(self._client_key_path)
-        if not cert_path.is_file():
-            raise FileNotFoundError(f"OPC UA client certificate not found: {cert_path}")
-        if not key_path.is_file():
-            raise FileNotFoundError(f"OPC UA client key not found: {key_path}")
+        cert_path_str = self._client_cert_path
+        key_path_str = self._client_key_path
+        if cert_path_str is None or key_path_str is None:
+            raise ValueError("OPC UA encryption paths are not configured")
+
+        cert_path = Path(cert_path_str)
+        key_path = Path(key_path_str)
+        _assert_file_exists(cert_path, "OPC UA client certificate")
+        _assert_file_exists(key_path, "OPC UA client key")
 
         key_value = str(key_path)
         if self._client_key_password:
             key_value = f"{key_value}::{self._client_key_password}"
 
-        security_items = [self._security_policy, mode, str(cert_path), key_value]
+        security_policy = self._security_policy
+        if security_policy is None:
+            raise ValueError("OPC UA security policy is not configured")
+
+        security_items: list[str] = [security_policy, mode, str(cert_path), key_value]
         if self._server_cert_path is not None:
             server_cert = Path(self._server_cert_path)
-            if not server_cert.is_file():
-                raise FileNotFoundError(f"OPC UA server certificate not found: {server_cert}")
+            _assert_file_exists(server_cert, "OPC UA server certificate")
             security_items.append(str(server_cert))
 
         security_string = ",".join(security_items)
@@ -987,3 +1016,8 @@ def _chunked(values: list[str], size: int) -> list[list[str]]:
 
 def _chunked_nodes(values: list[Any], size: int) -> list[list[Any]]:
     return [values[idx : idx + size] for idx in range(0, len(values), size)]
+
+
+def _assert_file_exists(path: Path, label: str) -> None:
+    if not path.is_file():
+        raise FileNotFoundError(f"{label} not found: {path}")

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import re
 import json
-from datetime import UTC, datetime
+import re
+from datetime import datetime, timezone
 from typing import Any, Generic, TypeVar
 
 from fastapi import APIRouter, Depends, Query
@@ -17,8 +17,8 @@ from i3x_server.opcua.client import (
     OpcUaNamespaceInfo,
     OpcUaObjectTypeInfo,
 )
-from i3x_server.schemas.objecttype_schema import build_object_type_schema
 from i3x_server.schemas.i3x import ModelNode
+from i3x_server.schemas.objecttype_schema import build_object_type_schema
 from i3x_server.schemas.state import BuildResult
 from i3x_server.subscriptions.service import SubscriptionService
 
@@ -180,7 +180,10 @@ class RegisterMonitoredItemsRequest(BaseModel):
 class SyncRequest(BaseModel):
     clientId: str | None = None
     subscriptionId: str
-    acknowledgeSequence: int = Field(default=0, validation_alias=AliasChoices("acknowledgeSequence", "lastSequenceNumber"))
+    acknowledgeSequence: int = Field(
+        default=0,
+        validation_alias=AliasChoices("acknowledgeSequence", "lastSequenceNumber"),
+    )
 
 
 class ListSubscriptionsRequest(BaseModel):
@@ -456,8 +459,8 @@ def _parse_iso_datetime(value: str, field_name: str) -> datetime:
             {"field": field_name, "value": value},
         ) from exc
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC)
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _parse_history_time_range(body: GetObjectHistoryRequest) -> tuple[datetime | None, datetime | None]:
@@ -522,10 +525,11 @@ def _normalize_quality(status_code: Any) -> str:
 
 def _normalize_timestamp(value: Any) -> str:
     if isinstance(value, datetime):
-        if value.tzinfo is None:
-            value = value.replace(tzinfo=UTC)
-        return value.astimezone(UTC).isoformat()
-    return datetime.now(UTC).isoformat()
+        normalized = value
+        if normalized.tzinfo is None:
+            normalized = normalized.replace(tzinfo=timezone.utc)
+        return normalized.astimezone(timezone.utc).isoformat()
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _to_vqt_from_history_value(data_value: Any) -> VQT:
@@ -798,7 +802,11 @@ async def query_last_known_values_v1(
                 elementId=element_id,
                 result=CurrentValueResult(
                     elementId=element_id,
-                    value=VQT(value=value, quality="Good", timestamp=datetime.now(UTC).isoformat()),
+                    value=VQT(
+                        value=value,
+                        quality="Good",
+                        timestamp=datetime.now(timezone.utc).isoformat(),
+                    ),
                 ),
             )
         )

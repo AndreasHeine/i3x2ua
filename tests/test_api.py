@@ -4,7 +4,7 @@ import json
 import os
 import time
 from collections.abc import Generator
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -27,13 +27,13 @@ class FakeOpcUaClient:
                 SimpleNamespace(
                     Value=SimpleNamespace(Value=40.0),
                     StatusCode=SimpleNamespace(name="Good"),
-                    SourceTimestamp=datetime(2026, 1, 1, 10, 0, tzinfo=UTC),
+                    SourceTimestamp=datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc),
                     ServerTimestamp=None,
                 ),
                 SimpleNamespace(
                     Value=SimpleNamespace(Value=41.5),
                     StatusCode=SimpleNamespace(name="Good"),
-                    SourceTimestamp=datetime(2026, 1, 1, 10, 5, tzinfo=UTC),
+                    SourceTimestamp=datetime(2026, 1, 1, 10, 5, tzinfo=timezone.utc),
                     ServerTimestamp=None,
                 ),
             ]

@@ -10,6 +10,9 @@ from pathlib import Path
 from time import perf_counter
 
 from fastapi import FastAPI, Request, Response
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from i3x_server.api.beta import router as beta_router
 from i3x_server.config.settings import settings
@@ -172,6 +175,43 @@ def create_app() -> FastAPI:
         return openapi_override
 
     app.openapi = custom_openapi  # type: ignore[method-assign]
+
+    @app.exception_handler(RequestValidationError)
+    async def handle_request_validation_error(
+        request: Request,
+        exc: RequestValidationError,
+    ) -> JSONResponse:
+        del request, exc
+        return JSONResponse(
+            status_code=400,
+            content={
+                "success": False,
+                "error": {
+                    "code": 400,
+                    "message": "Invalid request payload or parameters",
+                },
+            },
+        )
+
+    @app.exception_handler(StarletteHTTPException)
+    async def handle_http_exception(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+        del request
+        detail = exc.detail
+        if isinstance(detail, dict):
+            error = detail.get("error")
+            if isinstance(error, dict):
+                message = str(error.get("message", "Request failed"))
+            else:
+                message = str(detail.get("message", "Request failed"))
+        else:
+            message = str(detail) if detail else "Request failed"
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "success": False,
+                "error": {"code": int(exc.status_code), "message": message},
+            },
+        )
 
     @app.middleware("http")
     async def log_http_requests(

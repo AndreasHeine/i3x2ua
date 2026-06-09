@@ -127,9 +127,16 @@ class SubscriptionService:
             self._subscriptions[subscription_id] = state
         return self._to_detail(state)
 
-    async def list_subscriptions(self, subscription_ids: list[str] | None = None) -> list[SubscriptionDetail]:
+    async def list_subscriptions(
+        self,
+        client_id: str | None,
+        subscription_ids: list[str] | None = None,
+    ) -> list[SubscriptionDetail]:
         async with self._lock:
-            values = list(self._subscriptions.values())
+            if client_id is None:
+                values = list(self._subscriptions.values())
+            else:
+                values = [item for item in self._subscriptions.values() if item.client_id == client_id]
 
         if subscription_ids is not None:
             allowed = set(subscription_ids)
@@ -143,13 +150,17 @@ class SubscriptionService:
                 return None
             return self._to_detail(state)
 
-    async def delete_subscriptions(self, subscription_ids: list[str]) -> list[SubscriptionDeleteResult]:
+    async def delete_subscriptions(
+        self,
+        client_id: str | None,
+        subscription_ids: list[str],
+    ) -> list[SubscriptionDeleteResult]:
         removed: list[_SubscriptionState] = []
         results: list[SubscriptionDeleteResult] = []
 
         async with self._lock:
             for subscription_id in subscription_ids:
-                state = self._subscriptions.pop(subscription_id, None)
+                state = self._subscriptions.get(subscription_id)
                 if state is None:
                     results.append(
                         SubscriptionDeleteResult(
@@ -159,6 +170,16 @@ class SubscriptionService:
                         )
                     )
                     continue
+                if client_id is not None and state.client_id != client_id:
+                    results.append(
+                        SubscriptionDeleteResult(
+                            success=False,
+                            subscription_id=subscription_id,
+                            error={"code": 404, "message": "Subscription not found"},
+                        )
+                    )
+                    continue
+                self._subscriptions.pop(subscription_id, None)
                 removed.append(state)
                 state.update_event.set()
                 results.append(SubscriptionDeleteResult(success=True, subscription_id=subscription_id))
@@ -170,6 +191,7 @@ class SubscriptionService:
 
     async def register_items(
         self,
+        client_id: str | None,
         subscription_id: str,
         element_ids: list[str],
         max_depth: int,
@@ -177,7 +199,7 @@ class SubscriptionService:
     ) -> bool:
         async with self._lock:
             state = self._subscriptions.get(subscription_id)
-            if state is None:
+            if state is None or (client_id is not None and state.client_id != client_id):
                 return False
             for element_id in element_ids:
                 state.monitored_objects[element_id] = max_depth
@@ -191,10 +213,16 @@ class SubscriptionService:
         await self._reconfigure_runtime(subscription_id)
         return True
 
-    async def unregister_items(self, subscription_id: str, element_ids: list[str], model: BuildResult) -> bool:
+    async def unregister_items(
+        self,
+        client_id: str | None,
+        subscription_id: str,
+        element_ids: list[str],
+        model: BuildResult,
+    ) -> bool:
         async with self._lock:
             state = self._subscriptions.get(subscription_id)
-            if state is None:
+            if state is None or (client_id is not None and state.client_id != client_id):
                 return False
             for element_id in element_ids:
                 state.monitored_objects.pop(element_id, None)
@@ -208,10 +236,15 @@ class SubscriptionService:
         await self._reconfigure_runtime(subscription_id)
         return True
 
-    async def sync(self, subscription_id: str, acknowledge_sequence: int) -> SubscriptionSyncResult | None:
+    async def sync(
+        self,
+        client_id: str | None,
+        subscription_id: str,
+        acknowledge_sequence: int,
+    ) -> SubscriptionSyncResult | None:
         async with self._lock:
             state = self._subscriptions.get(subscription_id)
-            if state is None:
+            if state is None or (client_id is not None and state.client_id != client_id):
                 return None
             state.updates = [item for item in state.updates if item.sequence_number > acknowledge_sequence]
             return SubscriptionSyncResult(updates=list(state.updates))
@@ -225,13 +258,14 @@ class SubscriptionService:
 
     async def wait_for_updates(
         self,
+        client_id: str | None,
         subscription_id: str,
         after_sequence: int,
         timeout_seconds: int = 15,
     ) -> list[SubscriptionUpdate] | None:
         async with self._lock:
             state = self._subscriptions.get(subscription_id)
-            if state is None:
+            if state is None or (client_id is not None and state.client_id != client_id):
                 return None
 
             current = [item for item in state.updates if item.sequence_number > after_sequence]
@@ -248,7 +282,7 @@ class SubscriptionService:
 
         async with self._lock:
             state = self._subscriptions.get(subscription_id)
-            if state is None:
+            if state is None or (client_id is not None and state.client_id != client_id):
                 return None
             return [item for item in state.updates if item.sequence_number > after_sequence]
 

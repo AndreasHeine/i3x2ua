@@ -7,13 +7,8 @@ def i3x_http_error(
     message: str,
     details: dict[str, object] | None = None,
 ) -> HTTPException:
+    del code, details
     return HTTPException(
         status_code=status_code,
-        detail={
-            "error": {
-                "code": code,
-                "message": message,
-                "details": details or {},
-            }
-        },
+        detail={"success": False, "error": {"code": status_code, "message": message}},
     )

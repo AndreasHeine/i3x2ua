@@ -49,6 +49,9 @@ class BulkResponse(BaseModel, Generic[T]):
     success: bool = True
     results: list[BulkResultItem[T]] = Field(default_factory=list)
 
+def _bulk_response(results: list[BulkResultItem[T]]) -> BulkResponse[T]:
+    return BulkResponse(success=all(item.success for item in results), results=results)
+
 
 class QueryCapabilities(BaseModel):
     history: bool
@@ -127,8 +130,11 @@ class VQT(BaseModel):
 
 
 class CurrentValueResult(BaseModel):
-    elementId: str
-    value: VQT | None = None
+    isComposition: bool
+    value: Any
+    quality: str
+    timestamp: str
+    components: dict[str, VQT] | None = None
 
 
 class HistoricalValueResult(BaseModel):
@@ -151,6 +157,7 @@ class GetRelationshipTypesRequest(BaseModel):
 
 class GetObjectsRequest(BaseModel):
     elementIds: list[str]
+    includeMetadata: bool = False
 
 
 class GetRelatedObjectsRequest(BaseModel):
@@ -166,12 +173,13 @@ class GetObjectValueRequest(BaseModel):
 
 class GetObjectHistoryRequest(BaseModel):
     elementIds: list[str]
-    startTime: str | None = None
-    endTime: str | None = None
+    startTime: str
+    endTime: str
     maxDepth: int | None = Field(default=1, ge=0)
 
 
 class RegisterMonitoredItemsRequest(BaseModel):
+    clientId: str | None = None
     subscriptionId: str
     elementIds: list[str]
     maxDepth: int | None = 1
@@ -180,37 +188,40 @@ class RegisterMonitoredItemsRequest(BaseModel):
 class SyncRequest(BaseModel):
     clientId: str | None = None
     subscriptionId: str
-    acknowledgeSequence: int = Field(
-        default=0,
+    acknowledgeSequence: int | None = Field(
+        default=None,
         validation_alias=AliasChoices("acknowledgeSequence", "lastSequenceNumber"),
     )
 
 
 class ListSubscriptionsRequest(BaseModel):
+    clientId: str | None = None
     subscriptionIds: list[str] = Field(default_factory=list)
 
 
 class DeleteSubscriptionsRequest(BaseModel):
+    clientId: str | None = None
     subscriptionIds: list[str]
 
 
 class StreamRequest(BaseModel):
+    clientId: str | None = None
     subscriptionId: str
-    acknowledgeSequence: int = Field(
-        default=0,
+    acknowledgeSequence: int | None = Field(
+        default=None,
         ge=0,
         validation_alias=AliasChoices("acknowledgeSequence", "lastSequenceNumber"),
     )
 
 
 class CreateSubscriptionRequest(BaseModel):
-    clientId: str | None = None
+    clientId: str
     displayName: str | None = None
 
 
 class CreateSubscriptionResponse(BaseModel):
     subscriptionId: str
-    clientId: str | None = None
+    clientId: str
     displayName: str | None = None
 
 
@@ -225,7 +236,6 @@ class SubscriptionDetail(BaseModel):
 class SyncUpdate(BaseModel):
     sequenceNumber: int
     elementId: str
-    nodeId: str
     value: Any
     quality: str
     timestamp: str
@@ -250,7 +260,7 @@ def _supported_capabilities() -> ServerCapabilities:
 
 def _build_server_info() -> ServerInfo:
     return ServerInfo(
-        specVersion="beta",
+        specVersion="1.0",
         serverVersion="0.1.0",
         serverName="i3X OPC UA Provider",
         capabilities=_supported_capabilities(),
@@ -359,32 +369,32 @@ def _object_type_element_ids_by_node_id(
 def _relationship_type_items() -> list[RelationshipType]:
     return [
         RelationshipType(
-            elementId="has-component",
+            elementId="HasParent",
+            displayName="HasParent",
+            namespaceUri="https://cesmii.org/i3x",
+            relationshipId="HasParent",
+            reverseOf="HasChildren",
+        ),
+        RelationshipType(
+            elementId="HasChildren",
+            displayName="HasChildren",
+            namespaceUri="https://cesmii.org/i3x",
+            relationshipId="HasChildren",
+            reverseOf="HasParent",
+        ),
+        RelationshipType(
+            elementId="HasComponent",
             displayName="HasComponent",
-            namespaceUri="http://opcfoundation.org/UA/",
+            namespaceUri="https://cesmii.org/i3x",
             relationshipId="HasComponent",
             reverseOf="ComponentOf",
         ),
         RelationshipType(
-            elementId="has-property",
-            displayName="HasProperty",
-            namespaceUri="http://opcfoundation.org/UA/",
-            relationshipId="HasProperty",
-            reverseOf="PropertyOf",
-        ),
-        RelationshipType(
-            elementId="has-subtype",
-            displayName="HasSubtype",
-            namespaceUri="http://opcfoundation.org/UA/",
-            relationshipId="HasSubtype",
-            reverseOf="SubtypeOf",
-        ),
-        RelationshipType(
-            elementId="has-type-definition",
-            displayName="HasTypeDefinition",
-            namespaceUri="http://opcfoundation.org/UA/",
-            relationshipId="HasTypeDefinition",
-            reverseOf="TypeDefinitionOf",
+            elementId="ComponentOf",
+            displayName="ComponentOf",
+            namespaceUri="https://cesmii.org/i3x",
+            relationshipId="ComponentOf",
+            reverseOf="HasComponent",
         ),
     ]
 
@@ -411,10 +421,16 @@ def _parent_id_for_node(model: BuildResult, node_id: str) -> str | None:
 def _to_object_instance(model: BuildResult, node: ModelNode, include_metadata: bool) -> ObjectInstanceResponse:
     metadata = None
     if include_metadata:
+        relationships: dict[str, Any] = {}
+        parent_id = _parent_id_for_node(model, node.id)
+        if parent_id is not None:
+            relationships["HasParent"] = parent_id
+        if node.children:
+            relationships["HasChildren"] = list(node.children)
         metadata = ObjectInstanceMetadata(
             sourceTypeId=node.source_node_id,
             description=f"Derived from model node {node.name}",
-            relationships={"children": list(node.children)},
+            relationships=relationships,
         )
     return ObjectInstanceResponse(
         elementId=node.id,
@@ -430,18 +446,18 @@ def _to_object_instance(model: BuildResult, node: ModelNode, include_metadata: b
 def _relationship_type_for_child(child: ModelNode) -> RelationshipType:
     if child.kind == "property":
         return RelationshipType(
-            elementId="has-property",
-            displayName="HasProperty",
-            namespaceUri="http://opcfoundation.org/UA/",
-            relationshipId="HasProperty",
-            reverseOf="PropertyOf",
+            elementId="HasComponent",
+            displayName="HasComponent",
+            namespaceUri="https://cesmii.org/i3x",
+            relationshipId="HasComponent",
+            reverseOf="ComponentOf",
         )
     return RelationshipType(
-        elementId="has-component",
-        displayName="HasComponent",
-        namespaceUri="http://opcfoundation.org/UA/",
-        relationshipId="HasComponent",
-        reverseOf="ComponentOf",
+        elementId="HasChildren",
+        displayName="HasChildren",
+        namespaceUri="https://cesmii.org/i3x",
+        relationshipId="HasChildren",
+        reverseOf="HasParent",
     )
 
 
@@ -464,9 +480,9 @@ def _parse_iso_datetime(value: str, field_name: str) -> datetime:
 
 
 def _parse_history_time_range(body: GetObjectHistoryRequest) -> tuple[datetime | None, datetime | None]:
-    start_time = _parse_iso_datetime(body.startTime, "startTime") if body.startTime else None
-    end_time = _parse_iso_datetime(body.endTime, "endTime") if body.endTime else None
-    if start_time is not None and end_time is not None and start_time > end_time:
+    start_time = _parse_iso_datetime(body.startTime, "startTime")
+    end_time = _parse_iso_datetime(body.endTime, "endTime")
+    if start_time > end_time:
         raise i3x_http_error(
             400,
             "InvalidArgument",
@@ -474,6 +490,45 @@ def _parse_history_time_range(body: GetObjectHistoryRequest) -> tuple[datetime |
             {"startTime": body.startTime, "endTime": body.endTime},
         )
     return start_time, end_time
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _vqt_from_any(value: Any) -> VQT:
+    if value is None:
+        return VQT(value=None, quality="GoodNoData", timestamp=_now_iso())
+    return VQT(value=value, quality="Good", timestamp=_now_iso())
+
+
+def _collect_value_component_nodes(model: BuildResult, root: ModelNode, max_depth: int) -> list[ModelNode]:
+    if max_depth <= 1:
+        return []
+
+    components: list[ModelNode] = []
+    queue: list[tuple[str, int]] = [(root.id, 1)]
+    visited: set[str] = set()
+
+    while queue:
+        node_id, depth = queue.pop(0)
+        if node_id in visited:
+            continue
+        visited.add(node_id)
+
+        if max_depth != 0 and depth >= max_depth:
+            continue
+
+        for child_id in model.children_by_id.get(node_id, []):
+            child = model.nodes_by_id.get(child_id)
+            if child is None:
+                continue
+            if child.kind == "property":
+                components.append(child)
+            else:
+                queue.append((child.id, depth + 1))
+
+    return components
 
 
 def _collect_history_source_nodes(model: BuildResult, root: ModelNode, max_depth: int) -> list[ModelNode]:
@@ -632,7 +687,7 @@ async def query_object_types_v1(
             results.append(
                 BulkResultItem[ObjectTypeResponse](success=True, elementId=element_id, result=match)
             )
-    return BulkResponse(results=results)
+    return _bulk_response(results)
 
 
 @router.get("/relationshiptypes", response_model=SuccessResponse[list[RelationshipType]])
@@ -663,7 +718,7 @@ async def query_relationship_types(body: GetRelationshipTypesRequest) -> BulkRes
             results.append(
                 BulkResultItem[RelationshipType](success=True, elementId=element_id, result=match)
             )
-    return BulkResponse(results=results)
+    return _bulk_response(results)
 
 
 @router.get("/objects", response_model=SuccessResponse[list[ObjectInstanceResponse]])
@@ -703,10 +758,10 @@ async def list_objects_by_id_v1(
             BulkResultItem[ObjectInstanceResponse](
                 success=True,
                 elementId=element_id,
-                result=_to_object_instance(model, node, include_metadata=False),
+                result=_to_object_instance(model, node, include_metadata=body.includeMetadata),
             )
         )
-    return BulkResponse(results=results)
+    return _bulk_response(results)
 
 
 @router.post("/objects/related", response_model=BulkResponse[list[RelatedObjectResult]])
@@ -747,7 +802,7 @@ async def query_related_objects_v1(
                 result=related,
             )
         )
-    return BulkResponse(results=results)
+    return _bulk_response(results)
 
 
 @router.post("/objects/value", response_model=BulkResponse[CurrentValueResult])
@@ -758,12 +813,17 @@ async def query_last_known_values_v1(
 ) -> BulkResponse[CurrentValueResult]:
     node_ids: list[str] = []
     ordered_nodes: list[tuple[str, ModelNode]] = []
+    component_nodes_by_element_id: dict[str, list[ModelNode]] = {}
+    requested_depth = body.maxDepth if body.maxDepth is not None else 1
     for element_id in body.elementIds:
         node = _find_model_node(model, element_id)
         if node is None:
             continue
         node_ids.append(node.source_node_id)
         ordered_nodes.append((element_id, node))
+        component_nodes = _collect_value_component_nodes(model, node, requested_depth)
+        component_nodes_by_element_id[element_id] = component_nodes
+        node_ids.extend(item.source_node_id for item in component_nodes)
 
     values_by_node_id: dict[str, Any] = {}
     if node_ids:
@@ -785,32 +845,34 @@ async def query_last_known_values_v1(
             ) from exc
 
     results: list[BulkResultItem[CurrentValueResult]] = []
-    for element_id, node in ordered_nodes:
-        value = values_by_node_id.get(node.source_node_id)
-        if value is None:
+    lookup_by_element_id = {element_id: node for element_id, node in ordered_nodes}
+    for element_id in body.elementIds:
+        node = lookup_by_element_id.get(element_id)
+        if node is None:
             results.append(
                 BulkResultItem[CurrentValueResult](
                     success=False,
                     elementId=element_id,
-                    error=ErrorDetail(code=404, message="Object value not found"),
+                    error=ErrorDetail(code=404, message=f"Element not found: {element_id}"),
                 )
             )
             continue
-        results.append(
-            BulkResultItem[CurrentValueResult](
-                success=True,
-                elementId=element_id,
-                result=CurrentValueResult(
-                    elementId=element_id,
-                    value=VQT(
-                        value=value,
-                        quality="Good",
-                        timestamp=datetime.now(timezone.utc).isoformat(),
-                    ),
-                ),
-            )
+
+        root_vqt = _vqt_from_any(values_by_node_id.get(node.source_node_id))
+        component_nodes = component_nodes_by_element_id.get(element_id, [])
+        components: dict[str, VQT] = {}
+        for component_node in component_nodes:
+            components[component_node.id] = _vqt_from_any(values_by_node_id.get(component_node.source_node_id))
+
+        result = CurrentValueResult(
+            isComposition=bool(node.children),
+            value=root_vqt.value,
+            quality=root_vqt.quality,
+            timestamp=root_vqt.timestamp,
+            components=components or None,
         )
-    return BulkResponse(results=results)
+        results.append(BulkResultItem[CurrentValueResult](success=True, elementId=element_id, result=result))
+    return _bulk_response(results)
 
 
 @router.post("/objects/history", response_model=BulkResponse[HistoricalValueResult])
@@ -893,7 +955,7 @@ async def query_historical_values_v1(
             )
         )
 
-    return BulkResponse(results=results)
+    return _bulk_response(results)
 
 
 @router.get("/objects/{element_id}/history")
@@ -934,11 +996,27 @@ async def register_monitored_items_v1(
     body: RegisterMonitoredItemsRequest,
     model: BuildResult = Depends(get_or_build_model),
     subscription_service: SubscriptionService = Depends(get_subscription_service),
-) -> SuccessResponse[None]:
+) -> BulkResponse[None]:
     max_depth = body.maxDepth or 1
+    known_ids: list[str] = []
+    results: list[BulkResultItem[None]] = []
+    for element_id in body.elementIds:
+        if _find_model_node(model, element_id) is None:
+            results.append(
+                BulkResultItem[None](
+                    success=False,
+                    elementId=element_id,
+                    error=ErrorDetail(code=404, message=f"Element not found: {element_id}"),
+                )
+            )
+            continue
+        known_ids.append(element_id)
+        results.append(BulkResultItem[None](success=True, elementId=element_id, result=None))
+
     ok = await subscription_service.register_items(
+        client_id=body.clientId,
         subscription_id=body.subscriptionId,
-        element_ids=body.elementIds,
+        element_ids=known_ids,
         max_depth=max_depth,
         model=model,
     )
@@ -948,7 +1026,7 @@ async def register_monitored_items_v1(
             "SubscriptionNotFound",
             f"Subscription '{body.subscriptionId}' not found",
         )
-    return SuccessResponse(result=None)
+    return _bulk_response(results)
 
 
 @router.post("/subscriptions/unregister")
@@ -956,10 +1034,26 @@ async def remove_monitored_items_v1(
     body: RegisterMonitoredItemsRequest,
     model: BuildResult = Depends(get_or_build_model),
     subscription_service: SubscriptionService = Depends(get_subscription_service),
-) -> SuccessResponse[None]:
+) -> BulkResponse[None]:
+    known_ids: list[str] = []
+    results: list[BulkResultItem[None]] = []
+    for element_id in body.elementIds:
+        if _find_model_node(model, element_id) is None:
+            results.append(
+                BulkResultItem[None](
+                    success=False,
+                    elementId=element_id,
+                    error=ErrorDetail(code=404, message=f"Element not found: {element_id}"),
+                )
+            )
+            continue
+        known_ids.append(element_id)
+        results.append(BulkResultItem[None](success=True, elementId=element_id, result=None))
+
     ok = await subscription_service.unregister_items(
+        client_id=body.clientId,
         subscription_id=body.subscriptionId,
-        element_ids=body.elementIds,
+        element_ids=known_ids,
         model=model,
     )
     if not ok:
@@ -968,7 +1062,7 @@ async def remove_monitored_items_v1(
             "SubscriptionNotFound",
             f"Subscription '{body.subscriptionId}' not found",
         )
-    return SuccessResponse(result=None)
+    return _bulk_response(results)
 
 
 @router.post("/subscriptions/stream")
@@ -977,8 +1071,9 @@ async def stream_subscription_v1(
     subscription_service: SubscriptionService = Depends(get_subscription_service),
 ) -> StreamingResponse:
     acknowledged = await subscription_service.sync(
+        client_id=body.clientId,
         subscription_id=body.subscriptionId,
-        acknowledge_sequence=body.acknowledgeSequence,
+        acknowledge_sequence=body.acknowledgeSequence or 0,
     )
     if acknowledged is None:
         raise i3x_http_error(
@@ -988,9 +1083,10 @@ async def stream_subscription_v1(
         )
 
     async def event_stream() -> Any:
-        last_sequence = body.acknowledgeSequence
+        last_sequence = body.acknowledgeSequence or 0
         while True:
             updates = await subscription_service.wait_for_updates(
+                client_id=body.clientId,
                 subscription_id=body.subscriptionId,
                 after_sequence=last_sequence,
                 timeout_seconds=15,
@@ -1009,7 +1105,6 @@ async def stream_subscription_v1(
                 {
                     "sequenceNumber": item.sequence_number,
                     "elementId": item.element_id,
-                    "nodeId": item.node_id,
                     "value": item.value,
                     "quality": item.quality,
                     "timestamp": item.timestamp,
@@ -1035,8 +1130,9 @@ async def sync_subscription_v1(
     subscription_service: SubscriptionService = Depends(get_subscription_service),
 ) -> SuccessResponse[list[SyncUpdate]]:
     synced = await subscription_service.sync(
+        client_id=body.clientId,
         subscription_id=body.subscriptionId,
-        acknowledge_sequence=body.acknowledgeSequence,
+        acknowledge_sequence=body.acknowledgeSequence or 0,
     )
     if synced is None:
         raise i3x_http_error(
@@ -1049,7 +1145,6 @@ async def sync_subscription_v1(
             SyncUpdate(
                 sequenceNumber=item.sequence_number,
                 elementId=item.element_id,
-                nodeId=item.node_id,
                 value=item.value,
                 quality=item.quality,
                 timestamp=item.timestamp,
@@ -1064,9 +1159,9 @@ async def delete_subscriptions_v1(
     body: DeleteSubscriptionsRequest,
     subscription_service: SubscriptionService = Depends(get_subscription_service),
 ) -> BulkResponse[None]:
-    deleted = await subscription_service.delete_subscriptions(body.subscriptionIds)
-    return BulkResponse(
-        results=[
+    deleted = await subscription_service.delete_subscriptions(body.clientId, body.subscriptionIds)
+    return _bulk_response(
+        [
             BulkResultItem[None](
                 success=item.success,
                 subscriptionId=item.subscription_id,
@@ -1082,18 +1177,50 @@ async def delete_subscriptions_v1(
 async def list_subscriptions_v1(
     body: ListSubscriptionsRequest,
     subscription_service: SubscriptionService = Depends(get_subscription_service),
-) -> SuccessResponse[list[SubscriptionDetail]]:
+) -> BulkResponse[SubscriptionDetail]:
     filter_ids = body.subscriptionIds or None
-    subscriptions = await subscription_service.list_subscriptions(filter_ids)
-    return SuccessResponse(
-        result=[
-            SubscriptionDetail(
-                subscriptionId=item.subscription_id,
-                clientId=item.client_id,
-                displayName=item.display_name,
-                monitoredObjects=item.monitored_objects,
-                mode=item.mode,
+    subscriptions = await subscription_service.list_subscriptions(body.clientId, filter_ids)
+    found: dict[str, SubscriptionDetail] = {
+        item.subscription_id: SubscriptionDetail(
+            subscriptionId=item.subscription_id,
+            clientId=item.client_id,
+            displayName=item.display_name,
+            monitoredObjects=item.monitored_objects,
+            mode=item.mode,
+        )
+        for item in subscriptions
+    }
+
+    if filter_ids is None:
+        return _bulk_response(
+            [
+                BulkResultItem[SubscriptionDetail](
+                    success=True,
+                    elementId=item.subscription_id,
+                    result=detail,
+                )
+                for item in subscriptions
+                for detail in [found[item.subscription_id]]
+            ]
+        )
+
+    results: list[BulkResultItem[SubscriptionDetail]] = []
+    for subscription_id in body.subscriptionIds:
+        detail = found.get(subscription_id)
+        if detail is None:
+            results.append(
+                BulkResultItem[SubscriptionDetail](
+                    success=False,
+                    elementId=subscription_id,
+                    error=ErrorDetail(code=404, message=f"Subscription not found: {subscription_id}"),
+                )
             )
-            for item in subscriptions
-        ]
-    )
+            continue
+        results.append(
+            BulkResultItem[SubscriptionDetail](
+                success=True,
+                elementId=subscription_id,
+                result=detail,
+            )
+        )
+    return _bulk_response(results)

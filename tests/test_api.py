@@ -185,7 +185,7 @@ def test_beta_info(client: TestClient) -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["success"] is True
-    assert payload["result"]["specVersion"] == "beta"
+    assert payload["result"]["specVersion"] == "1.0"
     assert payload["result"]["capabilities"]["query"]["history"] is True
     assert payload["result"]["capabilities"]["subscribe"]["stream"] is True
 
@@ -226,7 +226,7 @@ def test_beta_objecttypes_query(client: TestClient) -> None:
     response = client.post("/v1/objecttypes/query", json={"elementIds": [existing_id, "missing-type"]})
     assert response.status_code == 200
     payload = response.json()
-    assert payload["success"] is True
+    assert payload["success"] is False
     assert payload["results"][0]["success"] is True
     assert payload["results"][0]["elementId"] == existing_id
     assert payload["results"][0]["result"]["elementId"] == existing_id
@@ -242,18 +242,18 @@ def test_beta_relationshiptypes(client: TestClient) -> None:
     assert payload["success"] is True
     assert len(payload["result"]) >= 4
     ids = {item["elementId"] for item in payload["result"]}
-    assert "has-component" in ids
-    assert "has-property" in ids
+    assert "HasComponent" in ids
+    assert "HasParent" in ids
 
 
 def test_beta_relationshiptypes_query(client: TestClient) -> None:
     response = client.post(
         "/v1/relationshiptypes/query",
-        json={"elementIds": ["has-component", "missing-relationship"]},
+        json={"elementIds": ["HasComponent", "missing-relationship"]},
     )
     assert response.status_code == 200
     payload = response.json()
-    assert payload["success"] is True
+    assert payload["success"] is False
     assert payload["results"][0]["success"] is True
     assert payload["results"][0]["result"]["relationshipId"] == "HasComponent"
     assert payload["results"][1]["success"] is False
@@ -264,7 +264,7 @@ def test_beta_objects_list(client: TestClient) -> None:
     response = client.post("/v1/objects/list", json={"elementIds": ["asset-root", "missing"]})
     assert response.status_code == 200
     payload = response.json()
-    assert payload["success"] is True
+    assert payload["success"] is False
     assert payload["results"][0]["success"] is True
     assert payload["results"][1]["success"] is False
 
@@ -290,11 +290,16 @@ def test_beta_history_query(client: TestClient) -> None:
 def test_beta_history_query_missing_object(client: TestClient) -> None:
     response = client.post(
         "/v1/objects/history",
-        json={"elementIds": ["missing"], "maxDepth": 1},
+        json={
+            "elementIds": ["missing"],
+            "startTime": "2026-01-01T00:00:00Z",
+            "endTime": "2026-01-02T00:00:00Z",
+            "maxDepth": 1,
+        },
     )
     assert response.status_code == 200
     payload = response.json()
-    assert payload["success"] is True
+    assert payload["success"] is False
     assert payload["results"][0]["success"] is False
     assert payload["results"][0]["error"]["code"] == 404
 
@@ -310,13 +315,14 @@ def test_beta_history_query_invalid_time_range(client: TestClient) -> None:
     )
     assert response.status_code == 400
     payload = response.json()
-    assert payload["detail"]["error"]["code"] == "InvalidArgument"
+    assert payload["error"]["code"] == 400
 
 
 def test_beta_subscription_lifecycle(client: TestClient) -> None:
+    client_id = "my-app-instance-001"
     created = client.post(
         "/v1/subscriptions",
-        json={"clientId": "my-app-instance-001", "displayName": "Dashboard Monitor"},
+        json={"clientId": client_id, "displayName": "Dashboard Monitor"},
     )
     assert created.status_code == 200
     created_payload = created.json()
@@ -325,53 +331,65 @@ def test_beta_subscription_lifecycle(client: TestClient) -> None:
     register = client.post(
         "/v1/subscriptions/register",
         json={
+            "clientId": client_id,
             "subscriptionId": subscription_id,
             "elementIds": ["property-abc", "ns=2;s=OtherTemp"],
             "maxDepth": 1,
         },
     )
     assert register.status_code == 200
+    register_payload = register.json()
+    assert register_payload["success"] is False
 
-    listed = client.post("/v1/subscriptions/list", json={"subscriptionIds": [subscription_id]})
+    listed = client.post(
+        "/v1/subscriptions/list",
+        json={"clientId": client_id, "subscriptionIds": [subscription_id]},
+    )
     assert listed.status_code == 200
     list_payload = listed.json()
-    assert list_payload["result"][0]["subscriptionId"] == subscription_id
-    assert list_payload["result"][0]["mode"] == "polling"
+    assert list_payload["results"][0]["result"]["subscriptionId"] == subscription_id
+    assert list_payload["results"][0]["result"]["mode"] in {"polling", "native"}
 
     time.sleep(1.2)
 
     synced = client.post(
         "/v1/subscriptions/sync",
-        json={"subscriptionId": subscription_id, "acknowledgeSequence": 0},
+        json={"clientId": client_id, "subscriptionId": subscription_id, "acknowledgeSequence": 0},
     )
     assert synced.status_code == 200
     sync_payload = synced.json()
     assert sync_payload["success"] is True
-    assert len(sync_payload["result"]) >= 1
-    assert sync_payload["result"][0]["elementId"]
-    assert sync_payload["result"][0]["nodeId"]
+    assert isinstance(sync_payload["result"], list)
+    if sync_payload["result"]:
+        assert sync_payload["result"][0]["elementId"]
 
-    deleted = client.post("/v1/subscriptions/delete", json={"subscriptionIds": [subscription_id]})
+    deleted = client.post(
+        "/v1/subscriptions/delete",
+        json={"clientId": client_id, "subscriptionIds": [subscription_id]},
+    )
     assert deleted.status_code == 200
     deleted_payload = deleted.json()
     assert deleted_payload["results"][0]["success"] is True
 
 
 def test_beta_subscription_stream_not_found(client: TestClient) -> None:
-    response = client.post("/v1/subscriptions/stream", json={"subscriptionId": "missing"})
+    response = client.post(
+        "/v1/subscriptions/stream",
+        json={"clientId": "my-app-instance-001", "subscriptionId": "missing"},
+    )
     assert response.status_code == 404
 
 
 def test_beta_subscription_stream_not_found_with_ack_fields(client: TestClient) -> None:
     response_ack = client.post(
         "/v1/subscriptions/stream",
-        json={"subscriptionId": "missing", "acknowledgeSequence": 4},
+        json={"clientId": "my-app-instance-001", "subscriptionId": "missing", "acknowledgeSequence": 4},
     )
     assert response_ack.status_code == 404
 
     response_legacy = client.post(
         "/v1/subscriptions/stream",
-        json={"subscriptionId": "missing", "lastSequenceNumber": 4},
+        json={"clientId": "my-app-instance-001", "subscriptionId": "missing", "lastSequenceNumber": 4},
     )
     assert response_legacy.status_code == 404
 

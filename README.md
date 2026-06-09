@@ -97,6 +97,8 @@ Configuration is handled via environment variables with the `I3X_` prefix.
 Important variables:
 
 - I3X_OPCUA_ENDPOINT (Default: opc.tcp://localhost:4840)
+- I3X_OPCUA_USERNAME (Optional: OPC UA username for authenticated sessions)
+- I3X_OPCUA_PASSWORD (Optional: OPC UA password for authenticated sessions)
 - I3X_OPCUA_SECURITY_MODE (Default: None)
 - I3X_OPCUA_BROWSE_CONCURRENCY (Default: 16)
 - I3X_OPCUA_METADATA_CACHE_TTL_SECONDS (Default: 300)
@@ -126,6 +128,8 @@ Run image:
 
 docker run --rm -p 8000:8000 \
   -e I3X_OPCUA_ENDPOINT=opc.tcp://your-opcua-host:4840 \
+  -e I3X_OPCUA_USERNAME=your-user \
+  -e I3X_OPCUA_PASSWORD=your-password \
   -e I3X_LOG_LEVEL=INFO \
   i3x2ua:prod
 
@@ -139,6 +143,8 @@ docker run --rm -p 8000:8000 \
   --security-opt no-new-privileges:true \
   --pids-limit 256 \
   -e I3X_OPCUA_ENDPOINT=opc.tcp://your-opcua-host:4840 \
+  -e I3X_OPCUA_USERNAME=your-user \
+  -e I3X_OPCUA_PASSWORD=your-password \
   -e I3X_LOG_LEVEL=INFO \
   i3x2ua:prod
 

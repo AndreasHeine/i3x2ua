@@ -118,13 +118,27 @@ class OpcUaClient:
     def __init__(
         self,
         endpoint: str,
+        username: str | None = None,
+        password: str | None = None,
         browse_concurrency: int = 16,
         metadata_cache_ttl_seconds: int = 300,
     ) -> None:
         self._endpoint = endpoint
+        self._username = username.strip() if isinstance(username, str) and username.strip() else None
+        self._password = password if isinstance(password, str) and password != "" else None
         self._browse_concurrency = max(1, browse_concurrency)
         self._metadata_cache_ttl_seconds = max(0, metadata_cache_ttl_seconds)
         self._client = Client(url=endpoint)
+        self._using_user_auth = False
+        if self._username is not None and self._password is not None:
+            self._client.set_user(self._username)
+            self._client.set_password(self._password)
+            self._using_user_auth = True
+        elif self._username is not None or self._password is not None:
+            logger.warning(
+                "OPC UA auth config incomplete endpoint=%s; both username and password are required. Falling back to anonymous session.",
+                self._endpoint,
+            )
         self._reconnect_lock = asyncio.Lock()
         self._reconnect_listeners: list[Callable[[], Awaitable[None]]] = []
         self._limits_cache: OpcUaOperationalLimits | None = None
@@ -134,7 +148,7 @@ class OpcUaClient:
 
     async def connect(self) -> None:
         started = perf_counter()
-        logger.info("OPC UA connect started endpoint=%s", self._endpoint)
+        logger.info("OPC UA connect started endpoint=%s auth_mode=%s", self._endpoint, "userpass" if self._using_user_auth else "anonymous")
         await self._client.connect(
             auto_reconnect = True,
             reconnect_max_delay = 30.0,

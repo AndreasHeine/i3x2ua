@@ -7,6 +7,8 @@ services:
       - "8000:8000"
     environment:
       I3X_OPCUA_ENDPOINT: ${I3X_OPCUA_ENDPOINT:-opc.tcp://opcua.umati.app:4843}
+      I3X_OPCUA_USERNAME: ${I3X_OPCUA_USERNAME:-}
+      I3X_OPCUA_PASSWORD: ${I3X_OPCUA_PASSWORD:-}
       I3X_LOG_LEVEL: ${I3X_LOG_LEVEL:-INFO}
     read_only: true
     tmpfs:

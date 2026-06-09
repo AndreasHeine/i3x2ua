@@ -6,6 +6,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="I3X_", env_file=".env", extra="ignore")
 
     opcua_endpoint: str = Field(default="opc.tcp://opcua.umati.app:4843")
+    opcua_username: str | None = Field(default=None)
+    opcua_password: str | None = Field(default=None)
     opcua_security_mode: str = Field(default="None")
     opcua_browse_concurrency: int = Field(default=16, ge=1)
     opcua_metadata_cache_ttl_seconds: int = Field(default=300, ge=0)

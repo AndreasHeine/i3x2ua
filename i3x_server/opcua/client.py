@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from time import perf_counter
@@ -67,6 +67,28 @@ class OpcUaSubscriptionCapabilities:
     max_monitored_items: int | None
     max_subscriptions_per_session: int | None
     max_monitored_items_per_subscription: int | None
+
+
+@dataclass(slots=True)
+class OpcUaRuntimeMetrics:
+    browse_calls: int = 0
+    browse_nodes: int = 0
+    browse_initial_references: int = 0
+    browse_next_calls: int = 0
+    browse_next_references: int = 0
+    read_calls: int = 0
+    read_nodes: int = 0
+    history_read_calls: int = 0
+    history_read_nodes: int = 0
+    namespace_reads: int = 0
+    namespace_count_last: int = 0
+    namespace_info_builds: int = 0
+    namespace_info_count_last: int = 0
+    object_type_reads: int = 0
+    object_type_count_last: int = 0
+    browse_tree_calls: int = 0
+    browse_tree_nodes_last: int = 0
+    method_calls: int = 0
 
 
 class OpcUaClientProtocol(Protocol):
@@ -175,6 +197,13 @@ class OpcUaClient:
         self._subscription_caps_cache: OpcUaSubscriptionCapabilities | None = None
         self._namespace_infos_cache: tuple[float, list[OpcUaNamespaceInfo]] | None = None
         self._object_types_cache: tuple[float, list[OpcUaObjectTypeInfo]] | None = None
+        self._runtime_metrics = OpcUaRuntimeMetrics()
+
+    def reset_runtime_metrics(self) -> None:
+        self._runtime_metrics = OpcUaRuntimeMetrics()
+
+    def snapshot_runtime_metrics(self) -> OpcUaRuntimeMetrics:
+        return OpcUaRuntimeMetrics(**asdict(self._runtime_metrics))
 
     async def connect(self) -> None:
         started = perf_counter()
@@ -209,6 +238,7 @@ class OpcUaClient:
 
     async def browse_tree(self) -> list[OpcUaNodeInfo]:
         started = perf_counter()
+        self._runtime_metrics.browse_tree_calls += 1
         limits = await self.get_operational_limits()
         max_nodes_per_browse = limits.max_nodes_per_browse or 128
         logger.info(
@@ -253,6 +283,7 @@ class OpcUaClient:
             len(output),
             perf_counter() - started,
         )
+        self._runtime_metrics.browse_tree_nodes_last = len(output)
         return output
 
     async def _read_node_info(self, node: Any, parent_node_id: str | None) -> OpcUaNodeInfo:
@@ -375,9 +406,11 @@ class OpcUaClient:
 
     async def get_namespaces(self) -> list[str]:
         started = perf_counter()
+        self._runtime_metrics.namespace_reads += 1
         try:
             raw = await self._client.nodes.namespace_array.read_value()
             namespaces = [str(item) for item in raw] if isinstance(raw, list) else []
+            self._runtime_metrics.namespace_count_last = len(namespaces)
             logger.info(
                 "OPC UA namespaces read ok endpoint=%s count=%d duration_s=%.3f",
                 self._endpoint,
@@ -428,28 +461,32 @@ class OpcUaClient:
                 len(namespace_components),
             )
 
-            for component in namespace_components:
-                component_display = (await component.read_display_name()).Text
-                component_children_browse = await self._browse_children_descriptions(
-                    [component],
-                    max_nodes_per_browse,
-                )
-                component_children = [
-                    self._client.get_node(ref.NodeId)
-                    for _, refs in component_children_browse
-                    for ref in refs
-                ]
+            component_display_names = await asyncio.gather(
+                *[component.read_display_name() for component in namespace_components]
+            )
+            component_display_by_id = {
+                component.nodeid.to_string(): display_name.Text
+                for component, display_name in zip(namespace_components, component_display_names, strict=True)
+            }
+
+            component_children_browse = await self._browse_children_descriptions(
+                namespace_components,
+                max_nodes_per_browse,
+            )
+
+            for component, refs in component_children_browse:
+                component_display = component_display_by_id.get(component.nodeid.to_string(), "")
                 logger.info(
                     "OPC UA namespace metadata component endpoint=%s node_id=%s children=%d",
                     self._endpoint,
                     component.nodeid.to_string(),
-                    len(component_children),
+                    len(refs),
                 )
 
-                for child in component_children:
-                    browse_name_obj = await child.read_browse_name()
-                    if browse_name_obj.Name != "NamespaceUri":
+                for ref in refs:
+                    if ref.BrowseName.Name != "NamespaceUri":
                         continue
+                    child = self._client.get_node(ref.NodeId)
                     uri_value = await child.read_value()
                     uri = str(uri_value)
                     if uri:
@@ -464,6 +501,8 @@ class OpcUaClient:
 
         infos = [OpcUaNamespaceInfo(uri=uri, display_name=display_by_uri.get(uri, "")) for uri in uris]
         self._namespace_infos_cache = (perf_counter(), infos)
+        self._runtime_metrics.namespace_info_builds += 1
+        self._runtime_metrics.namespace_info_count_last = len(infos)
         logger.info(
             "OPC UA namespace infos built endpoint=%s count=%d duration_s=%.3f",
             self._endpoint,
@@ -568,6 +607,8 @@ class OpcUaClient:
                 perf_counter() - started,
             )
             self._object_types_cache = (perf_counter(), output)
+            self._runtime_metrics.object_type_reads += 1
+            self._runtime_metrics.object_type_count_last = len(output)
             return output
         except Exception:
             logger.exception(
@@ -709,14 +750,17 @@ class OpcUaClient:
             params.RequestedMaxReferencesPerNode = 0
             params.NodesToBrowse = browse_descriptions
 
-            logger.info(
+            self._runtime_metrics.browse_calls += 1
+            self._runtime_metrics.browse_nodes += len(node_batch)
+            logger.debug(
                 "OPC UA browse batch endpoint=%s nodes_to_browse=%d",
                 self._endpoint,
                 len(node_batch),
             )
             browse_results = await self._client.uaclient.browse(params)
             initial_references_total = sum(len(result.References) for result in browse_results)
-            logger.info(
+            self._runtime_metrics.browse_initial_references += initial_references_total
+            logger.debug(
                 "OPC UA browse batch result endpoint=%s nodes=%d initial_references=%d",
                 self._endpoint,
                 len(node_batch),
@@ -735,15 +779,17 @@ class OpcUaClient:
                     next_params.ContinuationPoints = [continuation_point]
                     next_results = await self._client.uaclient.browse_next(next_params)
                     browse_next_calls += 1
+                    self._runtime_metrics.browse_next_calls += 1
                     if not next_results:
                         break
                     next_result = next_results[0]
                     refs.extend(next_result.References)
                     browse_next_references_total += len(next_result.References)
+                    self._runtime_metrics.browse_next_references += len(next_result.References)
                     continuation_point = next_result.ContinuationPoint
 
                 if browse_next_calls > 0:
-                    logger.info(
+                    logger.debug(
                         "OPC UA browse-next endpoint=%s node_id=%s calls=%d "
                         "additional_references=%d total_references=%d",
                         self._endpoint,
@@ -759,6 +805,8 @@ class OpcUaClient:
 
     async def read_value(self, node_id: str) -> Any:
         started = perf_counter()
+        self._runtime_metrics.read_calls += 1
+        self._runtime_metrics.read_nodes += 1
         node = self._client.get_node(node_id)
         try:
             value = await node.read_value()
@@ -793,6 +841,8 @@ class OpcUaClient:
 
         values: list[Any] = []
         for batch in _chunked(node_ids, batch_size):
+            self._runtime_metrics.read_calls += 1
+            self._runtime_metrics.read_nodes += len(batch)
             nodes = [self._client.get_node(node_id) for node_id in batch]
             try:
                 batch_values = await self._client.read_values(nodes)
@@ -828,6 +878,8 @@ class OpcUaClient:
             return {}
 
         started = perf_counter()
+        self._runtime_metrics.history_read_calls += len(node_ids)
+        self._runtime_metrics.history_read_nodes += len(node_ids)
         semaphore = asyncio.Semaphore(self._browse_concurrency)
 
         async def worker(node_id: str) -> tuple[str, list[ua.DataValue]]:
@@ -872,6 +924,7 @@ class OpcUaClient:
 
     async def call_method(self, object_node_id: str, method_node_id: str, args: list[Any]) -> Any:
         started = perf_counter()
+        self._runtime_metrics.method_calls += 1
         object_node = self._client.get_node(object_node_id)
         try:
             result = await object_node.call_method(method_node_id, *args)

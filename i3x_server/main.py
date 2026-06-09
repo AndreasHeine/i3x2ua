@@ -33,15 +33,54 @@ def _configure_logging() -> None:
 async def _run_model_preload(app: FastAPI) -> None:
     try:
         started = asyncio.get_running_loop().time()
+        app.state.opcua_client.reset_runtime_metrics()
         preload = await app.state.model_builder.build()
+        try:
+            namespace_infos = await app.state.opcua_client.get_namespace_infos()
+            logger.info("Namespace preload finished count=%d", len(namespace_infos))
+        except Exception:
+            logger.warning("Namespace preload failed; continuing with model preload result", exc_info=True)
         app.state.model_cache = preload
+        metrics = app.state.opcua_client.snapshot_runtime_metrics()
+        duration_s = asyncio.get_running_loop().time() - started
         logger.info(
             "Model preload finished nodes=%d roots=%d properties=%d actions=%d duration_s=%.3f",
             len(preload.nodes_by_id),
             len(preload.root_ids),
             len(preload.property_to_node),
             len(preload.action_to_method),
-            asyncio.get_running_loop().time() - started,
+            duration_s,
+        )
+        logger.info(
+            "Model preload metrics duration_s=%.3f rpc_calls=%d browse_calls=%d browse_nodes=%d "
+            "browse_initial_references=%d browse_next_calls=%d browse_next_references=%d "
+            "read_calls=%d read_nodes=%d history_read_calls=%d history_read_nodes=%d method_calls=%d "
+            "browse_tree_calls=%d browse_tree_nodes=%d namespace_reads=%d namespaces=%d "
+            "namespace_info_builds=%d namespace_info_count=%d object_type_reads=%d object_type_count=%d",
+            duration_s,
+            metrics.browse_calls
+            + metrics.browse_next_calls
+            + metrics.read_calls
+            + metrics.history_read_calls
+            + metrics.method_calls,
+            metrics.browse_calls,
+            metrics.browse_nodes,
+            metrics.browse_initial_references,
+            metrics.browse_next_calls,
+            metrics.browse_next_references,
+            metrics.read_calls,
+            metrics.read_nodes,
+            metrics.history_read_calls,
+            metrics.history_read_nodes,
+            metrics.method_calls,
+            metrics.browse_tree_calls,
+            metrics.browse_tree_nodes_last,
+            metrics.namespace_reads,
+            metrics.namespace_count_last,
+            metrics.namespace_info_builds,
+            metrics.namespace_info_count_last,
+            metrics.object_type_reads,
+            metrics.object_type_count_last,
         )
     except Exception:
         logger.exception("Model preload failed")

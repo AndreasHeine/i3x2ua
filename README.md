@@ -1,9 +1,8 @@
-# Asynchronous i3X Beta REST server for OPC UA Servers.
+# Asynchronous i3X Beta REST-API for OPC UA.
 
 ![i3X Logo](img/i3X_logo_white.png)
 
 ## **Industrial Information Interoperability eXchange (i3X)**
-**Now in Beta**
 
 The Industrial Information Interoperability Exchange (i3X™) is an open, common API initiative proposed to address a growing interoperability challenge in modern manufacturing architectures: **manufacturing data silo proliferation and API chaos**. As manufacturers adopt heterogeneous software stacks from multiple vendors, the industry risks repeating past fragmentation seen with protocols, platforms, and namespaces - this time at the API layer.
 

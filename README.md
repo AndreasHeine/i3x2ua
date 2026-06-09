@@ -1,7 +1,15 @@
 # Asynchronous i3X Beta REST-API for OPC UA.
 
+![i3X Logo](img/i3X_logo.png)
+
+## **Industrial Information Interoperability eXchange (i3X)**
+
+The Industrial Information Interoperability Exchange (i3X™) is an open, common API initiative proposed to address a growing interoperability challenge in modern manufacturing architectures: **manufacturing data silo proliferation and API chaos**. As manufacturers adopt heterogeneous software stacks from multiple vendors, the industry risks repeating past fragmentation seen with protocols, platforms, and namespaces - this time at the API layer.
+
 ## License
-Personal use only. All rights reserved. See the [LICENSE](LICENSE) file for details.
+
+### Personal use only. 
+All rights reserved. See the [LICENSE](LICENSE) file for details.
 
 ### Commercial Licensing
 Commercial use, distribution, or modification of this code is strictly prohibited under the standard license. If you want to use this project for commercial purposes, please purchase a commercial license.
@@ -13,12 +21,6 @@ Get your commercial license instantly here:
 
 Alternatively, for custom licensing agreements or one-time purchases, please contact me directly:
 * **Email:** info@andreas-heine.net
-
-![i3X Logo](img/i3X_logo.png)
-
-## **Industrial Information Interoperability eXchange (i3X)**
-
-The Industrial Information Interoperability Exchange (i3X™) is an open, common API initiative proposed to address a growing interoperability challenge in modern manufacturing architectures: **manufacturing data silo proliferation and API chaos**. As manufacturers adopt heterogeneous software stacks from multiple vendors, the industry risks repeating past fragmentation seen with protocols, platforms, and namespaces - this time at the API layer.
 
 ## Quick Start
 

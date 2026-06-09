@@ -3,6 +3,17 @@
 ## License
 Personal use only. All rights reserved. See the [LICENSE](LICENSE) file for details.
 
+### Commercial Licensing
+Commercial use, distribution, or modification of this code is strictly prohibited under the standard license. If you want to use this project for commercial purposes, please purchase a commercial license.
+
+However, you can automatically acquire a commercial license by sponsoring this project on GitHub. Commercial use is permitted as long as you maintain an active sponsorship at the **[$1 a month]** level or higher.
+
+Get your commercial license instantly here:
+* **Become a Sponsor:** [Sponsor me on GitHub](https://github.com/sponsors/AndreasHeine)
+
+Alternatively, for custom licensing agreements or one-time purchases, please contact me directly:
+* **Email:** info@andreas-heine.net
+
 ![i3X Logo](img/i3X_logo.png)
 
 ## **Industrial Information Interoperability eXchange (i3X)**

@@ -49,6 +49,7 @@ class BulkResponse(BaseModel, Generic[T]):
     success: bool = True
     results: list[BulkResultItem[T]] = Field(default_factory=list)
 
+
 def _bulk_response(results: list[BulkResultItem[T]]) -> BulkResponse[T]:
     return BulkResponse(success=all(item.success for item in results), results=results)
 
@@ -639,8 +640,7 @@ async def get_object_types_v1(
     object_types_by_node_id = {item.node_id: item for item in object_types}
     element_ids_by_node_id = _object_type_element_ids_by_node_id(object_types, namespace_infos)
     items = [
-        _to_object_type(item, namespace_infos, object_types_by_node_id, element_ids_by_node_id)
-        for item in object_types
+        _to_object_type(item, namespace_infos, object_types_by_node_id, element_ids_by_node_id) for item in object_types
     ]
     if namespace_uri:
         items = [item for item in items if item.namespaceUri == namespace_uri]
@@ -684,9 +684,7 @@ async def query_object_types_v1(
                 )
             )
         else:
-            results.append(
-                BulkResultItem[ObjectTypeResponse](success=True, elementId=element_id, result=match)
-            )
+            results.append(BulkResultItem[ObjectTypeResponse](success=True, elementId=element_id, result=match))
     return _bulk_response(results)
 
 
@@ -715,9 +713,7 @@ async def query_relationship_types(body: GetRelationshipTypesRequest) -> BulkRes
                 )
             )
         else:
-            results.append(
-                BulkResultItem[RelationshipType](success=True, elementId=element_id, result=match)
-            )
+            results.append(BulkResultItem[RelationshipType](success=True, elementId=element_id, result=match))
     return _bulk_response(results)
 
 
@@ -832,10 +828,7 @@ async def query_last_known_values_v1(
             if isinstance(raw_values, dict):
                 values_by_node_id = {str(key): value for key, value in raw_values.items()}
             else:
-                values_by_node_id = {
-                    node_id: value
-                    for node_id, value in zip(node_ids, raw_values, strict=False)
-                }
+                values_by_node_id = {node_id: value for node_id, value in zip(node_ids, raw_values, strict=False)}
         except Exception as exc:
             raise i3x_http_error(
                 502,

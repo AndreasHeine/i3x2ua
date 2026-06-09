@@ -92,52 +92,38 @@ class OpcUaRuntimeMetrics:
 
 
 class OpcUaClientProtocol(Protocol):
-    async def browse_tree(self) -> list[OpcUaNodeInfo]:
-        ...
+    async def browse_tree(self) -> list[OpcUaNodeInfo]: ...
 
-    async def get_namespaces(self) -> list[str]:
-        ...
+    async def get_namespaces(self) -> list[str]: ...
 
-    async def get_namespace_infos(self) -> list[OpcUaNamespaceInfo]:
-        ...
+    async def get_namespace_infos(self) -> list[OpcUaNamespaceInfo]: ...
 
-    async def get_object_types(self) -> list[OpcUaObjectTypeInfo]:
-        ...
+    async def get_object_types(self) -> list[OpcUaObjectTypeInfo]: ...
 
-    async def get_operational_limits(self) -> OpcUaOperationalLimits:
-        ...
+    async def get_operational_limits(self) -> OpcUaOperationalLimits: ...
 
-    async def get_subscription_capabilities(self) -> OpcUaSubscriptionCapabilities:
-        ...
+    async def get_subscription_capabilities(self) -> OpcUaSubscriptionCapabilities: ...
 
-    async def read_value(self, node_id: str) -> Any:
-        ...
+    async def read_value(self, node_id: str) -> Any: ...
 
-    async def read_values(self, node_ids: list[str]) -> list[Any]:
-        ...
+    async def read_values(self, node_ids: list[str]) -> list[Any]: ...
 
     async def read_history_values(
         self,
         node_ids: list[str],
         start_time: datetime | None,
         end_time: datetime | None,
-    ) -> dict[str, list[ua.DataValue]]:
-        ...
+    ) -> dict[str, list[ua.DataValue]]: ...
 
-    async def call_method(self, object_node_id: str, method_node_id: str, args: list[Any]) -> Any:
-        ...
+    async def call_method(self, object_node_id: str, method_node_id: str, args: list[Any]) -> Any: ...
 
-    async def create_datachange_subscription(self, publishing_interval_ms: float, handler: Any) -> Any:
-        ...
+    async def create_datachange_subscription(self, publishing_interval_ms: float, handler: Any) -> Any: ...
 
-    async def subscribe_data_changes(self, subscription: Any, node_ids: list[str]) -> Any:
-        ...
+    async def subscribe_data_changes(self, subscription: Any, node_ids: list[str]) -> Any: ...
 
-    async def delete_subscription(self, subscription: Any) -> None:
-        ...
+    async def delete_subscription(self, subscription: Any) -> None: ...
 
-    def add_reconnect_listener(self, listener: Callable[[], Awaitable[None]]) -> None:
-        ...
+    def add_reconnect_listener(self, listener: Callable[[], Awaitable[None]]) -> None: ...
 
 
 class OpcUaClient:
@@ -160,17 +146,13 @@ class OpcUaClient:
         self._password = password if isinstance(password, str) and password != "" else None
         self._security_mode = security_mode.strip() if security_mode.strip() else "None"
         self._security_policy = (
-            security_policy.strip()
-            if isinstance(security_policy, str) and security_policy.strip()
-            else None
+            security_policy.strip() if isinstance(security_policy, str) and security_policy.strip() else None
         )
         self._client_cert_path = (
             client_cert_path.strip() if isinstance(client_cert_path, str) and client_cert_path.strip() else None
         )
         self._client_key_path = (
-            client_key_path.strip()
-            if isinstance(client_key_path, str) and client_key_path.strip()
-            else None
+            client_key_path.strip() if isinstance(client_key_path, str) and client_key_path.strip() else None
         )
         self._client_key_password = client_key_password if client_key_password else None
         self._server_cert_path = (
@@ -215,8 +197,8 @@ class OpcUaClient:
             self._security_mode,
         )
         await self._client.connect(
-            auto_reconnect = True,
-            reconnect_max_delay = 30.0,
+            auto_reconnect=True,
+            reconnect_max_delay=30.0,
         )
         await self.load_additional_typedefinitions()
         self._limits_cache = await self.get_operational_limits()
@@ -234,13 +216,21 @@ class OpcUaClient:
         try:
             await self._client.load_data_type_definitions()
         except Exception as e:
-            logger.warning("OPC UA additional v1.04 data type definitions load failed endpoint=%s error=%s", self._endpoint, e)
+            logger.warning(
+                "OPC UA additional v1.04 data type definitions load failed endpoint=%s error=%s", self._endpoint, e
+            )
             try:
                 await self._client.load_type_definitions()
             except Exception as e:
-                logger.warning("OPC UA additional v1.03 data type definitions load failed endpoint=%s error=%s", self._endpoint, e)
+                logger.warning(
+                    "OPC UA additional v1.03 data type definitions load failed endpoint=%s error=%s", self._endpoint, e
+                )
         else:
-            logger.info("OPC UA additional type definitions load finished endpoint=%s duration_s=%.3f", self._endpoint, perf_counter() - started)
+            logger.info(
+                "OPC UA additional type definitions load finished endpoint=%s duration_s=%.3f",
+                self._endpoint,
+                perf_counter() - started,
+            )
 
     async def disconnect(self) -> None:
         started = perf_counter()
@@ -466,9 +456,7 @@ class OpcUaClient:
                 max_nodes_per_browse,
             )
             namespace_components = [
-                self._client.get_node(ref.NodeId)
-                for _, refs in namespace_components_browse
-                for ref in refs
+                self._client.get_node(ref.NodeId) for _, refs in namespace_components_browse for ref in refs
             ]
             logger.info(
                 "OPC UA namespace metadata components endpoint=%s count=%d",
@@ -991,7 +979,7 @@ class OpcUaClient:
                 auto_reconnect=True,
                 reconnect_max_delay=30.0,
             )
-            await self.load_custom_typedefinitions()
+            await self.load_additional_typedefinitions()
             self._limits_cache = None
             self._subscription_caps_cache = None
             logger.info("OPC UA reconnect finished endpoint=%s", self._endpoint)
@@ -1046,8 +1034,7 @@ class OpcUaClient:
             missing.append("client_key_path")
         if missing:
             raise ValueError(
-                "OPC UA encryption requires policy, client cert, and client key. "
-                f"Missing: {', '.join(missing)}"
+                f"OPC UA encryption requires policy, client cert, and client key. Missing: {', '.join(missing)}"
             )
 
         cert_path_str = self._client_cert_path

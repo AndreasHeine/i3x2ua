@@ -45,9 +45,7 @@ async def fetch_json(
             return {"value": data}
         except (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.ConnectError) as exc:
             if attempt >= attempts - 1:
-                message = (
-                    f"Request failed after {attempts} attempts: {method} {path} ({exc.__class__.__name__}: {exc})"
-                )
+                message = f"Request failed after {attempts} attempts: {method} {path} ({exc.__class__.__name__}: {exc})"
                 raise RuntimeError(message) from exc
             if verbose:
                 print(
@@ -92,9 +90,7 @@ async def build_test_dataset(
 
         root_items_raw = model_root.get("items", [])
         root_items = (
-            [item for item in root_items_raw if isinstance(item, dict)]
-            if isinstance(root_items_raw, list)
-            else []
+            [item for item in root_items_raw if isinstance(item, dict)] if isinstance(root_items_raw, list) else []
         )
 
         selected_roots = root_items[: max(0, max_root_children)]
@@ -117,9 +113,7 @@ async def build_test_dataset(
             )
             children_raw = children_payload.get("children", [])
             children = (
-                [item for item in children_raw if isinstance(item, dict)]
-                if isinstance(children_raw, list)
-                else []
+                [item for item in children_raw if isinstance(item, dict)] if isinstance(children_raw, list) else []
             )
             total_children_count += len(children)
             children_by_parent[root_id] = {
@@ -212,9 +206,7 @@ async def fetch_status(
             return response.status_code
         except (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.ConnectError) as exc:
             if attempt >= attempts - 1:
-                message = (
-                    f"Request failed after {attempts} attempts: {method} {path} ({exc.__class__.__name__}: {exc})"
-                )
+                message = f"Request failed after {attempts} attempts: {method} {path} ({exc.__class__.__name__}: {exc})"
                 raise RuntimeError(message) from exc
             if verbose:
                 print(

@@ -29,8 +29,7 @@ class ModelBuilder:
         for source_id, opc_node in by_source_node.items():
             child_sources = child_sources_by_parent.get(source_id, [])
             child_ids = [
-                stable_i3x_id(by_source_node[c].node_id, _kind_for_node(by_source_node[c]))
-                for c in child_sources
+                stable_i3x_id(by_source_node[c].node_id, _kind_for_node(by_source_node[c])) for c in child_sources
             ]
             mapped = map_node(opc_node, child_ids)
             nodes_by_id[mapped.id] = mapped

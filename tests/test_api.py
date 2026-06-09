@@ -4,6 +4,7 @@ import json
 import os
 import time
 from collections.abc import Generator
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -21,6 +22,22 @@ from i3x_server.subscriptions.service import SubscriptionService
 class FakeOpcUaClient:
     def __init__(self) -> None:
         self.values: dict[str, Any] = {"ns=2;s=Temperature": 42.5}
+        self.history_values: dict[str, list[SimpleNamespace]] = {
+            "ns=2;s=Temperature": [
+                SimpleNamespace(
+                    Value=SimpleNamespace(Value=40.0),
+                    StatusCode=SimpleNamespace(name="Good"),
+                    SourceTimestamp=datetime(2026, 1, 1, 10, 0, tzinfo=UTC),
+                    ServerTimestamp=None,
+                ),
+                SimpleNamespace(
+                    Value=SimpleNamespace(Value=41.5),
+                    StatusCode=SimpleNamespace(name="Good"),
+                    SourceTimestamp=datetime(2026, 1, 1, 10, 5, tzinfo=UTC),
+                    ServerTimestamp=None,
+                ),
+            ]
+        }
         self._reads = 0
         self._listeners: list[Any] = []
 
@@ -63,6 +80,15 @@ class FakeOpcUaClient:
             self.values[node_id] = value
             results.append(value)
         return results
+
+    async def read_history_values(
+        self,
+        node_ids: list[str],
+        start_time: datetime | None,
+        end_time: datetime | None,
+    ) -> dict[str, list[Any]]:
+        del start_time, end_time
+        return {node_id: self.history_values.get(node_id, []) for node_id in node_ids}
 
     async def get_subscription_capabilities(self) -> OpcUaSubscriptionCapabilities:
         return OpcUaSubscriptionCapabilities(
@@ -160,6 +186,7 @@ def test_beta_info(client: TestClient) -> None:
     payload = response.json()
     assert payload["success"] is True
     assert payload["result"]["specVersion"] == "beta"
+    assert payload["result"]["capabilities"]["query"]["history"] is True
     assert payload["result"]["capabilities"]["subscribe"]["stream"] is True
 
 
@@ -240,6 +267,50 @@ def test_beta_objects_list(client: TestClient) -> None:
     assert payload["success"] is True
     assert payload["results"][0]["success"] is True
     assert payload["results"][1]["success"] is False
+
+
+def test_beta_history_query(client: TestClient) -> None:
+    response = client.post(
+        "/v1/objects/history",
+        json={
+            "elementIds": ["property-abc"],
+            "startTime": "2026-01-01T00:00:00Z",
+            "endTime": "2026-01-02T00:00:00Z",
+            "maxDepth": 1,
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    assert payload["results"][0]["success"] is True
+    assert payload["results"][0]["result"]["isComposition"] is False
+    assert len(payload["results"][0]["result"]["values"]) == 2
+
+
+def test_beta_history_query_missing_object(client: TestClient) -> None:
+    response = client.post(
+        "/v1/objects/history",
+        json={"elementIds": ["missing"], "maxDepth": 1},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    assert payload["results"][0]["success"] is False
+    assert payload["results"][0]["error"]["code"] == 404
+
+
+def test_beta_history_query_invalid_time_range(client: TestClient) -> None:
+    response = client.post(
+        "/v1/objects/history",
+        json={
+            "elementIds": ["property-abc"],
+            "startTime": "2026-01-02T00:00:00Z",
+            "endTime": "2026-01-01T00:00:00Z",
+        },
+    )
+    assert response.status_code == 400
+    payload = response.json()
+    assert payload["detail"]["error"]["code"] == "InvalidArgument"
 
 
 def test_beta_subscription_lifecycle(client: TestClient) -> None:

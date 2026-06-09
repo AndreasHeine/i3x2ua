@@ -23,6 +23,7 @@ Documentation is split across three files:
   - POST /v1/objects/list
   - POST /v1/objects/related
   - POST /v1/objects/value
+  - POST /v1/objects/history
   - POST /v1/subscriptions
   - POST /v1/subscriptions/register
   - POST /v1/subscriptions/unregister
@@ -45,6 +46,7 @@ Already implemented:
 - `GET /v1/info`, `GET /v1/namespaces`, `GET /v1/objecttypes`, `POST /v1/objecttypes/query`
 - `GET /v1/relationshiptypes`, `POST /v1/relationshiptypes/query`
 - `GET /v1/objects`, `POST /v1/objects/list`, `POST /v1/objects/related`, `POST /v1/objects/value`
+- `POST /v1/objects/history`
 - `POST /v1/subscriptions`, `POST /v1/subscriptions/register`, `POST /v1/subscriptions/unregister`
 - `POST /v1/subscriptions/sync`, `POST /v1/subscriptions/list`, `POST /v1/subscriptions/delete`, `POST /v1/subscriptions/stream`
 - Structured 501 responses for non-implemented Beta endpoints
@@ -118,6 +120,7 @@ The active API surface is only available under `/v1`.
 - POST /v1/objects/list
 - POST /v1/objects/related
 - POST /v1/objects/value
+- POST /v1/objects/history
 - POST /v1/subscriptions
 - POST /v1/subscriptions/register
 - POST /v1/subscriptions/unregister

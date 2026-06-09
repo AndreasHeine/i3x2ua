@@ -20,6 +20,7 @@ Implemented and available:
 - `POST /v1/objects/list`
 - `POST /v1/objects/related`
 - `POST /v1/objects/value`
+- `POST /v1/objects/history`
 - `POST /v1/subscriptions`
 - `POST /v1/subscriptions/register`
 - `POST /v1/subscriptions/unregister`
@@ -34,7 +35,7 @@ Implemented and available:
 - `GET /v1/namespaces` returns OPC UA namespace entries in server order.
 - `GET /v1/objecttypes` and `POST /v1/objecttypes/query` expose object type projections derived from OPC UA ObjectTypes.
 - `GET /v1/relationshiptypes` and `POST /v1/relationshiptypes/query` expose supported relationship-type metadata.
-- `GET /v1/objects`, `POST /v1/objects/list`, `POST /v1/objects/related`, and `POST /v1/objects/value` expose the Beta object explorer surface.
+- `GET /v1/objects`, `POST /v1/objects/list`, `POST /v1/objects/related`, `POST /v1/objects/value`, and `POST /v1/objects/history` expose the Beta object explorer surface.
 - Subscription lifecycle endpoints create, register, unregister, sync, list, delete, and stream subscriptions.
 - Registered monitors use OPC UA data-change subscriptions when server limits allow; if limits are exceeded, the server falls back to batched polling.
 - Non-implemented Beta operations return structured `501` responses instead of disappearing as `404`.

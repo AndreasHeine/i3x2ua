@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime
 from time import perf_counter
 from typing import Any, Awaitable, Callable, Protocol
 
@@ -87,6 +88,14 @@ class OpcUaClientProtocol(Protocol):
         ...
 
     async def read_values(self, node_ids: list[str]) -> list[Any]:
+        ...
+
+    async def read_history_values(
+        self,
+        node_ids: list[str],
+        start_time: datetime | None,
+        end_time: datetime | None,
+    ) -> dict[str, list[ua.DataValue]]:
         ...
 
     async def call_method(self, object_node_id: str, method_node_id: str, args: list[Any]) -> Any:
@@ -747,6 +756,58 @@ class OpcUaClient:
             perf_counter() - started,
         )
         return values
+
+    async def read_history_values(
+        self,
+        node_ids: list[str],
+        start_time: datetime | None,
+        end_time: datetime | None,
+    ) -> dict[str, list[ua.DataValue]]:
+        if not node_ids:
+            return {}
+
+        started = perf_counter()
+        semaphore = asyncio.Semaphore(self._browse_concurrency)
+
+        async def worker(node_id: str) -> tuple[str, list[ua.DataValue]]:
+            async with semaphore:
+                node = self._client.get_node(node_id)
+                try:
+                    values = await node.read_raw_history(
+                        starttime=start_time,
+                        endtime=end_time,
+                        numvalues=0,
+                        return_bounds=False,
+                    )
+                except Exception as exc:
+                    if not self._should_retry_after_disconnect(exc):
+                        raise
+                    logger.warning(
+                        "OPC UA history read retry after reconnect endpoint=%s node_id=%s",
+                        self._endpoint,
+                        node_id,
+                    )
+                    await self._reconnect()
+                    retry_node = self._client.get_node(node_id)
+                    values = await retry_node.read_raw_history(
+                        starttime=start_time,
+                        endtime=end_time,
+                        numvalues=0,
+                        return_bounds=False,
+                    )
+                return node_id, values
+
+        pairs = await asyncio.gather(*[worker(node_id) for node_id in node_ids])
+        values_by_node_id = {node_id: values for node_id, values in pairs}
+
+        logger.info(
+            "OPC UA history read ok endpoint=%s nodes=%d values=%d duration_s=%.3f",
+            self._endpoint,
+            len(node_ids),
+            sum(len(item) for item in values_by_node_id.values()),
+            perf_counter() - started,
+        )
+        return values_by_node_id
 
     async def call_method(self, object_node_id: str, method_node_id: str, args: list[Any]) -> Any:
         started = perf_counter()

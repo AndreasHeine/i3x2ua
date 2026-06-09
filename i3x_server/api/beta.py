@@ -131,6 +131,11 @@ class CurrentValueResult(BaseModel):
     value: VQT | None = None
 
 
+class HistoricalValueResult(BaseModel):
+    isComposition: bool
+    values: list[VQT] = Field(default_factory=list)
+
+
 class RelatedObjectResult(BaseModel):
     sourceRelationship: str
     object: ObjectInstanceResponse
@@ -163,7 +168,7 @@ class GetObjectHistoryRequest(BaseModel):
     elementIds: list[str]
     startTime: str | None = None
     endTime: str | None = None
-    maxDepth: int | None = 1
+    maxDepth: int | None = Field(default=1, ge=0)
 
 
 class RegisterMonitoredItemsRequest(BaseModel):
@@ -234,7 +239,7 @@ def _not_implemented(feature: str) -> None:
 
 def _supported_capabilities() -> ServerCapabilities:
     return ServerCapabilities(
-        query=QueryCapabilities(history=False),
+        query=QueryCapabilities(history=True),
         update=UpdateCapabilities(current=False, history=False),
         subscribe=SubscribeCapabilities(stream=True),
     )
@@ -435,6 +440,104 @@ def _relationship_type_for_child(child: ModelNode) -> RelationshipType:
         relationshipId="HasComponent",
         reverseOf="ComponentOf",
     )
+
+
+def _parse_iso_datetime(value: str, field_name: str) -> datetime:
+    normalized = value.strip()
+    if normalized.endswith("Z"):
+        normalized = f"{normalized[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError as exc:
+        raise i3x_http_error(
+            400,
+            "InvalidArgument",
+            f"Invalid ISO 8601 timestamp for '{field_name}'",
+            {"field": field_name, "value": value},
+        ) from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _parse_history_time_range(body: GetObjectHistoryRequest) -> tuple[datetime | None, datetime | None]:
+    start_time = _parse_iso_datetime(body.startTime, "startTime") if body.startTime else None
+    end_time = _parse_iso_datetime(body.endTime, "endTime") if body.endTime else None
+    if start_time is not None and end_time is not None and start_time > end_time:
+        raise i3x_http_error(
+            400,
+            "InvalidArgument",
+            "startTime must be less than or equal to endTime",
+            {"startTime": body.startTime, "endTime": body.endTime},
+        )
+    return start_time, end_time
+
+
+def _collect_history_source_nodes(model: BuildResult, root: ModelNode, max_depth: int) -> list[ModelNode]:
+    if root.kind == "property":
+        return [root]
+
+    results: list[ModelNode] = []
+    visited: set[str] = set()
+    queue: list[tuple[str, int]] = [(root.id, 1)]
+
+    while queue:
+        current_id, depth = queue.pop(0)
+        if current_id in visited:
+            continue
+        visited.add(current_id)
+
+        current = model.nodes_by_id.get(current_id)
+        if current is None:
+            continue
+        if current.kind == "property":
+            results.append(current)
+
+        if max_depth != 0 and depth >= max_depth:
+            continue
+
+        for child_id in model.children_by_id.get(current_id, []):
+            queue.append((child_id, depth + 1))
+
+    return results
+
+
+def _normalize_quality(status_code: Any) -> str:
+    if status_code is None:
+        return "Good"
+    is_good = getattr(status_code, "is_good", None)
+    if callable(is_good):
+        try:
+            return "Good" if bool(is_good()) else "Bad"
+        except Exception:
+            pass
+    name = getattr(status_code, "name", "")
+    label = str(name) if name else str(status_code)
+    if "uncertain" in label.lower():
+        return "Uncertain"
+    if "good" in label.lower():
+        return "Good"
+    return "Bad"
+
+
+def _normalize_timestamp(value: Any) -> str:
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=UTC)
+        return value.astimezone(UTC).isoformat()
+    return datetime.now(UTC).isoformat()
+
+
+def _to_vqt_from_history_value(data_value: Any) -> VQT:
+    variant = getattr(data_value, "Value", None)
+    value = getattr(variant, "Value", variant)
+    timestamp = (
+        getattr(data_value, "SourceTimestamp", None)
+        or getattr(data_value, "ServerTimestamp", None)
+        or getattr(data_value, "timestamp", None)
+    )
+    quality = _normalize_quality(getattr(data_value, "StatusCode", None) or getattr(data_value, "status", None))
+    return VQT(value=value, quality=quality, timestamp=_normalize_timestamp(timestamp))
 
 
 @router.get("/info", response_model=SuccessResponse[ServerInfo])
@@ -702,9 +805,87 @@ async def query_last_known_values_v1(
     return BulkResponse(results=results)
 
 
-@router.post("/objects/history")
-async def query_historical_values_v1() -> None:
-    _not_implemented("Historical value queries")
+@router.post("/objects/history", response_model=BulkResponse[HistoricalValueResult])
+async def query_historical_values_v1(
+    body: GetObjectHistoryRequest,
+    model: BuildResult = Depends(get_or_build_model),
+    opcua_client: OpcUaClientProtocol = Depends(get_opcua_client),
+) -> BulkResponse[HistoricalValueResult]:
+    start_time, end_time = _parse_history_time_range(body)
+    max_depth = body.maxDepth if body.maxDepth is not None else 1
+
+    lookup: list[tuple[str, ModelNode, list[ModelNode]]] = []
+    node_ids: list[str] = []
+    for element_id in body.elementIds:
+        node = _find_model_node(model, element_id)
+        if node is None:
+            continue
+        source_nodes = _collect_history_source_nodes(model, node, max_depth)
+        lookup.append((element_id, node, source_nodes))
+        for source_node in source_nodes:
+            node_ids.append(source_node.source_node_id)
+
+    values_by_node_id: dict[str, list[Any]] = {}
+    if node_ids:
+        unique_node_ids = list(dict.fromkeys(node_ids))
+        try:
+            values_by_node_id = await opcua_client.read_history_values(
+                node_ids=unique_node_ids,
+                start_time=start_time,
+                end_time=end_time,
+            )
+        except Exception as exc:
+            raise i3x_http_error(
+                502,
+                "OpcUaHistoryReadError",
+                "Failed to read OPC UA historical values",
+                {"cause": str(exc)},
+            ) from exc
+
+    lookup_by_element_id = {element_id: (node, source_nodes) for element_id, node, source_nodes in lookup}
+
+    results: list[BulkResultItem[HistoricalValueResult]] = []
+    for element_id in body.elementIds:
+        match = lookup_by_element_id.get(element_id)
+        if match is None:
+            results.append(
+                BulkResultItem[HistoricalValueResult](
+                    success=False,
+                    elementId=element_id,
+                    error=ErrorDetail(code=404, message="Object not found"),
+                )
+            )
+            continue
+
+        node, source_nodes = match
+        if not source_nodes:
+            results.append(
+                BulkResultItem[HistoricalValueResult](
+                    success=False,
+                    elementId=element_id,
+                    error=ErrorDetail(code=404, message="Object history not found"),
+                )
+            )
+            continue
+
+        values: list[VQT] = []
+        for source_node in source_nodes:
+            raw_values = values_by_node_id.get(source_node.source_node_id, [])
+            values.extend(_to_vqt_from_history_value(item) for item in raw_values)
+
+        values.sort(key=lambda item: item.timestamp)
+        results.append(
+            BulkResultItem[HistoricalValueResult](
+                success=True,
+                elementId=element_id,
+                result=HistoricalValueResult(
+                    isComposition=bool(node.children),
+                    values=values,
+                ),
+            )
+        )
+
+    return BulkResponse(results=results)
 
 
 @router.get("/objects/{element_id}/history")

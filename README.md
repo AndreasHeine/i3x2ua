@@ -1,6 +1,6 @@
 # Asynchronous i3X Beta REST-API for OPC UA.
 
-![i3X Logo](img/i3X_logo_white.png)
+![i3X Logo](img/i3X_logo.png)
 
 ## **Industrial Information Interoperability eXchange (i3X)**
 

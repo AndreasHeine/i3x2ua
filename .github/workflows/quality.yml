@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 jobs:
   ruff:
@@ -60,7 +61,7 @@ jobs:
         run: uv run mypy .
 
   pytest:
-    name: Pytest
+    name: Pytest + Coverage
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -80,5 +81,18 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev --frozen
 
-      - name: Run Pytest
+      - name: Run Pytest with Coverage
         run: uv run pytest -q
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage.xml
+          use_oidc: true
+          fail_ci_if_error: false
+
+      - name: Upload coverage XML
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml

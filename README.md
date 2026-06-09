@@ -1,6 +1,6 @@
 # Asynchronous i3X Beta REST-API for OPC UA.
 
-[![Container Build](https://github.com/AndreasHeine/i3x2ua/actions/workflows/docker-image.yml/badge.svg)](https://github.com/AndreasHeine/i3x2ua/actions/workflows/docker-image.yml) [![Quality Checks](https://github.com/AndreasHeine/i3x2ua/actions/workflows/quality.yml/badge.svg)](https://github.com/AndreasHeine/i3x2ua/actions/workflows/quality.yml) [![Dependabot Updates](https://github.com/AndreasHeine/i3x2ua/actions/workflows/dependabot/dependabot-updates/badge.svg)](https://github.com/AndreasHeine/i3x2ua/actions/workflows/dependabot/dependabot-updates) [![Dependency Graph](https://github.com/AndreasHeine/i3x2ua/actions/workflows/dependabot/update-graph/badge.svg)](https://github.com/AndreasHeine/i3x2ua/actions/workflows/dependabot/update-graph)
+[![Container Build](https://github.com/AndreasHeine/i3x2ua/actions/workflows/docker-image.yml/badge.svg)](https://github.com/AndreasHeine/i3x2ua/actions/workflows/docker-image.yml) [![Quality Checks](https://github.com/AndreasHeine/i3x2ua/actions/workflows/quality.yml/badge.svg)](https://github.com/AndreasHeine/i3x2ua/actions/workflows/quality.yml) [![Coverage](https://codecov.io/gh/AndreasHeine/i3x2ua/branch/master/graph/badge.svg)](https://codecov.io/gh/AndreasHeine/i3x2ua) [![Dependabot Updates](https://github.com/AndreasHeine/i3x2ua/actions/workflows/dependabot/dependabot-updates/badge.svg)](https://github.com/AndreasHeine/i3x2ua/actions/workflows/dependabot/dependabot-updates) [![Dependency Graph](https://github.com/AndreasHeine/i3x2ua/actions/workflows/dependabot/update-graph/badge.svg)](https://github.com/AndreasHeine/i3x2ua/actions/workflows/dependabot/update-graph)
 
 ![i3X Logo](img/i3X_logo.png)
 
@@ -97,4 +97,5 @@ uv run ruff check .
 uv run ruff format .
 uv run mypy .
 uv run pytest -q
+uv run pytest -q --cov=i3x_server --cov-report=term-missing
 ```

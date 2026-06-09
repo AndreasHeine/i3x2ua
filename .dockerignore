@@ -13,3 +13,7 @@ dist/
 build/
 *.egg-info/
 img/
+tests/
+TODO.md
+I3X_CONFORMANCE.md
+python-coding-reguirements.md

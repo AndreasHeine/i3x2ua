@@ -71,6 +71,8 @@ Default startup with OPC UA connection:
 
 uv run uvicorn i3x_server.main:app --reload --host 127.0.0.1 --port 8000
 
+`run.py` is intentionally developer-focused (`--reload`) and should not be used for production runtime.
+
 OpenAPI and Swagger UI:
 
 - http://127.0.0.1:8000/openapi.json
@@ -105,6 +107,51 @@ Important variables:
 - I3X_SUBSCRIPTION_INTERVAL_SECONDS (Default: 5)
 - I3X_LOG_LEVEL (Default: INFO)
 - I3X_SKIP_OPCUA_CONNECT (for local tests only)
+
+## Docker (Production)
+
+The provided Dockerfile is production-oriented:
+
+- multi-stage build (build deps not included in runtime image)
+- non-root runtime user
+- `tini` as PID 1 for clean signal handling
+- no auto-reload in container startup command
+- healthcheck against `/v1/info`
+
+Build image:
+
+docker build -t i3x2ua:prod .
+
+Run image:
+
+docker run --rm -p 8000:8000 \
+  -e I3X_OPCUA_ENDPOINT=opc.tcp://your-opcua-host:4840 \
+  -e I3X_LOG_LEVEL=INFO \
+  i3x2ua:prod
+
+Run image with hardened runtime flags:
+
+docker run --rm -p 8000:8000 \
+  --read-only \
+  --tmpfs /tmp:size=64m,noexec,nosuid \
+  --tmpfs /home/app:size=16m,noexec,nosuid \
+  --cap-drop ALL \
+  --security-opt no-new-privileges:true \
+  --pids-limit 256 \
+  -e I3X_OPCUA_ENDPOINT=opc.tcp://your-opcua-host:4840 \
+  -e I3X_LOG_LEVEL=INFO \
+  i3x2ua:prod
+
+Use Docker Compose with production-hardening defaults:
+
+docker compose -f docker-compose.prod.yml up -d
+
+Run with startup probe tolerance (when OPC UA backend may be slow to connect):
+
+docker run --rm -p 8000:8000 \
+  --health-start-period=60s \
+  -e I3X_OPCUA_ENDPOINT=opc.tcp://your-opcua-host:4840 \
+  i3x2ua:prod
 
 ## API Overview
 

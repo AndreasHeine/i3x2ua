@@ -1,5 +1,8 @@
 # Asynchronous i3X Beta REST-API for OPC UA.
 
+## License
+Personal use only. All rights reserved. See the [LICENSE](LICENSE) file for details.
+
 ![i3X Logo](img/i3X_logo.png)
 
 ## **Industrial Information Interoperability eXchange (i3X)**

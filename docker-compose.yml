@@ -1,6 +1,6 @@
 services:
   i3x2ua:
-    image: i3x2ua:prod
+    image: ghcr.io/andreasheine/i3x2ua:master
     container_name: i3x2ua
     restart: unless-stopped
     ports:

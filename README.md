@@ -55,16 +55,10 @@ Active endpoints are exposed under `/v1` for:
 
 ## Docker
 
-Build:
-
-```bash
-docker build -t i3x2ua:prod .
-```
-
 Run with compose:
 
 ```bash
-docker compose -f docker-compose.prod.yml up -d
+docker compose up -d
 ```
 
 ## Development

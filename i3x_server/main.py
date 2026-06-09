@@ -58,19 +58,26 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         endpoint=settings.opcua_endpoint,
         username=settings.opcua_username,
         password=settings.opcua_password,
+        security_mode=settings.opcua_security_mode,
+        security_policy=settings.opcua_security_policy,
+        client_cert_path=settings.opcua_client_cert_path,
+        client_key_path=settings.opcua_client_key_path,
+        client_key_password=settings.opcua_client_key_password,
+        server_cert_path=settings.opcua_server_cert_path,
         browse_concurrency=settings.opcua_browse_concurrency,
         metadata_cache_ttl_seconds=settings.opcua_metadata_cache_ttl_seconds,
     )
     skip_connect = os.getenv("I3X_SKIP_OPCUA_CONNECT", "0") == "1"
     logger.info(
         "App startup opcua_endpoint=%s skip_connect=%s log_level=%s "
-        "browse_concurrency=%d metadata_cache_ttl_seconds=%d auth_configured=%s",
+        "browse_concurrency=%d metadata_cache_ttl_seconds=%d auth_configured=%s security_mode=%s",
         settings.opcua_endpoint,
         skip_connect,
         settings.log_level,
         settings.opcua_browse_concurrency,
         settings.opcua_metadata_cache_ttl_seconds,
         bool(settings.opcua_username and settings.opcua_password),
+        settings.opcua_security_mode,
     )
     if not skip_connect:
         await opcua_client.connect()

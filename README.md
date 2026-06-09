@@ -99,7 +99,12 @@ Important variables:
 - I3X_OPCUA_ENDPOINT (Default: opc.tcp://localhost:4840)
 - I3X_OPCUA_USERNAME (Optional: OPC UA username for authenticated sessions)
 - I3X_OPCUA_PASSWORD (Optional: OPC UA password for authenticated sessions)
-- I3X_OPCUA_SECURITY_MODE (Default: None)
+- I3X_OPCUA_SECURITY_MODE (Default: None; options include Sign, SignAndEncrypt)
+- I3X_OPCUA_SECURITY_POLICY (Optional; required when security mode is not None, e.g. Basic256Sha256)
+- I3X_OPCUA_CLIENT_CERT_PATH (Optional; required when security mode is not None)
+- I3X_OPCUA_CLIENT_KEY_PATH (Optional; required when security mode is not None)
+- I3X_OPCUA_CLIENT_KEY_PASSWORD (Optional; private key password)
+- I3X_OPCUA_SERVER_CERT_PATH (Optional; server certificate pinning)
 - I3X_OPCUA_BROWSE_CONCURRENCY (Default: 16)
 - I3X_OPCUA_METADATA_CACHE_TTL_SECONDS (Default: 300)
 - I3X_MODEL_REFRESH_INTERVAL_SECONDS (Default: 60)
@@ -131,6 +136,19 @@ docker run --rm -p 8000:8000 \
   -e I3X_OPCUA_USERNAME=your-user \
   -e I3X_OPCUA_PASSWORD=your-password \
   -e I3X_LOG_LEVEL=INFO \
+  i3x2ua:prod
+
+Run image with OPC UA encryption:
+
+docker run --rm -p 8000:8000 \
+  -v /path/to/certs:/certs:ro \
+  -e I3X_OPCUA_ENDPOINT=opc.tcp://your-opcua-host:4840 \
+  -e I3X_OPCUA_SECURITY_MODE=SignAndEncrypt \
+  -e I3X_OPCUA_SECURITY_POLICY=Basic256Sha256 \
+  -e I3X_OPCUA_CLIENT_CERT_PATH=/certs/client_cert.der \
+  -e I3X_OPCUA_CLIENT_KEY_PATH=/certs/client_key.pem \
+  -e I3X_OPCUA_CLIENT_KEY_PASSWORD=your-key-password \
+  -e I3X_OPCUA_SERVER_CERT_PATH=/certs/server_cert.der \
   i3x2ua:prod
 
 Run image with hardened runtime flags:

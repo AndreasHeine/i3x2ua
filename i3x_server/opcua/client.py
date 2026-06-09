@@ -4,6 +4,7 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from time import perf_counter
 from typing import Any, Awaitable, Callable, Protocol
 
@@ -120,16 +121,33 @@ class OpcUaClient:
         endpoint: str,
         username: str | None = None,
         password: str | None = None,
+        security_mode: str = "None",
+        security_policy: str | None = None,
+        client_cert_path: str | None = None,
+        client_key_path: str | None = None,
+        client_key_password: str | None = None,
+        server_cert_path: str | None = None,
         browse_concurrency: int = 16,
         metadata_cache_ttl_seconds: int = 300,
     ) -> None:
         self._endpoint = endpoint
         self._username = username.strip() if isinstance(username, str) and username.strip() else None
         self._password = password if isinstance(password, str) and password != "" else None
+        self._security_mode = security_mode.strip() if security_mode.strip() else "None"
+        self._security_policy = security_policy.strip() if isinstance(security_policy, str) and security_policy.strip() else None
+        self._client_cert_path = (
+            client_cert_path.strip() if isinstance(client_cert_path, str) and client_cert_path.strip() else None
+        )
+        self._client_key_path = client_key_path.strip() if isinstance(client_key_path, str) and client_key_path.strip() else None
+        self._client_key_password = client_key_password if client_key_password else None
+        self._server_cert_path = (
+            server_cert_path.strip() if isinstance(server_cert_path, str) and server_cert_path.strip() else None
+        )
         self._browse_concurrency = max(1, browse_concurrency)
         self._metadata_cache_ttl_seconds = max(0, metadata_cache_ttl_seconds)
         self._client = Client(url=endpoint)
         self._using_user_auth = False
+        self._using_security = False
         if self._username is not None and self._password is not None:
             self._client.set_user(self._username)
             self._client.set_password(self._password)
@@ -148,7 +166,13 @@ class OpcUaClient:
 
     async def connect(self) -> None:
         started = perf_counter()
-        logger.info("OPC UA connect started endpoint=%s auth_mode=%s", self._endpoint, "userpass" if self._using_user_auth else "anonymous")
+        await self._configure_security_if_needed()
+        logger.info(
+            "OPC UA connect started endpoint=%s auth_mode=%s security_mode=%s",
+            self._endpoint,
+            "userpass" if self._using_user_auth else "anonymous",
+            self._security_mode,
+        )
         await self._client.connect(
             auto_reconnect = True,
             reconnect_max_delay = 30.0,
@@ -871,6 +895,7 @@ class OpcUaClient:
                 await self._client.disconnect()
             except Exception:
                 logger.debug("OPC UA reconnect disconnect step failed endpoint=%s", self._endpoint, exc_info=True)
+            await self._configure_security_if_needed()
             await self._client.connect(
                 auto_reconnect=True,
                 reconnect_max_delay=30.0,
@@ -913,6 +938,47 @@ class OpcUaClient:
         if isinstance(value, int) and value > 0:
             return value
         return None
+
+    async def _configure_security_if_needed(self) -> None:
+        mode = self._security_mode.strip()
+        if mode.lower() == "none":
+            self._using_security = False
+            return
+
+        missing: list[str] = []
+        if self._security_policy is None:
+            missing.append("security_policy")
+        if self._client_cert_path is None:
+            missing.append("client_cert_path")
+        if self._client_key_path is None:
+            missing.append("client_key_path")
+        if missing:
+            raise ValueError(
+                "OPC UA encryption requires policy, client cert, and client key. "
+                f"Missing: {', '.join(missing)}"
+            )
+
+        cert_path = Path(self._client_cert_path)
+        key_path = Path(self._client_key_path)
+        if not cert_path.is_file():
+            raise FileNotFoundError(f"OPC UA client certificate not found: {cert_path}")
+        if not key_path.is_file():
+            raise FileNotFoundError(f"OPC UA client key not found: {key_path}")
+
+        key_value = str(key_path)
+        if self._client_key_password:
+            key_value = f"{key_value}::{self._client_key_password}"
+
+        security_items = [self._security_policy, mode, str(cert_path), key_value]
+        if self._server_cert_path is not None:
+            server_cert = Path(self._server_cert_path)
+            if not server_cert.is_file():
+                raise FileNotFoundError(f"OPC UA server certificate not found: {server_cert}")
+            security_items.append(str(server_cert))
+
+        security_string = ",".join(security_items)
+        await self._client.set_security_string(security_string)
+        self._using_security = True
 
 
 def _chunked(values: list[str], size: int) -> list[list[str]]:

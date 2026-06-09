@@ -3,8 +3,18 @@ services:
     image: ghcr.io/andreasheine/i3x2ua:master
     container_name: i3x2ua
     restart: unless-stopped
-    ports:
-      - "8000:8000"
+    command:
+      - python
+      - -m
+      - uvicorn
+      - i3x_server.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --proxy-headers
+      - --forwarded-allow-ips
+      - "*"
     environment:
       I3X_OPCUA_ENDPOINT: ${I3X_OPCUA_ENDPOINT:-opc.tcp://opcua.umati.app:4843}
       I3X_OPCUA_USERNAME: ${I3X_OPCUA_USERNAME:-}
@@ -16,6 +26,8 @@ services:
       I3X_OPCUA_CLIENT_KEY_PASSWORD: ${I3X_OPCUA_CLIENT_KEY_PASSWORD:-}
       I3X_OPCUA_SERVER_CERT_PATH: ${I3X_OPCUA_SERVER_CERT_PATH:-}
       I3X_LOG_LEVEL: ${I3X_LOG_LEVEL:-INFO}
+    expose:
+      - "8000"
     read_only: true
     tmpfs:
       - /tmp:size=64m,noexec,nosuid
@@ -31,3 +43,36 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
+    networks:
+      - backend
+
+  nginx:
+    build:
+      context: ./nginx
+    container_name: i3x2ua-nginx
+    restart: unless-stopped
+    depends_on:
+      i3x2ua:
+        condition: service_healthy
+    ports:
+      - "${NGINX_HTTP_PORT:-80}:80"
+      - "${NGINX_HTTPS_PORT:-443}:443"
+    environment:
+      NGINX_UPSTREAM_HOST: ${NGINX_UPSTREAM_HOST:-i3x2ua}
+      NGINX_UPSTREAM_PORT: ${NGINX_UPSTREAM_PORT:-8000}
+      NGINX_SERVER_NAME: ${NGINX_SERVER_NAME:-_}
+      NGINX_HTTPS_ENABLED: ${NGINX_HTTPS_ENABLED:-0}
+      NGINX_SSL_CERTIFICATE: ${NGINX_SSL_CERTIFICATE:-/etc/nginx/certs/fullchain.pem}
+      NGINX_SSL_CERTIFICATE_KEY: ${NGINX_SSL_CERTIFICATE_KEY:-/etc/nginx/certs/privkey.pem}
+      NGINX_BASIC_AUTH_ENABLED: ${NGINX_BASIC_AUTH_ENABLED:-0}
+      NGINX_BASIC_AUTH_USER: ${NGINX_BASIC_AUTH_USER:-}
+      NGINX_BASIC_AUTH_PASSWORD: ${NGINX_BASIC_AUTH_PASSWORD:-}
+      NGINX_BASIC_AUTH_REALM: ${NGINX_BASIC_AUTH_REALM:-i3x2ua}
+    volumes:
+      - ${NGINX_SSL_CERTS_DIR:-./certs}:/etc/nginx/certs:ro
+    networks:
+      - backend
+
+networks:
+  backend:
+    driver: bridge

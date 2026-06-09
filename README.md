@@ -61,6 +61,17 @@ Run with compose:
 docker compose up -d
 ```
 
+The stack now starts the API behind an nginx reverse proxy. The app container stays internal, while nginx exposes HTTP and optional HTTPS.
+
+Optional environment variables:
+
+- `NGINX_HTTPS_ENABLED=1` to enable TLS termination
+- `NGINX_SSL_CERTS_DIR=./certs` with `fullchain.pem` and `privkey.pem`
+- `NGINX_BASIC_AUTH_ENABLED=1` with `NGINX_BASIC_AUTH_USER` and `NGINX_BASIC_AUTH_PASSWORD`
+- `NGINX_SERVER_NAME` for the public host name
+
+If you enable HTTPS, mount or place the certificate files in the configured cert directory before starting Compose.
+
 ## Development
 
 ```bash

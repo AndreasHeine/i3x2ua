@@ -1,6 +1,6 @@
 # Asynchronous i3X Beta REST-API for OPC UA.
 
-[![Container Build](https://github.com/AndreasHeine/i3x2ua/actions/workflows/docker-image.yml/badge.svg)](https://github.com/AndreasHeine/i3x2ua/actions/workflows/docker-image.yml) [![Dependabot Updates](https://github.com/AndreasHeine/i3x2ua/actions/workflows/dependabot/dependabot-updates/badge.svg)](https://github.com/AndreasHeine/i3x2ua/actions/workflows/dependabot/dependabot-updates) [![Quality Checks](https://github.com/AndreasHeine/i3x2ua/actions/workflows/quality.yml/badge.svg)](https://github.com/AndreasHeine/i3x2ua/actions/workflows/quality.yml)
+[![Container Build](https://github.com/AndreasHeine/i3x2ua/actions/workflows/docker-image.yml/badge.svg)](https://github.com/AndreasHeine/i3x2ua/actions/workflows/docker-image.yml) [![Quality Checks](https://github.com/AndreasHeine/i3x2ua/actions/workflows/quality.yml/badge.svg)](https://github.com/AndreasHeine/i3x2ua/actions/workflows/quality.yml) [![Dependabot Updates](https://github.com/AndreasHeine/i3x2ua/actions/workflows/dependabot/dependabot-updates/badge.svg)](https://github.com/AndreasHeine/i3x2ua/actions/workflows/dependabot/dependabot-updates) [![Dependency Graph](https://github.com/AndreasHeine/i3x2ua/actions/workflows/dependabot/update-graph/badge.svg)](https://github.com/AndreasHeine/i3x2ua/actions/workflows/dependabot/update-graph)
 
 ![i3X Logo](img/i3X_logo.png)
 

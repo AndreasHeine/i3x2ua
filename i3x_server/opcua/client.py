@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from time import perf_counter
 from typing import Any, Awaitable, Callable, Protocol
 
@@ -30,6 +30,17 @@ class OpcUaObjectTypeInfo:
     browse_name: str
     display_name: str
     properties: dict[str, str | None]
+    members: list["OpcUaObjectTypeMemberInfo"] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class OpcUaObjectTypeMemberInfo:
+    node_id: str
+    browse_name: str
+    display_name: str
+    node_class: str
+    data_type: str | None
+    modelling_rule: str | None
 
 
 @dataclass(slots=True)
@@ -422,6 +433,7 @@ class OpcUaClient:
         root_node_id = root.nodeid.to_string()
         discovered: dict[str, tuple[str | None, str, str]] = {}
         properties_by_type: dict[str, dict[str, str | None]] = {}
+        members_by_type: dict[str, list[OpcUaObjectTypeMemberInfo]] = {}
         stack: list[tuple[Any, str | None]] = [(root, None)]
         visited: set[str] = set()
 
@@ -431,7 +443,7 @@ class OpcUaClient:
                 stack = stack[max_nodes_per_browse:]
 
                 nodes = [node for node, _ in batch_entries]
-                variable_candidates: list[tuple[str, str, Any]] = []
+                member_candidates: list[tuple[str, str, str, str, NodeClass, Any]] = []
 
                 browsed = await self._browse_children_descriptions(nodes, max_nodes_per_browse)
                 for parent_node, refs in browsed:
@@ -454,17 +466,29 @@ class OpcUaClient:
                             )
                             continue
 
-                        # For schema projection we only need direct Variable children of ObjectTypes.
-                        if parent_node_id != root_node_id and ref.NodeClass == NodeClass.Variable:
+                        # Collect direct declarations from ObjectTypes for generic schema projection.
+                        if parent_node_id != root_node_id and ref.NodeClass in {NodeClass.Variable, NodeClass.Object}:
                             child_node = self._client.get_node(ref.NodeId)
                             property_name = ref.BrowseName.Name or child_node_id
-                            variable_candidates.append((parent_node_id, property_name, child_node))
+                            display_name = ref.DisplayName.Text or property_name
+                            member_candidates.append(
+                                (parent_node_id, child_node_id, property_name, display_name, ref.NodeClass, child_node)
+                            )
 
-                if variable_candidates:
-                    data_types = await self._read_data_types_limited(variable_candidates)
-                    for parent_id, property_name, data_type in data_types:
-                        properties = properties_by_type.setdefault(parent_id, {})
-                        properties[property_name] = data_type
+                if member_candidates:
+                    member_infos = await self._read_object_type_members_limited(member_candidates)
+                    for parent_id, member_info in member_infos:
+                        if member_info.node_class.lower() == "variable":
+                            properties = properties_by_type.setdefault(parent_id, {})
+                            properties[member_info.browse_name] = member_info.data_type
+
+                        members = members_by_type.setdefault(parent_id, [])
+                        members.append(member_info)
+
+            for type_node_id, members in members_by_type.items():
+                # Keep response stable when servers expose duplicate declaration names.
+                unique_by_name = {member.browse_name: member for member in members}
+                members_by_type[type_node_id] = list(unique_by_name.values())
 
             output = [
                 OpcUaObjectTypeInfo(
@@ -473,6 +497,7 @@ class OpcUaClient:
                     browse_name=browse_name,
                     display_name=display_name,
                     properties=properties_by_type.get(node_id, {}),
+                    members=members_by_type.get(node_id, []),
                 )
                 for node_id, (parent_node_id, browse_name, display_name) in discovered.items()
             ]
@@ -519,10 +544,83 @@ class OpcUaClient:
 
         return await asyncio.gather(*[worker(parent_id, property_name, node) for parent_id, property_name, node in entries])
 
+    async def _read_object_type_members_limited(
+        self,
+        entries: list[tuple[str, str, str, str, NodeClass, Any]],
+    ) -> list[tuple[str, OpcUaObjectTypeMemberInfo]]:
+        semaphore = asyncio.Semaphore(self._browse_concurrency)
+
+        async def worker(
+            parent_id: str,
+            node_id: str,
+            browse_name: str,
+            display_name: str,
+            node_class: NodeClass,
+            node: Any,
+        ) -> tuple[str, OpcUaObjectTypeMemberInfo]:
+            async with semaphore:
+                data_type = await self._read_data_type_or_none(node) if node_class == NodeClass.Variable else None
+                modelling_rule = await self._read_modelling_rule_or_none(node)
+                return (
+                    parent_id,
+                    OpcUaObjectTypeMemberInfo(
+                        node_id=node_id,
+                        browse_name=browse_name,
+                        display_name=display_name,
+                        node_class=node_class.name,
+                        data_type=data_type,
+                        modelling_rule=modelling_rule,
+                    ),
+                )
+
+        return await asyncio.gather(
+            *[
+                worker(parent_id, node_id, browse_name, display_name, node_class, node)
+                for parent_id, node_id, browse_name, display_name, node_class, node in entries
+            ]
+        )
+
+    async def _read_modelling_rule_or_none(self, node: Any) -> str | None:
+        try:
+            browsed = await self._browse_references_descriptions(
+                [node],
+                max_nodes_per_browse=1,
+                reference_type_id=ua.ObjectIds.HasModellingRule,
+            )
+            if not browsed:
+                return None
+
+            _, refs = browsed[0]
+            if not refs:
+                return None
+
+            rule_name = refs[0].BrowseName.Name
+            return rule_name or None
+        except Exception:
+            logger.debug(
+                "OPC UA modelling rule read failed endpoint=%s node_id=%s",
+                self._endpoint,
+                node.nodeid.to_string(),
+                exc_info=True,
+            )
+            return None
+
     async def _browse_children_descriptions(
         self,
         nodes: list[Any],
         max_nodes_per_browse: int,
+    ) -> list[tuple[Any, list[ua.ReferenceDescription]]]:
+        return await self._browse_references_descriptions(
+            nodes,
+            max_nodes_per_browse=max_nodes_per_browse,
+            reference_type_id=ua.ObjectIds.HierarchicalReferences,
+        )
+
+    async def _browse_references_descriptions(
+        self,
+        nodes: list[Any],
+        max_nodes_per_browse: int,
+        reference_type_id: int,
     ) -> list[tuple[Any, list[ua.ReferenceDescription]]]:
         if not nodes:
             return []
@@ -534,7 +632,7 @@ class OpcUaClient:
                 desc = ua.BrowseDescription()
                 desc.NodeId = node.nodeid
                 desc.BrowseDirection = ua.BrowseDirection.Forward
-                desc.ReferenceTypeId = ua.NodeId(ua.ObjectIds.HierarchicalReferences)
+                desc.ReferenceTypeId = ua.NodeId(reference_type_id)
                 desc.IncludeSubtypes = True
                 desc.NodeClassMask = ua.NodeClass.Unspecified
                 desc.ResultMask = ua.BrowseResultMask.All

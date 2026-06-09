@@ -17,6 +17,7 @@ from i3x_server.opcua.client import (
     OpcUaNamespaceInfo,
     OpcUaObjectTypeInfo,
 )
+from i3x_server.schemas.objecttype_schema import build_object_type_schema
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
 from i3x_server.subscriptions.service import SubscriptionService
@@ -318,62 +319,33 @@ def _object_type_element_id(
     )
 
 
-def _json_schema_for_opcua_type(data_type: str | None) -> dict[str, Any]:
-    if data_type is None:
-        return {"type": "string"}
-
-    normalized = data_type.lower()
-    if normalized.endswith("i=10") or normalized.endswith("i=11"):
-        return {"type": "number"}
-    if any(normalized.endswith(f"i={idx}") for idx in [2, 3, 4, 5, 6, 7, 8, 9]):
-        return {"type": "integer"}
-    if normalized.endswith("i=13"):
-        return {"type": "string", "format": "date-time"}
-
-    if "boolean" in normalized or normalized.endswith("i=1"):
-        return {"type": "boolean"}
-    if any(token in normalized for token in ["double", "float"]):
-        return {"type": "number"}
-    if any(
-        token in normalized
-        for token in [
-            "sbyte",
-            "byte",
-            "int16",
-            "int32",
-            "int64",
-            "uint16",
-            "uint32",
-            "uint64",
-        ]
-    ):
-        return {"type": "integer"}
-    if "datetime" in normalized:
-        return {"type": "string", "format": "date-time"}
-
-    return {"type": "string"}
-
-
-def _to_object_type(item: OpcUaObjectTypeInfo, namespace_infos: list[OpcUaNamespaceInfo]) -> ObjectTypeResponse:
+def _to_object_type(
+    item: OpcUaObjectTypeInfo,
+    namespace_infos: list[OpcUaNamespaceInfo],
+    object_types_by_node_id: dict[str, OpcUaObjectTypeInfo],
+    element_ids_by_node_id: dict[str, str],
+) -> ObjectTypeResponse:
     namespace_uri = _namespace_uri_for_node_id(item.node_id, namespace_infos)
     element_id = _object_type_element_id(item, namespace_uri)
     source_type_id = item.parent_node_id or item.node_id
-    property_schema = {
-        key: _json_schema_for_opcua_type(value)
-        for key, value in item.properties.items()
-    }
     return ObjectTypeResponse(
         elementId=element_id,
         displayName=item.display_name,
         namespaceUri=namespace_uri,
         sourceTypeId=source_type_id,
-        schema={
-            "type": "object",
-            "title": item.display_name,
-            "properties": property_schema,
-        },
+        schema=build_object_type_schema(item, object_types_by_node_id, element_ids_by_node_id),
         related=None,
     )
+
+
+def _object_type_element_ids_by_node_id(
+    object_types: list[OpcUaObjectTypeInfo],
+    namespace_infos: list[OpcUaNamespaceInfo],
+) -> dict[str, str]:
+    return {
+        item.node_id: _object_type_element_id(item, _namespace_uri_for_node_id(item.node_id, namespace_infos))
+        for item in object_types
+    }
 
 
 def _relationship_type_items() -> list[RelationshipType]:
@@ -502,7 +474,12 @@ async def get_object_types_v1(
             {"cause": str(exc)},
         ) from exc
 
-    items = [_to_object_type(item, namespace_infos) for item in object_types]
+    object_types_by_node_id = {item.node_id: item for item in object_types}
+    element_ids_by_node_id = _object_type_element_ids_by_node_id(object_types, namespace_infos)
+    items = [
+        _to_object_type(item, namespace_infos, object_types_by_node_id, element_ids_by_node_id)
+        for item in object_types
+    ]
     if namespace_uri:
         items = [item for item in items if item.namespaceUri == namespace_uri]
     return SuccessResponse(result=items)
@@ -524,7 +501,15 @@ async def query_object_types_v1(
             {"cause": str(exc)},
         ) from exc
 
-    indexed = {item.elementId: item for item in (_to_object_type(item, namespace_infos) for item in object_types)}
+    object_types_by_node_id = {item.node_id: item for item in object_types}
+    element_ids_by_node_id = _object_type_element_ids_by_node_id(object_types, namespace_infos)
+    indexed = {
+        item.elementId: item
+        for item in (
+            _to_object_type(item, namespace_infos, object_types_by_node_id, element_ids_by_node_id)
+            for item in object_types
+        )
+    }
     results: list[BulkResultItem[ObjectTypeResponse]] = []
     for element_id in body.elementIds:
         match = indexed.get(element_id)

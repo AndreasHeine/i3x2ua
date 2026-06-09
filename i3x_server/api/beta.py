@@ -985,7 +985,7 @@ async def create_subscription_v1(
     return SuccessResponse(
         result=CreateSubscriptionResponse(
             subscriptionId=created.subscription_id,
-            clientId=created.client_id,
+            clientId=created.client_id or body.clientId,
             displayName=created.display_name,
         )
     )

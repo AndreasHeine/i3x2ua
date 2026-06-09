@@ -1,7 +1,16 @@
 {
   "extends": ["config:recommended"],
   "labels": ["dependencies"],
+  "enabledManagers": ["pep621", "uv", "dockerfile", "custom.regex"],
+  "rangeStrategy": "update-lockfile",
+  "lockFileMaintenance": {
+    "enabled": true
+  },
   "packageRules": [
+    {
+      "matchManagers": ["pep621", "uv"],
+      "groupName": "python dependencies"
+    },
     {
       "matchDatasources": ["docker"],
       "matchUpdateTypes": ["major"],
@@ -10,16 +19,5 @@
     }
   ],
   "customManagers": [
-    {
-      "customType": "regex",
-      "managerFilePatterns": ["/(^|/)(LDS\\.)?Dockerfile$/"],
-      "matchStringsStrategy": "any",
-      "matchStrings": [
-        "\\s\\s(?<package>[a-z0-9][a-z0-9-_]+)=(?<currentValue>[a-z0-9-_.]+)\\s+"
-      ],
-      "versioningTemplate": "loose",
-      "datasourceTemplate": "repology",
-      "depNameTemplate": "alpine_3_23/{{package}}"
-    }
   ]
 }

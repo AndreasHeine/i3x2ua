@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 import time
@@ -7,9 +8,10 @@ from collections.abc import Generator
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from i3x_server.api.beta import _expanded_node_id
@@ -18,6 +20,10 @@ from i3x_server.opcua.client import OpcUaNamespaceInfo, OpcUaSubscriptionCapabil
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
 from i3x_server.subscriptions.service import SubscriptionService
+
+
+def _fastapi_app(client: TestClient) -> FastAPI:
+    return cast(FastAPI, client.app)
 
 
 class FakeOpcUaClient:
@@ -105,6 +111,9 @@ class FakeOpcUaClient:
         results: list[Any] = []
         for node_id in node_ids:
             base = self.values.get(node_id, 1.0)
+            if isinstance(base, (bytes, bytearray, memoryview)):
+                results.append(bytes(base))
+                continue
             value = float(base) + self._reads
             self.values[node_id] = value
             results.append(value)
@@ -347,6 +356,55 @@ def test_beta_history_query(client: TestClient) -> None:
     assert len(payload["results"][0]["result"]["values"]) == 2
 
 
+def test_beta_value_query_serializes_binary_values(client: TestClient) -> None:
+    _fastapi_app(client).state.opcua_client.values["ns=2;s=Temperature"] = b"\xff\x00"
+
+    response = client.post(
+        "/v1/objects/value",
+        json={
+            "elementIds": ["property-abc"],
+            "maxDepth": 1,
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    assert payload["results"][0]["success"] is True
+    assert payload["results"][0]["result"]["value"] == {
+        "encoding": "base64",
+        "data": base64.b64encode(b"\xff\x00").decode("ascii"),
+    }
+
+
+def test_beta_history_query_serializes_binary_values(client: TestClient) -> None:
+    _fastapi_app(client).state.opcua_client.history_values["ns=2;s=Temperature"] = [
+        SimpleNamespace(
+            Value=SimpleNamespace(Value=b"\xff\x00"),
+            StatusCode=SimpleNamespace(name="Good"),
+            SourceTimestamp=datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc),
+            ServerTimestamp=None,
+        )
+    ]
+
+    response = client.post(
+        "/v1/objects/history",
+        json={
+            "elementIds": ["property-abc"],
+            "startTime": "2026-01-01T00:00:00Z",
+            "endTime": "2026-01-02T00:00:00Z",
+            "maxDepth": 1,
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    assert payload["results"][0]["success"] is True
+    assert payload["results"][0]["result"]["values"][0]["value"] == {
+        "encoding": "base64",
+        "data": base64.b64encode(b"\xff\x00").decode("ascii"),
+    }
+
+
 def test_expanded_node_id_does_not_rewrite_non_node_ids() -> None:
     namespaces = [OpcUaNamespaceInfo(uri="http://example.com/default", display_name="Default")]
     assert _expanded_node_id("asset-root", namespaces) == "asset-root"
@@ -443,6 +501,35 @@ def test_beta_subscription_lifecycle(client: TestClient) -> None:
     assert deleted.status_code == 200
     deleted_payload = deleted.json()
     assert deleted_payload["results"][0]["success"] is True
+
+
+def test_beta_subscription_sync_serializes_binary_values(client: TestClient) -> None:
+    created = client.post(
+        "/v1/subscriptions",
+        json={"clientId": "my-app-instance-001", "displayName": "Binary Monitor"},
+    )
+    assert created.status_code == 200
+    subscription_id = created.json()["result"]["subscriptionId"]
+
+    service = _fastapi_app(client).state.subscription_service
+    state = service._subscriptions[subscription_id]
+    service._append_update(state, "ns=2;s=RawBytes", b"\xff\x00")
+
+    synced = client.post(
+        "/v1/subscriptions/sync",
+        json={
+            "clientId": "my-app-instance-001",
+            "subscriptionId": subscription_id,
+            "acknowledgeSequence": 0,
+        },
+    )
+    assert synced.status_code == 200
+    payload = synced.json()
+    assert payload["success"] is True
+    assert payload["result"][0]["value"] == {
+        "encoding": "base64",
+        "data": base64.b64encode(b"\xff\x00").decode("ascii"),
+    }
 
 
 def test_beta_subscription_stream_not_found(client: TestClient) -> None:

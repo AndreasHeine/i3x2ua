@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import re
 from datetime import datetime, timezone
@@ -551,10 +552,28 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _to_json_safe_value(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, datetime):
+        normalized = value
+        if normalized.tzinfo is None:
+            normalized = normalized.replace(tzinfo=timezone.utc)
+        return normalized.astimezone(timezone.utc).isoformat()
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        encoded = base64.b64encode(bytes(value)).decode("ascii")
+        return {"encoding": "base64", "data": encoded}
+    if isinstance(value, (list, tuple, set)):
+        return [_to_json_safe_value(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _to_json_safe_value(item) for key, item in value.items()}
+    return str(value)
+
+
 def _vqt_from_any(value: Any) -> VQT:
     if value is None:
         return VQT(value=None, quality="GoodNoData", timestamp=_now_iso())
-    return VQT(value=value, quality="Good", timestamp=_now_iso())
+    return VQT(value=_to_json_safe_value(value), quality="Good", timestamp=_now_iso())
 
 
 def _collect_value_component_nodes(model: BuildResult, root: ModelNode, max_depth: int) -> list[ModelNode]:
@@ -651,7 +670,7 @@ def _to_vqt_from_history_value(data_value: Any) -> VQT:
         or getattr(data_value, "timestamp", None)
     )
     quality = _normalize_quality(getattr(data_value, "StatusCode", None) or getattr(data_value, "status", None))
-    return VQT(value=value, quality=quality, timestamp=_normalize_timestamp(timestamp))
+    return VQT(value=_to_json_safe_value(value), quality=quality, timestamp=_normalize_timestamp(timestamp))
 
 
 @router.get("/info", response_model=SuccessResponse[ServerInfo])
@@ -1247,7 +1266,7 @@ async def stream_subscription_v1(
                 {
                     "sequenceNumber": item.sequence_number,
                     "elementId": _expanded_node_id(item.element_id, namespace_infos),
-                    "value": item.value,
+                    "value": _to_json_safe_value(item.value),
                     "quality": item.quality,
                     "timestamp": item.timestamp,
                 }
@@ -1294,7 +1313,7 @@ async def sync_subscription_v1(
             SyncUpdate(
                 sequenceNumber=item.sequence_number,
                 elementId=_expanded_node_id(item.element_id, namespace_infos),
-                value=item.value,
+                value=_to_json_safe_value(item.value),
                 quality=item.quality,
                 timestamp=item.timestamp,
             )

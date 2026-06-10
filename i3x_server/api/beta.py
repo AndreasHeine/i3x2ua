@@ -808,7 +808,8 @@ async def get_objects_v1(
             or node.kind == type_element_id
             or (
                 node.kind != "property"
-                and object_type_element_ids_by_node_id.get(node.source_type_id or node.source_node_id) == type_element_id
+                and object_type_element_ids_by_node_id.get(node.source_type_id or node.source_node_id)
+                == type_element_id
             )
         ]
     return SuccessResponse(

@@ -31,27 +31,26 @@ def _configure_logging() -> None:
         level=level,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
+    logging.getLogger("asyncua").setLevel(logging.WARNING)
 
 
 async def _run_model_preload(app: FastAPI) -> None:
     try:
         started = asyncio.get_running_loop().time()
         app.state.opcua_client.reset_runtime_metrics()
+        build_started = asyncio.get_running_loop().time()
         preload = await app.state.model_builder.build()
-        try:
-            namespace_infos = await app.state.opcua_client.get_namespace_infos()
-            logger.info("Namespace preload finished count=%d", len(namespace_infos))
-        except Exception:
-            logger.warning("Namespace preload failed; continuing with model preload result", exc_info=True)
+        build_duration_s = asyncio.get_running_loop().time() - build_started
         app.state.model_cache = preload
         metrics = app.state.opcua_client.snapshot_runtime_metrics()
         duration_s = asyncio.get_running_loop().time() - started
         logger.info(
-            "Model preload finished nodes=%d roots=%d properties=%d actions=%d duration_s=%.3f",
+            "Model preload finished nodes=%d roots=%d properties=%d actions=%d build_s=%.3f total_s=%.3f",
             len(preload.nodes_by_id),
             len(preload.root_ids),
             len(preload.property_to_node),
             len(preload.action_to_method),
+            build_duration_s,
             duration_s,
         )
         logger.info(
@@ -85,6 +84,7 @@ async def _run_model_preload(app: FastAPI) -> None:
             metrics.object_type_reads,
             metrics.object_type_count_last,
         )
+        logger.info("Namespace metadata preload skipped at startup; loading on first request")
     except Exception:
         logger.exception("Model preload failed")
         if settings.fail_startup_on_model_preload_error and settings.model_preload_blocking:

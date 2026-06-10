@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import logging
+from time import perf_counter
+
 from i3x_server.model.mapper import map_node, stable_i3x_id
 from i3x_server.opcua.client import OpcUaClientProtocol, OpcUaNodeInfo
 from i3x_server.schemas.i3x import ModelNode, NodeKind
 from i3x_server.schemas.state import BuildResult
+
+logger = logging.getLogger(__name__)
 
 
 class ModelBuilder:
@@ -11,7 +16,11 @@ class ModelBuilder:
         self._opcua_client = opcua_client
 
     async def build(self) -> BuildResult:
+        started = perf_counter()
+        browse_started = perf_counter()
         opc_nodes = await self._opcua_client.browse_tree()
+        browse_duration_s = perf_counter() - browse_started
+        map_started = perf_counter()
         by_source_node = {node.node_id: node for node in opc_nodes}
 
         child_sources_by_parent: dict[str, list[str]] = {}
@@ -46,13 +55,22 @@ class ModelBuilder:
                 if parent is not None:
                     action_to_method[mapped.id] = (parent, opc_node.node_id)
 
-        return BuildResult(
+        result = BuildResult(
             nodes_by_id={key: value for key, value in nodes_by_id.items()},
             root_ids=root_ids,
             children_by_id=children_by_id,
             property_to_node=property_to_node,
             action_to_method=action_to_method,
         )
+        logger.info(
+            "Model build phases browse_s=%.3f map_s=%.3f total_s=%.3f source_nodes=%d model_nodes=%d",
+            browse_duration_s,
+            perf_counter() - map_started,
+            perf_counter() - started,
+            len(opc_nodes),
+            len(result.nodes_by_id),
+        )
+        return result
 
 
 def _kind_for_node(node: OpcUaNodeInfo) -> NodeKind:

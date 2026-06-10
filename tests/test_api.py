@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 
 from i3x_server.api.beta import _expanded_node_id
 from i3x_server.main import create_app
-from i3x_server.opcua.client import OpcUaSubscriptionCapabilities
+from i3x_server.opcua.client import OpcUaNamespaceInfo, OpcUaSubscriptionCapabilities
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
 from i3x_server.subscriptions.service import SubscriptionService
@@ -42,11 +42,11 @@ class FakeOpcUaClient:
         self._reads = 0
         self._listeners: list[Any] = []
 
-    async def get_namespace_infos(self) -> list[SimpleNamespace]:
+    async def get_namespace_infos(self) -> list[OpcUaNamespaceInfo]:
         return [
-            SimpleNamespace(uri="http://example.com/i3x", display_name="I3X"),
-            SimpleNamespace(uri="http://example.com/custom", display_name="Custom"),
-            SimpleNamespace(uri="http://example.com/runtime", display_name="Runtime"),
+            OpcUaNamespaceInfo(uri="http://example.com/i3x", display_name="I3X"),
+            OpcUaNamespaceInfo(uri="http://example.com/custom", display_name="Custom"),
+            OpcUaNamespaceInfo(uri="http://example.com/runtime", display_name="Runtime"),
         ]
 
     async def get_object_types(self) -> list[SimpleNamespace]:
@@ -312,14 +312,14 @@ def test_beta_history_query(client: TestClient) -> None:
 
 
 def test_expanded_node_id_does_not_rewrite_non_node_ids() -> None:
-    namespaces = [SimpleNamespace(uri="http://example.com/default", display_name="Default")]
+    namespaces = [OpcUaNamespaceInfo(uri="http://example.com/default", display_name="Default")]
     assert _expanded_node_id("asset-root", namespaces) == "asset-root"
 
 
 def test_expanded_node_id_rewrites_node_id_strings() -> None:
     namespaces = [
-        SimpleNamespace(uri="http://example.com/default", display_name="Default"),
-        SimpleNamespace(uri="http://example.com/custom", display_name="Custom"),
+        OpcUaNamespaceInfo(uri="http://example.com/default", display_name="Default"),
+        OpcUaNamespaceInfo(uri="http://example.com/custom", display_name="Custom"),
     ]
     assert _expanded_node_id("ns=1;i=1001", namespaces) == "nsu=http://example.com/custom;i=1001"
 

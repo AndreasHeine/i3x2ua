@@ -12,6 +12,7 @@ from typing import Any, Protocol
 from asyncua import ua
 from asyncua.client.client import Client
 from asyncua.ua import NodeClass
+from asyncua.ua.attribute_ids import AttributeIds
 from asyncua.ua.object_ids import ObjectIds
 
 logger = logging.getLogger(__name__)
@@ -190,26 +191,42 @@ class OpcUaClient:
 
     async def connect(self) -> None:
         started = perf_counter()
+        security_started = perf_counter()
         await self._configure_security_if_needed()
+        security_duration_s = perf_counter() - security_started
         logger.info(
             "OPC UA connect started endpoint=%s auth_mode=%s security_mode=%s",
             self._endpoint,
             "userpass" if self._using_user_auth else "anonymous",
             self._security_mode,
         )
+        session_started = perf_counter()
         await self._client.connect(
             auto_reconnect=True,
             reconnect_max_delay=30.0,
         )
+        session_duration_s = perf_counter() - session_started
+        typedef_started = perf_counter()
         await self.load_additional_typedefinitions()
+        typedef_duration_s = perf_counter() - typedef_started
+        limits_started = perf_counter()
         self._limits_cache = await self.get_operational_limits()
+        limits_duration_s = perf_counter() - limits_started
         logger.info(
             "OPC UA limits endpoint=%s max_nodes_per_browse=%s max_nodes_per_read=%s",
             self._endpoint,
             self._limits_cache.max_nodes_per_browse,
             self._limits_cache.max_nodes_per_read,
         )
-        logger.info("OPC UA connect finished endpoint=%s duration_s=%.3f", self._endpoint, perf_counter() - started)
+        logger.info(
+            "OPC UA connect phases endpoint=%s security_s=%.3f session_s=%.3f typedef_s=%.3f limits_s=%.3f total_s=%.3f",
+            self._endpoint,
+            security_duration_s,
+            session_duration_s,
+            typedef_duration_s,
+            limits_duration_s,
+            perf_counter() - started,
+        )
 
     async def load_additional_typedefinitions(self) -> None:
         started = perf_counter()
@@ -332,6 +349,93 @@ class OpcUaClient:
         )
 
     async def _read_node_infos_limited(self, entries: list[tuple[Any, str | None]]) -> list[OpcUaNodeInfo]:
+        if not entries:
+            return []
+
+        limits = await self.get_operational_limits()
+        max_nodes = limits.max_nodes_per_read or len(entries)
+        batch_size = max(1, min(max_nodes, len(entries)))
+        output: list[OpcUaNodeInfo] = []
+
+        for entry_batch in _chunked_nodes(entries, batch_size):
+            nodes = [node for node, _ in entry_batch]
+            parent_by_node_id = {node.nodeid.to_string(): parent_node_id for node, parent_node_id in entry_batch}
+
+            try:
+                browse_names = await self._read_attribute_batch(nodes, AttributeIds.BrowseName)
+                display_names = await self._read_attribute_batch(nodes, AttributeIds.DisplayName)
+                node_classes = await self._read_attribute_batch(nodes, AttributeIds.NodeClass)
+            except Exception:
+                logger.warning(
+                    "OPC UA batch node read failed endpoint=%s batch_size=%d; falling back to per-node reads",
+                    self._endpoint,
+                    len(entry_batch),
+                    exc_info=True,
+                )
+                output.extend(await self._read_node_infos_fallback(entry_batch))
+                continue
+
+            variable_nodes: list[Any] = []
+            object_or_variable_nodes: list[Any] = []
+            object_nodes: list[Any] = []
+            mandatory_by_node_id: dict[str, tuple[str, str, NodeClass]] = {}
+            fallback_entries: list[tuple[Any, str | None]] = []
+
+            for index, node in enumerate(nodes):
+                node_id = node.nodeid.to_string()
+                browse_name_value = self._extract_attribute_value(browse_names[index])
+                display_name_value = self._extract_attribute_value(display_names[index])
+                node_class_value = self._extract_attribute_value(node_classes[index])
+                node_class = self._coerce_node_class(node_class_value)
+
+                if node_class is None or browse_name_value is None or display_name_value is None:
+                    fallback_entries.append((node, parent_by_node_id[node_id]))
+                    continue
+
+                browse_name = getattr(browse_name_value, "Name", None)
+                display_name = getattr(display_name_value, "Text", None)
+                if not isinstance(browse_name, str) or not isinstance(display_name, str):
+                    fallback_entries.append((node, parent_by_node_id[node_id]))
+                    continue
+
+                mandatory_by_node_id[node_id] = (browse_name, display_name, node_class)
+                if node_class == NodeClass.Variable:
+                    variable_nodes.append(node)
+                    object_or_variable_nodes.append(node)
+                elif node_class == NodeClass.Object:
+                    object_nodes.append(node)
+                    object_or_variable_nodes.append(node)
+
+            data_types_by_node_id = await self._read_optional_node_ids(variable_nodes, AttributeIds.DataType)
+            type_definitions_by_node_id = await self._read_type_definitions(object_or_variable_nodes)
+            event_notifiers_by_node_id = await self._read_optional_scalars(object_nodes, AttributeIds.EventNotifier)
+
+            for node in nodes:
+                node_id = node.nodeid.to_string()
+                mandatory = mandatory_by_node_id.get(node_id)
+                if mandatory is None:
+                    continue
+
+                browse_name, display_name, node_class = mandatory
+                output.append(
+                    OpcUaNodeInfo(
+                        node_id=node_id,
+                        parent_node_id=parent_by_node_id[node_id],
+                        browse_name=browse_name,
+                        display_name=display_name,
+                        node_class=node_class.name,
+                        data_type=data_types_by_node_id.get(node_id),
+                        type_definition_id=type_definitions_by_node_id.get(node_id),
+                        event_notifier=bool(event_notifiers_by_node_id.get(node_id, False)),
+                    )
+                )
+
+            if fallback_entries:
+                output.extend(await self._read_node_infos_fallback(fallback_entries))
+
+        return output
+
+    async def _read_node_infos_fallback(self, entries: list[tuple[Any, str | None]]) -> list[OpcUaNodeInfo]:
         semaphore = asyncio.Semaphore(self._browse_concurrency)
 
         async def worker(node: Any, parent_node_id: str | None) -> OpcUaNodeInfo | None:
@@ -349,6 +453,116 @@ class OpcUaClient:
 
         raw = await asyncio.gather(*[worker(node, parent_node_id) for node, parent_node_id in entries])
         return [item for item in raw if item is not None]
+
+    async def _read_attribute_batch(self, nodes: list[Any], attr: AttributeIds) -> list[ua.DataValue]:
+        if not nodes:
+            return []
+
+        self._runtime_metrics.read_calls += 1
+        self._runtime_metrics.read_nodes += len(nodes)
+        try:
+            return await self._client.read_attributes(nodes, attr=attr)
+        except Exception as exc:
+            if not self._should_retry_after_disconnect(exc):
+                raise
+            logger.warning(
+                "OPC UA batch attribute read retry after reconnect endpoint=%s attr=%s batch_size=%d",
+                self._endpoint,
+                int(attr),
+                len(nodes),
+            )
+            await self._reconnect()
+            retry_nodes = [self._client.get_node(node.nodeid) for node in nodes]
+            return await self._client.read_attributes(retry_nodes, attr=attr)
+
+    async def _read_optional_node_ids(
+        self,
+        nodes: list[Any],
+        attr: AttributeIds,
+        fallback_attr: AttributeIds | None = None,
+    ) -> dict[str, str | None]:
+        if not nodes:
+            return {}
+
+        values = await self._read_attribute_batch(nodes, attr)
+        output: dict[str, str | None] = {}
+        fallback_nodes: list[Any] = []
+
+        for node, value in zip(nodes, values, strict=True):
+            attribute_value = self._extract_attribute_value(value)
+            node_id = node.nodeid.to_string()
+            if attribute_value is None:
+                if fallback_attr is not None:
+                    fallback_nodes.append(node)
+                continue
+
+            if hasattr(attribute_value, "to_string"):
+                output[node_id] = attribute_value.to_string()
+            else:
+                output[node_id] = str(attribute_value)
+
+        if fallback_attr is not None and fallback_nodes:
+            fallback_values = await self._read_attribute_batch(fallback_nodes, fallback_attr)
+            for node, value in zip(fallback_nodes, fallback_values, strict=True):
+                attribute_value = self._extract_attribute_value(value)
+                if attribute_value is None:
+                    continue
+                if hasattr(attribute_value, "to_string"):
+                    output[node.nodeid.to_string()] = attribute_value.to_string()
+                else:
+                    output[node.nodeid.to_string()] = str(attribute_value)
+
+        return output
+
+    async def _read_optional_scalars(self, nodes: list[Any], attr: AttributeIds) -> dict[str, Any]:
+        if not nodes:
+            return {}
+
+        values = await self._read_attribute_batch(nodes, attr)
+        output: dict[str, Any] = {}
+        for node, value in zip(nodes, values, strict=True):
+            attribute_value = self._extract_attribute_value(value)
+            if attribute_value is None:
+                continue
+            output[node.nodeid.to_string()] = attribute_value
+        return output
+
+    async def _read_type_definitions(self, nodes: list[Any]) -> dict[str, str | None]:
+        if not nodes:
+            return {}
+
+        limits = await self.get_operational_limits()
+        max_nodes_per_browse = limits.max_nodes_per_browse or len(nodes)
+        browsed = await self._browse_references_descriptions(
+            nodes,
+            max_nodes_per_browse=max_nodes_per_browse,
+            reference_type_id=ObjectIds.HasTypeDefinition,
+        )
+
+        output: dict[str, str | None] = {}
+        for node, refs in browsed:
+            if not refs:
+                continue
+            output[node.nodeid.to_string()] = refs[0].NodeId.to_string()
+        return output
+
+    def _extract_attribute_value(self, value: ua.DataValue) -> Any | None:
+        status_code = value.StatusCode
+        if status_code is not None and not status_code.is_good():
+            return None
+        if value.Value is None:
+            return None
+        return value.Value.Value
+
+    def _coerce_node_class(self, value: Any) -> NodeClass | None:
+        if isinstance(value, NodeClass):
+            return value
+        if value is None:
+            return None
+        try:
+            return NodeClass(int(value))
+        except (TypeError, ValueError):
+            return None
 
     async def get_operational_limits(self) -> OpcUaOperationalLimits:
         if self._limits_cache is not None:
@@ -459,6 +673,7 @@ class OpcUaClient:
                 return cached_value
 
         started = perf_counter()
+        cold_build = self._runtime_metrics.namespace_info_builds == 0
         uris = await self.get_namespaces()
         display_by_uri: dict[str, str] = {}
 
@@ -522,10 +737,11 @@ class OpcUaClient:
         self._runtime_metrics.namespace_info_builds += 1
         self._runtime_metrics.namespace_info_count_last = len(infos)
         logger.info(
-            "OPC UA namespace infos built endpoint=%s count=%d duration_s=%.3f",
+            "OPC UA namespace infos built endpoint=%s count=%d duration_s=%.3f cold_build=%s",
             self._endpoint,
             len(infos),
             perf_counter() - started,
+            cold_build,
         )
         return infos
 

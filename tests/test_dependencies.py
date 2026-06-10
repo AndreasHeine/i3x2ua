@@ -95,7 +95,7 @@ async def test_get_or_build_model_builds_and_sets_cache() -> None:
     request = _request_with_state(state)
     result = await get_or_build_model(request)
     assert result is built
-    assert state.model_cache is built
+    assert request.app.state.model_cache is built
     assert builder.calls == 1
 
 
@@ -103,17 +103,18 @@ async def test_get_or_build_model_builds_and_sets_cache() -> None:
 async def test_get_or_build_model_waits_for_preload_task() -> None:
     cached = _build_result()
 
-    async def preload() -> None:
-        await asyncio.sleep(0)
-        state.model_cache = cached
-
     state = SimpleNamespace(
         model_preload_task=None,
         model_cache=None,
         model_lock=asyncio.Lock(),
         model_builder=object(),
     )
-    state.model_preload_task = asyncio.create_task(preload())
     request = _request_with_state(state)
+
+    async def preload() -> None:
+        await asyncio.sleep(0)
+        request.app.state.model_cache = cached
+
+    request.app.state.model_preload_task = asyncio.create_task(preload())
     result = await get_or_build_model(request)
     assert result is cached

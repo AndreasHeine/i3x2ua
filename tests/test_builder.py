@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 
 from i3x_server.model.builder import ModelBuilder, _kind_for_node
 from i3x_server.model.mapper import infer_kind, map_type, stable_i3x_id
-from i3x_server.opcua.client import OpcUaNodeInfo
+from i3x_server.opcua.client import OpcUaClientProtocol, OpcUaNodeInfo
 
 
 class FakeOpcuaForBuilder:
@@ -45,7 +47,7 @@ class FakeOpcuaForBuilder:
 
 @pytest.mark.asyncio
 async def test_model_builder_build_maps_nodes_children_properties_and_actions() -> None:
-    builder = ModelBuilder(FakeOpcuaForBuilder())
+    builder = ModelBuilder(cast(OpcUaClientProtocol, FakeOpcuaForBuilder()))
     result = await builder.build()
 
     assert len(result.nodes_by_id) == 3

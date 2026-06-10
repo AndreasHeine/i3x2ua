@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -89,13 +89,13 @@ def test_assert_file_exists(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_read_positive_int_and_retry_detection() -> None:
     client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
-    client._client = SimpleNamespace(get_node=lambda _id: _FakeNode(7))
+    cast(Any, client)._client = SimpleNamespace(get_node=lambda _id: _FakeNode(7))
     assert await client._read_positive_int("ns=0;i=1") == 7
 
-    client._client = SimpleNamespace(get_node=lambda _id: _FakeNode(0))
+    cast(Any, client)._client = SimpleNamespace(get_node=lambda _id: _FakeNode(0))
     assert await client._read_positive_int("ns=0;i=1") is None
 
-    client._client = SimpleNamespace(get_node=lambda _id: _FakeNode(error=RuntimeError("boom")))
+    cast(Any, client)._client = SimpleNamespace(get_node=lambda _id: _FakeNode(error=RuntimeError("boom")))
     assert await client._read_positive_int("ns=0;i=1") is None
 
     assert client._should_retry_after_disconnect(RuntimeError("connection is closed")) is True
@@ -106,7 +106,7 @@ async def test_read_positive_int_and_retry_detection() -> None:
 async def test_subscription_wrapper_methods() -> None:
     client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
     fake = _FakeClient()
-    client._client = fake
+    cast(Any, client)._client = fake
 
     created = await client.create_datachange_subscription(500.0, handler=object())
     assert created.interval == 500.0
@@ -123,13 +123,13 @@ async def test_subscription_wrapper_methods() -> None:
 @pytest.mark.asyncio
 async def test_configure_security_none_and_missing_config(tmp_path: Path) -> None:
     client = OpcUaClient(endpoint="opc.tcp://localhost:4840", security_mode="None")
-    client._client = _FakeClient()
+    cast(Any, client)._client = _FakeClient()
     await client._configure_security_if_needed()
     assert client._using_security is False
 
     with pytest.raises(ValueError):
         bad = OpcUaClient(endpoint="opc.tcp://localhost:4840", security_mode="Sign")
-        bad._client = _FakeClient()
+        cast(Any, bad)._client = _FakeClient()
         await bad._configure_security_if_needed()
 
     cert = tmp_path / "client-cert.pem"
@@ -145,18 +145,19 @@ async def test_configure_security_none_and_missing_config(tmp_path: Path) -> Non
         client_key_path=str(key),
         client_key_password="pw",
     )
-    secure._client = _FakeClient()
+    secure_fake = _FakeClient()
+    cast(Any, secure)._client = secure_fake
     await secure._configure_security_if_needed()
     assert secure._using_security is True
-    assert secure._client.security_string is not None
-    assert "Basic256Sha256,Sign" in secure._client.security_string
+    assert secure_fake.security_string is not None
+    assert "Basic256Sha256,Sign" in secure_fake.security_string
 
 
 @pytest.mark.asyncio
-async def test_reconnect_calls_listeners_even_if_one_fails() -> None:
+async def test_reconnect_calls_listeners_even_if_one_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
     fake = _FakeClient()
-    client._client = fake
+    cast(Any, client)._client = fake
 
     called: list[str] = []
 
@@ -173,8 +174,8 @@ async def test_reconnect_calls_listeners_even_if_one_fails() -> None:
     async def _noop() -> None:
         return None
 
-    client.load_additional_typedefinitions = _noop
-    client._configure_security_if_needed = _noop
+    monkeypatch.setattr(client, "load_additional_typedefinitions", _noop)
+    monkeypatch.setattr(client, "_configure_security_if_needed", _noop)
     await client._reconnect()
 
     assert fake.connected is True

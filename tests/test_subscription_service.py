@@ -3,13 +3,14 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
+from i3x_server.opcua.client import OpcUaClientProtocol, OpcUaSubscriptionCapabilities
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
-from i3x_server.subscriptions.service import SubscriptionService, _min_positive
+from i3x_server.subscriptions.service import SubscriptionService, _SubscriptionState, _min_positive
 
 
 class FakeOpcUaClient:
@@ -90,7 +91,7 @@ def _model() -> BuildResult:
 
 @pytest.mark.asyncio
 async def test_subscription_lifecycle_sync_wait_and_delete() -> None:
-    service = SubscriptionService(FakeOpcUaClient(), interval_seconds=1)
+    service = SubscriptionService(cast(OpcUaClientProtocol, FakeOpcUaClient()), interval_seconds=1)
     created = await service.create_subscription(client_id="c1", display_name="s1")
     subscription_id = created.subscription_id
 
@@ -112,7 +113,7 @@ async def test_subscription_lifecycle_sync_wait_and_delete() -> None:
 
 @pytest.mark.asyncio
 async def test_unregister_unknown_and_updates_after_missing() -> None:
-    service = SubscriptionService(FakeOpcUaClient(), interval_seconds=1)
+    service = SubscriptionService(cast(OpcUaClientProtocol, FakeOpcUaClient()), interval_seconds=1)
     model = _model()
     assert await service.unregister_items("c1", "missing", ["asset-root"], model=model) is False
     assert await service.updates_after("missing", 0) is None
@@ -120,7 +121,7 @@ async def test_unregister_unknown_and_updates_after_missing() -> None:
 
 @pytest.mark.asyncio
 async def test_handle_datachange_resolves_client_handle_mapping() -> None:
-    service = SubscriptionService(FakeOpcUaClient(), interval_seconds=1)
+    service = SubscriptionService(cast(OpcUaClientProtocol, FakeOpcUaClient()), interval_seconds=1)
     created = await service.create_subscription(client_id="c1", display_name=None)
     subscription_id = created.subscription_id
 
@@ -138,7 +139,7 @@ async def test_handle_datachange_resolves_client_handle_mapping() -> None:
 @pytest.mark.asyncio
 async def test_polling_path_collects_updates() -> None:
     client = FakeOpcUaClient()
-    service = SubscriptionService(client, interval_seconds=1)
+    service = SubscriptionService(cast(OpcUaClientProtocol, client), interval_seconds=1)
     created = await service.create_subscription(client_id="c1", display_name="poll")
     subscription_id = created.subscription_id
 
@@ -161,7 +162,7 @@ async def test_polling_path_collects_updates() -> None:
 
 @pytest.mark.asyncio
 async def test_must_use_polling_limits_and_helpers() -> None:
-    service = SubscriptionService(FakeOpcUaClient(), interval_seconds=1)
+    service = SubscriptionService(cast(OpcUaClientProtocol, FakeOpcUaClient()), interval_seconds=1)
     created = await service.create_subscription(client_id="c1", display_name=None)
     subscription_id = created.subscription_id
     model = _model()
@@ -171,7 +172,7 @@ async def test_must_use_polling_limits_and_helpers() -> None:
         state = service._subscriptions[subscription_id]
         state.monitored_node_ids = {"a", "b", "c"}
 
-    caps = SimpleNamespace(
+    caps = OpcUaSubscriptionCapabilities(
         max_monitored_items_per_call=1,
         max_subscriptions=1,
         max_monitored_items=2,
@@ -184,7 +185,7 @@ async def test_must_use_polling_limits_and_helpers() -> None:
 
 
 def test_collect_property_source_mappings_depth_limit() -> None:
-    service = SubscriptionService(FakeOpcUaClient(), interval_seconds=1)
+    service = SubscriptionService(cast(OpcUaClientProtocol, FakeOpcUaClient()), interval_seconds=1)
     model = _model()
     mappings_depth1 = service._collect_property_source_mappings(model, model.nodes_by_id["asset-root"], max_depth=1)
     mappings_unbounded = service._collect_property_source_mappings(
@@ -197,12 +198,18 @@ def test_collect_property_source_mappings_depth_limit() -> None:
 
 
 def test_append_update_deduplicates_same_value() -> None:
-    service = SubscriptionService(FakeOpcUaClient(), interval_seconds=1)
-    state = SimpleNamespace(
+    service = SubscriptionService(cast(OpcUaClientProtocol, FakeOpcUaClient()), interval_seconds=1)
+    state = _SubscriptionState(
+        subscription_id="sub-1",
+        client_id="c1",
+        display_name=None,
+        monitored_objects={},
         updates=[],
         sequence_number=0,
         node_to_element_id={"ns=2;s=Temperature": "prop-a"},
         update_event=asyncio.Event(),
+        monitored_node_ids=set(),
+        handle_to_node_id={},
     )
     service._append_update(state, "ns=2;s=Temperature", 1.0)
     service._append_update(state, "ns=2;s=Temperature", 1.0)

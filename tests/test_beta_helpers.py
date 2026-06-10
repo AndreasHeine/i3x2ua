@@ -129,6 +129,8 @@ def test_parse_iso_and_history_range_validation() -> None:
         maxDepth=1,
     )
     parsed_start, parsed_end = beta._parse_history_time_range(body)
+    assert parsed_start is not None
+    assert parsed_end is not None
     assert parsed_start <= parsed_end
 
     with pytest.raises(HTTPException):

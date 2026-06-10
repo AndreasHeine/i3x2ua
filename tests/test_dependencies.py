@@ -19,7 +19,8 @@ from i3x_server.schemas.state import BuildResult
 
 def _request_with_state(state: SimpleNamespace) -> Request:
     app = FastAPI()
-    app.state = state
+    for key, value in vars(state).items():
+        setattr(app.state, key, value)
     return Request({"type": "http", "app": app})
 
 

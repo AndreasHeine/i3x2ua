@@ -8,6 +8,7 @@ class BuildResult:
     nodes_by_id: dict[str, ModelNode]
     root_ids: list[str]
     children_by_id: dict[str, list[str]]
+    instances_by_type_id: dict[str, list[str]]
     property_to_node: dict[str, str]
     action_to_method: dict[str, tuple[str, str]]
 

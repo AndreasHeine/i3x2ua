@@ -135,6 +135,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             nodes_by_id={},
             root_ids=[],
             children_by_id={},
+            instances_by_type_id={},
             property_to_node={},
             action_to_method={},
         )

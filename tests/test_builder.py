@@ -54,6 +54,7 @@ async def test_model_builder_build_maps_nodes_children_properties_and_actions() 
     assert len(result.root_ids) == 1
     assert len(result.property_to_node) == 1
     assert len(result.action_to_method) == 1
+    assert result.instances_by_type_id == {"ns=1;i=1001": [result.root_ids[0]]}
 
     property_id = next(iter(result.property_to_node.keys()))
     action_id = next(iter(result.action_to_method.keys()))

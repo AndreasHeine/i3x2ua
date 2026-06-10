@@ -177,6 +177,15 @@ def client() -> Generator[TestClient, None, None]:
                     source_node_id="ns=2;s=Machine",
                     source_type_id="ns=1;i=1001",
                 ),
+                "sensor-root": ModelNode(
+                    id="sensor-root",
+                    name="Sensor",
+                    kind="asset",
+                    type=None,
+                    children=[],
+                    source_node_id="ns=2;s=Sensor",
+                    source_type_id="ns=1;i=1002",
+                ),
                 property_id: ModelNode(
                     id=property_id,
                     name="Temperature",
@@ -194,8 +203,9 @@ def client() -> Generator[TestClient, None, None]:
                     source_node_id="ns=2;s=Reset",
                 ),
             },
-            root_ids=[root_id],
-            children_by_id={root_id: [property_id, action_id], property_id: [], action_id: []},
+            root_ids=[root_id, "sensor-root"],
+            children_by_id={root_id: [property_id, action_id], "sensor-root": [], property_id: [], action_id: []},
+            instances_by_type_id={"ns=1;i=1001": [root_id], "ns=1;i=1002": ["sensor-root"]},
             property_to_node={property_id: "ns=2;s=Temperature"},
             action_to_method={action_id: ("ns=2;s=Machine", "ns=2;s=Reset")},
         )
@@ -263,7 +273,14 @@ def test_beta_objecttypes(client: TestClient) -> None:
     assert first["schema"]["properties"]["temperature"]["x-opcua-description"] == "Current measured temperature"
     assert first["schema"]["properties"]["temperature"]["x-opcua-modellingRule"] == "Mandatory"
     assert first["schema"]["properties"]["temperature"]["x-opcua-value"] == 42.5
-    assert first["related"] is None
+    assert isinstance(first["related"], dict)
+    assert [item["elementId"] for item in first["related"]["instances"]] == ["asset-root"]
+    assert first["related"]["instances"][0]["metadata"]["relationships"]["HasChildren"] == [
+        "property-abc",
+        "action-def",
+    ]
+    second = payload["result"][1]
+    assert [item["elementId"] for item in second["related"]["instances"]] == ["sensor-root"]
 
 
 def test_beta_objecttypes_query(client: TestClient) -> None:

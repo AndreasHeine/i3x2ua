@@ -59,6 +59,7 @@ def _sample_model() -> BuildResult:
             prop_a.id: [],
             prop_b.id: [],
         },
+        instances_by_type_id={},
         property_to_node={"prop-a": "ns=2;s=Temperature", "prop-b": "ns=2;s=Pressure"},
         action_to_method={},
     )

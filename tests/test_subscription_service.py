@@ -91,6 +91,7 @@ def _model() -> BuildResult:
         nodes_by_id={root.id: root, child.id: child, prop_a.id: prop_a, prop_b.id: prop_b},
         root_ids=[root.id],
         children_by_id={root.id: [prop_a.id, child.id], child.id: [prop_b.id], prop_a.id: [], prop_b.id: []},
+        instances_by_type_id={},
         property_to_node={prop_a.id: prop_a.source_node_id, prop_b.id: prop_b.source_node_id},
         action_to_method={},
     )

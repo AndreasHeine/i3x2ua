@@ -369,6 +369,7 @@ def _object_type_element_id(
 
 def _to_object_type(
     item: OpcUaObjectTypeInfo,
+    model: BuildResult,
     namespace_infos: list[OpcUaNamespaceInfo],
     object_types_by_node_id: dict[str, OpcUaObjectTypeInfo],
     element_ids_by_node_id: dict[str, str],
@@ -376,13 +377,14 @@ def _to_object_type(
     namespace_uri = _namespace_uri_for_node_id(item.node_id, namespace_infos)
     element_id = _object_type_element_id(item, namespace_uri)
     source_type_id = _expanded_node_id(item.parent_node_id or item.node_id, namespace_infos)
+    related_instances = _object_type_related_instances(model, item.node_id, namespace_infos, element_ids_by_node_id)
     return ObjectTypeResponse(
         elementId=element_id,
         displayName=item.display_name,
         namespaceUri=namespace_uri,
         sourceTypeId=source_type_id,
         schema=build_object_type_schema(item, object_types_by_node_id, element_ids_by_node_id, namespace_infos),
-        related=None,
+        related={"instances": related_instances} if related_instances else None,
     )
 
 
@@ -394,6 +396,30 @@ def _object_type_element_ids_by_node_id(
         item.node_id: _object_type_element_id(item, _namespace_uri_for_node_id(item.node_id, namespace_infos))
         for item in object_types
     }
+
+
+def _object_type_related_instances(
+    model: BuildResult,
+    type_node_id: str,
+    namespace_infos: list[OpcUaNamespaceInfo],
+    element_ids_by_node_id: dict[str, str],
+) -> list[ObjectInstanceResponse]:
+    instances_by_type_id = getattr(model, "instances_by_type_id", {})
+    related: list[ObjectInstanceResponse] = []
+    for instance_id in instances_by_type_id.get(type_node_id, []):
+        node = model.nodes_by_id.get(instance_id)
+        if node is None:
+            continue
+        related.append(
+            _to_object_instance(
+                model,
+                node,
+                include_metadata=True,
+                namespace_infos=namespace_infos,
+                object_type_element_ids_by_node_id=element_ids_by_node_id,
+            )
+        )
+    return related
 
 
 def _relationship_type_items() -> list[RelationshipType]:
@@ -697,6 +723,7 @@ async def get_namespaces_v1(
 @router.get("/objecttypes", response_model=SuccessResponse[list[ObjectTypeResponse]])
 async def get_object_types_v1(
     namespace_uri: str | None = Query(default=None, alias="namespaceUri"),
+    model: BuildResult = Depends(get_or_build_model),
     opcua_client: OpcUaClientProtocol = Depends(get_opcua_client),
 ) -> SuccessResponse[list[ObjectTypeResponse]]:
     try:
@@ -713,7 +740,8 @@ async def get_object_types_v1(
     object_types_by_node_id = {item.node_id: item for item in object_types}
     element_ids_by_node_id = _object_type_element_ids_by_node_id(object_types, namespace_infos)
     items = [
-        _to_object_type(item, namespace_infos, object_types_by_node_id, element_ids_by_node_id) for item in object_types
+        _to_object_type(item, model, namespace_infos, object_types_by_node_id, element_ids_by_node_id)
+        for item in object_types
     ]
     if namespace_uri:
         items = [item for item in items if item.namespaceUri == namespace_uri]
@@ -723,6 +751,7 @@ async def get_object_types_v1(
 @router.post("/objecttypes/query", response_model=BulkResponse[ObjectTypeResponse])
 async def query_object_types_v1(
     body: GetObjectTypesRequest,
+    model: BuildResult = Depends(get_or_build_model),
     opcua_client: OpcUaClientProtocol = Depends(get_opcua_client),
 ) -> BulkResponse[ObjectTypeResponse]:
     try:
@@ -741,7 +770,7 @@ async def query_object_types_v1(
     indexed = {
         item.elementId: item
         for item in (
-            _to_object_type(item, namespace_infos, object_types_by_node_id, element_ids_by_node_id)
+            _to_object_type(item, model, namespace_infos, object_types_by_node_id, element_ids_by_node_id)
             for item in object_types
         )
     }

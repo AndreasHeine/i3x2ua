@@ -37,6 +37,7 @@ def _build_result() -> BuildResult:
         nodes_by_id={node.id: node},
         root_ids=[node.id],
         children_by_id={node.id: []},
+        instances_by_type_id={},
         property_to_node={},
         action_to_method={},
     )

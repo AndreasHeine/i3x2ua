@@ -31,6 +31,7 @@ class ModelBuilder:
 
         nodes_by_id: dict[str, ModelNode] = {}
         children_by_id: dict[str, list[str]] = {}
+        instances_by_type_id: dict[str, list[str]] = {}
         root_ids: list[str] = []
         property_to_node: dict[str, str] = {}
         action_to_method: dict[str, tuple[str, str]] = {}
@@ -49,6 +50,8 @@ class ModelBuilder:
 
             if mapped.kind == "property":
                 property_to_node[mapped.id] = opc_node.node_id
+            elif mapped.kind in {"asset", "eventSource"} and mapped.source_type_id is not None:
+                instances_by_type_id.setdefault(mapped.source_type_id, []).append(mapped.id)
 
             if mapped.kind == "action":
                 parent = opc_node.parent_node_id
@@ -59,6 +62,7 @@ class ModelBuilder:
             nodes_by_id={key: value for key, value in nodes_by_id.items()},
             root_ids=root_ids,
             children_by_id=children_by_id,
+            instances_by_type_id=instances_by_type_id,
             property_to_node=property_to_node,
             action_to_method=action_to_method,
         )

@@ -24,6 +24,92 @@ Get your commercial license instantly here:
 Alternatively, for custom licensing agreements or one-time purchases, please contact me directly:
 * **Email:** info@andreas-heine.net
 
+## Architecture Overview
+
+```mermaid
+flowchart LR
+	Client[i3X Client / Consumer] -->|HTTP JSON| Nginx[nginx Reverse Proxy]
+	Nginx -->|/v1| API[FastAPI App i3x_server.main]
+
+	subgraph App[Application Core]
+		API --> Router[Beta Router /v1]
+		Router --> Deps[Dependency Layer]
+		Deps --> ModelCache[(Model Cache)]
+		Deps --> SubSvc[Subscription Service]
+		Deps --> OpcClient[OPC UA Client]
+	end
+
+	subgraph Model[Model Layer]
+		Builder[Model Builder] --> Mapper[Node Mapper]
+		Mapper --> BuildResult[BuildResult Indexes]
+		BuildResult --> ModelCache
+	end
+
+	OpcClient -->|browse tree + metadata| Builder
+	OpcClient -->|read values/history| Router
+	OpcClient <-->|OPC UA binary protocol| UaServer[(External OPC UA Server)]
+	UaServer -->|address space browse + read + history + events| OpcClient
+	Router -.->|write endpoints currently not implemented| OpcClient
+	Router -->|object/value/history responses| Client
+
+	subgraph Subs[Subscribe Flow]
+		Router -->|create/register/sync/list/delete/stream| SubSvc
+		SubSvc -->|native subscription when limits allow| OpcClient
+		SubSvc -->|polling fallback| OpcClient
+		SubSvc -->|SSE updates| Router
+		Router -->|text/event-stream| Client
+	end
+
+	subgraph Startup[Lifecycle]
+		StartupCfg[Settings env I3X_*] --> API
+		API -->|startup| OpcClient
+		API -->|optional preload| Builder
+		API -->|shutdown| SubSvc
+		API -->|shutdown| OpcClient
+	end
+```
+
+```mermaid
+sequenceDiagram
+	participant C as Client
+	participant R as /v1 Router
+	participant D as Dependencies
+	participant M as Model Cache/Builder
+	participant O as OPC UA Client
+	participant U as OPC UA Server
+	participant S as Subscription Service
+
+	Note over C,R: Read current values
+	C->>R: POST /v1/objects/value
+	R->>D: get_or_build_model()
+	D->>M: cache hit? else build()
+	M-->>D: BuildResult
+	R->>O: read_values(node_ids)
+	O->>U: Read/Browse requests
+	U-->>O: values + metadata
+	O-->>R: values
+	R-->>C: bulk success/error envelope
+
+	Note over C,R: Streaming subscription
+	C->>R: POST /v1/subscriptions
+	R->>S: create_subscription()
+	S-->>R: subscriptionId
+	R-->>C: success
+
+	C->>R: POST /v1/subscriptions/register
+	R->>S: register_items(elementIds,maxDepth)
+	S->>O: native subscribe OR polling loop
+	O->>U: MonitoredItems or periodic reads
+	U-->>O: data changes
+	O-->>S: normalized updates
+	C->>R: POST /v1/subscriptions/stream
+	R->>S: wait_for_updates(afterSequence)
+	S-->>R: sequence updates
+	R-->>C: SSE data events + keepalive
+
+	Note over C,R: Write API paths exist in spec but return 501 in this beta implementation
+```
+
 ## Quick Start
 
 Requirements:

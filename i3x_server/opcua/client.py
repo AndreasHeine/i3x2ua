@@ -25,7 +25,8 @@ class OpcUaNodeInfo:
     display_name: str
     node_class: str
     data_type: str | None
-    event_notifier: bool
+    type_definition_id: str | None = None
+    event_notifier: bool = False
 
 
 @dataclass(slots=True)
@@ -300,9 +301,22 @@ class OpcUaClient:
         )
 
         data_type: str | None = None
+        type_definition_id: str | None = None
         if node_class_obj == NodeClass.Variable:
             data_type_obj = await node.read_data_type()
             data_type = data_type_obj.to_string()
+
+        if node_class_obj in {NodeClass.Object, NodeClass.Variable}:
+            try:
+                type_definition_obj = await node.read_type_definition()
+                type_definition_id = type_definition_obj.to_string()
+            except Exception:
+                logger.debug(
+                    "OPC UA type definition read failed endpoint=%s node_id=%s",
+                    self._endpoint,
+                    node_id,
+                    exc_info=True,
+                )
 
         event_notifier = bool(await node.read_event_notifier()) if node_class_obj == NodeClass.Object else False
 
@@ -313,6 +327,7 @@ class OpcUaClient:
             display_name=display_name_obj.Text,
             node_class=node_class_obj.name,
             data_type=data_type,
+            type_definition_id=type_definition_id,
             event_notifier=event_notifier,
         )
 

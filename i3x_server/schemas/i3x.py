@@ -13,6 +13,7 @@ class ModelNode(BaseModel):
     type: str | None = None
     children: list[str] = Field(default_factory=list)
     source_node_id: str
+    source_type_id: str | None = None
 
 
 class ModelRootResponse(BaseModel):

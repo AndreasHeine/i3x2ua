@@ -280,6 +280,34 @@ def _namespace_uri_for_node_id(node_id: str, namespace_infos: list[OpcUaNamespac
     return ""
 
 
+def _expanded_node_id(node_id: str, namespace_infos: list[OpcUaNamespaceInfo]) -> str:
+    if node_id.startswith("nsu="):
+        return node_id
+
+    match = re.match(r"^(?:ns=(\d+);)?([isgb]=.+)$", node_id)
+    if match is None:
+        return node_id
+
+    namespace_index = int(match.group(1)) if match.group(1) is not None else 0
+    identifier = match.group(2)
+    if not (0 <= namespace_index < len(namespace_infos)):
+        return node_id
+
+    namespace_uri = namespace_infos[namespace_index].uri
+    if not namespace_uri:
+        return node_id
+
+    return f"nsu={namespace_uri};{identifier}"
+
+
+def _namespace_uri_from_expanded_node_id(node_id: str) -> str | None:
+    match = re.match(r"^nsu=([^;]+);", node_id)
+    if match is None:
+        return None
+    namespace_uri = match.group(1)
+    return namespace_uri or None
+
+
 def _to_namespace(item: OpcUaNamespaceInfo) -> Namespace:
     display_name = item.display_name or _display_name_for_uri(item.uri)
     return Namespace(uri=item.uri, displayName=display_name)
@@ -346,7 +374,7 @@ def _to_object_type(
 ) -> ObjectTypeResponse:
     namespace_uri = _namespace_uri_for_node_id(item.node_id, namespace_infos)
     element_id = _object_type_element_id(item, namespace_uri)
-    source_type_id = item.parent_node_id or item.node_id
+    source_type_id = _expanded_node_id(item.parent_node_id or item.node_id, namespace_infos)
     return ObjectTypeResponse(
         elementId=element_id,
         displayName=item.display_name,
@@ -419,7 +447,32 @@ def _parent_id_for_node(model: BuildResult, node_id: str) -> str | None:
     return None
 
 
-def _to_object_instance(model: BuildResult, node: ModelNode, include_metadata: bool) -> ObjectInstanceResponse:
+def _to_object_instance(
+    model: BuildResult,
+    node: ModelNode,
+    include_metadata: bool,
+    namespace_infos: list[OpcUaNamespaceInfo],
+    object_type_element_ids_by_node_id: dict[str, str],
+) -> ObjectInstanceResponse:
+    source_type_id = node.source_type_id or node.source_node_id
+    source_type_id_expanded = _expanded_node_id(source_type_id, namespace_infos)
+    if node.kind == "property":
+        raw_type_element_id = node.type or node.kind
+        type_element_id = _expanded_node_id(raw_type_element_id, namespace_infos)
+    else:
+        type_element_id = object_type_element_ids_by_node_id.get(source_type_id, source_type_id_expanded)
+
+    type_namespace_uri = _namespace_uri_from_expanded_node_id(type_element_id)
+    if type_namespace_uri is None:
+        resolved_type_namespace_uri = _namespace_uri_for_node_id(type_element_id, namespace_infos)
+        if resolved_type_namespace_uri:
+            type_namespace_uri = resolved_type_namespace_uri
+    if type_namespace_uri is None:
+        type_namespace_uri = _namespace_uri_from_expanded_node_id(source_type_id_expanded)
+    if type_namespace_uri is None:
+        resolved_source_namespace_uri = _namespace_uri_for_node_id(source_type_id, namespace_infos)
+        type_namespace_uri = resolved_source_namespace_uri or None
+
     metadata = None
     if include_metadata:
         relationships: dict[str, Any] = {}
@@ -429,14 +482,15 @@ def _to_object_instance(model: BuildResult, node: ModelNode, include_metadata: b
         if node.children:
             relationships["HasChildren"] = list(node.children)
         metadata = ObjectInstanceMetadata(
-            sourceTypeId=node.source_node_id,
+            typeNamespaceUri=type_namespace_uri,
+            sourceTypeId=source_type_id_expanded,
             description=f"Derived from model node {node.name}",
             relationships=relationships,
         )
     return ObjectInstanceResponse(
         elementId=node.id,
         displayName=node.name,
-        typeElementId=node.type or node.kind,
+        typeElementId=type_element_id,
         parentId=_parent_id_for_node(model, node.id),
         isComposition=bool(node.children),
         isExtended=False,
@@ -723,21 +777,77 @@ async def get_objects_v1(
     include_metadata: bool = Query(default=False, alias="includeMetadata"),
     root: bool | None = Query(default=None),
     model: BuildResult = Depends(get_or_build_model),
+    opcua_client: OpcUaClientProtocol = Depends(get_opcua_client),
 ) -> SuccessResponse[list[ObjectInstanceResponse]]:
+    try:
+        namespace_infos = await opcua_client.get_namespace_infos()
+    except Exception as exc:
+        raise i3x_http_error(
+            502,
+            "OpcUaNamespaceError",
+            "Failed to read OPC UA namespaces",
+            {"cause": str(exc)},
+        ) from exc
+
+    object_type_element_ids_by_node_id: dict[str, str] = {}
+    try:
+        object_types = await opcua_client.get_object_types()
+        object_type_element_ids_by_node_id = _object_type_element_ids_by_node_id(object_types, namespace_infos)
+    except Exception:
+        object_type_element_ids_by_node_id = {}
+
     if root is True:
         nodes = [model.nodes_by_id[node_id] for node_id in model.root_ids if node_id in model.nodes_by_id]
     else:
         nodes = list(model.nodes_by_id.values())
     if type_element_id is not None:
-        nodes = [node for node in nodes if node.type == type_element_id or node.kind == type_element_id]
-    return SuccessResponse(result=[_to_object_instance(model, node, include_metadata) for node in nodes])
+        nodes = [
+            node
+            for node in nodes
+            if node.type == type_element_id
+            or node.kind == type_element_id
+            or (
+                node.kind != "property"
+                and object_type_element_ids_by_node_id.get(node.source_type_id or node.source_node_id) == type_element_id
+            )
+        ]
+    return SuccessResponse(
+        result=[
+            _to_object_instance(
+                model,
+                node,
+                include_metadata,
+                namespace_infos,
+                object_type_element_ids_by_node_id,
+            )
+            for node in nodes
+        ]
+    )
 
 
 @router.post("/objects/list", response_model=BulkResponse[ObjectInstanceResponse])
 async def list_objects_by_id_v1(
     body: GetObjectsRequest,
     model: BuildResult = Depends(get_or_build_model),
+    opcua_client: OpcUaClientProtocol = Depends(get_opcua_client),
 ) -> BulkResponse[ObjectInstanceResponse]:
+    try:
+        namespace_infos = await opcua_client.get_namespace_infos()
+    except Exception as exc:
+        raise i3x_http_error(
+            502,
+            "OpcUaNamespaceError",
+            "Failed to read OPC UA namespaces",
+            {"cause": str(exc)},
+        ) from exc
+
+    object_type_element_ids_by_node_id: dict[str, str] = {}
+    try:
+        object_types = await opcua_client.get_object_types()
+        object_type_element_ids_by_node_id = _object_type_element_ids_by_node_id(object_types, namespace_infos)
+    except Exception:
+        object_type_element_ids_by_node_id = {}
+
     results: list[BulkResultItem[ObjectInstanceResponse]] = []
     for element_id in body.elementIds:
         node = _find_model_node(model, element_id)
@@ -754,7 +864,13 @@ async def list_objects_by_id_v1(
             BulkResultItem[ObjectInstanceResponse](
                 success=True,
                 elementId=element_id,
-                result=_to_object_instance(model, node, include_metadata=body.includeMetadata),
+                result=_to_object_instance(
+                    model,
+                    node,
+                    include_metadata=body.includeMetadata,
+                    namespace_infos=namespace_infos,
+                    object_type_element_ids_by_node_id=object_type_element_ids_by_node_id,
+                ),
             )
         )
     return _bulk_response(results)
@@ -764,7 +880,25 @@ async def list_objects_by_id_v1(
 async def query_related_objects_v1(
     body: GetRelatedObjectsRequest,
     model: BuildResult = Depends(get_or_build_model),
+    opcua_client: OpcUaClientProtocol = Depends(get_opcua_client),
 ) -> BulkResponse[list[RelatedObjectResult]]:
+    try:
+        namespace_infos = await opcua_client.get_namespace_infos()
+    except Exception as exc:
+        raise i3x_http_error(
+            502,
+            "OpcUaNamespaceError",
+            "Failed to read OPC UA namespaces",
+            {"cause": str(exc)},
+        ) from exc
+
+    object_type_element_ids_by_node_id: dict[str, str] = {}
+    try:
+        object_types = await opcua_client.get_object_types()
+        object_type_element_ids_by_node_id = _object_type_element_ids_by_node_id(object_types, namespace_infos)
+    except Exception:
+        object_type_element_ids_by_node_id = {}
+
     results: list[BulkResultItem[list[RelatedObjectResult]]] = []
     for element_id in body.elementIds:
         node = _find_model_node(model, element_id)
@@ -788,7 +922,13 @@ async def query_related_objects_v1(
             related.append(
                 RelatedObjectResult(
                     sourceRelationship=relationship.displayName,
-                    object=_to_object_instance(model, child, include_metadata=body.includeMetadata),
+                    object=_to_object_instance(
+                        model,
+                        child,
+                        include_metadata=body.includeMetadata,
+                        namespace_infos=namespace_infos,
+                        object_type_element_ids_by_node_id=object_type_element_ids_by_node_id,
+                    ),
                 )
             )
         results.append(
@@ -1061,8 +1201,16 @@ async def remove_monitored_items_v1(
 @router.post("/subscriptions/stream")
 async def stream_subscription_v1(
     body: StreamRequest,
+    opcua_client: OpcUaClientProtocol = Depends(get_opcua_client),
     subscription_service: SubscriptionService = Depends(get_subscription_service),
 ) -> StreamingResponse:
+    namespace_infos: list[OpcUaNamespaceInfo] = []
+    try:
+        namespace_infos = await opcua_client.get_namespace_infos()
+    except Exception:
+        # Streaming should still work even if namespace metadata is temporarily unavailable.
+        namespace_infos = []
+
     acknowledged = await subscription_service.sync(
         client_id=body.clientId,
         subscription_id=body.subscriptionId,
@@ -1097,7 +1245,7 @@ async def stream_subscription_v1(
             payload = [
                 {
                     "sequenceNumber": item.sequence_number,
-                    "elementId": item.element_id,
+                    "elementId": _expanded_node_id(item.element_id, namespace_infos),
                     "value": item.value,
                     "quality": item.quality,
                     "timestamp": item.timestamp,
@@ -1120,8 +1268,15 @@ async def stream_subscription_v1(
 @router.post("/subscriptions/sync")
 async def sync_subscription_v1(
     body: SyncRequest,
+    opcua_client: OpcUaClientProtocol = Depends(get_opcua_client),
     subscription_service: SubscriptionService = Depends(get_subscription_service),
 ) -> SuccessResponse[list[SyncUpdate]]:
+    namespace_infos: list[OpcUaNamespaceInfo] = []
+    try:
+        namespace_infos = await opcua_client.get_namespace_infos()
+    except Exception:
+        namespace_infos = []
+
     synced = await subscription_service.sync(
         client_id=body.clientId,
         subscription_id=body.subscriptionId,
@@ -1137,7 +1292,7 @@ async def sync_subscription_v1(
         result=[
             SyncUpdate(
                 sequenceNumber=item.sequence_number,
-                elementId=item.element_id,
+                elementId=_expanded_node_id(item.element_id, namespace_infos),
                 value=item.value,
                 quality=item.quality,
                 timestamp=item.timestamp,
@@ -1169,8 +1324,15 @@ async def delete_subscriptions_v1(
 @router.post("/subscriptions/list")
 async def list_subscriptions_v1(
     body: ListSubscriptionsRequest,
+    opcua_client: OpcUaClientProtocol = Depends(get_opcua_client),
     subscription_service: SubscriptionService = Depends(get_subscription_service),
 ) -> BulkResponse[SubscriptionDetail]:
+    namespace_infos: list[OpcUaNamespaceInfo] = []
+    try:
+        namespace_infos = await opcua_client.get_namespace_infos()
+    except Exception:
+        namespace_infos = []
+
     filter_ids = body.subscriptionIds or None
     subscriptions = await subscription_service.list_subscriptions(body.clientId, filter_ids)
     found: dict[str, SubscriptionDetail] = {
@@ -1178,7 +1340,13 @@ async def list_subscriptions_v1(
             subscriptionId=item.subscription_id,
             clientId=item.client_id,
             displayName=item.display_name,
-            monitoredObjects=item.monitored_objects,
+            monitoredObjects=[
+                {
+                    **monitored,
+                    "elementId": _expanded_node_id(str(monitored.get("elementId", "")), namespace_infos),
+                }
+                for monitored in item.monitored_objects
+            ],
             mode=item.mode,
         )
         for item in subscriptions

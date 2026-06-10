@@ -38,4 +38,5 @@ def map_node(node: OpcUaNodeInfo, children: list[str]) -> ModelNode:
         type=map_type(node, kind),
         children=children,
         source_node_id=node.node_id,
+        source_type_id=node.type_definition_id,
     )

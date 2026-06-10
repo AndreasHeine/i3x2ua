@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from i3x_server.api.beta import _expanded_node_id
 from i3x_server.main import create_app
 from i3x_server.opcua.client import OpcUaSubscriptionCapabilities
 from i3x_server.schemas.i3x import ModelNode
@@ -45,6 +46,7 @@ class FakeOpcUaClient:
         return [
             SimpleNamespace(uri="http://example.com/i3x", display_name="I3X"),
             SimpleNamespace(uri="http://example.com/custom", display_name="Custom"),
+            SimpleNamespace(uri="http://example.com/runtime", display_name="Runtime"),
         ]
 
     async def get_object_types(self) -> list[SimpleNamespace]:
@@ -137,12 +139,13 @@ def client() -> Generator[TestClient, None, None]:
                     type=None,
                     children=[property_id, action_id],
                     source_node_id="ns=2;s=Machine",
+                    source_type_id="ns=1;i=1001",
                 ),
                 property_id: ModelNode(
                     id=property_id,
                     name="Temperature",
                     kind="property",
-                    type="Double",
+                    type="ns=1;i=11",
                     children=[],
                     source_node_id="ns=2;s=Temperature",
                 ),
@@ -195,7 +198,7 @@ def test_beta_namespaces(client: TestClient) -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["success"] is True
-    assert len(payload["result"]) == 2
+    assert len(payload["result"]) == 3
 
 
 def test_beta_objecttypes(client: TestClient) -> None:
@@ -209,6 +212,7 @@ def test_beta_objecttypes(client: TestClient) -> None:
     assert isinstance(first["displayName"], str)
     assert isinstance(first["namespaceUri"], str)
     assert isinstance(first["sourceTypeId"], str)
+    assert first["sourceTypeId"].startswith("nsu=http://example.com/custom;")
     assert isinstance(first["schema"], dict)
     assert first["schema"]["type"] == "object"
     assert isinstance(first["schema"]["properties"], dict)
@@ -261,12 +265,32 @@ def test_beta_relationshiptypes_query(client: TestClient) -> None:
 
 
 def test_beta_objects_list(client: TestClient) -> None:
+    object_types = client.get("/v1/objecttypes").json()["result"]
+    expected_type_element_id = object_types[0]["elementId"]
+
     response = client.post("/v1/objects/list", json={"elementIds": ["asset-root", "missing"]})
     assert response.status_code == 200
     payload = response.json()
     assert payload["success"] is False
     assert payload["results"][0]["success"] is True
     assert payload["results"][1]["success"] is False
+    first = payload["results"][0]["result"]
+    assert first["typeElementId"] == expected_type_element_id
+
+
+def test_beta_objects_list_include_metadata_uses_expanded_source_type_id(client: TestClient) -> None:
+    response = client.post(
+        "/v1/objects/list",
+        json={"elementIds": ["property-abc"], "includeMetadata": True},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    result = payload["results"][0]["result"]
+    assert result["typeElementId"] == "nsu=http://example.com/custom;i=11"
+    metadata = payload["results"][0]["result"]["metadata"]
+    assert metadata["typeNamespaceUri"] == "http://example.com/custom"
+    assert metadata["sourceTypeId"] == "nsu=http://example.com/runtime;s=Temperature"
 
 
 def test_beta_history_query(client: TestClient) -> None:
@@ -285,6 +309,19 @@ def test_beta_history_query(client: TestClient) -> None:
     assert payload["results"][0]["success"] is True
     assert payload["results"][0]["result"]["isComposition"] is False
     assert len(payload["results"][0]["result"]["values"]) == 2
+
+
+def test_expanded_node_id_does_not_rewrite_non_node_ids() -> None:
+    namespaces = [SimpleNamespace(uri="http://example.com/default", display_name="Default")]
+    assert _expanded_node_id("asset-root", namespaces) == "asset-root"
+
+
+def test_expanded_node_id_rewrites_node_id_strings() -> None:
+    namespaces = [
+        SimpleNamespace(uri="http://example.com/default", display_name="Default"),
+        SimpleNamespace(uri="http://example.com/custom", display_name="Custom"),
+    ]
+    assert _expanded_node_id("ns=1;i=1001", namespaces) == "nsu=http://example.com/custom;i=1001"
 
 
 def test_beta_history_query_missing_object(client: TestClient) -> None:

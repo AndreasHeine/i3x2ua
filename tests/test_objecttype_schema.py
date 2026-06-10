@@ -82,6 +82,21 @@ def _assert_schema_type_contains(schema: dict[str, Any], expected: str) -> None:
         assert schema_type == expected
 
 
+def _extract_ref(schema: dict[str, Any]) -> str | None:
+    if "$ref" in schema and isinstance(schema["$ref"], str):
+        return schema["$ref"]
+    all_of = schema.get("allOf")
+    if isinstance(all_of, list) and all_of and isinstance(all_of[0], dict):
+        candidate = all_of[0].get("$ref")
+        if isinstance(candidate, str):
+            return candidate
+    return None
+
+
+def _def_key_from_ref(ref: str) -> str:
+    return ref.split("#/$defs/", 1)[1]
+
+
 def test_structured_array_schema_inferred_from_datatype_registry_when_value_empty() -> None:
     _set_ua_attr("extension_objects_by_datatype", {"ns=1;i=3015": FakeJobOrderAndState})
 
@@ -120,18 +135,19 @@ def test_structured_array_schema_inferred_from_datatype_registry_when_value_empt
 
     job_order_list_schema = schema["properties"]["JobOrderList"]
     assert job_order_list_schema["type"] == "array"
-    assert job_order_list_schema["items"]["type"] == "object"
+    assert isinstance(job_order_list_schema["items"].get("$ref"), str)
+    item_ref = job_order_list_schema["items"]["$ref"]
+    assert item_ref.startswith("#/$defs/")
     assert "x-opcua-structureTypeId" not in job_order_list_schema
-    assert job_order_list_schema["items"]["x-opcua-structureDataType"] == (
-        "nsu=http://opcfoundation.org/UA/ISA95-JOBCONTROL_V2/;i=3015"
-    )
+    item_def = schema["$defs"][_def_key_from_ref(item_ref)]
+    assert item_def["x-opcua-structureDataType"] == ("nsu=http://opcfoundation.org/UA/ISA95-JOBCONTROL_V2/;i=3015")
 
-    item_def = job_order_list_schema["items"]
     assert item_def["type"] == "object"
     _assert_schema_type_contains(item_def["properties"]["JobOrderId"], "string")
     _assert_schema_type_contains(item_def["properties"]["Quantity"], "number")
-    assert item_def["properties"]["State"]["type"] == "object"
-    _assert_schema_type_contains(item_def["properties"]["State"]["properties"]["State"], "string")
+    assert isinstance(item_def["properties"]["State"].get("$ref"), str)
+    state_def = schema["$defs"][_def_key_from_ref(item_def["properties"]["State"]["$ref"])]
+    _assert_schema_type_contains(state_def["properties"]["State"], "string")
 
 
 def test_structured_array_schema_inferred_when_placeholder_extension_object_and_valuerank_array() -> None:
@@ -173,7 +189,8 @@ def test_structured_array_schema_inferred_when_placeholder_extension_object_and_
 
     job_order_list_schema = schema["properties"]["JobOrderList"]
     assert job_order_list_schema["type"] == "array"
-    assert job_order_list_schema["items"]["type"] == "object"
+    assert isinstance(job_order_list_schema["items"].get("$ref"), str)
+    assert job_order_list_schema["items"]["$ref"].startswith("#/$defs/")
 
 
 def test_recursive_datatype_annotations_resolve_nested_subschemas() -> None:
@@ -223,22 +240,25 @@ def test_recursive_datatype_annotations_resolve_nested_subschemas() -> None:
     )
 
     items_schema = schema["properties"]["JobOrderList"]["items"]
-    job_order_schema = items_schema["properties"]["JobOrder"]
-    assert (
-        "object" in job_order_schema["type"]
-        if isinstance(job_order_schema["type"], list)
-        else job_order_schema["type"] == "object"
-    )
-    job_order_def = job_order_schema
+    assert isinstance(items_schema.get("$ref"), str)
+    items_ref = items_schema["$ref"]
+    assert items_ref.startswith("#/$defs/")
+    items_def = schema["$defs"][_def_key_from_ref(items_ref)]
+    job_order_schema = items_def["properties"]["JobOrder"]
+    assert isinstance(job_order_schema.get("$ref"), str)
+    assert job_order_schema["$ref"].startswith("#/$defs/")
+    job_order_def = schema["$defs"][_def_key_from_ref(job_order_schema["$ref"])]
     _assert_schema_type_contains(job_order_def["properties"]["JobOrderID"], "string")
     assert job_order_def["properties"]["Description"]["type"] == "array"
-    assert job_order_def["properties"]["WorkMasterID"]["items"]["type"] == "object"
+    assert isinstance(job_order_def["properties"]["WorkMasterID"]["items"].get("$ref"), str)
+    assert job_order_def["properties"]["WorkMasterID"]["items"]["$ref"].startswith("#/$defs/")
     parameter_schema = job_order_def["properties"]["JobOrderParameters"]["items"]
-    assert parameter_schema["type"] == "object"
-    _assert_schema_type_contains(parameter_schema["properties"]["ID"], "string")
-    subparameter_items = parameter_schema["properties"]["Subparameters"]["items"]
-    assert subparameter_items["type"] == "object"
-    assert "$ref" in subparameter_items["properties"]["Subparameters"]["items"]
+    assert isinstance(parameter_schema.get("$ref"), str)
+    assert parameter_schema["$ref"].startswith("#/$defs/")
+    parameter_def = schema["$defs"][_def_key_from_ref(parameter_schema["$ref"])]
+    _assert_schema_type_contains(parameter_def["properties"]["ID"], "string")
+    assert isinstance(parameter_def["properties"]["Subparameters"]["items"].get("$ref"), str)
+    assert parameter_def["properties"]["Subparameters"]["items"]["$ref"].startswith("#/$defs/")
 
 
 def test_unresolved_datatype_annotation_falls_back_to_object() -> None:
@@ -259,8 +279,7 @@ def test_forwardref_annotation_is_resolved_as_structure() -> None:
         __forward_arg__ = "ua.ForwardRefNested"
 
     schema = objecttype_schema._schema_for_annotation(_ForwardRef(), objecttype_schema._SchemaRegistry())
-    assert schema["type"] == "object"
-    assert schema["properties"]["ID"]["type"] == "string"
+    assert schema == {"$ref": "#/$defs/Nested"}
 
 
 def test_non_dataclass_structured_class_with_annotations_is_resolved() -> None:
@@ -271,8 +290,7 @@ def test_non_dataclass_structured_class_with_annotations_is_resolved() -> None:
     schema = objecttype_schema._schema_for_annotation_string(
         "ua.AnnotatedOnlyType", objecttype_schema._SchemaRegistry()
     )
-    assert schema["type"] == "object"
-    assert schema["properties"]["Priority"]["type"] == "integer"
+    assert schema == {"$ref": "#/$defs/AnnotatedOnlyType"}
 
 
 def test_dataclass_docstring_vartype_override_applies_for_ambiguous_annotations() -> None:
@@ -291,8 +309,7 @@ def test_dataclass_docstring_vartype_override_applies_for_ambiguous_annotations(
 
     registry = objecttype_schema._SchemaRegistry()
     schema = objecttype_schema._structure_schema_for_type(_DocCarrier, registry)
-    assert schema["properties"]["JobOrder"]["type"] == "object"
-    assert schema["properties"]["JobOrder"]["properties"]["ID"]["type"] == "string"
+    assert schema["properties"]["JobOrder"] == {"$ref": "#/$defs/DocNested"}
 
 
 def test_dataclass_ua_types_override_applies_for_ambiguous_annotations() -> None:
@@ -308,8 +325,7 @@ def test_dataclass_ua_types_override_applies_for_ambiguous_annotations() -> None
 
     registry = objecttype_schema._SchemaRegistry()
     schema = objecttype_schema._structure_schema_for_type(_UaCarrier, registry)
-    assert schema["properties"]["JobOrder"]["type"] == "object"
-    assert schema["properties"]["JobOrder"]["properties"]["ID"]["type"] == "string"
+    assert schema["properties"]["JobOrder"] == {"$ref": "#/$defs/UaNested"}
 
 
 def test_module_path_resolution_inlines_structured_annotation() -> None:
@@ -318,7 +334,7 @@ def test_module_path_resolution_inlines_structured_annotation() -> None:
         objecttype_schema._SchemaRegistry(),
     )
     assert schema["type"] == "object"
-    assert "$ref" not in schema
+    assert schema["title"] == "isa95joborderdatatype"
 
 
 def test_loaded_structures_module_name_resolution_supports_recursive_arrays() -> None:
@@ -336,7 +352,7 @@ def test_loaded_structures_module_name_resolution_supports_recursive_arrays() ->
             "ua.ISA95ParameterDataType",
             objecttype_schema._SchemaRegistry(),
         )
-        assert schema["type"] == "object"
+        assert schema == {"$ref": "#/$defs/Parameter"}
     finally:
         sys.modules.pop(module.__name__, None)
 
@@ -385,7 +401,8 @@ def test_generated_dep_annotation_is_evaluated_in_owner_module_context() -> None
         _Carrier: type[Any] = dataclass(carrier_cls)
         registry = objecttype_schema._SchemaRegistry()
         schema = objecttype_schema._structure_schema_for_type(_Carrier, registry)
-        assert schema["properties"]["Child"]["type"] == "object"
+        child_ref = _extract_ref(schema["properties"]["Child"])
+        assert child_ref == "#/$defs/Nested"
     finally:
         sys.modules.pop(module.__name__, None)
 

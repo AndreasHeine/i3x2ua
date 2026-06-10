@@ -310,13 +310,23 @@ def test_beta_objecttypes(client: TestClient) -> None:
     assert first["schema"]["properties"]["temperature"]["x-opcua-modellingRule"] == "Mandatory"
     assert first["schema"]["properties"]["temperature"]["x-opcua-value"] == 42.5
     config_schema = first["schema"]["properties"]["config"]
-    assert config_schema["type"] == "object"
-    assert config_schema["x-opcua-structureTypeId"] == "nsu=http://example.com/custom;i=3001"
-    assert config_schema["properties"]["mode"]["type"] == "string"
-    thresholds_schema = config_schema["properties"]["thresholds"]
-    assert thresholds_schema["type"] == "object"
-    assert thresholds_schema["properties"]["min"]["type"] == "number"
-    assert thresholds_schema["properties"]["max"]["type"] == "number"
+    assert isinstance(config_schema.get("allOf"), list)
+    assert isinstance(config_schema["allOf"][0], dict)
+    config_ref = config_schema["allOf"][0].get("$ref")
+    assert isinstance(config_ref, str) and config_ref.startswith("#/$defs/")
+    assert config_schema["x-opcua-displayName"] == "Config"
+    config_def_key = config_ref.split("#/$defs/", 1)[1]
+    config_def = first["schema"]["$defs"][config_def_key]
+    assert config_def["x-opcua-structureTypeId"] == "nsu=http://example.com/custom;i=3001"
+    assert config_def["properties"]["mode"]["type"] == "string"
+    thresholds_schema = config_def["properties"]["thresholds"]
+    assert isinstance(thresholds_schema.get("$ref"), str)
+    thresholds_ref = thresholds_schema["$ref"]
+    assert thresholds_ref.startswith("#/$defs/")
+    thresholds_def_key = thresholds_ref.split("#/$defs/", 1)[1]
+    thresholds_def = first["schema"]["$defs"][thresholds_def_key]
+    assert thresholds_def["properties"]["min"]["type"] == "number"
+    assert thresholds_def["properties"]["max"]["type"] == "number"
     assert isinstance(first["related"], dict)
     assert [item["elementId"] for item in first["related"]["instances"]] == ["asset-root"]
     assert first["related"]["instances"][0]["metadata"]["relationships"]["HasChildren"] == [

@@ -23,6 +23,7 @@ class _SchemaRegistry:
     def __init__(self) -> None:
         self.defs: dict[str, Any] = {}
         self._definition_by_key: dict[str, str] = {}
+        self._used_definition_names: set[str] = set()
 
     def has(self, key: str) -> bool:
         return key in self._definition_by_key
@@ -33,9 +34,24 @@ class _SchemaRegistry:
 
     def reserve(self, key: str, definition_name: str) -> None:
         self._definition_by_key[key] = definition_name
+        self._used_definition_names.add(definition_name)
 
     def set_definition(self, definition_name: str, schema: dict[str, Any]) -> None:
         self.defs[definition_name] = schema
+
+    def allocate(self, key: str, preferred_name: str) -> str:
+        if key in self._definition_by_key:
+            return self._definition_by_key[key]
+
+        base_name = _safe_definition_name(preferred_name)
+        candidate = base_name
+        index = 2
+        while candidate in self._used_definition_names:
+            candidate = f"{base_name}_{index}"
+            index += 1
+
+        self.reserve(key, candidate)
+        return candidate
 
 
 def json_schema_for_opcua_type(data_type: str | None) -> dict[str, Any]:
@@ -121,7 +137,7 @@ def build_object_type_schema(
         schema["x-opcua-isAbstract"] = is_abstract
     if merged_required:
         schema["required"] = merged_required
-    return cast(dict[str, Any], _expand_schema_refs(schema, registry.defs))
+    return schema
 
 
 def _lineage(
@@ -201,6 +217,10 @@ def _schema_for_member(
         schema = structured_schema
     else:
         schema = json_schema_for_opcua_type(member.data_type)
+
+    # Keep "$ref" pure by moving member-level metadata beside an allOf wrapper.
+    if "$ref" in schema:
+        schema = {"allOf": [schema]}
 
     if member.modelling_rule:
         schema["x-opcua-modellingRule"] = member.modelling_rule
@@ -307,20 +327,18 @@ def _reference_or_register_structure(
     registry: _SchemaRegistry,
     metadata: dict[str, Any],
 ) -> dict[str, Any]:
-    definition_name = _def_key(schema_key)
     if registry.has(schema_key):
         ref = registry.ref_for(schema_key)
     else:
-        registry.reserve(schema_key, definition_name)
+        preferred_name = type(structure_value).__name__
+        if isinstance(structure_value, Mapping):
+            preferred_name = "MappedStructure"
+        definition_name = registry.allocate(schema_key, preferred_name)
         structure_schema = _structure_object_schema(structure_value, registry)
         for key, value in metadata.items():
             structure_schema[key] = value
         registry.set_definition(definition_name, structure_schema)
         ref = registry.ref_for(schema_key)
-
-    if metadata:
-        for key, value in metadata.items():
-            ref[key] = value
     return ref
 
 
@@ -462,8 +480,7 @@ def _schema_from_data_type(
     normalized_data_type = _expanded_if_node_id(_node_id_to_string(data_type), namespace_infos) or data_type
     schema_key = f"opcua-datatype:{normalized_data_type.lower()}"
     metadata = {"x-opcua-structureDataType": normalized_data_type}
-    reference_schema = _reference_or_register_structure_from_type(schema_key, structure_type, registry, metadata)
-    return _inline_registered_reference(reference_schema, registry)
+    return _reference_or_register_structure_from_type(schema_key, structure_type, registry, metadata)
 
 
 def _resolve_structure_type(data_type: str) -> type[Any] | None:
@@ -489,19 +506,15 @@ def _reference_or_register_structure_from_type(
     registry: _SchemaRegistry,
     metadata: dict[str, Any],
 ) -> dict[str, Any]:
-    definition_name = _def_key(schema_key)
     if registry.has(schema_key):
         ref = registry.ref_for(schema_key)
     else:
-        registry.reserve(schema_key, definition_name)
+        definition_name = registry.allocate(schema_key, structure_type.__name__)
         structure_schema = _structure_schema_for_type(structure_type, registry)
         for key, value in metadata.items():
             structure_schema[key] = value
         registry.set_definition(definition_name, structure_schema)
         ref = registry.ref_for(schema_key)
-    if metadata:
-        for key, value in metadata.items():
-            ref[key] = value
     return ref
 
 
@@ -583,13 +596,12 @@ def _schema_for_annotation(annotation: Any, registry: _SchemaRegistry) -> dict[s
         if issubclass(annotation, Enum):
             return {"type": "string", "enum": [item.name for item in annotation]}
         if _is_structured_class(annotation):
-            schema = _reference_or_register_structure_from_type(
+            return _reference_or_register_structure_from_type(
                 f"py-annotation:{annotation.__module__.lower()}.{annotation.__name__.lower()}",
                 annotation,
                 registry,
                 {},
             )
-            return _inline_registered_reference(schema, registry)
 
     return {"type": "string"}
 
@@ -684,23 +696,21 @@ def _schema_for_annotation_string(annotation: str, registry: _SchemaRegistry) ->
 
     structure_type = _resolve_structure_type_by_name(normalized)
     if isinstance(structure_type, type) and _is_structured_class(structure_type):
-        schema = _reference_or_register_structure_from_type(
+        return _reference_or_register_structure_from_type(
             f"ua-annotation:{structure_type.__module__.lower()}.{structure_type.__name__.lower()}",
             structure_type,
             registry,
             {},
         )
-        return _inline_registered_reference(schema, registry)
 
     imported_type = _resolve_type_from_module_path(normalized)
     if isinstance(imported_type, type) and _is_structured_class(imported_type):
-        schema = _reference_or_register_structure_from_type(
+        return _reference_or_register_structure_from_type(
             f"module-annotation:{imported_type.__module__.lower()}.{imported_type.__name__.lower()}",
             imported_type,
             registry,
             {},
         )
-        return _inline_registered_reference(schema, registry)
 
     # If this token denotes a structured datatype but cannot be resolved,
     # represent it as an object instead of degrading to string.
@@ -1240,6 +1250,16 @@ def _members(item: OpcUaObjectTypeInfo) -> Iterable[OpcUaObjectTypeMemberInfo]:
 
 def _def_key(node_id: str) -> str:
     return node_id.replace("~", "~0").replace("/", "~1")
+
+
+def _safe_definition_name(raw_name: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_]", "_", raw_name)
+    cleaned = re.sub(r"_+", "_", cleaned).strip("_")
+    if not cleaned:
+        return "Definition"
+    if cleaned[0].isdigit():
+        return f"D_{cleaned}"
+    return cleaned
 
 
 def _definition_name(

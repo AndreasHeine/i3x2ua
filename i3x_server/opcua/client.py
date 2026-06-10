@@ -37,6 +37,8 @@ class OpcUaObjectTypeInfo:
     browse_name: str
     display_name: str
     properties: dict[str, str | None]
+    description: str | None = None
+    is_abstract: bool | None = None
     members: list[OpcUaObjectTypeMemberInfo] = field(default_factory=list)
 
 
@@ -45,9 +47,11 @@ class OpcUaObjectTypeMemberInfo:
     node_id: str
     browse_name: str
     display_name: str
+    description: str | None
     node_class: str
     data_type: str | None
-    modelling_rule: str | None
+    modelling_rule: str | None = None
+    value: Any = None
 
 
 @dataclass(slots=True)
@@ -763,7 +767,7 @@ class OpcUaClient:
 
         root = self._client.nodes.object_types
         root_node_id = root.nodeid.to_string()
-        discovered: dict[str, tuple[str | None, str, str]] = {}
+        discovered: dict[str, tuple[str | None, str, str, Any]] = {}
         properties_by_type: dict[str, dict[str, str | None]] = {}
         members_by_type: dict[str, list[OpcUaObjectTypeMemberInfo]] = {}
         stack: list[tuple[Any, str | None]] = [(root, None)]
@@ -791,11 +795,7 @@ class OpcUaClient:
 
                             browse_name = ref.BrowseName.Name
                             display_name = ref.DisplayName.Text or browse_name
-                            discovered[child_node_id] = (
-                                parent_node_id,
-                                browse_name,
-                                display_name,
-                            )
+                            discovered[child_node_id] = (parent_node_id, browse_name, display_name, child_node)
                             continue
 
                         # Collect direct declarations from ObjectTypes for generic schema projection.
@@ -822,16 +822,20 @@ class OpcUaClient:
                 unique_by_name = {member.browse_name: member for member in members}
                 members_by_type[type_node_id] = list(unique_by_name.values())
 
+            metadata_by_node_id = await self._read_object_type_metadata([node for _, _, _, node in discovered.values()])
+
             output = [
                 OpcUaObjectTypeInfo(
                     node_id=node_id,
                     parent_node_id=parent_node_id,
                     browse_name=browse_name,
                     display_name=display_name,
+                    description=metadata_by_node_id.get(node_id, {}).get("description"),
+                    is_abstract=metadata_by_node_id.get(node_id, {}).get("is_abstract"),
                     properties=properties_by_type.get(node_id, {}),
                     members=members_by_type.get(node_id, []),
                 )
-                for node_id, (parent_node_id, browse_name, display_name) in discovered.items()
+                for node_id, (parent_node_id, browse_name, display_name, _) in discovered.items()
             ]
 
             logger.info(
@@ -899,15 +903,19 @@ class OpcUaClient:
         ) -> tuple[str, OpcUaObjectTypeMemberInfo]:
             async with semaphore:
                 data_type = await self._read_data_type_or_none(node) if node_class == NodeClass.Variable else None
+                value = await self._read_value_or_none(node) if node_class == NodeClass.Variable else None
                 modelling_rule = await self._read_modelling_rule_or_none(node)
+                description = await self._read_description_or_none(node)
                 return (
                     parent_id,
                     OpcUaObjectTypeMemberInfo(
                         node_id=node_id,
                         browse_name=browse_name,
                         display_name=display_name,
+                        description=description,
                         node_class=node_class.name,
                         data_type=data_type,
+                        value=_to_json_compatible(value),
                         modelling_rule=modelling_rule,
                     ),
                 )
@@ -945,6 +953,60 @@ class OpcUaClient:
                 exc_info=True,
             )
             return None
+
+    async def _read_description_or_none(self, node: Any) -> str | None:
+        try:
+            localized = await node.read_description()
+            text = getattr(localized, "Text", None)
+            if isinstance(text, str) and text.strip():
+                return text
+            return None
+        except Exception:
+            logger.debug(
+                "OPC UA description read failed endpoint=%s node_id=%s",
+                self._endpoint,
+                node.nodeid.to_string(),
+                exc_info=True,
+            )
+            return None
+
+    async def _read_value_or_none(self, node: Any) -> Any:
+        try:
+            return await node.read_value()
+        except Exception:
+            logger.debug(
+                "OPC UA value read failed endpoint=%s node_id=%s",
+                self._endpoint,
+                node.nodeid.to_string(),
+                exc_info=True,
+            )
+            return None
+
+    async def _read_object_type_metadata(self, nodes: list[Any]) -> dict[str, dict[str, Any]]:
+        if not nodes:
+            return {}
+
+        descriptions = await self._read_attribute_batch(nodes, AttributeIds.Description)
+        abstract_flags = await self._read_attribute_batch(nodes, AttributeIds.IsAbstract)
+
+        output: dict[str, dict[str, Any]] = {}
+        for node, description_value, abstract_value in zip(nodes, descriptions, abstract_flags, strict=True):
+            node_id = node.nodeid.to_string()
+            description_raw = self._extract_attribute_value(description_value)
+            abstract_raw = self._extract_attribute_value(abstract_value)
+
+            description: str | None = None
+            text_value = getattr(description_raw, "Text", None)
+            if isinstance(text_value, str) and text_value.strip():
+                description = text_value
+
+            is_abstract: bool | None = None
+            if abstract_raw is not None:
+                is_abstract = bool(abstract_raw)
+
+            output[node_id] = {"description": description, "is_abstract": is_abstract}
+
+        return output
 
     async def _browse_children_descriptions(
         self,
@@ -1308,3 +1370,15 @@ def _chunked_nodes(values: list[Any], size: int) -> list[list[Any]]:
 def _assert_file_exists(path: Path, label: str) -> None:
     if not path.is_file():
         raise FileNotFoundError(f"{label} not found: {path}")
+
+
+def _to_json_compatible(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, (list, tuple)):
+        return [_to_json_compatible(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _to_json_compatible(item) for key, item in value.items()}
+    return str(value)

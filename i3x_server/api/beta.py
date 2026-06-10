@@ -380,7 +380,7 @@ def _to_object_type(
         displayName=item.display_name,
         namespaceUri=namespace_uri,
         sourceTypeId=source_type_id,
-        schema=build_object_type_schema(item, object_types_by_node_id, element_ids_by_node_id),
+        schema=build_object_type_schema(item, object_types_by_node_id, element_ids_by_node_id, namespace_infos),
         related=None,
     )
 

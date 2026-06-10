@@ -56,17 +56,44 @@ class FakeOpcUaClient:
                 parent_node_id=None,
                 browse_name="MachineType",
                 display_name="Machine Type",
+                description="Machine object type",
+                is_abstract=False,
                 properties={
                     "temperature": "i=11",
                     "running": "i=1",
                 },
+                members=[
+                    SimpleNamespace(
+                        node_id="ns=1;i=2001",
+                        browse_name="temperature",
+                        display_name="Temperature",
+                        description="Current measured temperature",
+                        node_class="Variable",
+                        data_type="i=11",
+                        value=42.5,
+                        modelling_rule="Mandatory",
+                    ),
+                    SimpleNamespace(
+                        node_id="ns=1;i=2002",
+                        browse_name="running",
+                        display_name="Running",
+                        description="Running state",
+                        node_class="Variable",
+                        data_type="i=1",
+                        value=True,
+                        modelling_rule=None,
+                    ),
+                ],
             ),
             SimpleNamespace(
                 node_id="ns=1;i=1002",
                 parent_node_id="ns=1;i=1001",
                 browse_name="SensorType",
                 display_name="Sensor Type",
+                description="Sensor subtype",
+                is_abstract=True,
                 properties={},
+                members=[],
             ),
         ]
 
@@ -215,9 +242,18 @@ def test_beta_objecttypes(client: TestClient) -> None:
     assert first["sourceTypeId"].startswith("nsu=http://example.com/custom;")
     assert isinstance(first["schema"], dict)
     assert first["schema"]["type"] == "object"
+    assert first["schema"]["x-opcua-nodeId"].startswith("nsu=http://example.com/custom;")
+    assert first["schema"]["x-opcua-displayName"] == "Machine Type"
+    assert first["schema"]["x-opcua-description"] == "Machine object type"
+    assert first["schema"]["x-opcua-isAbstract"] is False
     assert isinstance(first["schema"]["properties"], dict)
     assert first["schema"]["properties"]["temperature"]["type"] == "number"
     assert first["schema"]["properties"]["running"]["type"] == "boolean"
+    assert first["schema"]["properties"]["temperature"]["x-opcua-nodeId"].startswith("nsu=http://example.com/custom;")
+    assert first["schema"]["properties"]["temperature"]["x-opcua-displayName"] == "Temperature"
+    assert first["schema"]["properties"]["temperature"]["x-opcua-description"] == "Current measured temperature"
+    assert first["schema"]["properties"]["temperature"]["x-opcua-modellingRule"] == "Mandatory"
+    assert first["schema"]["properties"]["temperature"]["x-opcua-value"] == 42.5
     assert first["related"] is None
 
 

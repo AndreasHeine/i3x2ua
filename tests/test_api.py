@@ -5,6 +5,7 @@ import json
 import os
 import time
 from collections.abc import Generator
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,6 +21,24 @@ from i3x_server.opcua.client import OpcUaNamespaceInfo, OpcUaSubscriptionCapabil
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
 from i3x_server.subscriptions.service import SubscriptionService
+
+
+@dataclass(slots=True)
+class FakeMachineThresholds:
+    min: float
+    max: float
+
+
+@dataclass(slots=True)
+class FakeMachineConfig:
+    thresholds: FakeMachineThresholds
+    mode: str
+
+
+class FakeExtensionObject:
+    def __init__(self, type_id: str, body: Any) -> None:
+        self.TypeId = type_id
+        self.Body = body
 
 
 def _fastapi_app(client: TestClient) -> FastAPI:
@@ -67,6 +86,7 @@ class FakeOpcUaClient:
                 properties={
                     "temperature": "i=11",
                     "running": "i=1",
+                    "config": "ns=1;i=3001",
                 },
                 members=[
                     SimpleNamespace(
@@ -87,6 +107,22 @@ class FakeOpcUaClient:
                         node_class="Variable",
                         data_type="i=1",
                         value=True,
+                        modelling_rule=None,
+                    ),
+                    SimpleNamespace(
+                        node_id="ns=1;i=2003",
+                        browse_name="config",
+                        display_name="Config",
+                        description="Machine configuration",
+                        node_class="Variable",
+                        data_type="ns=1;i=3001",
+                        value=FakeExtensionObject(
+                            "ns=1;i=3001",
+                            FakeMachineConfig(
+                                thresholds=FakeMachineThresholds(min=10.0, max=120.5),
+                                mode="auto",
+                            ),
+                        ),
                         modelling_rule=None,
                     ),
                 ],
@@ -273,6 +309,14 @@ def test_beta_objecttypes(client: TestClient) -> None:
     assert first["schema"]["properties"]["temperature"]["x-opcua-description"] == "Current measured temperature"
     assert first["schema"]["properties"]["temperature"]["x-opcua-modellingRule"] == "Mandatory"
     assert first["schema"]["properties"]["temperature"]["x-opcua-value"] == 42.5
+    config_schema = first["schema"]["properties"]["config"]
+    assert config_schema["type"] == "object"
+    assert config_schema["x-opcua-structureTypeId"] == "nsu=http://example.com/custom;i=3001"
+    assert config_schema["properties"]["mode"]["type"] == "string"
+    thresholds_schema = config_schema["properties"]["thresholds"]
+    assert thresholds_schema["type"] == "object"
+    assert thresholds_schema["properties"]["min"]["type"] == "number"
+    assert thresholds_schema["properties"]["max"]["type"] == "number"
     assert isinstance(first["related"], dict)
     assert [item["elementId"] for item in first["related"]["instances"]] == ["asset-root"]
     assert first["related"]["instances"][0]["metadata"]["relationships"]["HasChildren"] == [

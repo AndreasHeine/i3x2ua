@@ -1,0 +1,470 @@
+from __future__ import annotations
+
+import sys
+import types
+from dataclasses import dataclass, field
+from types import SimpleNamespace
+from typing import Any, cast
+
+from asyncua import ua
+
+from i3x_server.opcua.client import OpcUaNamespaceInfo, OpcUaObjectTypeInfo, OpcUaObjectTypeMemberInfo
+from i3x_server.schemas import objecttype_schema
+from i3x_server.schemas.objecttype_schema import build_object_type_schema
+
+
+@dataclass(slots=True)
+class FakeJobOrderState:
+    State: ua.String | None = None
+
+
+@dataclass(slots=True)
+class FakeJobOrderAndState:
+    JobOrderId: ua.String | None = None
+    Quantity: ua.Double | None = None
+    State: FakeJobOrderState = field(default_factory=FakeJobOrderState)
+
+
+class Variant:
+    def __init__(self, value: Any, variant_type_name: str, is_array: bool) -> None:
+        self.Value = value
+        self.VariantType = SimpleNamespace(name=variant_type_name)
+        self.Dimensions = [0] if is_array else None
+
+
+class DataValue:
+    def __init__(self, variant: Variant) -> None:
+        self.Value = variant
+
+
+class ExtensionObject:
+    def __init__(self, type_id: str, body: Any) -> None:
+        self.TypeId = type_id
+        self.Body = body
+
+
+@dataclass(slots=True)
+class RecursiveParameterDataType:
+    ID: ua.String | None = None
+    Value: Any | None = None
+    Subparameters: list[RecursiveParameterDataType] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class RecursiveWorkMasterDataType:
+    ID: ua.String | None = None
+    Parameters: list[RecursiveParameterDataType] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class RecursiveJobOrderDataType:
+    JobOrderID: ua.String | None = None
+    Description: list[str] = field(default_factory=list)
+    WorkMasterID: list[RecursiveWorkMasterDataType] = field(default_factory=list)
+    JobOrderParameters: list[RecursiveParameterDataType] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class RecursiveJobOrderAndStateDataType:
+    JobOrder: RecursiveJobOrderDataType | None = None
+    State: list[str] = field(default_factory=list)
+
+
+def _set_ua_attr(name: str, value: Any) -> None:
+    setattr(ua, name, value)
+
+
+def _assert_schema_type_contains(schema: dict[str, Any], expected: str) -> None:
+    schema_type = schema["type"]
+    if isinstance(schema_type, list):
+        assert expected in schema_type
+    else:
+        assert schema_type == expected
+
+
+def test_structured_array_schema_inferred_from_datatype_registry_when_value_empty() -> None:
+    _set_ua_attr("extension_objects_by_datatype", {"ns=1;i=3015": FakeJobOrderAndState})
+
+    member = OpcUaObjectTypeMemberInfo(
+        node_id="ns=22;i=6033",
+        browse_name="JobOrderList",
+        display_name="JobOrderList",
+        description="List of job orders",
+        node_class="Variable",
+        data_type="ns=1;i=3015",
+        modelling_rule="Mandatory",
+        value=[],
+        schema_value=DataValue(Variant([], "ExtensionObject", True)),
+        variant_type="ExtensionObject",
+        is_array=True,
+    )
+
+    item = OpcUaObjectTypeInfo(
+        node_id="ns=22;i=1002",
+        parent_node_id=None,
+        browse_name="ISA95JobOrderReceiverObjectType",
+        display_name="ISA95JobOrderReceiverObjectType",
+        properties={"JobOrderList": "ns=1;i=3015"},
+        members=[member],
+    )
+
+    schema = build_object_type_schema(
+        item=item,
+        object_types_by_node_id={item.node_id: item},
+        element_ids_by_node_id={item.node_id: "urn:opcua:objecttype:isa95joborderreceiver"},
+        namespace_infos=[
+            OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/", display_name="UA"),
+            OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/ISA95-JOBCONTROL_V2/", display_name="ISA95"),
+        ],
+    )
+
+    job_order_list_schema = schema["properties"]["JobOrderList"]
+    assert job_order_list_schema["type"] == "array"
+    assert job_order_list_schema["items"]["type"] == "object"
+    assert "x-opcua-structureTypeId" not in job_order_list_schema
+    assert job_order_list_schema["items"]["x-opcua-structureDataType"] == (
+        "nsu=http://opcfoundation.org/UA/ISA95-JOBCONTROL_V2/;i=3015"
+    )
+
+    item_def = job_order_list_schema["items"]
+    assert item_def["type"] == "object"
+    _assert_schema_type_contains(item_def["properties"]["JobOrderId"], "string")
+    _assert_schema_type_contains(item_def["properties"]["Quantity"], "number")
+    assert item_def["properties"]["State"]["type"] == "object"
+    _assert_schema_type_contains(item_def["properties"]["State"]["properties"]["State"], "string")
+
+
+def test_structured_array_schema_inferred_when_placeholder_extension_object_and_valuerank_array() -> None:
+    _set_ua_attr("extension_objects_by_datatype", {"ns=22;i=3015": FakeJobOrderAndState})
+
+    member = OpcUaObjectTypeMemberInfo(
+        node_id="ns=22;i=6033",
+        browse_name="JobOrderList",
+        display_name="JobOrderList",
+        description="List of job orders",
+        node_class="Variable",
+        data_type="ns=22;i=3015",
+        modelling_rule="Mandatory",
+        value={"TypeId": "i=0", "Body": None},
+        schema_value=DataValue(Variant(ExtensionObject("i=0", None), "ExtensionObject", False)),
+        variant_type="ExtensionObject",
+        is_array=False,
+        value_rank=1,
+    )
+
+    item = OpcUaObjectTypeInfo(
+        node_id="ns=22;i=1002",
+        parent_node_id=None,
+        browse_name="ISA95JobOrderReceiverObjectType",
+        display_name="ISA95JobOrderReceiverObjectType",
+        properties={"JobOrderList": "ns=22;i=3015"},
+        members=[member],
+    )
+
+    schema = build_object_type_schema(
+        item=item,
+        object_types_by_node_id={item.node_id: item},
+        element_ids_by_node_id={item.node_id: "urn:opcua:objecttype:isa95joborderreceiver"},
+        namespace_infos=[
+            OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/", display_name="UA"),
+            OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/ISA95-JOBCONTROL_V2/", display_name="ISA95"),
+        ],
+    )
+
+    job_order_list_schema = schema["properties"]["JobOrderList"]
+    assert job_order_list_schema["type"] == "array"
+    assert job_order_list_schema["items"]["type"] == "object"
+
+
+def test_recursive_datatype_annotations_resolve_nested_subschemas() -> None:
+    _set_ua_attr("RecursiveParameterDataType", RecursiveParameterDataType)
+    _set_ua_attr("RecursiveWorkMasterDataType", RecursiveWorkMasterDataType)
+    _set_ua_attr("RecursiveJobOrderDataType", RecursiveJobOrderDataType)
+    _set_ua_attr("RecursiveJobOrderAndStateDataType", RecursiveJobOrderAndStateDataType)
+    _set_ua_attr(
+        "extension_objects_by_datatype",
+        {
+            "ns=22;i=3015": RecursiveJobOrderAndStateDataType,
+        },
+    )
+
+    member = OpcUaObjectTypeMemberInfo(
+        node_id="ns=22;i=6033",
+        browse_name="JobOrderList",
+        display_name="JobOrderList",
+        description="List of job orders",
+        node_class="Variable",
+        data_type="ns=22;i=3015",
+        modelling_rule="Mandatory",
+        value=[],
+        schema_value=DataValue(Variant([], "ExtensionObject", True)),
+        variant_type="ExtensionObject",
+        is_array=True,
+        value_rank=1,
+    )
+
+    item = OpcUaObjectTypeInfo(
+        node_id="ns=22;i=1002",
+        parent_node_id=None,
+        browse_name="ISA95JobOrderReceiverObjectType",
+        display_name="ISA95JobOrderReceiverObjectType",
+        properties={"JobOrderList": "ns=22;i=3015"},
+        members=[member],
+    )
+
+    schema = build_object_type_schema(
+        item=item,
+        object_types_by_node_id={item.node_id: item},
+        element_ids_by_node_id={item.node_id: "urn:opcua:objecttype:isa95joborderreceiver"},
+        namespace_infos=[
+            OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/", display_name="UA"),
+            OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/ISA95-JOBCONTROL_V2/", display_name="ISA95"),
+        ],
+    )
+
+    items_schema = schema["properties"]["JobOrderList"]["items"]
+    job_order_schema = items_schema["properties"]["JobOrder"]
+    assert (
+        "object" in job_order_schema["type"]
+        if isinstance(job_order_schema["type"], list)
+        else job_order_schema["type"] == "object"
+    )
+    job_order_def = job_order_schema
+    _assert_schema_type_contains(job_order_def["properties"]["JobOrderID"], "string")
+    assert job_order_def["properties"]["Description"]["type"] == "array"
+    assert job_order_def["properties"]["WorkMasterID"]["items"]["type"] == "object"
+    parameter_schema = job_order_def["properties"]["JobOrderParameters"]["items"]
+    assert parameter_schema["type"] == "object"
+    _assert_schema_type_contains(parameter_schema["properties"]["ID"], "string")
+    subparameter_items = parameter_schema["properties"]["Subparameters"]["items"]
+    assert subparameter_items["type"] == "object"
+    assert "$ref" in subparameter_items["properties"]["Subparameters"]["items"]
+
+
+def test_unresolved_datatype_annotation_falls_back_to_object() -> None:
+    schema = objecttype_schema._schema_for_annotation_string(
+        "ua.UnknownCustomDataType", objecttype_schema._SchemaRegistry()
+    )
+    assert schema["type"] == "object"
+    assert schema["title"] == "UnknownCustomDataType"
+
+
+def test_forwardref_annotation_is_resolved_as_structure() -> None:
+    class _Nested:
+        __annotations__ = {"ID": "ua.String"}
+
+    _set_ua_attr("ForwardRefNested", _Nested)
+
+    class _ForwardRef:
+        __forward_arg__ = "ua.ForwardRefNested"
+
+    schema = objecttype_schema._schema_for_annotation(_ForwardRef(), objecttype_schema._SchemaRegistry())
+    assert schema["type"] == "object"
+    assert schema["properties"]["ID"]["type"] == "string"
+
+
+def test_non_dataclass_structured_class_with_annotations_is_resolved() -> None:
+    class _AnnotatedOnlyType:
+        __annotations__ = {"JobOrderID": "ua.String", "Priority": "ua.Int16"}
+
+    _set_ua_attr("AnnotatedOnlyType", _AnnotatedOnlyType)
+    schema = objecttype_schema._schema_for_annotation_string(
+        "ua.AnnotatedOnlyType", objecttype_schema._SchemaRegistry()
+    )
+    assert schema["type"] == "object"
+    assert schema["properties"]["Priority"]["type"] == "integer"
+
+
+def test_dataclass_docstring_vartype_override_applies_for_ambiguous_annotations() -> None:
+    class _DocNested:
+        __annotations__ = {"ID": "ua.String"}
+
+    @dataclass(slots=True)
+    class _DocCarrier:
+        """
+        :vartype JobOrder: ua.DocNested
+        """
+
+        JobOrder: ua.String | None = None
+
+    _set_ua_attr("DocNested", _DocNested)
+
+    registry = objecttype_schema._SchemaRegistry()
+    schema = objecttype_schema._structure_schema_for_type(_DocCarrier, registry)
+    assert schema["properties"]["JobOrder"]["type"] == "object"
+    assert schema["properties"]["JobOrder"]["properties"]["ID"]["type"] == "string"
+
+
+def test_dataclass_ua_types_override_applies_for_ambiguous_annotations() -> None:
+    class _UaNested:
+        __annotations__ = {"ID": "ua.String"}
+
+    @dataclass(slots=True)
+    class _UaCarrier:
+        JobOrder: ua.String | None = None
+
+    cast(Any, _UaCarrier).ua_types = [("JobOrder", "ua.UaNested")]
+    _set_ua_attr("UaNested", _UaNested)
+
+    registry = objecttype_schema._SchemaRegistry()
+    schema = objecttype_schema._structure_schema_for_type(_UaCarrier, registry)
+    assert schema["properties"]["JobOrder"]["type"] == "object"
+    assert schema["properties"]["JobOrder"]["properties"]["ID"]["type"] == "string"
+
+
+def test_module_path_resolution_inlines_structured_annotation() -> None:
+    schema = objecttype_schema._schema_for_annotation_string(
+        "asyncua.common.structures104.isa95joborderdatatype",
+        objecttype_schema._SchemaRegistry(),
+    )
+    assert schema["type"] == "object"
+    assert "$ref" not in schema
+
+
+def test_loaded_structures_module_name_resolution_supports_recursive_arrays() -> None:
+    module = types.ModuleType("asyncua.common.structures999")
+    module_any = cast(Any, module)
+
+    @dataclass(slots=True)
+    class _Parameter:
+        Subparameters: list[Any] = field(default_factory=list)
+
+    module_any.ISA95ParameterDataType = _Parameter
+    sys.modules[module.__name__] = module
+    try:
+        schema = objecttype_schema._schema_for_annotation_string(
+            "ua.ISA95ParameterDataType",
+            objecttype_schema._SchemaRegistry(),
+        )
+        assert schema["type"] == "object"
+    finally:
+        sys.modules.pop(module.__name__, None)
+
+
+def test_expand_schema_refs_inlines_nested_refs() -> None:
+    defs = {
+        "nested": {"type": "object", "properties": {"x": {"type": "string"}}},
+        "outer": {"type": "object", "properties": {"inner": {"$ref": "#/$defs/nested"}}},
+    }
+    schema = {"$ref": "#/$defs/outer"}
+    expanded = objecttype_schema._expand_schema_refs(schema, defs)
+    assert expanded["properties"]["inner"]["properties"]["x"]["type"] == "string"
+
+
+def test_expand_schema_refs_preserves_recursive_boundary_ref() -> None:
+    defs = {
+        "recursive": {
+            "type": "object",
+            "properties": {
+                "children": {
+                    "type": "array",
+                    "items": {"$ref": "#/$defs/recursive"},
+                }
+            },
+        }
+    }
+    schema = {"$ref": "#/$defs/recursive"}
+    expanded = objecttype_schema._expand_schema_refs(schema, defs)
+    assert expanded["type"] == "object"
+    assert expanded["properties"]["children"]["type"] == "array"
+    assert expanded["properties"]["children"]["items"]["$ref"] == "#/$defs/recursive"
+
+
+def test_generated_dep_annotation_is_evaluated_in_owner_module_context() -> None:
+    module = types.ModuleType("generated.owner")
+    module_any = cast(Any, module)
+
+    @dataclass(slots=True)
+    class _Nested:
+        ID: ua.String | None = None
+
+    module_any._dep_0 = _Nested
+    sys.modules[module.__name__] = module
+    try:
+        carrier_cls = type("Carrier", (), {"__module__": module.__name__, "__annotations__": {"Child": "_dep_0"}})
+        _Carrier: type[Any] = dataclass(carrier_cls)
+        registry = objecttype_schema._SchemaRegistry()
+        schema = objecttype_schema._structure_schema_for_type(_Carrier, registry)
+        assert schema["properties"]["Child"]["type"] == "object"
+    finally:
+        sys.modules.pop(module.__name__, None)
+
+
+def test_uint32_annotation_maps_to_integer() -> None:
+    schema = objecttype_schema._schema_for_annotation(ua.UInt32, objecttype_schema._SchemaRegistry())
+    assert schema["type"] == "integer"
+
+
+def test_guess_generated_dependency_type_prefers_parameter_for_joborderparameters() -> None:
+    module = types.ModuleType("asyncua.common.structures777")
+    module_any = cast(Any, module)
+
+    @dataclass(slots=True)
+    class ISA95JobOrderDataType:
+        pass
+
+    @dataclass(slots=True)
+    class ISA95ParameterDataType:
+        pass
+
+    ISA95JobOrderDataType.__module__ = module.__name__
+    ISA95ParameterDataType.__module__ = module.__name__
+
+    module_any.ISA95JobOrderDataType = ISA95JobOrderDataType
+    module_any.ISA95ParameterDataType = ISA95ParameterDataType
+    sys.modules[module.__name__] = module
+    try:
+        guessed = objecttype_schema._guess_generated_dependency_type("JobOrderParameters", ISA95JobOrderDataType)
+        assert guessed is ISA95ParameterDataType
+    finally:
+        sys.modules.pop(module.__name__, None)
+
+
+def test_guess_generated_dependency_type_prefers_workmaster_for_workmasterid() -> None:
+    module = types.ModuleType("asyncua.common.structures778")
+    module_any = cast(Any, module)
+
+    @dataclass(slots=True)
+    class ISA95WorkMasterDataType:
+        pass
+
+    @dataclass(slots=True)
+    class ISA95ParameterDataType:
+        pass
+
+    ISA95WorkMasterDataType.__module__ = module.__name__
+    ISA95ParameterDataType.__module__ = module.__name__
+
+    module_any.ISA95WorkMasterDataType = ISA95WorkMasterDataType
+    module_any.ISA95ParameterDataType = ISA95ParameterDataType
+    sys.modules[module.__name__] = module
+    try:
+        guessed = objecttype_schema._guess_generated_dependency_type("WorkMasterID", ISA95WorkMasterDataType)
+        assert guessed is ISA95WorkMasterDataType
+    finally:
+        sys.modules.pop(module.__name__, None)
+
+
+def test_guess_generated_dependency_type_prefers_personnel_for_personnelrequirements() -> None:
+    module = types.ModuleType("asyncua.common.structures779")
+    module_any = cast(Any, module)
+
+    @dataclass(slots=True)
+    class ISA95PersonnelDataType:
+        pass
+
+    @dataclass(slots=True)
+    class ISA95ParameterDataType:
+        pass
+
+    ISA95PersonnelDataType.__module__ = module.__name__
+    ISA95ParameterDataType.__module__ = module.__name__
+
+    module_any.ISA95PersonnelDataType = ISA95PersonnelDataType
+    module_any.ISA95ParameterDataType = ISA95ParameterDataType
+    sys.modules[module.__name__] = module
+    try:
+        guessed = objecttype_schema._guess_generated_dependency_type("PersonnelRequirements", ISA95PersonnelDataType)
+        assert guessed is ISA95PersonnelDataType
+    finally:
+        sys.modules.pop(module.__name__, None)

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from datetime import datetime
 from pathlib import Path
 from time import perf_counter
@@ -52,6 +52,10 @@ class OpcUaObjectTypeMemberInfo:
     data_type: str | None
     modelling_rule: str | None = None
     value: Any = None
+    schema_value: Any = None
+    variant_type: str | None = None
+    is_array: bool | None = None
+    value_rank: int | None = None
 
 
 @dataclass(slots=True)
@@ -906,7 +910,12 @@ class OpcUaClient:
         ) -> tuple[str, OpcUaObjectTypeMemberInfo]:
             async with semaphore:
                 data_type = await self._read_data_type_or_none(node) if node_class == NodeClass.Variable else None
-                value = await self._read_value_or_none(node) if node_class == NodeClass.Variable else None
+                data_value = await self._read_data_value_or_none(node) if node_class == NodeClass.Variable else None
+                value = _variant_value_or_self(data_value)
+                variant_type, is_array = _variant_metadata(data_value)
+                value_rank = await self._read_value_rank_or_none(node) if node_class == NodeClass.Variable else None
+                if value_rank is not None and value_rank >= 1:
+                    is_array = True
                 modelling_rule = await self._read_modelling_rule_or_none(node)
                 description = await self._read_description_or_none(node)
                 return (
@@ -919,6 +928,10 @@ class OpcUaClient:
                         node_class=node_class.name,
                         data_type=data_type,
                         value=_to_json_compatible(value),
+                        schema_value=data_value if data_value is not None else value,
+                        variant_type=variant_type,
+                        is_array=is_array,
+                        value_rank=value_rank,
                         modelling_rule=modelling_rule,
                     ),
                 )
@@ -973,12 +986,27 @@ class OpcUaClient:
             )
             return None
 
-    async def _read_value_or_none(self, node: Any) -> Any:
+    async def _read_data_value_or_none(self, node: Any) -> Any:
         try:
-            return await node.read_value()
+            return await node.read_data_value()
         except Exception:
             logger.debug(
-                "OPC UA value read failed endpoint=%s node_id=%s",
+                "OPC UA data value read failed endpoint=%s node_id=%s",
+                self._endpoint,
+                node.nodeid.to_string(),
+                exc_info=True,
+            )
+            return None
+
+    async def _read_value_rank_or_none(self, node: Any) -> int | None:
+        try:
+            value_rank = await node.read_value_rank()
+            if isinstance(value_rank, int):
+                return value_rank
+            return int(value_rank)
+        except Exception:
+            logger.debug(
+                "OPC UA value rank read failed endpoint=%s node_id=%s",
                 self._endpoint,
                 node.nodeid.to_string(),
                 exc_info=True,
@@ -1380,8 +1408,56 @@ def _to_json_compatible(value: Any) -> Any:
         return value
     if isinstance(value, datetime):
         return value.isoformat()
+    if is_dataclass(value):
+        return {item.name: _to_json_compatible(getattr(value, item.name)) for item in fields(value)}
     if isinstance(value, (list, tuple)):
         return [_to_json_compatible(item) for item in value]
     if isinstance(value, dict):
         return {str(key): _to_json_compatible(item) for key, item in value.items()}
+    if hasattr(value, "__dict__") and type(value).__module__ != "builtins":
+        return {
+            str(key): _to_json_compatible(item)
+            for key, item in vars(value).items()
+            if not key.startswith("_") and not callable(item)
+        }
     return str(value)
+
+
+def _variant_value_or_self(data_value: Any) -> Any:
+    if data_value is None:
+        return None
+    variant = getattr(data_value, "Value", None)
+    if variant is None:
+        return data_value
+    return getattr(variant, "Value", variant)
+
+
+def _variant_metadata(data_value: Any) -> tuple[str | None, bool | None]:
+    if data_value is None:
+        return None, None
+    variant = getattr(data_value, "Value", None)
+    if variant is None:
+        return None, None
+
+    variant_type = getattr(variant, "VariantType", None)
+    variant_type_name = None
+    if variant_type is not None:
+        variant_type_name = str(getattr(variant_type, "name", variant_type))
+
+    is_array = None
+    array_type = getattr(variant, "is_array", None)
+    if callable(array_type):
+        try:
+            is_array = bool(array_type())
+        except Exception:
+            is_array = None
+    if is_array is None:
+        dims = getattr(variant, "Dimensions", None)
+        if dims:
+            is_array = True
+    if is_array is None:
+        candidate_value = getattr(variant, "Value", None)
+        if isinstance(candidate_value, (list, tuple)):
+            is_array = True
+
+    return variant_type_name, is_array

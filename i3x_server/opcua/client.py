@@ -223,7 +223,10 @@ class OpcUaClient:
             self._limits_cache.max_nodes_per_read,
         )
         logger.info(
-            "OPC UA connect phases endpoint=%s security_s=%.3f session_s=%.3f typedef_s=%.3f limits_s=%.3f total_s=%.3f",
+            (
+                "OPC UA connect phases endpoint=%s security_s=%.3f session_s=%.3f "
+                "typedef_s=%.3f limits_s=%.3f total_s=%.3f"
+            ),
             self._endpoint,
             security_duration_s,
             session_duration_s,

@@ -4,7 +4,7 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from starlette.requests import Request
 
 from i3x_server.dependencies import (
@@ -52,11 +52,11 @@ def test_dependency_getters_return_initialized_instances() -> None:
 
 def test_dependency_getters_raise_when_missing() -> None:
     request = _request_with_state(SimpleNamespace())
-    with pytest.raises(Exception):
+    with pytest.raises(HTTPException):
         get_model_builder(request)
-    with pytest.raises(Exception):
+    with pytest.raises(HTTPException):
         get_opcua_client(request)
-    with pytest.raises(Exception):
+    with pytest.raises(HTTPException):
         get_subscription_service(request)
 
 

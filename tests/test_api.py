@@ -437,6 +437,59 @@ def test_beta_value_query_serializes_binary_values(client: TestClient) -> None:
     }
 
 
+def test_beta_value_query_serializes_structured_object_arrays(client: TestClient) -> None:
+    async def read_values(node_ids: list[str]) -> list[Any]:
+        assert node_ids == ["ns=2;s=Temperature"]
+        return [
+            [
+                FakeExtensionObject(
+                    "ns=1;i=3001",
+                    FakeMachineConfig(
+                        thresholds=FakeMachineThresholds(min=10.0, max=120.5),
+                        mode="auto",
+                    ),
+                ),
+                FakeExtensionObject(
+                    "ns=1;i=3001",
+                    FakeMachineConfig(
+                        thresholds=FakeMachineThresholds(min=12.0, max=130.0),
+                        mode="manual",
+                    ),
+                ),
+            ]
+        ]
+
+    _fastapi_app(client).state.opcua_client.read_values = read_values
+
+    response = client.post(
+        "/v1/objects/value",
+        json={
+            "elementIds": ["property-abc"],
+            "maxDepth": 1,
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    assert payload["results"][0]["success"] is True
+    assert payload["results"][0]["result"]["value"] == [
+        {
+            "TypeId": "ns=1;i=3001",
+            "Body": {
+                "thresholds": {"min": 10.0, "max": 120.5},
+                "mode": "auto",
+            },
+        },
+        {
+            "TypeId": "ns=1;i=3001",
+            "Body": {
+                "thresholds": {"min": 12.0, "max": 130.0},
+                "mode": "manual",
+            },
+        },
+    ]
+
+
 def test_beta_history_query_serializes_binary_values(client: TestClient) -> None:
     _fastapi_app(client).state.opcua_client.history_values["ns=2;s=Temperature"] = [
         SimpleNamespace(

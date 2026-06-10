@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import re
+from dataclasses import fields, is_dataclass
 from datetime import datetime, timezone
 from typing import Any, Generic, TypeVar
 
@@ -589,10 +590,20 @@ def _to_json_safe_value(value: Any) -> Any:
     if isinstance(value, (bytes, bytearray, memoryview)):
         encoded = base64.b64encode(bytes(value)).decode("ascii")
         return {"encoding": "base64", "data": encoded}
+    if isinstance(value, BaseModel):
+        return _to_json_safe_value(value.model_dump(mode="json", by_alias=True))
+    if is_dataclass(value):
+        return {item.name: _to_json_safe_value(getattr(value, item.name)) for item in fields(value)}
     if isinstance(value, (list, tuple, set)):
         return [_to_json_safe_value(item) for item in value]
     if isinstance(value, dict):
         return {str(key): _to_json_safe_value(item) for key, item in value.items()}
+    if hasattr(value, "__dict__") and type(value).__module__ != "builtins":
+        return {
+            str(key): _to_json_safe_value(item)
+            for key, item in vars(value).items()
+            if not key.startswith("_") and not callable(item)
+        }
     return str(value)
 
 

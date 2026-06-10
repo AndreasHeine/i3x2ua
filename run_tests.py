@@ -6,11 +6,10 @@ Commands:
 3) uv run pytest -q --cov=i3x_server --cov-report=term-missing
 """
 
-import subprocess
-import sys
-
 from __future__ import annotations
 
+import subprocess
+import sys
 
 COMMANDS: list[list[str]] = [
     ["uv", "run", "ruff", "format", "."],

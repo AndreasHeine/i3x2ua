@@ -10,7 +10,7 @@ from dataclasses import MISSING, fields, is_dataclass
 from datetime import datetime
 from enum import Enum
 from types import ModuleType
-from typing import Any, cast, get_args, get_origin
+from typing import Any, get_args, get_origin
 
 from asyncua import ua
 

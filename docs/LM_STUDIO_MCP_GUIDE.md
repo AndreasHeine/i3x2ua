@@ -58,6 +58,21 @@ Common tools you can expect include:
 
 `streamSubscription` is not exposed as a normal tool because it is an SSE stream.
 
+## Tool Overrides
+
+You can tune tool descriptions, priorities, and keywords by editing [tool_overrides.json](../tool_overrides.json) at the repository root. The server loads that file at startup and merges any matching overrides into the generated MCP tool catalog.
+
+If you want LM Studio to use that metadata more intentionally, add these rules to your system prompt:
+
+```text
+Tool selection rules:
+- Prefer tools with priority "high".
+- Avoid tools with priority "low" unless explicitly asked.
+- Match user intent using the tool's keywords.
+- Never call getInfo unless the user explicitly asks for server info.
+- Choose the tool whose name and description most closely match the user's request.
+```
+
 ## How To Use It In Prompts
 
 Ask LM Studio questions that map naturally to the API:

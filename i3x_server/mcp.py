@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -12,6 +14,19 @@ from fastapi.responses import JSONResponse, Response
 from i3x_server.errors import i3x_http_error
 
 MCP_EXCLUDED_OPERATION_IDS = {"streamSubscription"}
+
+
+def load_overrides(path: str | Path = "tool_overrides.json") -> dict[str, Any]:
+    override_path = Path(path)
+    if not override_path.is_absolute():
+        override_path = Path(__file__).resolve().parents[1] / override_path
+    if not override_path.exists():
+        return {}
+
+    with override_path.open("r", encoding="utf-8") as file:
+        overrides = json.load(file)
+
+    return overrides if isinstance(overrides, dict) else {}
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,12 +39,20 @@ class McpToolDefinition:
     path_parameters: tuple[str, ...]
     query_parameters: tuple[str, ...]
     body_required: bool
+    priority: str = "normal"
+    keywords: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
-def build_mcp_tools(openapi_spec: Mapping[str, Any]) -> dict[str, McpToolDefinition]:
+def build_mcp_tools(
+    openapi_spec: Mapping[str, Any],
+    overrides: Mapping[str, Any] | None = None,
+) -> dict[str, McpToolDefinition]:
+    if overrides is None:
+        overrides = load_overrides()
+
     components = openapi_spec.get("components")
     if not isinstance(components, Mapping):
         components = {}
@@ -80,9 +103,17 @@ def build_mcp_tools(openapi_spec: Mapping[str, Any]) -> dict[str, McpToolDefinit
                     if body_required:
                         required.append("body")
 
+            override = overrides.get(operation_id, {}) if isinstance(overrides, Mapping) else {}
+            if not isinstance(override, Mapping):
+                override = {}
+
+            keywords = override.get("keywords", [])
+            if not isinstance(keywords, list):
+                keywords = []
+
             tools[operation_id] = McpToolDefinition(
                 name=operation_id,
-                description=str(details.get("summary") or details.get("description") or ""),
+                description=str(override.get("description") or details.get("summary") or details.get("description") or ""),
                 method=method.upper(),
                 path=path,
                 input_schema={
@@ -94,6 +125,8 @@ def build_mcp_tools(openapi_spec: Mapping[str, Any]) -> dict[str, McpToolDefinit
                 path_parameters=tuple(path_parameters),
                 query_parameters=tuple(query_parameters),
                 body_required=body_required,
+                priority=str(override.get("priority") or "normal"),
+                keywords=tuple(str(keyword) for keyword in keywords if isinstance(keyword, str)),
             )
 
     return tools

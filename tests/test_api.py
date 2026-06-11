@@ -1139,6 +1139,13 @@ def test_mcp_tools_are_generated_from_openapi(client: TestClient) -> None:
     assert "queryLastKnownValues" in tools
     assert "streamSubscription" not in tools
 
+    namespaces_tool = tools["getNamespaces"]
+    assert namespaces_tool["description"] == (
+        "List all namespaces. Use this tool whenever the user asks about namespaces, available namespaces, or exploring the data model."
+    )
+    assert namespaces_tool["priority"] == "high"
+    assert namespaces_tool["keywords"] == ["namespaces", "list namespaces", "available namespaces"]
+
     value_tool = tools["queryLastKnownValues"]
     assert value_tool["method"] == "POST"
     assert value_tool["path"] == "/objects/value"

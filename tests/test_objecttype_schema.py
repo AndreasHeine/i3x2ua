@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sys
 import types
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, make_dataclass
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -355,6 +355,92 @@ def test_loaded_structures_module_name_resolution_supports_recursive_arrays() ->
         assert schema == {"$ref": "#/$defs/Parameter"}
     finally:
         sys.modules.pop(module.__name__, None)
+
+
+def test_localizedtext_deduplicates_across_distinct_runtime_types() -> None:
+    module = types.ModuleType("asyncua.common.structures902")
+    module_any = cast(Any, module)
+
+    localized_text_runtime = make_dataclass(
+        "LocalizedText",
+        [("Locale", str | None, None), ("Text", str | None, None)],
+        slots=True,
+    )
+    localized_text_runtime.__module__ = module.__name__
+    module_any.LocalizedText = localized_text_runtime
+    sys.modules[module.__name__] = module
+
+    localized_text_ua = make_dataclass(
+        "LocalizedText",
+        [("Locale", str | None, None), ("Text", str | None, None)],
+        slots=True,
+    )
+    _set_ua_attr("LocalizedText", localized_text_ua)
+
+    try:
+        registry = objecttype_schema._SchemaRegistry()
+        from_ua = objecttype_schema._schema_for_annotation_string("ua.LocalizedText", registry)
+        from_module = objecttype_schema._schema_for_annotation_string(
+            "asyncua.common.structures902.LocalizedText",
+            registry,
+        )
+
+        assert from_ua == {"$ref": "#/$defs/LocalizedText"}
+        assert from_module == {"$ref": "#/$defs/LocalizedText"}
+        assert list(registry.defs.keys()) == ["LocalizedText"]
+    finally:
+        sys.modules.pop(module.__name__, None)
+
+
+def test_localizedtext_deduplicates_between_value_and_annotation_paths() -> None:
+    @dataclass(slots=True)
+    class LocalizedText:
+        Encoding: int = 0
+        Locale: str | None = None
+        Text: str | None = None
+
+    _set_ua_attr("LocalizedText", LocalizedText)
+    registry = objecttype_schema._SchemaRegistry()
+
+    value_ref = objecttype_schema._reference_or_register_structure(
+        "py-structure:test.localizedtextvalue",
+        LocalizedText(),
+        registry,
+        {},
+    )
+    annotation_ref = objecttype_schema._schema_for_annotation_string("ua.LocalizedText", registry)
+
+    assert value_ref == {"$ref": "#/$defs/LocalizedText"}
+    assert annotation_ref == {"$ref": "#/$defs/LocalizedText"}
+    assert list(registry.defs.keys()) == ["LocalizedText"]
+
+
+def test_isa95_workmaster_deduplicates_between_annotation_and_datatype_paths() -> None:
+    @dataclass(slots=True)
+    class ISA95WorkMasterDataType:
+        ID: str | None = None
+
+    registry = objecttype_schema._SchemaRegistry()
+
+    from_annotation = objecttype_schema._reference_or_register_structure_from_type(
+        "py-annotation:test.isa95workmasterdatatype",
+        ISA95WorkMasterDataType,
+        registry,
+        {},
+    )
+    from_datatype = objecttype_schema._reference_or_register_structure_from_type(
+        "opcua-datatype:nsu=http://opcfoundation.org/ua/isa95-jobcontrol_v2/;i=3007",
+        ISA95WorkMasterDataType,
+        registry,
+        {"x-opcua-structureDataType": "nsu=http://opcfoundation.org/UA/ISA95-JOBCONTROL_V2/;i=3007"},
+    )
+
+    assert from_annotation == {"$ref": "#/$defs/ISA95WorkMasterDataType"}
+    assert from_datatype == {"$ref": "#/$defs/ISA95WorkMasterDataType"}
+    assert "ISA95WorkMasterDataType_2" not in registry.defs
+    assert registry.defs["ISA95WorkMasterDataType"]["x-opcua-structureDataType"] == (
+        "nsu=http://opcfoundation.org/UA/ISA95-JOBCONTROL_V2/;i=3007"
+    )
 
 
 def test_expand_schema_refs_inlines_nested_refs() -> None:

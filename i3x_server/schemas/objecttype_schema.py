@@ -32,6 +32,9 @@ class _SchemaRegistry:
         definition_name = self._definition_by_key[key]
         return {"$ref": f"#/$defs/{definition_name}"}
 
+    def definition_name_for(self, key: str) -> str:
+        return self._definition_by_key[key]
+
     def reserve(self, key: str, definition_name: str) -> None:
         self._definition_by_key[key] = definition_name
         self._used_definition_names.add(definition_name)
@@ -327,13 +330,20 @@ def _reference_or_register_structure(
     registry: _SchemaRegistry,
     metadata: dict[str, Any],
 ) -> dict[str, Any]:
+    canonical_key = _canonical_schema_key_for_structure_value(structure_value)
+
     if registry.has(schema_key):
+        ref = registry.ref_for(schema_key)
+    elif canonical_key and registry.has(canonical_key):
+        registry.reserve(schema_key, registry.definition_name_for(canonical_key))
         ref = registry.ref_for(schema_key)
     else:
         preferred_name = type(structure_value).__name__
         if isinstance(structure_value, Mapping):
             preferred_name = "MappedStructure"
         definition_name = registry.allocate(schema_key, preferred_name)
+        if canonical_key and not registry.has(canonical_key):
+            registry.reserve(canonical_key, definition_name)
         structure_schema = _structure_object_schema(structure_value, registry)
         for key, value in metadata.items():
             structure_schema[key] = value
@@ -506,16 +516,68 @@ def _reference_or_register_structure_from_type(
     registry: _SchemaRegistry,
     metadata: dict[str, Any],
 ) -> dict[str, Any]:
+    canonical_key = _canonical_schema_key_for_type(structure_type)
+
     if registry.has(schema_key):
+        _merge_metadata_into_registered_definition(registry, schema_key, metadata)
+        ref = registry.ref_for(schema_key)
+    elif canonical_key and registry.has(canonical_key):
+        registry.reserve(schema_key, registry.definition_name_for(canonical_key))
+        _merge_metadata_into_registered_definition(registry, schema_key, metadata)
         ref = registry.ref_for(schema_key)
     else:
         definition_name = registry.allocate(schema_key, structure_type.__name__)
+        if canonical_key and not registry.has(canonical_key):
+            registry.reserve(canonical_key, definition_name)
         structure_schema = _structure_schema_for_type(structure_type, registry)
         for key, value in metadata.items():
             structure_schema[key] = value
         registry.set_definition(definition_name, structure_schema)
         ref = registry.ref_for(schema_key)
     return ref
+
+
+def _canonical_schema_key_for_type(structure_type: type[Any]) -> str | None:
+    type_name = structure_type.__name__
+    core_name = _structure_core_name(type_name)
+    if core_name == "localizedtext":
+        return "canonical-structure:localizedtext"
+
+    if type_name.startswith("ISA95") and type_name.endswith("DataType"):
+        return f"canonical-structure:isa95-datatype:{core_name}"
+
+    return None
+
+
+def _canonical_schema_key_for_structure_value(structure_value: Any) -> str | None:
+    type_name = type(structure_value).__name__
+    core_name = _structure_core_name(type_name)
+    if core_name == "localizedtext":
+        return "canonical-structure:localizedtext"
+
+    if isinstance(structure_value, Mapping):
+        keys = {str(key).lower() for key in structure_value.keys()}
+        if keys.issubset({"encoding", "locale", "text"}) and {"locale", "text"}.issubset(keys):
+            return "canonical-structure:localizedtext"
+
+    return None
+
+
+def _merge_metadata_into_registered_definition(
+    registry: _SchemaRegistry,
+    schema_key: str,
+    metadata: dict[str, Any],
+) -> None:
+    if not metadata or not registry.has(schema_key):
+        return
+
+    definition_name = registry.definition_name_for(schema_key)
+    definition = registry.defs.get(definition_name)
+    if not isinstance(definition, dict):
+        return
+
+    for key, value in metadata.items():
+        definition.setdefault(key, value)
 
 
 def _structure_schema_for_type(structure_type: type[Any], registry: _SchemaRegistry) -> dict[str, Any]:
@@ -655,22 +717,6 @@ def _schema_for_annotation_string(annotation: str, registry: _SchemaRegistry) ->
     scalar_map: dict[str, dict[str, Any]] = {
         "ua.string": {"type": "string"},
         "string": {"type": "string"},
-        "ua.localizedtext": {
-            "type": "object",
-            "properties": {
-                "Locale": {"type": ["string", "null"]},
-                "Text": {"type": ["string", "null"]},
-            },
-            "additionalProperties": False,
-        },
-        "localizedtext": {
-            "type": "object",
-            "properties": {
-                "Locale": {"type": ["string", "null"]},
-                "Text": {"type": ["string", "null"]},
-            },
-            "additionalProperties": False,
-        },
         "ua.euinformation": {"type": "object"},
         "euinformation": {"type": "object"},
         "ua.basedatatype": {},

@@ -143,6 +143,15 @@ class FakeOpcUaClient:
     async def read_value(self, node_id: str) -> Any:
         return self.values[node_id]
 
+    async def read_browse_name(self, node_id: str) -> str | None:
+        if node_id == "ns=0;i=17364":
+            return "NetworkAddressDataType"
+        if node_id == "ns=0;i=865":
+            return "SessionDiagnosticsDataType"
+        if node_id == "ns=0;i=96":
+            return "RolePermissionType"
+        return None
+
     async def read_values(self, node_ids: list[str]) -> list[Any]:
         self._reads += 1
         results: list[Any] = []
@@ -356,6 +365,31 @@ def test_beta_objecttypes(client: TestClient) -> None:
     assert [item["elementId"] for item in second["related"]["instances"]] == ["sensor-root"]
 
 
+def test_beta_objecttypes_namespace_uri_is_declared(client: TestClient) -> None:
+    namespaces_response = client.get("/v1/namespaces")
+    assert namespaces_response.status_code == 200
+    namespaces_payload = namespaces_response.json()
+    assert namespaces_payload["success"] is True
+    declared_namespaces = {item["uri"] for item in namespaces_payload["result"]}
+
+    object_types_response = client.get("/v1/objecttypes")
+    assert object_types_response.status_code == 200
+    object_types_payload = object_types_response.json()
+    assert object_types_payload["success"] is True
+
+    missing = [item for item in object_types_payload["result"] if item["namespaceUri"] not in declared_namespaces]
+    assert missing == []
+
+
+def test_beta_objecttypes_namespace_filter_is_canonicalized(client: TestClient) -> None:
+    response = client.get("/v1/objecttypes", params={"namespaceUri": "HTTP://EXAMPLE.COM/CUSTOM/"})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    assert len(payload["result"]) > 0
+    assert all(item["namespaceUri"] == "http://example.com/custom" for item in payload["result"])
+
+
 def test_beta_objecttypes_query(client: TestClient) -> None:
     list_response = client.get("/v1/objecttypes")
     assert list_response.status_code == 200
@@ -398,8 +432,38 @@ def test_beta_objecttypes_includes_builtin_scalar_datatype_reference(client: Tes
         None,
     )
     assert builtin is not None
-    assert builtin["elementId"] == "nsu=http://opcfoundation.org/UA/;i=12"
+    assert builtin["elementId"].startswith("urn:opcua:objecttype:")
     assert builtin["displayName"] != "UnknownType"
+
+
+def test_beta_objecttypes_includes_builtin_localizedtext_structured_schema(client: TestClient) -> None:
+    app = _fastapi_app(client)
+    app.state.model_cache.nodes_by_id["property-builtin-21"] = ModelNode(
+        id="property-builtin-21",
+        name="BuiltinLocalizedText",
+        kind="property",
+        type="ns=0;i=21",
+        children=[],
+        source_node_id="ns=2;s=BuiltinLocalizedText",
+    )
+    app.state.model_cache.children_by_id.setdefault("asset-root", []).append("property-builtin-21")
+    app.state.model_cache.children_by_id["property-builtin-21"] = []
+    app.state.model_cache.property_to_node["property-builtin-21"] = "ns=2;s=BuiltinLocalizedText"
+
+    response = client.get("/v1/objecttypes")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+
+    localized_text = next(
+        (item for item in payload["result"] if item["sourceTypeId"] == "nsu=http://opcfoundation.org/UA/;i=21"),
+        None,
+    )
+    assert localized_text is not None
+    assert localized_text["displayName"] == "LocalizedText"
+    assert localized_text["schema"]["type"] == "object"
+    assert set(localized_text["schema"]["properties"]["Locale"]["type"]) == {"null", "string"}
+    assert set(localized_text["schema"]["properties"]["Text"]["type"]) == {"null", "string"}
 
 
 def test_beta_objecttypes_resolves_standard_structured_datatype(client: TestClient) -> None:
@@ -470,7 +534,7 @@ def test_beta_objecttypes_registers_source_type_alias_element_id(client: TestCli
     assert alias["schema"]["x-opcua-nodeId"] == "nsu=http://example.com/custom;i=3001"
 
 
-def test_beta_objecttypes_registers_non_datatype_standard_ua_node_ids_as_unknown(client: TestClient) -> None:
+def test_beta_objecttypes_does_not_register_action_source_node_id_as_object_type(client: TestClient) -> None:
     app = _fastapi_app(client)
     app.state.model_cache.nodes_by_id["action-ua-11492"] = ModelNode(
         id="action-ua-11492",
@@ -489,13 +553,217 @@ def test_beta_objecttypes_registers_non_datatype_standard_ua_node_ids_as_unknown
     payload = response.json()
     assert payload["success"] is True
 
-    unresolved = next(
-        (item for item in payload["result"] if item["sourceTypeId"] == "nsu=http://opcfoundation.org/UA/;i=11492"),
+    unresolved = [
+        item for item in payload["result"] if item["sourceTypeId"] == "nsu=http://opcfoundation.org/UA/;i=11492"
+    ]
+    assert unresolved == []
+
+
+def test_beta_objecttypes_registers_standard_ua_optionset_datatype_as_known(client: TestClient) -> None:
+    app = _fastapi_app(client)
+    app.state.model_cache.nodes_by_id["property-ua-95"] = ModelNode(
+        id="property-ua-95",
+        name="AccessRestriction",
+        kind="property",
+        type="ns=0;i=95",
+        children=[],
+        source_node_id="ns=2;s=AccessRestriction",
+    )
+    app.state.model_cache.children_by_id.setdefault("asset-root", []).append("property-ua-95")
+    app.state.model_cache.children_by_id["property-ua-95"] = []
+    app.state.model_cache.property_to_node["property-ua-95"] = "ns=2;s=AccessRestriction"
+
+    response = client.get("/v1/objecttypes")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+
+    resolved = next(
+        (item for item in payload["result"] if item["sourceTypeId"] == "nsu=http://opcfoundation.org/UA/;i=95"),
         None,
     )
-    assert unresolved is not None
-    assert unresolved["elementId"] == "nsu=http://opcfoundation.org/UA/;i=11492"
-    assert unresolved["displayName"] == "UnknownType"
+    assert resolved is not None
+    assert resolved["elementId"].startswith("urn:opcua:objecttype:")
+    assert resolved["displayName"] == "AccessRestrictionType"
+    assert resolved["schema"]["title"] == "AccessRestrictionType"
+    assert resolved["schema"]["oneOf"][0]["type"] == "integer"
+
+
+def test_beta_objecttypes_registers_standard_ua_structured_datatype_as_known(client: TestClient) -> None:
+    app = _fastapi_app(client)
+    app.state.model_cache.nodes_by_id["property-ua-865"] = ModelNode(
+        id="property-ua-865",
+        name="SessionDiagnostics",
+        kind="property",
+        type="ns=0;i=865",
+        children=[],
+        source_node_id="ns=2;s=SessionDiagnostics",
+    )
+    app.state.model_cache.children_by_id.setdefault("asset-root", []).append("property-ua-865")
+    app.state.model_cache.children_by_id["property-ua-865"] = []
+    app.state.model_cache.property_to_node["property-ua-865"] = "ns=2;s=SessionDiagnostics"
+
+    response = client.get("/v1/objecttypes")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+
+    resolved = next(
+        (item for item in payload["result"] if item["sourceTypeId"] == "nsu=http://opcfoundation.org/UA/;i=865"),
+        None,
+    )
+    assert resolved is not None
+    assert resolved["elementId"].startswith("urn:opcua:objecttype:")
+    assert resolved["displayName"] == "SessionDiagnosticsDataType"
+    assert resolved["schema"]["title"] == "SessionDiagnosticsDataType"
+    assert resolved["schema"]["type"] == "object"
+
+
+def test_beta_objecttypes_registers_standard_ua_role_permission_as_known(client: TestClient) -> None:
+    app = _fastapi_app(client)
+    app.state.model_cache.nodes_by_id["property-ua-96"] = ModelNode(
+        id="property-ua-96",
+        name="RolePermissions",
+        kind="property",
+        type="ns=0;i=96",
+        children=[],
+        source_node_id="ns=2;s=RolePermissions",
+    )
+    app.state.model_cache.children_by_id.setdefault("asset-root", []).append("property-ua-96")
+    app.state.model_cache.children_by_id["property-ua-96"] = []
+    app.state.model_cache.property_to_node["property-ua-96"] = "ns=2;s=RolePermissions"
+
+    response = client.get("/v1/objecttypes")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+
+    resolved = next(
+        (item for item in payload["result"] if item["sourceTypeId"] == "nsu=http://opcfoundation.org/UA/;i=96"),
+        None,
+    )
+    assert resolved is not None
+    assert resolved["elementId"].startswith("urn:opcua:objecttype:")
+    assert resolved["displayName"] == "RolePermissionType"
+    assert resolved["schema"]["title"] == "RolePermissionType"
+    assert resolved["schema"]["type"] == "object"
+
+
+def test_beta_objecttypes_registers_generic_custom_nodeid_type_as_known(client: TestClient) -> None:
+    app = _fastapi_app(client)
+    app.state.model_cache.nodes_by_id["property-custom-inferred"] = ModelNode(
+        id="property-custom-inferred",
+        name="VendorSpecific",
+        kind="property",
+        type="nsu=http://example.com/custom;s=Vendor.TypeA",
+        children=[],
+        source_node_id="ns=2;s=VendorSpecific",
+    )
+    app.state.model_cache.children_by_id.setdefault("asset-root", []).append("property-custom-inferred")
+    app.state.model_cache.children_by_id["property-custom-inferred"] = []
+    app.state.model_cache.property_to_node["property-custom-inferred"] = "ns=2;s=VendorSpecific"
+
+    response = client.get("/v1/objecttypes")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+
+    resolved = next(
+        (item for item in payload["result"] if item["sourceTypeId"] == "nsu=http://example.com/custom;s=Vendor.TypeA"),
+        None,
+    )
+    assert resolved is not None
+    assert resolved["elementId"].startswith("urn:opcua:objecttype:")
+    assert resolved["displayName"] == "DataType"
+    assert isinstance(resolved["schema"].get("oneOf"), list)
+
+
+def test_beta_objecttypes_unresolved_standard_property_datatype_gets_fallback_schema(client: TestClient) -> None:
+    app = _fastapi_app(client)
+    app.state.model_cache.nodes_by_id["property-ua-14119"] = ModelNode(
+        id="property-ua-14119",
+        name="OpaqueStandardType",
+        kind="property",
+        type="ns=0;i=14119",
+        children=[],
+        source_node_id="ns=2;s=OpaqueStandardType",
+    )
+    app.state.model_cache.children_by_id.setdefault("asset-root", []).append("property-ua-14119")
+    app.state.model_cache.children_by_id["property-ua-14119"] = []
+    app.state.model_cache.property_to_node["property-ua-14119"] = "ns=2;s=OpaqueStandardType"
+
+    response = client.get("/v1/objecttypes")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+
+    resolved = next(
+        (item for item in payload["result"] if item["sourceTypeId"] == "nsu=http://opcfoundation.org/UA/;i=14119"),
+        None,
+    )
+    assert resolved is not None
+    assert resolved["elementId"].startswith("urn:opcua:objecttype:")
+    assert not resolved["displayName"].startswith("InferredType_")
+    assert isinstance(resolved["schema"].get("oneOf"), list)
+    assert resolved["schema"]["x-opcua-nodeId"] == "nsu=http://opcfoundation.org/UA/;i=14119"
+
+
+def test_beta_objecttypes_generic_standard_id_uses_browse_name_lookup(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("i3x_server.api.beta._ENABLE_LIVE_TYPE_NAME_LOOKUP", True)
+    monkeypatch.setattr("i3x_server.api.beta._LIVE_TYPE_NAME_LOOKUP_MAX_PER_REQUEST", 100)
+
+    app = _fastapi_app(client)
+    app.state.model_cache.nodes_by_id["property-ua-17364"] = ModelNode(
+        id="property-ua-17364",
+        name="NetworkAddress",
+        kind="property",
+        type="ns=0;i=17364",
+        children=[],
+        source_node_id="ns=2;s=NetworkAddress",
+    )
+    app.state.model_cache.children_by_id.setdefault("asset-root", []).append("property-ua-17364")
+    app.state.model_cache.children_by_id["property-ua-17364"] = []
+    app.state.model_cache.property_to_node["property-ua-17364"] = "ns=2;s=NetworkAddress"
+
+    response = client.get("/v1/objecttypes")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+
+    resolved = next(
+        (item for item in payload["result"] if item["sourceTypeId"] == "nsu=http://opcfoundation.org/UA/;i=17364"),
+        None,
+    )
+    assert resolved is not None
+    assert resolved["displayName"] == "PublishSubscribe_SetSecurityKeys"
+    assert resolved["schema"]["title"] == "PublishSubscribe_SetSecurityKeys"
+
+
+def test_beta_objecttypes_does_not_publish_null_opcua_type_id(client: TestClient) -> None:
+    app = _fastapi_app(client)
+    app.state.model_cache.nodes_by_id["asset-null-type"] = ModelNode(
+        id="asset-null-type",
+        name="NullTypeAsset",
+        kind="asset",
+        type=None,
+        children=[],
+        source_node_id="ns=2;s=NullTypeAsset",
+        source_type_id="ns=0;i=0",
+    )
+    app.state.model_cache.root_ids.append("asset-null-type")
+    app.state.model_cache.children_by_id["asset-null-type"] = []
+    app.state.model_cache.instances_by_type_id.setdefault("ns=0;i=0", []).append("asset-null-type")
+
+    response = client.get("/v1/objecttypes")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+
+    assert all(item["elementId"] != "nsu=http://opcfoundation.org/UA/;i=0" for item in payload["result"])
+    assert all(item["sourceTypeId"] != "nsu=http://opcfoundation.org/UA/;i=0" for item in payload["result"])
 
 
 def test_beta_relationshiptypes(client: TestClient) -> None:
@@ -546,10 +814,41 @@ def test_beta_objects_list_include_metadata_uses_expanded_source_type_id(client:
     payload = response.json()
     assert payload["success"] is True
     result = payload["results"][0]["result"]
-    assert result["typeElementId"] == "nsu=http://example.com/custom;i=11"
+    assert result["typeElementId"].startswith("urn:opcua:objecttype:")
     metadata = payload["results"][0]["result"]["metadata"]
-    assert metadata["typeNamespaceUri"] == "http://example.com/custom"
+    assert metadata["typeNamespaceUri"] == "http://example.com/i3x"
     assert metadata["sourceTypeId"] == "nsu=http://example.com/runtime;s=Temperature"
+
+
+def test_beta_objects_list_property_null_type_resolves_to_unknown_type(client: TestClient) -> None:
+    app = _fastapi_app(client)
+    app.state.model_cache.nodes_by_id["property-null-type"] = ModelNode(
+        id="property-null-type",
+        name="UnknownProperty",
+        kind="property",
+        type="ns=0;i=0",
+        children=[],
+        source_node_id="ns=2;s=UnknownProperty",
+    )
+    app.state.model_cache.children_by_id.setdefault("asset-root", []).append("property-null-type")
+    app.state.model_cache.children_by_id["property-null-type"] = []
+    app.state.model_cache.property_to_node["property-null-type"] = "ns=2;s=UnknownProperty"
+
+    response = client.post(
+        "/v1/objects/list",
+        json={"elementIds": ["property-null-type"]},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+
+    result = payload["results"][0]["result"]
+    assert result["typeElementId"].startswith("urn:opcua:objecttype:")
+    assert result["typeElementId"] != "nsu=http://opcfoundation.org/UA/;i=0"
+
+    object_types = client.get("/v1/objecttypes").json()["result"]
+    known_type_ids = {item["elementId"] for item in object_types}
+    assert result["typeElementId"] in known_type_ids
 
 
 def test_beta_history_query(client: TestClient) -> None:

@@ -18,6 +18,15 @@ from asyncua.ua.object_ids import ObjectIds
 logger = logging.getLogger(__name__)
 
 
+def _normalize_type_definition_id(type_definition_id: str | None) -> str | None:
+    if not type_definition_id:
+        return None
+    normalized = type_definition_id.strip()
+    if normalized in {"i=0", "ns=0;i=0", "nsu=http://opcfoundation.org/UA/;i=0"}:
+        return None
+    return normalized
+
+
 @dataclass(slots=True)
 class OpcUaNodeInfo:
     node_id: str
@@ -115,6 +124,8 @@ class OpcUaClientProtocol(Protocol):
     async def get_subscription_capabilities(self) -> OpcUaSubscriptionCapabilities: ...
 
     async def read_value(self, node_id: str) -> Any: ...
+
+    async def read_browse_name(self, node_id: str) -> str | None: ...
 
     async def read_values(self, node_ids: list[str]) -> list[Any]: ...
 
@@ -337,7 +348,7 @@ class OpcUaClient:
         if node_class_obj in {NodeClass.Object, NodeClass.Variable}:
             try:
                 type_definition_obj = await node.read_type_definition()
-                type_definition_id = type_definition_obj.to_string()
+                type_definition_id = _normalize_type_definition_id(type_definition_obj.to_string())
             except Exception:
                 logger.debug(
                     "OPC UA type definition read failed endpoint=%s node_id=%s",
@@ -436,7 +447,7 @@ class OpcUaClient:
                         display_name=display_name,
                         node_class=node_class.name,
                         data_type=data_types_by_node_id.get(node_id),
-                        type_definition_id=type_definitions_by_node_id.get(node_id),
+                        type_definition_id=_normalize_type_definition_id(type_definitions_by_node_id.get(node_id)),
                         event_notifier=bool(event_notifiers_by_node_id.get(node_id, False)),
                     )
                 )
@@ -554,7 +565,7 @@ class OpcUaClient:
         for node, refs in browsed:
             if not refs:
                 continue
-            output[node.nodeid.to_string()] = refs[0].NodeId.to_string()
+            output[node.nodeid.to_string()] = _normalize_type_definition_id(refs[0].NodeId.to_string())
         return output
 
     def _extract_attribute_value(self, value: ua.DataValue) -> Any | None:
@@ -1156,6 +1167,36 @@ class OpcUaClient:
                 return value
             logger.exception("OPC UA read failed node_id=%s duration_s=%.3f", node_id, perf_counter() - started)
             raise
+
+    async def read_browse_name(self, node_id: str) -> str | None:
+        started = perf_counter()
+        node = self._client.get_node(node_id)
+        try:
+            browse_name = await node.read_browse_name()
+            resolved = getattr(browse_name, "Name", None)
+            if isinstance(resolved, str) and resolved:
+                return resolved
+            return str(browse_name) if browse_name is not None else None
+        except Exception as exc:
+            if self._should_retry_after_disconnect(exc):
+                logger.warning(
+                    "OPC UA browse-name retry after reconnect node_id=%s endpoint=%s",
+                    node_id,
+                    self._endpoint,
+                )
+                await self._reconnect()
+                retry_name = await self._client.get_node(node_id).read_browse_name()
+                resolved_retry = getattr(retry_name, "Name", None)
+                if isinstance(resolved_retry, str) and resolved_retry:
+                    return resolved_retry
+                return str(retry_name) if retry_name is not None else None
+            logger.debug(
+                "OPC UA browse-name read failed node_id=%s duration_s=%.3f",
+                node_id,
+                perf_counter() - started,
+                exc_info=True,
+            )
+            return None
 
     async def read_values(self, node_ids: list[str]) -> list[Any]:
         if not node_ids:

@@ -19,6 +19,15 @@ from i3x_server.opcua.client import OpcUaNamespaceInfo, OpcUaObjectTypeInfo, Opc
 _MANDATORY_RULES = {"mandatory", "mandatoryplaceholder"}
 
 
+def _ua_object_id_name(identifier: int) -> str | None:
+    object_id_names = getattr(ua, "ObjectIdNames", None)
+    if isinstance(object_id_names, Mapping):
+        candidate = object_id_names.get(identifier)
+        if isinstance(candidate, str) and candidate:
+            return candidate
+    return None
+
+
 class _SchemaRegistry:
     def __init__(self) -> None:
         self.defs: dict[str, Any] = {}
@@ -61,11 +70,20 @@ def json_schema_for_opcua_type(data_type: str | None) -> dict[str, Any]:
     if data_type is None:
         return {"type": "string"}
 
+    type_name_token = data_type
     normalized = data_type.lower()
+    node_id_match = re.match(r"^(?:ns=0;|nsu=http://opcfoundation.org/UA/;)i=(\d+)$", data_type, flags=re.IGNORECASE)
+    if node_id_match is not None:
+        object_id_name = _ua_object_id_name(int(node_id_match.group(1)))
+        if object_id_name:
+            type_name_token = object_id_name
+            normalized = object_id_name.lower()
+
     if normalized.endswith("i=10") or normalized.endswith("i=11"):
         return {"type": "number"}
     if any(normalized.endswith(f"i={idx}") for idx in [2, 3, 4, 5, 6, 7, 8, 9]):
         return {"type": "integer"}
+    # DateTime (i=13) and subtypes
     if normalized.endswith("i=13"):
         return {"type": "string", "format": "date-time"}
 
@@ -89,6 +107,19 @@ def json_schema_for_opcua_type(data_type: str | None) -> dict[str, Any]:
         return {"type": "integer"}
     if "datetime" in normalized:
         return {"type": "string", "format": "date-time"}
+
+    type_candidate = _resolve_structure_type_by_name(type_name_token)
+    if isinstance(type_candidate, type):
+        if type_candidate is bool:
+            return {"type": "boolean"}
+        if type_candidate.__name__.lower() in {"number"}:
+            return {"type": "number"}
+        if _is_integer_annotation_type(type_candidate):
+            return {"type": "integer"}
+        if _is_number_annotation_type(type_candidate):
+            return {"type": "number"}
+        if _is_datetime_annotation_type(type_candidate):
+            return {"type": "string", "format": "date-time"}
 
     return {"type": "string"}
 
@@ -491,6 +522,8 @@ def _schema_from_data_type(
             structure_type = _resolve_structure_type(indexed_node_id)
     if structure_type is None:
         return None
+    if not _is_structured_class(structure_type):
+        return None
 
     schema_key = f"opcua-datatype:{normalized_data_type.lower()}"
     metadata = {"x-opcua-structureDataType": normalized_data_type}
@@ -514,12 +547,22 @@ def build_data_type_schema(
 
 
 def _resolve_structure_type(data_type: str) -> type[Any] | None:
+    canonical = _node_id_to_string(data_type) or str(data_type)
+
+    symbolic_name: str | None = None
+    id_match = re.match(r"^(?:ns=0;|nsu=http://opcfoundation.org/UA/;)i=(\d+)$", canonical, flags=re.IGNORECASE)
+    if id_match is not None:
+        symbolic_name = _ua_object_id_name(int(id_match.group(1)))
+
+    name_candidate = _resolve_structure_type_by_name(symbolic_name or canonical)
+    if isinstance(name_candidate, type):
+        return name_candidate
+
     registries = [
         getattr(ua, "extension_objects_by_datatype", None),
         getattr(ua, "extension_objects_by_typeid", None),
         getattr(ua, "EXTENSION_OBJECT_CLASSES_BY_DATATYPE", None),
     ]
-    canonical = _node_id_to_string(data_type) or str(data_type)
     for registry in registries:
         if not isinstance(registry, Mapping):
             continue

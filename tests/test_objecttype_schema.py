@@ -586,5 +586,5 @@ def test_build_data_type_schema_resolves_expanded_node_id_via_namespace_lookup()
 
     assert isinstance(schema, dict)
     assert schema["type"] == "object"
-    assert schema["title"] == "_StandardStruct"
+    assert schema["title"] == "RolePermissionType"
     assert schema["x-opcua-structureDataType"] == "nsu=http://opcfoundation.org/UA/;i=96"

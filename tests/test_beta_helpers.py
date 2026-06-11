@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 from fastapi import HTTPException
@@ -85,6 +87,25 @@ def test_namespace_and_expanded_node_helpers() -> None:
     assert beta._namespace_uri_from_expanded_node_id("ns=1;i=42") is None
 
 
+def test_namespace_canonicalization_helper() -> None:
+    infos = [
+        OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/", display_name="UA"),
+        OpcUaNamespaceInfo(uri="http://example.com/custom/", display_name="Custom"),
+    ]
+    assert beta._canonical_namespace_uri("http://opcfoundation.org/UA", infos) == "http://opcfoundation.org/UA/"
+    assert beta._canonical_namespace_uri("http://example.com/custom", infos) == "http://example.com/custom/"
+    assert beta._canonical_namespace_uri("http://not-declared", infos) == "http://not-declared"
+
+
+def test_unknown_type_placeholder_uses_declared_namespace_when_unresolved() -> None:
+    infos = [
+        OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/", display_name="UA"),
+        OpcUaNamespaceInfo(uri="http://example.com/custom", display_name="Custom"),
+    ]
+    placeholder = beta._unknown_type_placeholder("unknown-type", infos)
+    assert placeholder.namespaceUri == "http://opcfoundation.org/UA/"
+
+
 def test_element_and_urn_token_helpers() -> None:
     assert beta._to_element_id("MachineType") == "machine-type"
     assert beta._to_element_id("__") == "unknown-type"
@@ -94,6 +115,65 @@ def test_element_and_urn_token_helpers() -> None:
 def test_builtin_ua_datatype_helper_detection() -> None:
     assert beta._is_builtin_ua_datatype_node_id("nsu=http://opcfoundation.org/UA/;i=12") is True
     assert beta._is_builtin_ua_datatype_node_id("nsu=http://opcfoundation.org/UA/;i=11492") is False
+
+
+def test_standard_ua_datatype_scalar_schema_detection() -> None:
+    schema = beta._scalar_schema_for_standard_ua_datatype_node_id("nsu=http://opcfoundation.org/UA/;i=95")
+    assert schema == {"type": "integer"}
+
+    structured = beta._scalar_schema_for_standard_ua_datatype_node_id("nsu=http://opcfoundation.org/UA/;i=865")
+    assert structured == {"type": "object"}
+
+    enum_like = beta._scalar_schema_for_standard_ua_datatype_node_id("nsu=http://opcfoundation.org/UA/;i=852")
+    assert enum_like == {"type": "integer"}
+
+    role_permission = beta._scalar_schema_for_standard_ua_datatype_node_id("nsu=http://opcfoundation.org/UA/;i=96")
+    assert role_permission == {"type": "object"}
+
+    type_like = beta._scalar_schema_for_standard_ua_datatype_node_id("nsu=http://opcfoundation.org/UA/;i=61")
+    assert type_like is None
+
+    non_datatype = beta._scalar_schema_for_standard_ua_datatype_node_id("nsu=http://opcfoundation.org/UA/;i=11492")
+    assert non_datatype is None
+
+
+def test_generic_object_type_from_source_type_id() -> None:
+    infos = [
+        OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/", display_name="UA"),
+        OpcUaNamespaceInfo(uri="http://example.com/custom", display_name="Custom"),
+    ]
+
+    class _NoopClient:
+        async def read_browse_name(self, node_id: str) -> str | None:
+            return None
+
+    client = cast(Any, _NoopClient())
+
+    standard = asyncio.run(
+        beta._generic_object_type_from_source_type_id(
+            "nsu=http://opcfoundation.org/UA/;i=865",
+            infos,
+            client,
+            {},
+            {"remaining": 0},
+        )
+    )
+    assert standard is not None
+    assert standard.displayName == "SessionDiagnosticsDataType"
+    assert standard.schema_["type"] == "object"
+
+    custom = asyncio.run(
+        beta._generic_object_type_from_source_type_id(
+            "nsu=http://example.com/custom;s=Vendor.TypeA",
+            infos,
+            client,
+            {},
+            {"remaining": 0},
+        )
+    )
+    assert custom is not None
+    assert custom.displayName == "TypeA"
+    assert custom.namespaceUri == "http://example.com/custom"
 
 
 def test_find_node_and_parent_helpers() -> None:

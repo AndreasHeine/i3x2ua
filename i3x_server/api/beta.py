@@ -4,8 +4,8 @@ import base64
 import http
 import json
 import re
-from copy import deepcopy
 from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import fields, is_dataclass
 from datetime import datetime, timezone
 from typing import Any, Generic, TypeVar
@@ -825,6 +825,47 @@ def _collect_referenced_type_element_ids(
     return referenced
 
 
+def _iter_local_defs_refs(value: Any) -> list[str]:
+    refs: list[str] = []
+
+    if isinstance(value, Mapping):
+        ref_value = value.get("$ref")
+        if isinstance(ref_value, str) and ref_value.startswith("#/$defs/"):
+            refs.append(ref_value.split("#/$defs/", 1)[1])
+
+        for nested in value.values():
+            refs.extend(_iter_local_defs_refs(nested))
+        return refs
+
+    if isinstance(value, list):
+        for nested in value:
+            refs.extend(_iter_local_defs_refs(nested))
+
+    return refs
+
+
+def _collect_transitive_defs(schema: Mapping[str, Any], defs: Mapping[str, Any]) -> dict[str, Any]:
+    collected: dict[str, Any] = {}
+    pending = _iter_local_defs_refs(schema)
+    seen: set[str] = set()
+
+    while pending:
+        def_name = pending.pop()
+        if def_name in seen:
+            continue
+        seen.add(def_name)
+
+        referenced = defs.get(def_name)
+        if not isinstance(referenced, Mapping):
+            continue
+
+        referenced_copy = deepcopy(dict(referenced))
+        collected[def_name] = referenced_copy
+        pending.extend(_iter_local_defs_refs(referenced_copy))
+
+    return collected
+
+
 def _synthetic_object_types_from_structure_defs(
     listed_object_types: list[ObjectTypeResponse],
     namespace_infos: list[OpcUaNamespaceInfo],
@@ -860,6 +901,9 @@ def _synthetic_object_types_from_structure_defs(
                 display_name_raw if isinstance(display_name_raw, str) and display_name_raw else "StructureType"
             )
             schema = deepcopy(dict(raw_def))
+            required_defs = _collect_transitive_defs(schema, defs)
+            if required_defs:
+                schema["$defs"] = required_defs
             schema.setdefault("x-opcua-nodeId", source_type_id)
             schema.setdefault("x-opcua-displayName", display_name)
 

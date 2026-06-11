@@ -344,6 +344,13 @@ def test_beta_objecttypes(client: TestClient) -> None:
     assert synthetic["schema"]["type"] == "object"
     assert synthetic["schema"]["x-opcua-structureTypeId"] == "nsu=http://example.com/custom;i=3001"
     assert synthetic["schema"]["x-opcua-nodeId"] == "nsu=http://example.com/custom;i=3001"
+    synthetic_thresholds_schema = synthetic["schema"]["properties"]["thresholds"]
+    assert isinstance(synthetic_thresholds_schema.get("$ref"), str)
+    synthetic_thresholds_ref = synthetic_thresholds_schema["$ref"]
+    assert synthetic_thresholds_ref.startswith("#/$defs/")
+    synthetic_thresholds_def_key = synthetic_thresholds_ref.split("#/$defs/", 1)[1]
+    assert synthetic["schema"]["$defs"][synthetic_thresholds_def_key]["properties"]["min"]["type"] == "number"
+    assert synthetic["schema"]["$defs"][synthetic_thresholds_def_key]["properties"]["max"]["type"] == "number"
 
     second = payload["result"][1]
     assert [item["elementId"] for item in second["related"]["instances"]] == ["sensor-root"]
@@ -389,8 +396,9 @@ def test_beta_objecttypes_resolves_standard_structured_datatype(client: TestClie
     class _StdStruct96:
         Name: str | None = None
 
-    previous_registry = getattr(ua, "extension_objects_by_datatype", None)
-    setattr(ua, "extension_objects_by_datatype", {"ns=0;i=96": _StdStruct96})
+    ua_any = cast(Any, ua)
+    previous_registry = getattr(ua_any, "extension_objects_by_datatype", None)
+    ua_any.extension_objects_by_datatype = {"ns=0;i=96": _StdStruct96}
 
     app = _fastapi_app(client)
     app.state.model_cache.nodes_by_id["property-struct-96"] = ModelNode(
@@ -419,7 +427,7 @@ def test_beta_objecttypes_resolves_standard_structured_datatype(client: TestClie
         assert resolved["schema"]["type"] == "object"
         assert resolved["schema"]["x-opcua-structureDataType"] == "nsu=http://opcfoundation.org/UA/;i=96"
     finally:
-        setattr(ua, "extension_objects_by_datatype", previous_registry)
+        ua_any.extension_objects_by_datatype = previous_registry
 
 
 def test_beta_objecttypes_skips_non_datatype_standard_ua_node_ids(client: TestClient) -> None:

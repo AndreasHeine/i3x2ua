@@ -171,6 +171,11 @@ def _resolve_ref(ref: str, components: Mapping[str, Any]) -> Any:
 
 
 async def call_mcp_tool(request: Request, tool: McpToolDefinition, arguments: Mapping[str, Any]) -> Response:
+    payload = await invoke_mcp_tool(request, tool, arguments)
+    return _payload_to_response(payload)
+
+
+async def invoke_mcp_tool(request: Request, tool: McpToolDefinition, arguments: Mapping[str, Any]) -> Any:
     allowed_arguments = set(tool.path_parameters) | set(tool.query_parameters)
     if tool.body_required or "body" in tool.input_schema.get("properties", {}):
         allowed_arguments.add("body")
@@ -216,8 +221,23 @@ async def call_mcp_tool(request: Request, tool: McpToolDefinition, arguments: Ma
 
     if response.headers.get("content-type", "").startswith("application/json"):
         try:
-            return JSONResponse(status_code=response.status_code, content=response.json())
+            body = response.json()
         except ValueError as exc:
             raise i3x_http_error(502, "Bad Gateway", "Upstream response was not valid JSON") from exc
+    else:
+        body = {
+            "text": response.text,
+            "content_type": response.headers.get("content-type"),
+        }
 
-    return Response(content=response.text, status_code=response.status_code, media_type=response.headers.get("content-type"))
+    return {"status_code": response.status_code, "body": body}
+
+
+def _payload_to_response(payload: Any) -> Response:
+    if isinstance(payload, dict) and "status_code" in payload and "body" in payload:
+        body = payload["body"]
+        status_code = int(payload["status_code"])
+        if isinstance(body, dict) and "text" in body and "content_type" in body:
+            return Response(content=str(body["text"]), status_code=status_code, media_type=body.get("content_type"))
+        return JSONResponse(status_code=status_code, content=body)
+    return JSONResponse(status_code=200, content=payload)

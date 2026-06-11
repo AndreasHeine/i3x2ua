@@ -1145,6 +1145,60 @@ def test_mcp_tools_are_generated_from_openapi(client: TestClient) -> None:
     assert value_tool["input_schema"]["properties"]["body"]["properties"]["elementIds"]["type"] == "array"
 
 
+def test_mcp_endpoint_exposes_sse_discovery(client: TestClient) -> None:
+    response = client.get("/mcp")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert "event: endpoint" in response.text
+    assert "/mcp" in response.text
+
+
+def test_mcp_initialize_request(client: TestClient) -> None:
+    response = client.post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {"protocolVersion": "2025-06-18"},
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["jsonrpc"] == "2.0"
+    assert payload["id"] == 1
+    assert payload["result"]["protocolVersion"] == "2025-06-18"
+    assert payload["result"]["capabilities"]["tools"]["listChanged"] is False
+
+
+def test_mcp_tools_list_request(client: TestClient) -> None:
+    response = client.post(
+        "/mcp",
+        json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    tools = payload["result"]["tools"]
+    assert any(tool["name"] == "getNamespaces" for tool in tools)
+
+
+def test_mcp_tools_call_request(client: TestClient) -> None:
+    response = client.post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {"name": "getNamespaces", "arguments": {}},
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    content = payload["result"]["content"]
+    assert content[0]["type"] == "text"
+    assert "success" in content[0]["text"]
+
+
 def test_mcp_call_dispatches_to_existing_api(client: TestClient) -> None:
     response = client.post("/mcp/call", json={"tool": "getNamespaces", "arguments": {}})
     assert response.status_code == 200

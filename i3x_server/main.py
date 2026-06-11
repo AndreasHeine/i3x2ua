@@ -16,8 +16,10 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.gzip import GZipMiddleware
 
 from i3x_server.api.beta import router as beta_router
+from i3x_server.api.mcp import router as mcp_router
 from i3x_server.config.settings import settings
 from i3x_server.model.builder import ModelBuilder
+from i3x_server.mcp import build_mcp_tools, get_api_prefix
 from i3x_server.opcua.client import OpcUaClient
 from i3x_server.schemas.state import BuildResult
 from i3x_server.subscriptions.service import SubscriptionService
@@ -131,6 +133,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     app.state.model_lock = asyncio.Lock()
     app.state.model_preload_task = None
+    openapi_spec = app.openapi()
+    app.state.mcp_tools = build_mcp_tools(openapi_spec)
+    app.state.mcp_api_prefix = get_api_prefix(openapi_spec)
     if skip_connect:
         app.state.model_cache = BuildResult(
             nodes_by_id={},
@@ -259,6 +264,7 @@ def create_app() -> FastAPI:
         return response
 
     app.include_router(beta_router)
+    app.include_router(mcp_router)
     return app
 
 

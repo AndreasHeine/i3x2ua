@@ -156,6 +156,7 @@ Active endpoints are exposed under `/v1` for:
 
 - Beta contract and conformance: `docs/I3X_CONFORMANCE.md`
 - OPC UA to i3X mapping profile: `docs/OPCUA_I3X_MAPPING_PROFILE.md`
+- LM Studio / MCP bridge guide: `docs/LM_STUDIO_MCP_GUIDE.md`
 - Roadmap and open items: `docs/TODO.md`
 - Python coding requirements: `docs/python-coding-reguirements.md`
 - API definition: `openapi.json`

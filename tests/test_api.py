@@ -1127,3 +1127,53 @@ def test_openapi_json_is_source_of_truth(client: TestClient) -> None:
     expected_path = Path(__file__).resolve().parents[1] / "openapi.json"
     expected = json.loads(expected_path.read_text(encoding="utf-8"))
     assert response.json() == expected
+
+
+def test_mcp_tools_are_generated_from_openapi(client: TestClient) -> None:
+    response = client.get("/mcp/tools")
+    assert response.status_code == 200
+
+    payload = response.json()
+    tools = payload["tools"]
+    assert "getNamespaces" in tools
+    assert "queryLastKnownValues" in tools
+    assert "streamSubscription" not in tools
+
+    value_tool = tools["queryLastKnownValues"]
+    assert value_tool["method"] == "POST"
+    assert value_tool["path"] == "/objects/value"
+    assert value_tool["input_schema"]["properties"]["body"]["properties"]["elementIds"]["type"] == "array"
+
+
+def test_mcp_call_dispatches_to_existing_api(client: TestClient) -> None:
+    response = client.post("/mcp/call", json={"tool": "getNamespaces", "arguments": {}})
+    assert response.status_code == 200
+
+    expected = client.get("/v1/namespaces")
+    assert response.json() == expected.json()
+
+
+def test_mcp_call_supports_body_arguments(client: TestClient) -> None:
+    response = client.post(
+        "/mcp/call",
+        json={
+            "tool": "queryLastKnownValues",
+            "arguments": {
+                "body": {
+                    "elementIds": ["property-abc"],
+                    "maxDepth": 1,
+                },
+            },
+        },
+    )
+    assert response.status_code == 200
+
+    payload = response.json()
+    assert payload["success"] is True
+    assert payload["results"][0]["success"] is True
+    assert payload["results"][0]["result"]["isComposition"] is False
+
+
+def test_mcp_call_rejects_unknown_tool(client: TestClient) -> None:
+    response = client.post("/mcp/call", json={"tool": "unknownTool", "arguments": {}})
+    assert response.status_code == 400

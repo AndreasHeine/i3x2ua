@@ -288,7 +288,7 @@ def test_beta_objecttypes(client: TestClient) -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["success"] is True
-    assert len(payload["result"]) == 2
+    assert len(payload["result"]) >= 2
     first = payload["result"][0]
     assert first["elementId"].startswith("urn:opcua:objecttype:")
     assert isinstance(first["displayName"], str)

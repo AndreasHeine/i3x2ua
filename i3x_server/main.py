@@ -13,6 +13,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.middleware.gzip import GZipMiddleware
 
 from i3x_server.api.beta import router as beta_router
 from i3x_server.config.settings import settings
@@ -165,6 +166,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 def create_app() -> FastAPI:
     app = FastAPI(title="i3X API Beta", version="beta", lifespan=lifespan)
+    app.add_middleware(GZipMiddleware, minimum_size=1)
 
     openapi_doc_path = Path(__file__).resolve().parents[1] / "openapi.json"
     openapi_override: dict[str, object] | None = None
@@ -198,19 +200,34 @@ def create_app() -> FastAPI:
     async def handle_http_exception(request: Request, exc: StarletteHTTPException) -> JSONResponse:
         del request
         detail = exc.detail
+        response_detail: dict[str, object] | None = None
         if isinstance(detail, dict):
             error = detail.get("error")
             if isinstance(error, dict):
                 message = str(error.get("message", "Request failed"))
             else:
                 message = str(detail.get("message", "Request failed"))
+            raw_response_detail = detail.get("responseDetail")
+            if isinstance(raw_response_detail, dict):
+                response_detail = {
+                    "title": str(raw_response_detail.get("title", "Error")),
+                    "status": int(raw_response_detail.get("status", exc.status_code)),
+                    "detail": str(raw_response_detail.get("detail", message)),
+                }
         else:
             message = str(detail) if detail else "Request failed"
+        if response_detail is None:
+            response_detail = {
+                "title": "Error",
+                "status": int(exc.status_code),
+                "detail": message,
+            }
         return JSONResponse(
             status_code=exc.status_code,
             content={
                 "success": False,
                 "error": {"code": int(exc.status_code), "message": message},
+                "responseDetail": response_detail,
             },
         )
 
@@ -220,7 +237,18 @@ def create_app() -> FastAPI:
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
         started = perf_counter()
-        response = await call_next(request)
+        try:
+            response = await call_next(request)
+        except RuntimeError as exc:
+            if str(exc) == "No response returned." and await request.is_disconnected():
+                logger.info(
+                    "HTTP request aborted by client method=%s path=%s duration_s=%.3f",
+                    request.method,
+                    request.url.path,
+                    perf_counter() - started,
+                )
+                return Response(status_code=499)
+            raise
         logger.info(
             "HTTP request method=%s path=%s status=%s duration_s=%.3f",
             request.method,

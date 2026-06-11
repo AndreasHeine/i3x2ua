@@ -223,4 +223,5 @@ def test_append_update_deduplicates_same_value() -> None:
     service._append_update(state, "ns=2;s=Temperature", 1.0)
     service._append_update(state, "ns=2;s=Temperature", 2.0)
     assert len(state.updates) == 2
-    assert state.updates[0].timestamp <= datetime.now(timezone.utc).isoformat()
+    parsed_timestamp = datetime.fromisoformat(state.updates[0].timestamp.replace("Z", "+00:00"))
+    assert parsed_timestamp <= datetime.now(timezone.utc)

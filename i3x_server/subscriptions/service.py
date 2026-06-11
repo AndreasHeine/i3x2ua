@@ -65,6 +65,7 @@ class _SubscriptionState:
     mode: str = "idle"
     runtime: _SubscriptionRuntime = field(default_factory=_SubscriptionRuntime)
     update_event: asyncio.Event = field(default_factory=asyncio.Event)
+    active_stream_generation: int = 0
 
 
 class _DataChangeHandler:
@@ -248,6 +249,22 @@ class SubscriptionService:
                 return None
             state.updates = [item for item in state.updates if item.sequence_number > acknowledge_sequence]
             return SubscriptionSyncResult(updates=list(state.updates))
+
+    async def activate_stream(self, client_id: str | None, subscription_id: str) -> int | None:
+        async with self._lock:
+            state = self._subscriptions.get(subscription_id)
+            if state is None or (client_id is not None and state.client_id != client_id):
+                return None
+            state.active_stream_generation += 1
+            state.update_event.set()
+            return state.active_stream_generation
+
+    async def is_stream_active(self, subscription_id: str, generation: int) -> bool:
+        async with self._lock:
+            state = self._subscriptions.get(subscription_id)
+            if state is None:
+                return False
+            return state.active_stream_generation == generation
 
     async def updates_after(self, subscription_id: str, after_sequence: int) -> list[SubscriptionUpdate] | None:
         async with self._lock:
@@ -459,7 +476,7 @@ class SubscriptionService:
                 node_id=node_id,
                 value=value,
                 quality="Good",
-                timestamp=datetime.now(timezone.utc).isoformat(),
+                timestamp=_format_utc_timestamp(datetime.now(timezone.utc)),
             )
         )
         state.update_event.set()
@@ -540,3 +557,10 @@ def _min_positive(*values: int | None) -> int | None:
     if not positive:
         return None
     return min(positive)
+
+
+def _format_utc_timestamp(value: datetime) -> str:
+    normalized = value
+    if normalized.tzinfo is None:
+        normalized = normalized.replace(tzinfo=timezone.utc)
+    return normalized.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")

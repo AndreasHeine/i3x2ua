@@ -106,8 +106,8 @@ def test_collect_value_component_nodes_respects_depth() -> None:
     root = model.nodes_by_id["asset-root"]
     assert beta._collect_value_component_nodes(model, root, max_depth=1) == []
     depth_two = beta._collect_value_component_nodes(model, root, max_depth=2)
-    assert [node.id for node in depth_two] == ["prop-a"]
-    assert beta._collect_value_component_nodes(model, root, max_depth=0) == []
+    assert [node.id for node in depth_two] == ["prop-a", "prop-b"]
+    assert [node.id for node in beta._collect_value_component_nodes(model, root, max_depth=0)] == ["prop-a", "prop-b"]
 
 
 def test_collect_history_source_nodes_paths() -> None:
@@ -156,9 +156,9 @@ def test_quality_timestamp_and_history_conversion_helpers() -> None:
 
     naive_dt = datetime(2026, 1, 1, 12, 0, 0)
     aware_dt = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
-    assert beta._normalize_timestamp(naive_dt).endswith("+00:00")
-    assert beta._normalize_timestamp(aware_dt).endswith("+00:00")
-    assert beta._normalize_timestamp("invalid").endswith("+00:00")
+    assert beta._normalize_timestamp(naive_dt).endswith("Z")
+    assert beta._normalize_timestamp(aware_dt).endswith("Z")
+    assert beta._normalize_timestamp("invalid").endswith("Z")
 
     data_value = SimpleNamespace(
         Value=SimpleNamespace(Value=123),
@@ -168,7 +168,7 @@ def test_quality_timestamp_and_history_conversion_helpers() -> None:
     vqt = beta._to_vqt_from_history_value(data_value)
     assert vqt.value == 123
     assert vqt.quality == "Good"
-    assert vqt.timestamp.endswith("+00:00")
+    assert vqt.timestamp.endswith("Z")
 
 
 def test_not_implemented_and_server_info() -> None:

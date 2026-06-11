@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import http
 import json
 import re
 from dataclasses import fields, is_dataclass
@@ -39,12 +40,19 @@ class ErrorDetail(BaseModel):
     message: str
 
 
+class ResponseDetail(BaseModel):
+    title: str
+    status: int
+    detail: str
+
+
 class BulkResultItem(BaseModel, Generic[T]):
     success: bool = True
     elementId: str | None = None
     subscriptionId: str | None = None
     result: T | None = None
     error: ErrorDetail | None = None
+    responseDetail: ResponseDetail | None = None
 
 
 class BulkResponse(BaseModel, Generic[T]):
@@ -53,6 +61,16 @@ class BulkResponse(BaseModel, Generic[T]):
 
 
 def _bulk_response(results: list[BulkResultItem[T]]) -> BulkResponse[T]:
+    for item in results:
+        if item.success or item.responseDetail is not None:
+            continue
+        error_code = item.error.code if item.error is not None else 500
+        error_message = item.error.message if item.error is not None else "Request failed"
+        item.responseDetail = ResponseDetail(
+            title=_status_title(error_code),
+            status=error_code,
+            detail=error_message,
+        )
     return BulkResponse(success=all(item.success for item in results), results=results)
 
 
@@ -576,17 +594,28 @@ def _parse_history_time_range(body: GetObjectHistoryRequest) -> tuple[datetime |
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return _format_utc_timestamp(datetime.now(timezone.utc))
+
+
+def _status_title(status_code: int) -> str:
+    try:
+        return http.HTTPStatus(status_code).phrase
+    except ValueError:
+        return "Error"
+
+
+def _format_utc_timestamp(value: datetime) -> str:
+    normalized = value
+    if normalized.tzinfo is None:
+        normalized = normalized.replace(tzinfo=timezone.utc)
+    return normalized.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _to_json_safe_value(value: Any) -> Any:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     if isinstance(value, datetime):
-        normalized = value
-        if normalized.tzinfo is None:
-            normalized = normalized.replace(tzinfo=timezone.utc)
-        return normalized.astimezone(timezone.utc).isoformat()
+        return _format_utc_timestamp(value)
     if isinstance(value, (bytes, bytearray, memoryview)):
         encoded = base64.b64encode(bytes(value)).decode("ascii")
         return {"encoding": "base64", "data": encoded}
@@ -614,11 +643,11 @@ def _vqt_from_any(value: Any) -> VQT:
 
 
 def _collect_value_component_nodes(model: BuildResult, root: ModelNode, max_depth: int) -> list[ModelNode]:
-    if max_depth <= 1:
+    if max_depth == 1:
         return []
 
     components: list[ModelNode] = []
-    queue: list[tuple[str, int]] = [(root.id, 1)]
+    queue: list[tuple[str, int]] = [(root.id, 0)]
     visited: set[str] = set()
 
     while queue:
@@ -627,7 +656,7 @@ def _collect_value_component_nodes(model: BuildResult, root: ModelNode, max_dept
             continue
         visited.add(node_id)
 
-        if max_depth != 0 and depth >= max_depth:
+        if max_depth > 0 and depth >= max_depth:
             continue
 
         for child_id in model.children_by_id.get(node_id, []):
@@ -691,11 +720,70 @@ def _normalize_quality(status_code: Any) -> str:
 
 def _normalize_timestamp(value: Any) -> str:
     if isinstance(value, datetime):
-        normalized = value
-        if normalized.tzinfo is None:
-            normalized = normalized.replace(tzinfo=timezone.utc)
-        return normalized.astimezone(timezone.utc).isoformat()
-    return datetime.now(timezone.utc).isoformat()
+        return _format_utc_timestamp(value)
+    return _format_utc_timestamp(datetime.now(timezone.utc))
+
+
+def _relationship_type_to_parent(node: ModelNode) -> RelationshipType:
+    if node.kind == "property":
+        return RelationshipType(
+            elementId="ComponentOf",
+            displayName="ComponentOf",
+            namespaceUri="https://cesmii.org/i3x",
+            relationshipId="ComponentOf",
+            reverseOf="HasComponent",
+        )
+    return RelationshipType(
+        elementId="HasParent",
+        displayName="HasParent",
+        namespaceUri="https://cesmii.org/i3x",
+        relationshipId="HasParent",
+        reverseOf="HasChildren",
+    )
+
+
+def _unknown_type_placeholder(element_id: str) -> ObjectTypeResponse:
+    namespace_uri = _namespace_uri_from_expanded_node_id(element_id) or "https://cesmii.org/i3x/unknown"
+    return ObjectTypeResponse(
+        elementId=element_id,
+        displayName="UnknownType",
+        namespaceUri=namespace_uri,
+        sourceTypeId=element_id,
+        schema={
+            "title": "UnknownType",
+            "description": "Placeholder type generated for unresolved source type IDs",
+        },
+    )
+
+
+def _collect_referenced_type_element_ids(
+    model: BuildResult,
+    namespace_infos: list[OpcUaNamespaceInfo],
+    object_type_element_ids_by_node_id: dict[str, str],
+) -> set[str]:
+    referenced: set[str] = set()
+    for node in model.nodes_by_id.values():
+        source_type_id = node.source_type_id or node.source_node_id
+        source_type_id_expanded = _expanded_node_id(source_type_id, namespace_infos)
+        if node.kind == "property":
+            raw_type_element_id = node.type or "unknown-type"
+            type_element_id = _expanded_node_id(raw_type_element_id, namespace_infos)
+        else:
+            type_element_id = object_type_element_ids_by_node_id.get(source_type_id, source_type_id_expanded)
+        referenced.add(type_element_id)
+    return referenced
+
+
+def _require_client_id(client_id: str | None, endpoint: str) -> str:
+    normalized = (client_id or "").strip()
+    if normalized:
+        return normalized
+    raise i3x_http_error(
+        400,
+        "InvalidArgument",
+        f"'{endpoint}' requires a non-empty clientId",
+        {"field": "clientId"},
+    )
 
 
 def _to_vqt_from_history_value(data_value: Any) -> VQT:
@@ -754,6 +842,15 @@ async def get_object_types_v1(
         _to_object_type(item, model, namespace_infos, object_types_by_node_id, element_ids_by_node_id)
         for item in object_types
     ]
+    referenced_type_element_ids = _collect_referenced_type_element_ids(
+        model,
+        namespace_infos,
+        element_ids_by_node_id,
+    )
+    known_ids = {item.elementId for item in items}
+    for unresolved_id in sorted(referenced_type_element_ids - known_ids):
+        items.append(_unknown_type_placeholder(unresolved_id))
+
     if namespace_uri:
         items = [item for item in items if item.namespaceUri == namespace_uri]
     return SuccessResponse(result=items)
@@ -778,13 +875,20 @@ async def query_object_types_v1(
 
     object_types_by_node_id = {item.node_id: item for item in object_types}
     element_ids_by_node_id = _object_type_element_ids_by_node_id(object_types, namespace_infos)
-    indexed = {
-        item.elementId: item
-        for item in (
-            _to_object_type(item, model, namespace_infos, object_types_by_node_id, element_ids_by_node_id)
-            for item in object_types
-        )
-    }
+    listed_types = [
+        _to_object_type(item, model, namespace_infos, object_types_by_node_id, element_ids_by_node_id)
+        for item in object_types
+    ]
+    referenced_type_element_ids = _collect_referenced_type_element_ids(
+        model,
+        namespace_infos,
+        element_ids_by_node_id,
+    )
+    known_ids = {item.elementId for item in listed_types}
+    for unresolved_id in sorted(referenced_type_element_ids - known_ids):
+        listed_types.append(_unknown_type_placeholder(unresolved_id))
+
+    indexed = {item.elementId: item for item in listed_types}
     results: list[BulkResultItem[ObjectTypeResponse]] = []
     for element_id in body.elementIds:
         match = indexed.get(element_id)
@@ -972,6 +1076,25 @@ async def query_related_objects_v1(
             )
             continue
         related: list[RelatedObjectResult] = []
+        parent_id = _parent_id_for_node(model, node.id)
+        if parent_id is not None:
+            parent = model.nodes_by_id.get(parent_id)
+            if parent is not None:
+                parent_relationship = _relationship_type_to_parent(node)
+                if body.relationshipType is None or parent_relationship.elementId == body.relationshipType:
+                    related.append(
+                        RelatedObjectResult(
+                            sourceRelationship=parent_relationship.displayName,
+                            object=_to_object_instance(
+                                model,
+                                parent,
+                                include_metadata=body.includeMetadata,
+                                namespace_infos=namespace_infos,
+                                object_type_element_ids_by_node_id=object_type_element_ids_by_node_id,
+                            ),
+                        )
+                    )
+
         for child_id in model.children_by_id.get(node.id, []):
             child = model.nodes_by_id.get(child_id)
             if child is None:
@@ -1190,6 +1313,7 @@ async def register_monitored_items_v1(
     model: BuildResult = Depends(get_or_build_model),
     subscription_service: SubscriptionService = Depends(get_subscription_service),
 ) -> BulkResponse[None]:
+    client_id = _require_client_id(body.clientId, "/subscriptions/register")
     max_depth = body.maxDepth or 1
     known_ids: list[str] = []
     results: list[BulkResultItem[None]] = []
@@ -1207,7 +1331,7 @@ async def register_monitored_items_v1(
         results.append(BulkResultItem[None](success=True, elementId=element_id, result=None))
 
     ok = await subscription_service.register_items(
-        client_id=body.clientId,
+        client_id=client_id,
         subscription_id=body.subscriptionId,
         element_ids=known_ids,
         max_depth=max_depth,
@@ -1228,6 +1352,7 @@ async def remove_monitored_items_v1(
     model: BuildResult = Depends(get_or_build_model),
     subscription_service: SubscriptionService = Depends(get_subscription_service),
 ) -> BulkResponse[None]:
+    client_id = _require_client_id(body.clientId, "/subscriptions/unregister")
     known_ids: list[str] = []
     results: list[BulkResultItem[None]] = []
     for element_id in body.elementIds:
@@ -1244,7 +1369,7 @@ async def remove_monitored_items_v1(
         results.append(BulkResultItem[None](success=True, elementId=element_id, result=None))
 
     ok = await subscription_service.unregister_items(
-        client_id=body.clientId,
+        client_id=client_id,
         subscription_id=body.subscriptionId,
         element_ids=known_ids,
         model=model,
@@ -1264,6 +1389,7 @@ async def stream_subscription_v1(
     opcua_client: OpcUaClientProtocol = Depends(get_opcua_client),
     subscription_service: SubscriptionService = Depends(get_subscription_service),
 ) -> StreamingResponse:
+    client_id = _require_client_id(body.clientId, "/subscriptions/stream")
     namespace_infos: list[OpcUaNamespaceInfo] = []
     try:
         namespace_infos = await opcua_client.get_namespace_infos()
@@ -1271,8 +1397,19 @@ async def stream_subscription_v1(
         # Streaming should still work even if namespace metadata is temporarily unavailable.
         namespace_infos = []
 
+    stream_generation = await subscription_service.activate_stream(
+        client_id=client_id,
+        subscription_id=body.subscriptionId,
+    )
+    if stream_generation is None:
+        raise i3x_http_error(
+            404,
+            "SubscriptionNotFound",
+            f"Subscription '{body.subscriptionId}' not found",
+        )
+
     acknowledged = await subscription_service.sync(
-        client_id=body.clientId,
+        client_id=client_id,
         subscription_id=body.subscriptionId,
         acknowledge_sequence=body.acknowledgeSequence or 0,
     )
@@ -1284,10 +1421,17 @@ async def stream_subscription_v1(
         )
 
     async def event_stream() -> Any:
+        # Send an immediate SSE comment so clients can confirm stream establishment quickly.
+        yield ": connected\n\n"
         last_sequence = body.acknowledgeSequence or 0
         while True:
+            is_active = await subscription_service.is_stream_active(body.subscriptionId, stream_generation)
+            if not is_active:
+                yield "event: close\ndata: {}\n\n"
+                return
+
             updates = await subscription_service.wait_for_updates(
-                client_id=body.clientId,
+                client_id=client_id,
                 subscription_id=body.subscriptionId,
                 after_sequence=last_sequence,
                 timeout_seconds=15,
@@ -1331,6 +1475,7 @@ async def sync_subscription_v1(
     opcua_client: OpcUaClientProtocol = Depends(get_opcua_client),
     subscription_service: SubscriptionService = Depends(get_subscription_service),
 ) -> SuccessResponse[list[SyncUpdate]]:
+    client_id = _require_client_id(body.clientId, "/subscriptions/sync")
     namespace_infos: list[OpcUaNamespaceInfo] = []
     try:
         namespace_infos = await opcua_client.get_namespace_infos()
@@ -1338,7 +1483,7 @@ async def sync_subscription_v1(
         namespace_infos = []
 
     synced = await subscription_service.sync(
-        client_id=body.clientId,
+        client_id=client_id,
         subscription_id=body.subscriptionId,
         acknowledge_sequence=body.acknowledgeSequence or 0,
     )
@@ -1367,7 +1512,8 @@ async def delete_subscriptions_v1(
     body: DeleteSubscriptionsRequest,
     subscription_service: SubscriptionService = Depends(get_subscription_service),
 ) -> BulkResponse[None]:
-    deleted = await subscription_service.delete_subscriptions(body.clientId, body.subscriptionIds)
+    client_id = _require_client_id(body.clientId, "/subscriptions/delete")
+    deleted = await subscription_service.delete_subscriptions(client_id, body.subscriptionIds)
     return _bulk_response(
         [
             BulkResultItem[None](
@@ -1387,6 +1533,7 @@ async def list_subscriptions_v1(
     opcua_client: OpcUaClientProtocol = Depends(get_opcua_client),
     subscription_service: SubscriptionService = Depends(get_subscription_service),
 ) -> BulkResponse[SubscriptionDetail]:
+    client_id = _require_client_id(body.clientId, "/subscriptions/list")
     namespace_infos: list[OpcUaNamespaceInfo] = []
     try:
         namespace_infos = await opcua_client.get_namespace_infos()
@@ -1394,7 +1541,7 @@ async def list_subscriptions_v1(
         namespace_infos = []
 
     filter_ids = body.subscriptionIds or None
-    subscriptions = await subscription_service.list_subscriptions(body.clientId, filter_ids)
+    subscriptions = await subscription_service.list_subscriptions(client_id, filter_ids)
     found: dict[str, SubscriptionDetail] = {
         item.subscription_id: SubscriptionDetail(
             subscriptionId=item.subscription_id,
@@ -1418,6 +1565,7 @@ async def list_subscriptions_v1(
                 BulkResultItem[SubscriptionDetail](
                     success=True,
                     elementId=item.subscription_id,
+                    subscriptionId=item.subscription_id,
                     result=detail,
                 )
                 for item in subscriptions
@@ -1433,6 +1581,7 @@ async def list_subscriptions_v1(
                 BulkResultItem[SubscriptionDetail](
                     success=False,
                     elementId=subscription_id,
+                    subscriptionId=subscription_id,
                     error=ErrorDetail(code=404, message=f"Subscription not found: {subscription_id}"),
                 )
             )
@@ -1441,6 +1590,7 @@ async def list_subscriptions_v1(
             BulkResultItem[SubscriptionDetail](
                 success=True,
                 elementId=subscription_id,
+                subscriptionId=subscription_id,
                 result=detail,
             )
         )

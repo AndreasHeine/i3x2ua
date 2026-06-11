@@ -374,21 +374,32 @@ def test_beta_objecttypes_query(client: TestClient) -> None:
     assert payload["results"][1]["error"]["code"] == 404
 
 
-def test_beta_objecttypes_excludes_builtin_scalar_datatype_reference(client: TestClient) -> None:
+def test_beta_objecttypes_includes_builtin_scalar_datatype_reference(client: TestClient) -> None:
+    app = _fastapi_app(client)
+    app.state.model_cache.nodes_by_id["property-builtin-12"] = ModelNode(
+        id="property-builtin-12",
+        name="BuiltinString",
+        kind="property",
+        type="ns=0;i=12",
+        children=[],
+        source_node_id="ns=2;s=BuiltinString",
+    )
+    app.state.model_cache.children_by_id.setdefault("asset-root", []).append("property-builtin-12")
+    app.state.model_cache.children_by_id["property-builtin-12"] = []
+    app.state.model_cache.property_to_node["property-builtin-12"] = "ns=2;s=BuiltinString"
+
     response = client.get("/v1/objecttypes")
     assert response.status_code == 200
     payload = response.json()
     assert payload["success"] is True
 
-    source_type_ids = {item["sourceTypeId"] for item in payload["result"]}
-    assert "nsu=http://opcfoundation.org/UA/;i=12" not in source_type_ids
-
-    unknown_for_builtin = [
-        item
-        for item in payload["result"]
-        if item["displayName"] == "UnknownType" and item["sourceTypeId"] == "nsu=http://opcfoundation.org/UA/;i=12"
-    ]
-    assert unknown_for_builtin == []
+    builtin = next(
+        (item for item in payload["result"] if item["sourceTypeId"] == "nsu=http://opcfoundation.org/UA/;i=12"),
+        None,
+    )
+    assert builtin is not None
+    assert builtin["elementId"] == "nsu=http://opcfoundation.org/UA/;i=12"
+    assert builtin["displayName"] != "UnknownType"
 
 
 def test_beta_objecttypes_resolves_standard_structured_datatype(client: TestClient) -> None:
@@ -430,7 +441,36 @@ def test_beta_objecttypes_resolves_standard_structured_datatype(client: TestClie
         ua_any.extension_objects_by_datatype = previous_registry
 
 
-def test_beta_objecttypes_skips_non_datatype_standard_ua_node_ids(client: TestClient) -> None:
+def test_beta_objecttypes_registers_source_type_alias_element_id(client: TestClient) -> None:
+    app = _fastapi_app(client)
+    app.state.model_cache.nodes_by_id["property-struct-alias"] = ModelNode(
+        id="property-struct-alias",
+        name="ConfigAlias",
+        kind="property",
+        type="ns=1;i=3001",
+        children=[],
+        source_node_id="ns=2;s=ConfigAlias",
+    )
+    app.state.model_cache.children_by_id.setdefault("asset-root", []).append("property-struct-alias")
+    app.state.model_cache.children_by_id["property-struct-alias"] = []
+    app.state.model_cache.property_to_node["property-struct-alias"] = "ns=2;s=ConfigAlias"
+
+    response = client.get("/v1/objecttypes")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+
+    alias = next(
+        (item for item in payload["result"] if item["elementId"] == "nsu=http://example.com/custom;i=3001"),
+        None,
+    )
+    assert alias is not None
+    assert alias["displayName"] == "FakeMachineConfig"
+    assert alias["sourceTypeId"] == "nsu=http://example.com/custom;i=3001"
+    assert alias["schema"]["x-opcua-nodeId"] == "nsu=http://example.com/custom;i=3001"
+
+
+def test_beta_objecttypes_registers_non_datatype_standard_ua_node_ids_as_unknown(client: TestClient) -> None:
     app = _fastapi_app(client)
     app.state.model_cache.nodes_by_id["action-ua-11492"] = ModelNode(
         id="action-ua-11492",
@@ -449,10 +489,13 @@ def test_beta_objecttypes_skips_non_datatype_standard_ua_node_ids(client: TestCl
     payload = response.json()
     assert payload["success"] is True
 
-    unresolved = [
-        item for item in payload["result"] if item["sourceTypeId"] == "nsu=http://opcfoundation.org/UA/;i=11492"
-    ]
-    assert unresolved == []
+    unresolved = next(
+        (item for item in payload["result"] if item["sourceTypeId"] == "nsu=http://opcfoundation.org/UA/;i=11492"),
+        None,
+    )
+    assert unresolved is not None
+    assert unresolved["elementId"] == "nsu=http://opcfoundation.org/UA/;i=11492"
+    assert unresolved["displayName"] == "UnknownType"
 
 
 def test_beta_relationshiptypes(client: TestClient) -> None:

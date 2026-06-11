@@ -23,13 +23,45 @@ from i3x_server.opcua.client import (
     OpcUaObjectTypeInfo,
 )
 from i3x_server.schemas.i3x import ModelNode
-from i3x_server.schemas.objecttype_schema import build_data_type_schema, build_object_type_schema
+from i3x_server.schemas.objecttype_schema import (
+    build_data_type_schema,
+    build_object_type_schema,
+    json_schema_for_opcua_type,
+)
 from i3x_server.schemas.state import BuildResult
 from i3x_server.subscriptions.service import SubscriptionService
 
 router = APIRouter(prefix="/v1", tags=["beta"])
 
 T = TypeVar("T")
+
+_UA_BUILTIN_DATATYPE_NAMES: dict[int, str] = {
+    1: "Boolean",
+    2: "SByte",
+    3: "Byte",
+    4: "Int16",
+    5: "UInt16",
+    6: "Int32",
+    7: "UInt32",
+    8: "Int64",
+    9: "UInt64",
+    10: "Float",
+    11: "Double",
+    12: "String",
+    13: "DateTime",
+    14: "Guid",
+    15: "ByteString",
+    16: "XmlElement",
+    17: "NodeId",
+    18: "ExpandedNodeId",
+    19: "StatusCode",
+    20: "QualifiedName",
+    21: "LocalizedText",
+    22: "ExtensionObject",
+    23: "DataValue",
+    24: "Variant",
+    25: "DiagnosticInfo",
+}
 
 
 class SuccessResponse(BaseModel, Generic[T]):
@@ -781,6 +813,17 @@ def _unknown_type_placeholder(element_id: str) -> ObjectTypeResponse:
     )
 
 
+def _object_type_alias_with_element_id(item: ObjectTypeResponse, element_id: str) -> ObjectTypeResponse:
+    return ObjectTypeResponse(
+        elementId=element_id,
+        displayName=item.displayName,
+        namespaceUri=item.namespaceUri,
+        sourceTypeId=item.sourceTypeId,
+        schema=deepcopy(item.schema_),
+        related=deepcopy(item.related),
+    )
+
+
 def _is_builtin_ua_datatype_node_id(element_id: str) -> bool:
     match = re.match(r"^nsu=([^;]+);i=(\d+)$", element_id, flags=re.IGNORECASE)
     if match is None:
@@ -923,8 +966,18 @@ def _datatype_object_type_from_source_type_id(
     namespace_infos: list[OpcUaNamespaceInfo],
 ) -> ObjectTypeResponse | None:
     schema = build_data_type_schema(source_type_id, namespace_infos)
+    builtin_match = re.match(r"^nsu=[^;]+;i=(\d+)$", source_type_id, flags=re.IGNORECASE)
+    builtin_id = int(builtin_match.group(1)) if builtin_match is not None else None
     if not isinstance(schema, Mapping):
-        return None
+        if not _is_builtin_ua_datatype_node_id(source_type_id):
+            return None
+        scalar_schema = json_schema_for_opcua_type(source_type_id)
+        schema = {
+            "oneOf": [
+                dict(scalar_schema),
+                {"type": "array", "items": dict(scalar_schema)},
+            ]
+        }
 
     namespace_uri = _namespace_uri_from_expanded_node_id(source_type_id)
     if namespace_uri is None:
@@ -932,14 +985,18 @@ def _datatype_object_type_from_source_type_id(
     if not namespace_uri:
         return None
 
-    title = schema.get("title")
+    title = schema.get("title") if isinstance(schema, Mapping) else None
     display_name = title if isinstance(title, str) and title else "StructureType"
+    if builtin_id is not None:
+        display_name = _UA_BUILTIN_DATATYPE_NAMES.get(builtin_id, display_name)
     schema_payload = dict(schema)
+    schema_payload.setdefault("title", display_name)
     schema_payload.setdefault("x-opcua-nodeId", source_type_id)
     schema_payload.setdefault("x-opcua-displayName", display_name)
 
     return ObjectTypeResponse(
-        elementId=_virtual_object_type_element_id(namespace_uri, display_name, source_type_id),
+        # Use the expanded datatype NodeId as elementId so Object.typeElementId always resolves.
+        elementId=source_type_id,
         displayName=display_name,
         namespaceUri=namespace_uri,
         sourceTypeId=source_type_id,
@@ -1022,19 +1079,17 @@ async def get_object_types_v1(
         element_ids_by_node_id,
     )
     known_ids = {item.elementId for item in items}
-    known_source_type_ids = {item.sourceTypeId.lower() for item in items}
+    by_source_type_id = {item.sourceTypeId.lower(): item for item in items}
     for unresolved_id in sorted(referenced_type_element_ids - known_ids):
         unresolved_key = unresolved_id.lower()
-        if unresolved_key in known_source_type_ids:
-            continue
-        if _is_builtin_ua_datatype_node_id(unresolved_id):
+        source_match = by_source_type_id.get(unresolved_key)
+        if source_match is not None:
+            items.append(_object_type_alias_with_element_id(source_match, unresolved_id))
             continue
         datatype_item = _datatype_object_type_from_source_type_id(unresolved_id, namespace_infos)
         if datatype_item is not None:
             items.append(datatype_item)
-            known_source_type_ids.add(unresolved_key)
-            continue
-        if _is_standard_ua_namespace_node_id(unresolved_id):
+            by_source_type_id[unresolved_key] = datatype_item
             continue
         items.append(_unknown_type_placeholder(unresolved_id))
 
@@ -1073,19 +1128,17 @@ async def query_object_types_v1(
         element_ids_by_node_id,
     )
     known_ids = {item.elementId for item in listed_types}
-    known_source_type_ids = {item.sourceTypeId.lower() for item in listed_types}
+    by_source_type_id = {item.sourceTypeId.lower(): item for item in listed_types}
     for unresolved_id in sorted(referenced_type_element_ids - known_ids):
         unresolved_key = unresolved_id.lower()
-        if unresolved_key in known_source_type_ids:
-            continue
-        if _is_builtin_ua_datatype_node_id(unresolved_id):
+        source_match = by_source_type_id.get(unresolved_key)
+        if source_match is not None:
+            listed_types.append(_object_type_alias_with_element_id(source_match, unresolved_id))
             continue
         datatype_item = _datatype_object_type_from_source_type_id(unresolved_id, namespace_infos)
         if datatype_item is not None:
             listed_types.append(datatype_item)
-            known_source_type_ids.add(unresolved_key)
-            continue
-        if _is_standard_ua_namespace_node_id(unresolved_id):
+            by_source_type_id[unresolved_key] = datatype_item
             continue
         listed_types.append(_unknown_type_placeholder(unresolved_id))
 

@@ -91,6 +91,11 @@ def test_element_and_urn_token_helpers() -> None:
     assert beta._to_urn_token("HTTP://Example.COM/Plant 01") == "http-example-com-plant-01"
 
 
+def test_builtin_ua_datatype_helper_detection() -> None:
+    assert beta._is_builtin_ua_datatype_node_id("nsu=http://opcfoundation.org/UA/;i=12") is True
+    assert beta._is_builtin_ua_datatype_node_id("nsu=http://opcfoundation.org/UA/;i=11492") is False
+
+
 def test_find_node_and_parent_helpers() -> None:
     model = _sample_model()
     assert beta._find_model_node(model, "prop-a") is not None

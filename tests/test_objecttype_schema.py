@@ -571,3 +571,20 @@ def test_guess_generated_dependency_type_prefers_personnel_for_personnelrequirem
         assert guessed is ISA95PersonnelDataType
     finally:
         sys.modules.pop(module.__name__, None)
+
+
+def test_build_data_type_schema_resolves_expanded_node_id_via_namespace_lookup() -> None:
+    @dataclass(slots=True)
+    class _StandardStruct:
+        Name: ua.String | None = None
+
+    _set_ua_attr("extension_objects_by_datatype", {"ns=0;i=96": _StandardStruct})
+    schema = objecttype_schema.build_data_type_schema(
+        "nsu=http://opcfoundation.org/UA/;i=96",
+        [OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/", display_name="UA")],
+    )
+
+    assert isinstance(schema, dict)
+    assert schema["type"] == "object"
+    assert schema["title"] == "_StandardStruct"
+    assert schema["x-opcua-structureDataType"] == "nsu=http://opcfoundation.org/UA/;i=96"

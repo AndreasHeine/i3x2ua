@@ -4,6 +4,8 @@ import base64
 import http
 import json
 import re
+from copy import deepcopy
+from collections.abc import Mapping
 from dataclasses import fields, is_dataclass
 from datetime import datetime, timezone
 from typing import Any, Generic, TypeVar
@@ -21,7 +23,7 @@ from i3x_server.opcua.client import (
     OpcUaObjectTypeInfo,
 )
 from i3x_server.schemas.i3x import ModelNode
-from i3x_server.schemas.objecttype_schema import build_object_type_schema
+from i3x_server.schemas.objecttype_schema import build_data_type_schema, build_object_type_schema
 from i3x_server.schemas.state import BuildResult
 from i3x_server.subscriptions.service import SubscriptionService
 
@@ -310,6 +312,11 @@ def _expanded_node_id(node_id: str, namespace_infos: list[OpcUaNamespaceInfo]) -
 
     namespace_index = int(match.group(1)) if match.group(1) is not None else 0
     identifier = match.group(2)
+
+    # Namespace index 0 is the OPC UA standard namespace.
+    if namespace_index == 0:
+        return f"nsu=http://opcfoundation.org/UA/;{identifier}"
+
     if not (0 <= namespace_index < len(namespace_infos)):
         return node_id
 
@@ -382,6 +389,24 @@ def _object_type_element_id(
             _to_urn_token(namespace_uri),
             _to_urn_token(item.browse_name),
             _to_urn_token(item.node_id),
+        ]
+    )
+
+
+def _virtual_object_type_element_id(
+    namespace_uri: str,
+    display_name: str,
+    source_type_id: str,
+) -> str:
+    # Keep synthetic structure IDs in the same namespace as regular objecttypes.
+    return ":".join(
+        [
+            "urn",
+            "opcua",
+            "objecttype",
+            _to_urn_token(namespace_uri),
+            _to_urn_token(display_name),
+            _to_urn_token(source_type_id),
         ]
     )
 
@@ -756,6 +781,32 @@ def _unknown_type_placeholder(element_id: str) -> ObjectTypeResponse:
     )
 
 
+def _is_builtin_ua_datatype_node_id(element_id: str) -> bool:
+    match = re.match(r"^nsu=([^;]+);i=(\d+)$", element_id, flags=re.IGNORECASE)
+    if match is None:
+        return False
+
+    namespace_uri = match.group(1).rstrip("/").lower()
+    if namespace_uri != "http://opcfoundation.org/ua":
+        return False
+
+    identifier = int(match.group(2))
+    # OPC UA Built-in DataTypes (NodeId namespace 0, i=1..25)
+    return 1 <= identifier <= 25
+
+
+def _is_standard_ua_namespace_node_id(element_id: str) -> bool:
+    expanded_match = re.match(r"^nsu=([^;]+);", element_id, flags=re.IGNORECASE)
+    if expanded_match is not None:
+        namespace_uri = expanded_match.group(1).rstrip("/").lower()
+        return namespace_uri == "http://opcfoundation.org/ua"
+
+    indexed_match = re.match(r"^ns=(\d+);", element_id, flags=re.IGNORECASE)
+    if indexed_match is None:
+        return False
+    return int(indexed_match.group(1)) == 0
+
+
 def _collect_referenced_type_element_ids(
     model: BuildResult,
     namespace_infos: list[OpcUaNamespaceInfo],
@@ -772,6 +823,84 @@ def _collect_referenced_type_element_ids(
             type_element_id = object_type_element_ids_by_node_id.get(source_type_id, source_type_id_expanded)
         referenced.add(type_element_id)
     return referenced
+
+
+def _synthetic_object_types_from_structure_defs(
+    listed_object_types: list[ObjectTypeResponse],
+    namespace_infos: list[OpcUaNamespaceInfo],
+) -> list[ObjectTypeResponse]:
+    synthetic_by_source_type_id: dict[str, ObjectTypeResponse] = {}
+
+    for item in listed_object_types:
+        defs = item.schema_.get("$defs") if isinstance(item.schema_, Mapping) else None
+        if not isinstance(defs, Mapping):
+            continue
+
+        for raw_def in defs.values():
+            if not isinstance(raw_def, Mapping):
+                continue
+
+            source_hint = raw_def.get("x-opcua-structureDataType") or raw_def.get("x-opcua-structureTypeId")
+            if not isinstance(source_hint, str) or not source_hint:
+                continue
+
+            source_type_id = _expanded_node_id(source_hint, namespace_infos)
+            source_key = source_type_id.lower()
+            if source_key in synthetic_by_source_type_id:
+                continue
+
+            namespace_uri = _namespace_uri_from_expanded_node_id(source_type_id)
+            if namespace_uri is None:
+                namespace_uri = _namespace_uri_for_node_id(source_type_id, namespace_infos)
+            if not namespace_uri:
+                namespace_uri = item.namespaceUri
+
+            display_name_raw = raw_def.get("title")
+            display_name = (
+                display_name_raw if isinstance(display_name_raw, str) and display_name_raw else "StructureType"
+            )
+            schema = deepcopy(dict(raw_def))
+            schema.setdefault("x-opcua-nodeId", source_type_id)
+            schema.setdefault("x-opcua-displayName", display_name)
+
+            synthetic_by_source_type_id[source_key] = ObjectTypeResponse(
+                elementId=_virtual_object_type_element_id(namespace_uri, display_name, source_type_id),
+                displayName=display_name,
+                namespaceUri=namespace_uri,
+                sourceTypeId=source_type_id,
+                schema=schema,
+            )
+
+    return list(synthetic_by_source_type_id.values())
+
+
+def _datatype_object_type_from_source_type_id(
+    source_type_id: str,
+    namespace_infos: list[OpcUaNamespaceInfo],
+) -> ObjectTypeResponse | None:
+    schema = build_data_type_schema(source_type_id, namespace_infos)
+    if not isinstance(schema, Mapping):
+        return None
+
+    namespace_uri = _namespace_uri_from_expanded_node_id(source_type_id)
+    if namespace_uri is None:
+        namespace_uri = _namespace_uri_for_node_id(source_type_id, namespace_infos)
+    if not namespace_uri:
+        return None
+
+    title = schema.get("title")
+    display_name = title if isinstance(title, str) and title else "StructureType"
+    schema_payload = dict(schema)
+    schema_payload.setdefault("x-opcua-nodeId", source_type_id)
+    schema_payload.setdefault("x-opcua-displayName", display_name)
+
+    return ObjectTypeResponse(
+        elementId=_virtual_object_type_element_id(namespace_uri, display_name, source_type_id),
+        displayName=display_name,
+        namespaceUri=namespace_uri,
+        sourceTypeId=source_type_id,
+        schema=schema_payload,
+    )
 
 
 def _require_client_id(client_id: str | None, endpoint: str) -> str:
@@ -842,13 +971,27 @@ async def get_object_types_v1(
         _to_object_type(item, model, namespace_infos, object_types_by_node_id, element_ids_by_node_id)
         for item in object_types
     ]
+    items.extend(_synthetic_object_types_from_structure_defs(items, namespace_infos))
     referenced_type_element_ids = _collect_referenced_type_element_ids(
         model,
         namespace_infos,
         element_ids_by_node_id,
     )
     known_ids = {item.elementId for item in items}
+    known_source_type_ids = {item.sourceTypeId.lower() for item in items}
     for unresolved_id in sorted(referenced_type_element_ids - known_ids):
+        unresolved_key = unresolved_id.lower()
+        if unresolved_key in known_source_type_ids:
+            continue
+        if _is_builtin_ua_datatype_node_id(unresolved_id):
+            continue
+        datatype_item = _datatype_object_type_from_source_type_id(unresolved_id, namespace_infos)
+        if datatype_item is not None:
+            items.append(datatype_item)
+            known_source_type_ids.add(unresolved_key)
+            continue
+        if _is_standard_ua_namespace_node_id(unresolved_id):
+            continue
         items.append(_unknown_type_placeholder(unresolved_id))
 
     if namespace_uri:
@@ -879,13 +1022,27 @@ async def query_object_types_v1(
         _to_object_type(item, model, namespace_infos, object_types_by_node_id, element_ids_by_node_id)
         for item in object_types
     ]
+    listed_types.extend(_synthetic_object_types_from_structure_defs(listed_types, namespace_infos))
     referenced_type_element_ids = _collect_referenced_type_element_ids(
         model,
         namespace_infos,
         element_ids_by_node_id,
     )
     known_ids = {item.elementId for item in listed_types}
+    known_source_type_ids = {item.sourceTypeId.lower() for item in listed_types}
     for unresolved_id in sorted(referenced_type_element_ids - known_ids):
+        unresolved_key = unresolved_id.lower()
+        if unresolved_key in known_source_type_ids:
+            continue
+        if _is_builtin_ua_datatype_node_id(unresolved_id):
+            continue
+        datatype_item = _datatype_object_type_from_source_type_id(unresolved_id, namespace_infos)
+        if datatype_item is not None:
+            listed_types.append(datatype_item)
+            known_source_type_ids.add(unresolved_key)
+            continue
+        if _is_standard_ua_namespace_node_id(unresolved_id):
+            continue
         listed_types.append(_unknown_type_placeholder(unresolved_id))
 
     indexed = {item.elementId: item for item in listed_types}

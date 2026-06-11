@@ -30,6 +30,7 @@ include = ["i3x_server*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+testpaths = ["tests"]
 addopts = [
     "--cov=i3x_server",
     "--cov-report=term-missing",
@@ -49,3 +50,5 @@ ignore = ["B008"]
 python_version = "3.10"
 strict = true
 ignore_missing_imports = true
+files = ["i3x_server", "tests", "run.py", "run_tests.py"]
+exclude = "(^|[\\/])i3X[\\/]demo[\\/]"

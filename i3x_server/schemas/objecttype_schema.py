@@ -483,14 +483,34 @@ def _schema_from_data_type(
     if not data_type:
         return None
 
-    structure_type = _resolve_structure_type(data_type)
+    normalized_data_type = _expanded_if_node_id(_node_id_to_string(data_type), namespace_infos) or data_type
+    structure_type = _resolve_structure_type(normalized_data_type)
+    if structure_type is None:
+        indexed_node_id = _indexed_node_id(normalized_data_type, namespace_infos)
+        if indexed_node_id is not None:
+            structure_type = _resolve_structure_type(indexed_node_id)
     if structure_type is None:
         return None
 
-    normalized_data_type = _expanded_if_node_id(_node_id_to_string(data_type), namespace_infos) or data_type
     schema_key = f"opcua-datatype:{normalized_data_type.lower()}"
     metadata = {"x-opcua-structureDataType": normalized_data_type}
     return _reference_or_register_structure_from_type(schema_key, structure_type, registry, metadata)
+
+
+def build_data_type_schema(
+    data_type: str,
+    namespace_infos: list[OpcUaNamespaceInfo],
+) -> dict[str, Any] | None:
+    registry = _SchemaRegistry()
+    schema = _schema_from_data_type(data_type, namespace_infos, registry)
+    if schema is None:
+        return None
+
+    inlined = _inline_registered_reference(schema, registry)
+    expanded = _expand_schema_refs(inlined, registry.defs)
+    if isinstance(expanded, Mapping):
+        return dict(expanded)
+    return None
 
 
 def _resolve_structure_type(data_type: str) -> type[Any] | None:
@@ -1219,6 +1239,25 @@ def _expanded_if_node_id(value: str | None, namespace_infos: list[OpcUaNamespace
     return _expanded_node_id(value, namespace_infos)
 
 
+def _indexed_node_id(value: str, namespace_infos: list[OpcUaNamespaceInfo]) -> str | None:
+    match = re.match(r"^nsu=([^;]+);([isgb]=.+)$", value)
+    if match is None:
+        return None
+
+    namespace_uri = match.group(1)
+    identifier = match.group(2)
+
+    # Namespace 0 (OPC UA standard namespace) is fixed and does not depend
+    # on the runtime namespace array ordering.
+    if namespace_uri.rstrip("/").lower() == "http://opcfoundation.org/ua":
+        return f"ns=0;{identifier}"
+
+    for index, namespace_info in enumerate(namespace_infos):
+        if namespace_info.uri == namespace_uri:
+            return f"ns={index};{identifier}"
+    return None
+
+
 def _is_null_node_id(value: str) -> bool:
     normalized = value.strip().lower()
     return bool(re.match(r"^(?:ns=\d+;|nsu=[^;]+;)?i=0$", normalized))
@@ -1325,6 +1364,11 @@ def _expanded_node_id(node_id: str, namespace_infos: list[OpcUaNamespaceInfo]) -
 
     namespace_index = int(match.group(1)) if match.group(1) is not None else 0
     identifier = match.group(2)
+
+    # Namespace index 0 is the OPC UA standard namespace.
+    if namespace_index == 0:
+        return f"nsu=http://opcfoundation.org/UA/;{identifier}"
+
     if not (0 <= namespace_index < len(namespace_infos)):
         return node_id
 

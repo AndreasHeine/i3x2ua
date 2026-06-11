@@ -1,0 +1,264 @@
+version: '3.8'
+
+# Multi-Instance Setup for i3x2ua
+# This configuration deploys:
+# - 3 independent instances of i3x2ua with separate OPC-UA connections
+# - Each instance accessible via separate URL path (e.g., /instance1/v1/...)
+# - NGINX reverse proxy with HTTPS and path-based routing
+# - Prometheus and Grafana for monitoring (optional)
+# 
+# Each instance is completely independent with no shared state.
+# Instances can connect to different OPC-UA servers.
+
+services:
+  # i3x2ua Instance 1
+  i3x2ua-1:
+    image: ${I3X2UA_IMAGE:-ghcr.io/andreasheine/i3x2ua:master}
+    container_name: i3x2ua-1
+    restart: unless-stopped
+    command:
+      - python
+      - -m
+      - uvicorn
+      - i3x_server.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --proxy-headers
+      - --forwarded-allow-ips
+      - "*"
+      - --workers
+      - "4"
+    environment:
+      I3X_OPCUA_ENDPOINT: ${I3X_OPCUA_ENDPOINT_1}
+      I3X_OPCUA_USERNAME: ${I3X_OPCUA_USERNAME_1}
+      I3X_OPCUA_PASSWORD: ${I3X_OPCUA_PASSWORD_1}
+      I3X_OPCUA_SECURITY_MODE: ${I3X_OPCUA_SECURITY_MODE_1:-None}
+      I3X_OPCUA_SECURITY_POLICY: ${I3X_OPCUA_SECURITY_POLICY_1:-}
+      I3X_LOG_LEVEL: ${I3X_LOG_LEVEL:-INFO}
+    expose:
+      - "8000"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid
+      - /home/app:size=16m,noexec,nosuid
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/v1/info', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - backend
+
+  # i3x2ua Instance 2
+  i3x2ua-2:
+    image: ${I3X2UA_IMAGE:-ghcr.io/andreasheine/i3x2ua:master}
+    container_name: i3x2ua-2
+    restart: unless-stopped
+    command:
+      - python
+      - -m
+      - uvicorn
+      - i3x_server.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8001"
+      - --proxy-headers
+      - --forwarded-allow-ips
+      - "*"
+      - --workers
+      - "4"
+    environment:
+      I3X_OPCUA_ENDPOINT: ${I3X_OPCUA_ENDPOINT_2}
+      I3X_OPCUA_USERNAME: ${I3X_OPCUA_USERNAME_2}
+      I3X_OPCUA_PASSWORD: ${I3X_OPCUA_PASSWORD_2}
+      I3X_OPCUA_SECURITY_MODE: ${I3X_OPCUA_SECURITY_MODE_2:-None}
+      I3X_OPCUA_SECURITY_POLICY: ${I3X_OPCUA_SECURITY_POLICY_2:-}
+      I3X_LOG_LEVEL: ${I3X_LOG_LEVEL:-INFO}
+    expose:
+      - "8001"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid
+      - /home/app:size=16m,noexec,nosuid
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/v1/info', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - backend
+
+  # i3x2ua Instance 3
+  i3x2ua-3:
+    image: ${I3X2UA_IMAGE:-ghcr.io/andreasheine/i3x2ua:master}
+    container_name: i3x2ua-3
+    restart: unless-stopped
+    command:
+      - python
+      - -m
+      - uvicorn
+      - i3x_server.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8002"
+      - --proxy-headers
+      - --forwarded-allow-ips
+      - "*"
+      - --workers
+      - "4"
+    environment:
+      I3X_OPCUA_ENDPOINT: ${I3X_OPCUA_ENDPOINT_3}
+      I3X_OPCUA_USERNAME: ${I3X_OPCUA_USERNAME_3}
+      I3X_OPCUA_PASSWORD: ${I3X_OPCUA_PASSWORD_3}
+      I3X_OPCUA_SECURITY_MODE: ${I3X_OPCUA_SECURITY_MODE_3:-None}
+      I3X_OPCUA_SECURITY_POLICY: ${I3X_OPCUA_SECURITY_POLICY_3:-}
+      I3X_LOG_LEVEL: ${I3X_LOG_LEVEL:-INFO}
+    expose:
+      - "8002"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid
+      - /home/app:size=16m,noexec,nosuid
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8002/v1/info', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - backend
+
+  # NGINX Reverse Proxy with Load Balancing
+  nginx:
+    build:
+      context: ./nginx
+    container_name: i3x2ua-nginx
+    restart: unless-stopped
+    depends_on:
+      i3x2ua-1:
+        condition: service_healthy
+      i3x2ua-2:
+        condition: service_healthy
+      i3x2ua-3:
+        condition: service_healthy
+    ports:
+      - "${NGINX_HTTP_PORT:-80}:80"
+      - "${NGINX_HTTPS_PORT:-443}:443"
+    environment:
+      NGINX_UPSTREAM_HOSTS: i3x2ua-1:8000 i3x2ua-2:8001 i3x2ua-3:8002
+      NGINX_SERVER_NAME: ${NGINX_SERVER_NAME}
+      NGINX_HTTPS_ENABLED: ${NGINX_HTTPS_ENABLED}
+      NGINX_SSL_CERTIFICATE: ${NGINX_SSL_CERTIFICATE:-/etc/nginx/certs/fullchain.pem}
+      NGINX_SSL_CERTIFICATE_KEY: ${NGINX_SSL_CERTIFICATE_KEY:-/etc/nginx/certs/privkey.pem}
+      NGINX_BASIC_AUTH_ENABLED: ${NGINX_BASIC_AUTH_ENABLED:-0}
+      NGINX_BASIC_AUTH_USER: ${NGINX_BASIC_AUTH_USER:-}
+      NGINX_BASIC_AUTH_PASSWORD: ${NGINX_BASIC_AUTH_PASSWORD:-}
+      NGINX_BASIC_AUTH_REALM: ${NGINX_BASIC_AUTH_REALM:-i3x2ua}
+      NGINX_LOAD_BALANCING: ${NGINX_LOAD_BALANCING:-round_robin}
+    volumes:
+      - ${NGINX_SSL_CERTS_DIR:-./certs}:/etc/nginx/certs:ro
+    networks:
+      - backend
+    cap_drop:
+      - ALL
+      - NET_RAW
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /var/run:size=32m,noexec,nosuid
+      - /var/cache:size=32m,noexec,nosuid
+
+  # Prometheus - Metrics Collection (Optional)
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: i3x2ua-prometheus
+    restart: unless-stopped
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+    networks:
+      - backend
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  # Grafana - Visualization (Optional)
+  grafana:
+    image: grafana/grafana:latest
+    container_name: i3x2ua-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_SECURITY_ADMIN_USER: admin
+      GF_INSTALL_PLUGINS: grafana-worldmap-panel
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+    networks:
+      - backend
+    depends_on:
+      - prometheus
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+# Named volumes for data persistence
+volumes:
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+
+# Network configuration
+networks:
+  backend:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+# Metadata
+x-logging:
+  &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+# Apply logging to all services
+x-global-logging: &global-logging
+  logging: *default-logging

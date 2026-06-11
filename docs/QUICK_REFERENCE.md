@@ -139,11 +139,6 @@ I3X_OPCUA_ENDPOINT=opc.tcp://server:4843
 I3X_OPCUA_USERNAME=user
 I3X_OPCUA_PASSWORD=pass
 
-# Multi-Instance
-DB_USER=i3x2ua
-DB_PASSWORD=dbpass
-NGINX_UPSTREAM_HOSTS=i3x2ua-1:8000 i3x2ua-2:8001
-
 # Logging
 I3X_LOG_LEVEL=INFO
 ```
@@ -178,18 +173,6 @@ docker stats
 # Check load across instances (if multi-instance)
 docker-compose logs i3x2ua-1 | wc -l
 docker-compose logs i3x2ua-2 | wc -l
-```
-
-### Database Connection Error
-```bash
-# Check database status
-docker-compose ps db
-
-# Test connection
-docker-compose exec db psql -U i3x2ua -d i3x2ua -c "SELECT 1"
-
-# Check logs
-docker-compose logs db
 ```
 
 ---

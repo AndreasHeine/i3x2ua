@@ -221,16 +221,6 @@ For OAuth integration, use nginx-lua or an external service like oauth2-proxy.
       OAUTH2_PROXY_COOKIE_HTTPONLY: "true"
       OAUTH2_PROXY_COOKIE_SAMESITE: "Lax"
       OAUTH2_PROXY_SET_XAUTHREQUEST: "true"
-      OAUTH2_PROXY_SESSION_STORE_TYPE: redis
-      OAUTH2_PROXY_REDIS_CONNECTION_URL: ${REDIS_URL}
-    networks:
-      - backend
-    depends_on:
-      - redis
-
-  redis:
-    image: redis:7-alpine
-    restart: unless-stopped
     networks:
       - backend
 ```
@@ -244,7 +234,6 @@ OAUTH_CLIENT_ID=your-oauth-client-id
 OAUTH_CLIENT_SECRET=your-oauth-client-secret
 OAUTH_ISSUER_URL=https://accounts.google.com/o/oauth2/v2/auth
 OAUTH_ALLOWED_EMAILS=user1@example.com,user2@example.com
-REDIS_URL=redis://redis:6379
 ```
 
 #### NGINX Configuration for OAuth2-Proxy
@@ -773,24 +762,19 @@ EOF
 ### 3. Backup Strategy
 
 ```bash
-# Backup database
-docker-compose exec db pg_dump -U i3x2ua i3x2ua > backup_$(date +%Y%m%d_%H%M%S).sql
-
 # Backup SSL certificates
 cp -r certs/ certs_backup_$(date +%Y%m%d)
 
-# Automated backup script
+# Automated backup script for certificates
 #!/bin/bash
 BACKUP_DIR="/backups/i3x2ua"
 mkdir -p $BACKUP_DIR
 
-# Daily database backup
-docker-compose -f /path/to/docker-compose.yml exec -T db \
-  pg_dump -U i3x2ua i3x2ua > \
-  $BACKUP_DIR/db_backup_$(date +%Y%m%d_%H%M%S).sql
+# Daily certificate backup
+cp -r certs/ $BACKUP_DIR/certs_backup_$(date +%Y%m%d_%H%M%S)
 
 # Keep only last 30 days
-find $BACKUP_DIR -name "db_backup_*.sql" -mtime +30 -delete
+find $BACKUP_DIR -name "certs_backup_*" -mtime +30 -exec rm -rf {} \;
 ```
 
 ### 4. Monitoring Stack (Prometheus + Grafana)
@@ -968,25 +952,7 @@ docker exec i3x2ua-1 ps aux
 docker stats --no-stream --format "{{.Container}}\t{{.MemUsage}}"
 ```
 
-### 5. Database Connection Issues
-
-**Problem**: "Cannot connect to database"
-
-```bash
-# Check database container is running
-docker-compose ps db
-
-# Test database connection
-docker-compose exec db psql -U i3x2ua -d i3x2ua -c "SELECT 1"
-
-# Check connection pool
-docker-compose logs i3x2ua | grep -i "database\|connection pool"
-
-# Verify environment variables
-docker-compose config | grep DB_
-```
-
-### 6. Certificate Renewal Failures
+### 5. Certificate Renewal Failures
 
 **Problem**: Certbot renewal fails
 
@@ -1087,10 +1053,7 @@ OAUTH_CLIENT_ID=your-client-id.apps.googleusercontent.com
 OAUTH_CLIENT_SECRET=your-client-secret
 OAUTH_ISSUER_URL=https://accounts.google.com
 OAUTH_ALLOWED_EMAILS=admin@mycompany.com,dev@mycompany.com
-REDIS_URL=redis://redis:6379
 ```
-
----
 
 ## Additional Resources
 

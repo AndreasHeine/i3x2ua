@@ -41,12 +41,12 @@ Complete guide for deploying i3x2ua in production with HTTPS, load balancing, an
    - Security recommendations
    - Copy to `.env` and customize for your environment
 
-5. **[docker-compose.multi-instance.yml](docker-compose.multi-instance.yml)** 📦 HA SETUP
+5. **[docker-compose.multi-instance.yml](docker-compose.multi-instance.yml)** 📦 MULTI-INSTANCE SETUP
    - Multi-instance Docker Compose configuration
-   - 3 i3x2ua instances with load balancing
-   - PostgreSQL database for shared state
-   - Redis for session management
-   - Prometheus and Grafana monitoring
+   - 3 independent i3x2ua instances with separate OPC-UA connections
+   - NGINX reverse proxy with path-based routing
+   - Prometheus and Grafana monitoring (optional)
+   - Each instance completely independent with no shared state
    - Use with: `docker-compose -f docker-compose.multi-instance.yml up -d`
 
 6. **[cert-manager.sh](cert-manager.sh)** 🔐 CERTIFICATE TOOL
@@ -375,8 +375,7 @@ After deployment, verify:
 - [ ] Health checks pass
 - [ ] Logs show no errors
 - [ ] Certificates are valid
-- [ ] Database connection works (if multi-instance)
-- [ ] Load balancing is functioning (if multi-instance)
+- [ ] All instances are accessible (if multi-instance)
 
 ---
 

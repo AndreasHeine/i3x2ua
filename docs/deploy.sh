@@ -238,15 +238,6 @@ backup_data() {
     cp "$ENV_FILE" "$backup_dir/.env.bak"
     log_info "✓ Configuration backed up"
     
-    # Database backup if available
-    if docker-compose -f "$PROJECT_DIR/docker-compose.yml" ps db > /dev/null 2>&1; then
-        log_info "Backing up database..."
-        docker-compose -f "$PROJECT_DIR/docker-compose.yml" exec -T db \
-            pg_dump -U "${DB_USER:-i3x2ua}" "${DB_NAME:-i3x2ua}" > \
-            "$backup_dir/database.sql" 2>/dev/null || log_warn "Database backup failed"
-        log_info "✓ Database backed up"
-    fi
-    
     log_info "Backups saved to: $backup_dir"
     return 0
 }

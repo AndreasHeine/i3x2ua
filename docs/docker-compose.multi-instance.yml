@@ -149,7 +149,7 @@ services:
     networks:
       - backend
 
-  # NGINX Reverse Proxy with Load Balancing
+  # NGINX Reverse Proxy with Path-Based Routing
   nginx:
     build:
       context: ./nginx
@@ -175,7 +175,6 @@ services:
       NGINX_BASIC_AUTH_USER: ${NGINX_BASIC_AUTH_USER:-}
       NGINX_BASIC_AUTH_PASSWORD: ${NGINX_BASIC_AUTH_PASSWORD:-}
       NGINX_BASIC_AUTH_REALM: ${NGINX_BASIC_AUTH_REALM:-i3x2ua}
-      NGINX_LOAD_BALANCING: ${NGINX_LOAD_BALANCING:-round_robin}
     volumes:
       - ${NGINX_SSL_CERTS_DIR:-./certs}:/etc/nginx/certs:ro
     networks:

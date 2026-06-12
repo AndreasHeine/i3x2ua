@@ -1,6 +1,6 @@
-# i3X API Gateway for OPC UA — Browse, Read & Stream Industrial Data
+# i3X API Gateway for OPC UA — REST, MCP & Real-Time Streaming
 
-**FastAPI gateway implementing the i3X REST API over OPC UA — exposes OPC UA address spaces as standardized JSON endpoints for browsing, value reads, history, and Server-Sent Event subscriptions.**
+**FastAPI gateway implementing the i3X API over OPC UA — exposes OPC UA address spaces as standardized REST and MCP endpoints with JSON responses, OpenAPI docs, and Server-Sent Event subscriptions. Built for teams that do not have deep OPC UA expertise.**
 
 [![Container Build](https://github.com/AndreasHeine/i3x2ua/actions/workflows/docker.yml/badge.svg)](https://github.com/AndreasHeine/i3x2ua/actions/workflows/docker.yml) [![Quality Checks](https://github.com/AndreasHeine/i3x2ua/actions/workflows/quality.yml/badge.svg)](https://github.com/AndreasHeine/i3x2ua/actions/workflows/quality.yml) [![Coverage](https://codecov.io/gh/AndreasHeine/i3x2ua/branch/master/graph/badge.svg)](https://codecov.io/gh/AndreasHeine/i3x2ua) [![Dependabot Updates](https://github.com/AndreasHeine/i3x2ua/actions/workflows/dependabot/dependabot-updates/badge.svg)](https://github.com/AndreasHeine/i3x2ua/actions/workflows/dependabot/dependabot-updates) [![Dependency Graph](https://github.com/AndreasHeine/i3x2ua/actions/workflows/dependabot/update-graph/badge.svg)](https://github.com/AndreasHeine/i3x2ua/actions/workflows/dependabot/update-graph)
 
@@ -119,7 +119,7 @@ sequenceDiagram
 
 Requirements:
 
-- Python 3.12
+- Python 3.10 to 3.12
 - uv
 - Optional: running OPC UA server
 
@@ -161,6 +161,7 @@ OpenAPI/Swagger:
 Active endpoints are exposed under `/v1` for:
 
 - info and metadata (`/info`, `/namespaces`, `/objecttypes`, `/relationshiptypes`)
+- filtered type queries (`/objecttypes/query`, `/relationshiptypes/query`)
 - object queries and values (`/objects`, `/objects/list`, `/objects/related`, `/objects/value`, `/objects/history`)
 - subscriptions (`/subscriptions`, `/subscriptions/register`, `/subscriptions/unregister`, `/subscriptions/sync`, `/subscriptions/list`, `/subscriptions/delete`, `/subscriptions/stream`)
 
@@ -169,13 +170,21 @@ Optional MCP endpoints are exposed only when `I3X_ENABLE_MCP=1`:
 - discovery and tool catalog (`/mcp`, `/mcp/tools`)
 - JSON-RPC and tool call entry points (`/mcp`, `/mcp/call`)
 
+## Current Limitations
+
+- write APIs currently return `501 Not Implemented` (`PUT /v1/objects/{element_id}/value`, `PUT /v1/objects/{element_id}/history`)
+- `GET /v1/objects/{element_id}/history` currently returns `501 Not Implemented`
+- server capabilities report updates as not supported while read/history/streaming are supported
+
 ## Documentation
 
-- Beta contract and conformance: `docs/I3X_CONFORMANCE.md`
+- i3X upstream specification materials: `i3X/spec/README.md`
+- i3X conformance tests: `i3X/conformance-tests/README.md`
 - OPC UA to i3X mapping profile: `docs/OPCUA_I3X_MAPPING_PROFILE.md`
 - LM Studio / MCP bridge guide: `docs/LM_STUDIO_MCP_GUIDE.md`
-- Roadmap and open items: `docs/TODO.md`
-- Python coding requirements: `docs/python-coding-reguirements.md`
+- deployment guide index: `docs/PRODUCTION_DEPLOYMENT_INDEX.md`
+- quick ops reference: `docs/QUICK_REFERENCE.md`
+- Python coding requirements: `python-coding-reguirements.md`
 - API definition: `openapi.json`
 
 ## Docker
@@ -187,6 +196,8 @@ docker compose up -d
 ```
 
 The stack now starts the API behind an nginx reverse proxy. The app container stays internal, while nginx exposes HTTP and optional HTTPS.
+
+The default compose setup also enables container hardening (`read_only`, `tmpfs`, dropped Linux capabilities, `no-new-privileges`).
 
 Optional environment variables:
 

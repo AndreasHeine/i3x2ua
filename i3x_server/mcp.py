@@ -303,7 +303,7 @@ async def invoke_mcp_tool(request: Request, tool: McpToolDefinition, arguments: 
         safe_value = _safe_path_parameter_value(parameter_name, arguments[parameter_name])
         resolved_path = resolved_path.replace(placeholder, quote(safe_value, safe=""))
 
-    request_url = _safe_internal_request_url(resolved_path)
+    request_target = _safe_request_path("", resolved_path)
 
     query_params = {
         parameter_name: arguments[parameter_name]
@@ -320,8 +320,12 @@ async def invoke_mcp_tool(request: Request, tool: McpToolDefinition, arguments: 
     if request_body is not None:
         request_kwargs["json"] = request_body
 
-    async with httpx.AsyncClient(transport=transport, timeout=30) as client:
-        response = await client.request(tool.method, request_url, **request_kwargs)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url=_MCP_INTERNAL_BASE_URL,
+        timeout=30,
+    ) as client:
+        response = await client.request(tool.method, request_target, **request_kwargs)
 
     if response.headers.get("content-type", "").startswith("application/json"):
         try:

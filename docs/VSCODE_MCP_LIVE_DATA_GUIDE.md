@@ -85,6 +85,8 @@ Expected behavior:
 - Time ranges: `queryHistoricalValues`
 - Live updates workflow: `createSubscription`, `syncSubscription`
 
+![vs-code-mcp.png](../img/vs-code-mcp.png)
+
 ## 6. Use Live Data Reliably
 
 1. Keep requests narrow (specific IDs and time windows).

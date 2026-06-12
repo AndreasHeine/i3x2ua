@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from posixpath import normpath
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -143,8 +144,47 @@ def get_api_prefix(openapi_spec: Mapping[str, Any]) -> str:
                 continue
             url = server.get("url")
             if isinstance(url, str) and url:
-                return url.rstrip("/")
+                return _safe_api_prefix(url)
     return ""
+
+
+def _safe_api_prefix(api_prefix: str) -> str:
+    parsed = urlsplit(api_prefix)
+    if parsed.scheme or parsed.netloc:
+        api_prefix = parsed.path
+    if not api_prefix:
+        return ""
+    prefix = api_prefix.strip()
+    if not prefix:
+        return ""
+    if not prefix.startswith("/"):
+        prefix = "/" + prefix
+    if prefix.startswith("//"):
+        raise i3x_http_error(500, "Internal Error", "Invalid MCP API prefix")
+    normalized = normpath(prefix)
+    if normalized in {".", "/", ""}:
+        return ""
+    if not normalized.startswith("/") or normalized.startswith("//"):
+        raise i3x_http_error(500, "Internal Error", "Invalid MCP API prefix")
+    return normalized.rstrip("/")
+
+
+def _safe_request_path(api_prefix: str, tool_path: str) -> str:
+    prefix = _safe_api_prefix(api_prefix)
+    if not tool_path.startswith("/"):
+        raise i3x_http_error(500, "Internal Error", "Invalid MCP tool path")
+    combined = f"{prefix}{tool_path}" if prefix else tool_path
+    parsed = urlsplit(combined)
+    if parsed.scheme or parsed.netloc or parsed.query or parsed.fragment:
+        raise i3x_http_error(500, "Internal Error", "Invalid MCP request path")
+    if not parsed.path.startswith("/") or parsed.path.startswith("//"):
+        raise i3x_http_error(500, "Internal Error", "Invalid MCP request path")
+    normalized = normpath(parsed.path)
+    if not normalized.startswith("/") or normalized.startswith("//"):
+        raise i3x_http_error(500, "Internal Error", "Invalid MCP request path")
+    if normalized == "/.." or normalized.startswith("/../"):
+        raise i3x_http_error(500, "Internal Error", "Invalid MCP request path")
+    return normalized
 
 
 def _resolve_request_body_schema(
@@ -246,7 +286,7 @@ async def invoke_mcp_tool(request: Request, tool: McpToolDefinition, arguments: 
     if not isinstance(api_prefix, str):
         api_prefix = ""
 
-    resolved_path = f"{api_prefix}{tool.path}" if api_prefix else tool.path
+    resolved_path = _safe_request_path(api_prefix, tool.path)
     for parameter_name in tool.path_parameters:
         placeholder = "{" + parameter_name + "}"
         if placeholder not in resolved_path:

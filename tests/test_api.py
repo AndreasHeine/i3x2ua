@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 
 from i3x_server.api.beta import _expanded_node_id
 from i3x_server.main import create_app
+from i3x_server.mcp import get_api_prefix
 from i3x_server.opcua.client import OpcUaNamespaceInfo, OpcUaSubscriptionCapabilities
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
@@ -1300,3 +1301,16 @@ def test_mcp_call_rejects_malicious_path_parameters(client: TestClient, element_
 def test_mcp_call_rejects_unknown_tool(client: TestClient) -> None:
     response = client.post("/mcp/call", json={"tool": "unknownTool", "arguments": {}})
     assert response.status_code == 400
+
+
+def test_mcp_get_api_prefix_strips_host_parts() -> None:
+    openapi_spec = {"servers": [{"url": "https://example.test/v1"}]}
+    assert get_api_prefix(openapi_spec) == "/v1"
+
+
+def test_mcp_call_strips_host_from_runtime_api_prefix(client: TestClient) -> None:
+    app = _fastapi_app(client)
+    app.state.mcp_api_prefix = "https://evil.example/v1"
+
+    response = client.post("/mcp/call", json={"tool": "getNamespaces", "arguments": {}})
+    assert response.status_code == 200

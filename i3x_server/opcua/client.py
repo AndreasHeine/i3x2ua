@@ -504,6 +504,47 @@ class OpcUaClient:
             retry_nodes = [self._client.get_node(node.nodeid) for node in nodes]
             return await self._client.read_attributes(retry_nodes, attr=attr)
 
+    async def _read_attribute_batch_limited(
+        self,
+        nodes: list[Any],
+        attr: AttributeIds,
+        batch_size: int | None = None,
+    ) -> list[ua.DataValue]:
+        if not nodes:
+            return []
+
+        effective_batch_size = batch_size
+        if effective_batch_size is None:
+            limits = await self.get_operational_limits()
+            max_nodes = limits.max_nodes_per_read or len(nodes)
+            effective_batch_size = max(1, min(max_nodes, len(nodes)))
+
+        output: list[ua.DataValue] = []
+        for node_batch in _chunked_nodes(nodes, max(1, effective_batch_size)):
+            try:
+                output.extend(await self._read_attribute_batch(node_batch, attr))
+            except Exception as exc:
+                if not self._is_too_many_operations_error(exc) or len(node_batch) <= 1:
+                    raise
+
+                reduced_batch_size = max(1, len(node_batch) // 2)
+                logger.warning(
+                    "OPC UA attribute read split retry endpoint=%s attr=%s batch_size=%d reduced_batch_size=%d",
+                    self._endpoint,
+                    int(attr),
+                    len(node_batch),
+                    reduced_batch_size,
+                )
+                output.extend(
+                    await self._read_attribute_batch_limited(
+                        node_batch,
+                        attr,
+                        batch_size=reduced_batch_size,
+                    )
+                )
+
+        return output
+
     async def _read_optional_node_ids(
         self,
         nodes: list[Any],
@@ -910,7 +951,7 @@ class OpcUaClient:
         description_by_node_id: dict[str, str | None] = {}
         descriptions_batch_ok = True
         try:
-            descriptions = await self._read_attribute_batch(all_nodes, AttributeIds.Description)
+            descriptions = await self._read_attribute_batch_limited(all_nodes, AttributeIds.Description)
             for node_id, description_value in zip(all_node_ids, descriptions, strict=True):
                 description_raw = self._extract_attribute_value(description_value)
                 text_value = getattr(description_raw, "Text", None)
@@ -933,7 +974,7 @@ class OpcUaClient:
         data_type_batch_ok = True
         if variable_nodes:
             try:
-                data_types = await self._read_attribute_batch(variable_nodes, AttributeIds.DataType)
+                data_types = await self._read_attribute_batch_limited(variable_nodes, AttributeIds.DataType)
                 for node_id, data_type_value in zip(variable_node_ids, data_types, strict=True):
                     data_type_raw = self._extract_attribute_value(data_type_value)
                     if data_type_raw is None:
@@ -955,7 +996,7 @@ class OpcUaClient:
         value_rank_batch_ok = True
         if variable_nodes:
             try:
-                value_ranks = await self._read_attribute_batch(variable_nodes, AttributeIds.ValueRank)
+                value_ranks = await self._read_attribute_batch_limited(variable_nodes, AttributeIds.ValueRank)
                 for node_id, value_rank_value in zip(variable_node_ids, value_ranks, strict=True):
                     value_rank_raw = self._extract_attribute_value(value_rank_value)
                     if value_rank_raw is None:
@@ -1478,6 +1519,10 @@ class OpcUaClient:
     def _should_retry_after_disconnect(self, exc: Exception) -> bool:
         text = str(exc).lower()
         return "connection is closed" in text or "connection is not open" in text
+
+    def _is_too_many_operations_error(self, exc: Exception) -> bool:
+        text = str(exc).lower()
+        return "badtoomanyoperations" in text or "too many operations" in text
 
     def add_reconnect_listener(self, listener: Callable[[], Awaitable[None]]) -> None:
         self._reconnect_listeners.append(listener)

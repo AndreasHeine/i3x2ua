@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from posixpath import normpath
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 import httpx
 from fastapi import Request
@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse, Response
 from i3x_server.errors import i3x_http_error
 
 MCP_EXCLUDED_OPERATION_IDS = {"streamSubscription"}
+_MCP_INTERNAL_BASE_URL = httpx.URL("http://mcp.local")
 
 
 def load_overrides(path: str | Path = "tool_overrides.json") -> dict[str, Any]:
@@ -262,6 +263,14 @@ def _safe_path_parameter_value(parameter_name: str, value: Any) -> str:
     return value_str
 
 
+def _safe_internal_request_url(path: str) -> httpx.URL:
+    safe_path = _safe_request_path("", path)
+    request_url = _MCP_INTERNAL_BASE_URL.join(safe_path)
+    if request_url.scheme != "http" or request_url.host != "mcp.local":
+        raise i3x_http_error(500, "Internal Error", "Invalid MCP request URL")
+    return request_url
+
+
 async def call_mcp_tool(request: Request, tool: McpToolDefinition, arguments: Mapping[str, Any]) -> Response:
     payload = await invoke_mcp_tool(request, tool, arguments)
     return _payload_to_response(payload)
@@ -292,7 +301,9 @@ async def invoke_mcp_tool(request: Request, tool: McpToolDefinition, arguments: 
         if placeholder not in resolved_path:
             raise i3x_http_error(500, "Internal Error", f"Path placeholder not found for {parameter_name}")
         safe_value = _safe_path_parameter_value(parameter_name, arguments[parameter_name])
-        resolved_path = resolved_path.replace(placeholder, safe_value)
+        resolved_path = resolved_path.replace(placeholder, quote(safe_value, safe=""))
+
+    request_url = _safe_internal_request_url(resolved_path)
 
     query_params = {
         parameter_name: arguments[parameter_name]
@@ -309,8 +320,8 @@ async def invoke_mcp_tool(request: Request, tool: McpToolDefinition, arguments: 
     if request_body is not None:
         request_kwargs["json"] = request_body
 
-    async with httpx.AsyncClient(transport=transport, base_url="http://mcp.local", timeout=30) as client:
-        response = await client.request(tool.method, resolved_path, **request_kwargs)
+    async with httpx.AsyncClient(transport=transport, timeout=30) as client:
+        response = await client.request(tool.method, request_url, **request_kwargs)
 
     if response.headers.get("content-type", "").startswith("application/json"):
         try:

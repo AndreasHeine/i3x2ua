@@ -181,7 +181,8 @@ def create_app() -> FastAPI:
     mcp_enabled = _env_flag("I3X_ENABLE_MCP")
     description = (
         "Industrial Information Interface eXchange API - 1.0 Beta. "
-        "Scope: read/query/subscribe are implemented; update/write operations are optional and may return 501 Not Implemented. "
+        "Scope: read/query/subscribe are implemented; update/write operations are optional "
+        "and may return 501 Not Implemented. "
         "MCP endpoints are optional and available only when I3X_ENABLE_MCP=1."
     )
     app = FastAPI(title="i3X API Beta", version="beta", description=description, lifespan=lifespan)

@@ -1,6 +1,6 @@
 # Production Documentation Index
 
-Complete guide for deploying i3x2ua in production with HTTPS, load balancing, and authentication.
+Complete guide for deploying i3x2ua in production with HTTPS, path-based routing, and authentication.
 
 ## 📚 Documentation Files
 
@@ -10,7 +10,7 @@ Complete guide for deploying i3x2ua in production with HTTPS, load balancing, an
    - Comprehensive production deployment guide
    - HTTPS/SSL setup with Let's Encrypt and commercial certificates
    - BasicAuth and OAuth authentication
-   - Multi-instance setup with load balancing
+   - Multi-instance setup with path-based routing
    - Security best practices
    - Monitoring and maintenance
    - Complete troubleshooting section
@@ -28,7 +28,7 @@ Complete guide for deploying i3x2ua in production with HTTPS, load balancing, an
    - Detailed NGINX configuration reference
    - SSL/TLS configuration options
    - Authentication setup
-   - Load balancing strategies
+   - Path-based routing strategies
    - Security headers
    - Performance tuning
    - **Read time**: 15-20 minutes

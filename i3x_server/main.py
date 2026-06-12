@@ -16,13 +16,19 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.gzip import GZipMiddleware
 
 from i3x_server.api.beta import router as beta_router
+from i3x_server.api.mcp import router as mcp_router
 from i3x_server.config.settings import settings
+from i3x_server.mcp import build_mcp_tools, get_api_prefix
 from i3x_server.model.builder import ModelBuilder
 from i3x_server.opcua.client import OpcUaClient
 from i3x_server.schemas.state import BuildResult
 from i3x_server.subscriptions.service import SubscriptionService
 
 logger = logging.getLogger(__name__)
+
+
+def _env_flag(name: str, default: str = "0") -> bool:
+    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _configure_logging() -> None:
@@ -96,6 +102,7 @@ async def _run_model_preload(app: FastAPI) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _configure_logging()
+    mcp_enabled = _env_flag("I3X_ENABLE_MCP")
     opcua_client = OpcUaClient(
         endpoint=settings.opcua_endpoint,
         username=settings.opcua_username,
@@ -112,7 +119,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     skip_connect = os.getenv("I3X_SKIP_OPCUA_CONNECT", "0") == "1"
     logger.info(
         "App startup opcua_endpoint=%s skip_connect=%s log_level=%s "
-        "browse_concurrency=%d metadata_cache_ttl_seconds=%d auth_configured=%s security_mode=%s",
+        "browse_concurrency=%d metadata_cache_ttl_seconds=%d auth_configured=%s security_mode=%s mcp_enabled=%s",
         settings.opcua_endpoint,
         skip_connect,
         settings.log_level,
@@ -120,6 +127,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         settings.opcua_metadata_cache_ttl_seconds,
         bool(settings.opcua_username and settings.opcua_password),
         settings.opcua_security_mode,
+        mcp_enabled,
     )
     if not skip_connect:
         await opcua_client.connect()
@@ -131,6 +139,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     app.state.model_lock = asyncio.Lock()
     app.state.model_preload_task = None
+    if mcp_enabled:
+        openapi_spec = app.openapi()
+        app.state.mcp_tools = build_mcp_tools(openapi_spec)
+        app.state.mcp_api_prefix = get_api_prefix(openapi_spec)
     if skip_connect:
         app.state.model_cache = BuildResult(
             nodes_by_id={},
@@ -165,6 +177,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 def create_app() -> FastAPI:
+    mcp_enabled = _env_flag("I3X_ENABLE_MCP")
     app = FastAPI(title="i3X API Beta", version="beta", lifespan=lifespan)
     app.add_middleware(GZipMiddleware, minimum_size=1)
 
@@ -175,6 +188,12 @@ def create_app() -> FastAPI:
         nonlocal openapi_override
         if openapi_override is None:
             openapi_override = json.loads(openapi_doc_path.read_text(encoding="utf-8"))
+            if not mcp_enabled:
+                paths = openapi_override.get("paths")
+                if isinstance(paths, dict):
+                    openapi_override["paths"] = {
+                        path: spec for path, spec in paths.items() if not path.startswith("/mcp")
+                    }
         return openapi_override
 
     app.openapi = custom_openapi  # type: ignore[method-assign]
@@ -259,6 +278,8 @@ def create_app() -> FastAPI:
         return response
 
     app.include_router(beta_router)
+    if mcp_enabled:
+        app.include_router(mcp_router)
     return app
 
 

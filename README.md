@@ -35,6 +35,9 @@ flowchart LR
 
 	subgraph App[Application Core]
 		API --> Router[Beta Router /v1]
+		API -. optional /mcp .-> McpRouter[MCP Router /mcp]
+		McpRouter -->|generated tools| McpTools[(MCP Tool Catalog)]
+		McpRouter -->|tool calls| Router
 		Router --> Deps[Dependency Layer]
 		Deps --> ModelCache[(Model Cache)]
 		Deps --> SubSvc[Subscription Service]
@@ -63,7 +66,7 @@ flowchart LR
 	end
 
 	subgraph Startup[Lifecycle]
-		StartupCfg[Settings env I3X_*] --> API
+		StartupCfg[Settings env I3X_* + I3X_ENABLE_MCP] --> API
 		API -->|startup| OpcClient
 		API -->|optional preload| Builder
 		API -->|shutdown| SubSvc
@@ -139,6 +142,15 @@ $env:I3X_SKIP_OPCUA_CONNECT="1"
 uv run uvicorn i3x_server.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
+Enable MCP support explicitly when you want the `/mcp` endpoints and MCP tool catalog to be available:
+
+```powershell
+$env:I3X_ENABLE_MCP="1"
+uv run uvicorn i3x_server.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+If you do not set `I3X_ENABLE_MCP`, the app starts without MCP support and `/mcp` returns `404`.
+
 OpenAPI/Swagger:
 
 - http://127.0.0.1:8000/openapi.json
@@ -152,10 +164,16 @@ Active endpoints are exposed under `/v1` for:
 - object queries and values (`/objects`, `/objects/list`, `/objects/related`, `/objects/value`, `/objects/history`)
 - subscriptions (`/subscriptions`, `/subscriptions/register`, `/subscriptions/unregister`, `/subscriptions/sync`, `/subscriptions/list`, `/subscriptions/delete`, `/subscriptions/stream`)
 
+Optional MCP endpoints are exposed only when `I3X_ENABLE_MCP=1`:
+
+- discovery and tool catalog (`/mcp`, `/mcp/tools`)
+- JSON-RPC and tool call entry points (`/mcp`, `/mcp/call`)
+
 ## Documentation
 
 - Beta contract and conformance: `docs/I3X_CONFORMANCE.md`
 - OPC UA to i3X mapping profile: `docs/OPCUA_I3X_MAPPING_PROFILE.md`
+- LM Studio / MCP bridge guide: `docs/LM_STUDIO_MCP_GUIDE.md`
 - Roadmap and open items: `docs/TODO.md`
 - Python coding requirements: `docs/python-coding-reguirements.md`
 - API definition: `openapi.json`
@@ -172,6 +190,7 @@ The stack now starts the API behind an nginx reverse proxy. The app container st
 
 Optional environment variables:
 
+- `I3X_ENABLE_MCP=1` to enable MCP support; it is disabled by default
 - `NGINX_HTTPS_ENABLED=1` to enable TLS termination
 - `NGINX_SSL_CERTS_DIR=./certs` with `fullchain.pem` and `privkey.pem`
 - `NGINX_BASIC_AUTH_ENABLED=1` with `NGINX_BASIC_AUTH_USER` and `NGINX_BASIC_AUTH_PASSWORD`

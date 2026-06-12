@@ -13,11 +13,12 @@ from typing import Any, cast
 
 import pytest
 from asyncua import ua
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from i3x_server.api.beta import _expanded_node_id
 from i3x_server.main import create_app
+from i3x_server.mcp import _safe_internal_request_url, get_api_prefix
 from i3x_server.opcua.client import OpcUaNamespaceInfo, OpcUaSubscriptionCapabilities
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
@@ -44,6 +45,58 @@ class FakeExtensionObject:
 
 def _fastapi_app(client: TestClient) -> FastAPI:
     return cast(FastAPI, client.app)
+
+
+def _configure_test_app(app: FastAPI) -> None:
+    property_id = "property-abc"
+    action_id = "action-def"
+    root_id = "asset-root"
+
+    app.state.model_cache = BuildResult(
+        nodes_by_id={
+            root_id: ModelNode(
+                id=root_id,
+                name="Machine",
+                kind="asset",
+                type=None,
+                children=[property_id, action_id],
+                source_node_id="ns=2;s=Machine",
+                source_type_id="ns=1;i=1001",
+            ),
+            "sensor-root": ModelNode(
+                id="sensor-root",
+                name="Sensor",
+                kind="asset",
+                type=None,
+                children=[],
+                source_node_id="ns=2;s=Sensor",
+                source_type_id="ns=1;i=1002",
+            ),
+            property_id: ModelNode(
+                id=property_id,
+                name="Temperature",
+                kind="property",
+                type="ns=1;i=11",
+                children=[],
+                source_node_id="ns=2;s=Temperature",
+            ),
+            action_id: ModelNode(
+                id=action_id,
+                name="Reset",
+                kind="action",
+                type=None,
+                children=[],
+                source_node_id="ns=2;s=Reset",
+            ),
+        },
+        root_ids=[root_id, "sensor-root"],
+        children_by_id={root_id: [property_id, action_id], "sensor-root": [], property_id: [], action_id: []},
+        instances_by_type_id={"ns=1;i=1001": [root_id], "ns=1;i=1002": ["sensor-root"]},
+        property_to_node={property_id: "ns=2;s=Temperature"},
+        action_to_method={action_id: ("ns=2;s=Machine", "ns=2;s=Reset")},
+    )
+    app.state.opcua_client = FakeOpcUaClient()
+    app.state.subscription_service = SubscriptionService(app.state.opcua_client, interval_seconds=1)
 
 
 class FakeOpcUaClient:
@@ -204,60 +257,46 @@ class FakeOpcUaClient:
 
 @pytest.fixture
 def client() -> Generator[TestClient, None, None]:
+    previous_enable_mcp = os.environ.get("I3X_ENABLE_MCP")
+    previous_skip_connect = os.environ.get("I3X_SKIP_OPCUA_CONNECT")
+    os.environ["I3X_ENABLE_MCP"] = "1"
     os.environ["I3X_SKIP_OPCUA_CONNECT"] = "1"
     app = create_app()
+    try:
+        with TestClient(app) as test_client:
+            _configure_test_app(app)
+            yield test_client
+    finally:
+        if previous_enable_mcp is None:
+            os.environ.pop("I3X_ENABLE_MCP", None)
+        else:
+            os.environ["I3X_ENABLE_MCP"] = previous_enable_mcp
+        if previous_skip_connect is None:
+            os.environ.pop("I3X_SKIP_OPCUA_CONNECT", None)
+        else:
+            os.environ["I3X_SKIP_OPCUA_CONNECT"] = previous_skip_connect
 
-    property_id = "property-abc"
-    action_id = "action-def"
-    root_id = "asset-root"
 
-    with TestClient(app) as test_client:
-        app.state.model_cache = BuildResult(
-            nodes_by_id={
-                root_id: ModelNode(
-                    id=root_id,
-                    name="Machine",
-                    kind="asset",
-                    type=None,
-                    children=[property_id, action_id],
-                    source_node_id="ns=2;s=Machine",
-                    source_type_id="ns=1;i=1001",
-                ),
-                "sensor-root": ModelNode(
-                    id="sensor-root",
-                    name="Sensor",
-                    kind="asset",
-                    type=None,
-                    children=[],
-                    source_node_id="ns=2;s=Sensor",
-                    source_type_id="ns=1;i=1002",
-                ),
-                property_id: ModelNode(
-                    id=property_id,
-                    name="Temperature",
-                    kind="property",
-                    type="ns=1;i=11",
-                    children=[],
-                    source_node_id="ns=2;s=Temperature",
-                ),
-                action_id: ModelNode(
-                    id=action_id,
-                    name="Reset",
-                    kind="action",
-                    type=None,
-                    children=[],
-                    source_node_id="ns=2;s=Reset",
-                ),
-            },
-            root_ids=[root_id, "sensor-root"],
-            children_by_id={root_id: [property_id, action_id], "sensor-root": [], property_id: [], action_id: []},
-            instances_by_type_id={"ns=1;i=1001": [root_id], "ns=1;i=1002": ["sensor-root"]},
-            property_to_node={property_id: "ns=2;s=Temperature"},
-            action_to_method={action_id: ("ns=2;s=Machine", "ns=2;s=Reset")},
-        )
-        app.state.opcua_client = FakeOpcUaClient()
-        app.state.subscription_service = SubscriptionService(app.state.opcua_client, interval_seconds=1)
-        yield test_client
+@pytest.fixture
+def client_without_mcp() -> Generator[TestClient, None, None]:
+    previous_enable_mcp = os.environ.get("I3X_ENABLE_MCP")
+    previous_skip_connect = os.environ.get("I3X_SKIP_OPCUA_CONNECT")
+    os.environ.pop("I3X_ENABLE_MCP", None)
+    os.environ["I3X_SKIP_OPCUA_CONNECT"] = "1"
+    app = create_app()
+    try:
+        with TestClient(app) as test_client:
+            _configure_test_app(app)
+            yield test_client
+    finally:
+        if previous_enable_mcp is None:
+            os.environ.pop("I3X_ENABLE_MCP", None)
+        else:
+            os.environ["I3X_ENABLE_MCP"] = previous_enable_mcp
+        if previous_skip_connect is None:
+            os.environ.pop("I3X_SKIP_OPCUA_CONNECT", None)
+        else:
+            os.environ["I3X_SKIP_OPCUA_CONNECT"] = previous_skip_connect
 
 
 def test_get_model(client: TestClient) -> None:
@@ -1127,3 +1166,253 @@ def test_openapi_json_is_source_of_truth(client: TestClient) -> None:
     expected_path = Path(__file__).resolve().parents[1] / "openapi.json"
     expected = json.loads(expected_path.read_text(encoding="utf-8"))
     assert response.json() == expected
+
+
+def test_mcp_tools_are_generated_from_openapi(client: TestClient) -> None:
+    response = client.get("/mcp/tools")
+    assert response.status_code == 200
+
+    payload = response.json()
+    tools = payload["tools"]
+    assert "getNamespaces" in tools
+    assert "queryLastKnownValues" in tools
+    assert "streamSubscription" not in tools
+
+    namespaces_tool = tools["getNamespaces"]
+    assert namespaces_tool["description"] == (
+        "List all namespaces available on the server. Use when the user asks about "
+        "namespaces or wants to explore the data model."
+    )
+    assert namespaces_tool["priority"] == "high"
+    assert namespaces_tool["keywords"] == ["namespaces", "list", "available namespaces"]
+
+    value_tool = tools["queryLastKnownValues"]
+    assert value_tool["method"] == "POST"
+    assert value_tool["path"] == "/objects/value"
+    assert value_tool["input_schema"]["properties"]["body"]["properties"]["elementIds"]["type"] == "array"
+
+
+def test_mcp_support_is_disabled_by_default(client_without_mcp: TestClient) -> None:
+    response = client_without_mcp.get("/mcp")
+    assert response.status_code == 404
+
+    response = client_without_mcp.get("/mcp/tools")
+    assert response.status_code == 404
+
+    openapi = client_without_mcp.get("/openapi.json").json()
+    assert all(not path.startswith("/mcp") for path in openapi["paths"])
+
+
+def test_mcp_endpoint_exposes_sse_discovery(client: TestClient) -> None:
+    response = client.get("/mcp")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert "event: endpoint" in response.text
+    assert "/mcp" in response.text
+
+
+def test_mcp_initialize_request(client: TestClient) -> None:
+    response = client.post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {"protocolVersion": "2025-06-18"},
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["jsonrpc"] == "2.0"
+    assert payload["id"] == 1
+    assert payload["result"]["protocolVersion"] == "2025-06-18"
+    assert payload["result"]["capabilities"]["tools"]["listChanged"] is False
+
+
+def test_mcp_tools_list_request(client: TestClient) -> None:
+    response = client.post(
+        "/mcp",
+        json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    tools = payload["result"]["tools"]
+    assert any(tool["name"] == "getNamespaces" for tool in tools)
+
+
+def test_mcp_tools_call_request(client: TestClient) -> None:
+    response = client.post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {"name": "getNamespaces", "arguments": {}},
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    content = payload["result"]["content"]
+    assert content[0]["type"] == "text"
+    assert "success" in content[0]["text"]
+
+
+def test_mcp_initialize_notification_returns_no_response(client: TestClient) -> None:
+    response = client.post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "method": "initialize",
+            "params": {"protocolVersion": "2025-06-18"},
+        },
+    )
+
+    assert response.status_code == 202
+    assert response.text == "null"
+
+
+def test_mcp_tools_list_notification_returns_no_response(client: TestClient) -> None:
+    response = client.post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "method": "tools/list",
+        },
+    )
+
+    assert response.status_code == 202
+    assert response.text == "null"
+
+
+def test_mcp_tools_call_notification_returns_no_response(client: TestClient) -> None:
+    response = client.post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "method": "tools/call",
+            "params": {"name": "getNamespaces", "arguments": {}},
+        },
+    )
+
+    assert response.status_code == 202
+    assert response.text == "null"
+
+
+def test_mcp_call_allows_omitting_optional_query_parameters(client: TestClient) -> None:
+    tools_response = client.get("/mcp/tools")
+    assert tools_response.status_code == 200
+    tools = tools_response.json()["tools"]
+
+    candidate_name: str | None = None
+    for name, tool in tools.items():
+        query_parameters = set(tool.get("query_parameters", []))
+        required_fields = set(tool.get("input_schema", {}).get("required", []))
+        required_query_parameters = query_parameters & required_fields
+        if (
+            query_parameters
+            and not required_query_parameters
+            and not tool.get("path_parameters")
+            and not tool.get("body_required", False)
+            and tool.get("method") == "GET"
+        ):
+            candidate_name = name
+            break
+
+    if candidate_name is None:
+        pytest.skip("No MCP tool with fully optional query parameters is available")
+
+    response = client.post("/mcp/call", json={"tool": candidate_name, "arguments": {}})
+    assert response.status_code == 200
+
+
+def test_mcp_jsonrpc_tools_call_returns_jsonrpc_error_for_http_exception(client: TestClient) -> None:
+    response = client.post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 301,
+            "method": "tools/call",
+            "params": {"name": "updateObjectValue", "arguments": {}},
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["jsonrpc"] == "2.0"
+    assert payload["id"] == 301
+    assert payload["error"]["code"] == 400
+    assert "Missing required arguments" in payload["error"]["message"]
+
+
+def test_mcp_call_dispatches_to_existing_api(client: TestClient) -> None:
+    response = client.post("/mcp/call", json={"tool": "getNamespaces", "arguments": {}})
+    assert response.status_code == 200
+
+    expected = client.get("/v1/namespaces")
+    assert response.json() == expected.json()
+
+
+def test_mcp_call_supports_body_arguments(client: TestClient) -> None:
+    response = client.post(
+        "/mcp/call",
+        json={
+            "tool": "queryLastKnownValues",
+            "arguments": {
+                "body": {
+                    "elementIds": ["property-abc"],
+                    "maxDepth": 1,
+                },
+            },
+        },
+    )
+    assert response.status_code == 200
+
+    payload = response.json()
+    assert payload["success"] is True
+    assert payload["results"][0]["success"] is True
+    assert payload["results"][0]["result"]["isComposition"] is False
+
+
+@pytest.mark.parametrize("element_id", ["http://evil.example", "../evil"])
+def test_mcp_call_rejects_malicious_path_parameters(client: TestClient, element_id: str) -> None:
+    response = client.post(
+        "/mcp/call",
+        json={"tool": "updateObjectValue", "arguments": {"elementId": element_id, "body": {"value": 1}}},
+    )
+
+    assert response.status_code == 400
+    payload = response.json()
+    assert payload["error"]["message"] == "Invalid path parameter: elementId"
+
+
+def test_mcp_call_rejects_unknown_tool(client: TestClient) -> None:
+    response = client.post("/mcp/call", json={"tool": "unknownTool", "arguments": {}})
+    assert response.status_code == 400
+
+
+def test_mcp_get_api_prefix_strips_host_parts() -> None:
+    openapi_spec = {"servers": [{"url": "https://example.test/v1"}]}
+    assert get_api_prefix(openapi_spec) == "/v1"
+
+
+@pytest.mark.parametrize("path", ["http://evil.example/pwn", "//evil.example/pwn"])
+def test_mcp_internal_request_url_rejects_external_hosts(path: str) -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        _safe_internal_request_url(path)
+    detail = exc_info.value.detail
+    assert isinstance(detail, dict)
+    assert detail["error"]["message"] in {"Invalid MCP request path", "Invalid MCP tool path"}
+
+
+def test_mcp_internal_request_url_keeps_fixed_internal_host() -> None:
+    url = _safe_internal_request_url("/v1/namespaces")
+    assert url.host == "mcp.local"
+    assert str(url) == "http://mcp.local/v1/namespaces"
+
+
+def test_mcp_call_strips_host_from_runtime_api_prefix(client: TestClient) -> None:
+    app = _fastapi_app(client)
+    app.state.mcp_api_prefix = "https://evil.example/v1"
+
+    response = client.post("/mcp/call", json={"tool": "getNamespaces", "arguments": {}})
+    assert response.status_code == 200

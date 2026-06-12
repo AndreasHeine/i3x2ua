@@ -12,6 +12,7 @@ import subprocess
 import sys
 
 COMMANDS: list[list[str]] = [
+    ["uv", "run", "ruff", "check", "."],
     ["uv", "run", "ruff", "format", "."],
     ["uv", "run", "mypy", "."],
     ["uv", "run", "pytest", "-q", "--cov=i3x_server", "--cov-report=term-missing"],

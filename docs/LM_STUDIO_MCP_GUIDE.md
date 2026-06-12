@@ -2,6 +2,8 @@
 
 This guide explains how to connect LM Studio to the native MCP support built into i3xua.
 
+MCP support is opt-in. Start the server with `I3X_ENABLE_MCP=1` before following the steps below.
+
 Use this guide when you already have the i3Xua server running and want LM Studio to call it as a tool source.
 
 ## What You Need
@@ -15,6 +17,7 @@ Use this guide when you already have the i3Xua server running and want LM Studio
 Run i3xua the same way you normally start the FastAPI app:
 
 ```bash
+I3X_ENABLE_MCP=1 \
 uv run uvicorn i3x_server.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
@@ -107,6 +110,8 @@ If tool calls fail, the most common causes are:
 ## Troubleshooting
 
 If the server shows `404` for `/mcp`, make sure you are running the updated i3xua server version that includes the native MCP endpoint.
+
+If `/mcp` still returns `404`, confirm that `I3X_ENABLE_MCP=1` is set in the server process environment before startup.
 
 If LM Studio reports a plugin exit or SSE error, restart both the server and LM Studio, then re-check the URL in the config.
 

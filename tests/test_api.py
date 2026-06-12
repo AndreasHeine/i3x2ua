@@ -46,6 +46,58 @@ def _fastapi_app(client: TestClient) -> FastAPI:
     return cast(FastAPI, client.app)
 
 
+def _configure_test_app(app: FastAPI) -> None:
+    property_id = "property-abc"
+    action_id = "action-def"
+    root_id = "asset-root"
+
+    app.state.model_cache = BuildResult(
+        nodes_by_id={
+            root_id: ModelNode(
+                id=root_id,
+                name="Machine",
+                kind="asset",
+                type=None,
+                children=[property_id, action_id],
+                source_node_id="ns=2;s=Machine",
+                source_type_id="ns=1;i=1001",
+            ),
+            "sensor-root": ModelNode(
+                id="sensor-root",
+                name="Sensor",
+                kind="asset",
+                type=None,
+                children=[],
+                source_node_id="ns=2;s=Sensor",
+                source_type_id="ns=1;i=1002",
+            ),
+            property_id: ModelNode(
+                id=property_id,
+                name="Temperature",
+                kind="property",
+                type="ns=1;i=11",
+                children=[],
+                source_node_id="ns=2;s=Temperature",
+            ),
+            action_id: ModelNode(
+                id=action_id,
+                name="Reset",
+                kind="action",
+                type=None,
+                children=[],
+                source_node_id="ns=2;s=Reset",
+            ),
+        },
+        root_ids=[root_id, "sensor-root"],
+        children_by_id={root_id: [property_id, action_id], "sensor-root": [], property_id: [], action_id: []},
+        instances_by_type_id={"ns=1;i=1001": [root_id], "ns=1;i=1002": ["sensor-root"]},
+        property_to_node={property_id: "ns=2;s=Temperature"},
+        action_to_method={action_id: ("ns=2;s=Machine", "ns=2;s=Reset")},
+    )
+    app.state.opcua_client = FakeOpcUaClient()
+    app.state.subscription_service = SubscriptionService(app.state.opcua_client, interval_seconds=1)
+
+
 class FakeOpcUaClient:
     def __init__(self) -> None:
         self.values: dict[str, Any] = {"ns=2;s=Temperature": 42.5}
@@ -204,60 +256,46 @@ class FakeOpcUaClient:
 
 @pytest.fixture
 def client() -> Generator[TestClient, None, None]:
+    previous_enable_mcp = os.environ.get("I3X_ENABLE_MCP")
+    previous_skip_connect = os.environ.get("I3X_SKIP_OPCUA_CONNECT")
+    os.environ["I3X_ENABLE_MCP"] = "1"
     os.environ["I3X_SKIP_OPCUA_CONNECT"] = "1"
     app = create_app()
+    try:
+        with TestClient(app) as test_client:
+            _configure_test_app(app)
+            yield test_client
+    finally:
+        if previous_enable_mcp is None:
+            os.environ.pop("I3X_ENABLE_MCP", None)
+        else:
+            os.environ["I3X_ENABLE_MCP"] = previous_enable_mcp
+        if previous_skip_connect is None:
+            os.environ.pop("I3X_SKIP_OPCUA_CONNECT", None)
+        else:
+            os.environ["I3X_SKIP_OPCUA_CONNECT"] = previous_skip_connect
 
-    property_id = "property-abc"
-    action_id = "action-def"
-    root_id = "asset-root"
 
-    with TestClient(app) as test_client:
-        app.state.model_cache = BuildResult(
-            nodes_by_id={
-                root_id: ModelNode(
-                    id=root_id,
-                    name="Machine",
-                    kind="asset",
-                    type=None,
-                    children=[property_id, action_id],
-                    source_node_id="ns=2;s=Machine",
-                    source_type_id="ns=1;i=1001",
-                ),
-                "sensor-root": ModelNode(
-                    id="sensor-root",
-                    name="Sensor",
-                    kind="asset",
-                    type=None,
-                    children=[],
-                    source_node_id="ns=2;s=Sensor",
-                    source_type_id="ns=1;i=1002",
-                ),
-                property_id: ModelNode(
-                    id=property_id,
-                    name="Temperature",
-                    kind="property",
-                    type="ns=1;i=11",
-                    children=[],
-                    source_node_id="ns=2;s=Temperature",
-                ),
-                action_id: ModelNode(
-                    id=action_id,
-                    name="Reset",
-                    kind="action",
-                    type=None,
-                    children=[],
-                    source_node_id="ns=2;s=Reset",
-                ),
-            },
-            root_ids=[root_id, "sensor-root"],
-            children_by_id={root_id: [property_id, action_id], "sensor-root": [], property_id: [], action_id: []},
-            instances_by_type_id={"ns=1;i=1001": [root_id], "ns=1;i=1002": ["sensor-root"]},
-            property_to_node={property_id: "ns=2;s=Temperature"},
-            action_to_method={action_id: ("ns=2;s=Machine", "ns=2;s=Reset")},
-        )
-        app.state.opcua_client = FakeOpcUaClient()
-        app.state.subscription_service = SubscriptionService(app.state.opcua_client, interval_seconds=1)
-        yield test_client
+@pytest.fixture
+def client_without_mcp() -> Generator[TestClient, None, None]:
+    previous_enable_mcp = os.environ.get("I3X_ENABLE_MCP")
+    previous_skip_connect = os.environ.get("I3X_SKIP_OPCUA_CONNECT")
+    os.environ.pop("I3X_ENABLE_MCP", None)
+    os.environ["I3X_SKIP_OPCUA_CONNECT"] = "1"
+    app = create_app()
+    try:
+        with TestClient(app) as test_client:
+            _configure_test_app(app)
+            yield test_client
+    finally:
+        if previous_enable_mcp is None:
+            os.environ.pop("I3X_ENABLE_MCP", None)
+        else:
+            os.environ["I3X_ENABLE_MCP"] = previous_enable_mcp
+        if previous_skip_connect is None:
+            os.environ.pop("I3X_SKIP_OPCUA_CONNECT", None)
+        else:
+            os.environ["I3X_SKIP_OPCUA_CONNECT"] = previous_skip_connect
 
 
 def test_get_model(client: TestClient) -> None:
@@ -1151,6 +1189,17 @@ def test_mcp_tools_are_generated_from_openapi(client: TestClient) -> None:
     assert value_tool["method"] == "POST"
     assert value_tool["path"] == "/objects/value"
     assert value_tool["input_schema"]["properties"]["body"]["properties"]["elementIds"]["type"] == "array"
+
+
+def test_mcp_support_is_disabled_by_default(client_without_mcp: TestClient) -> None:
+    response = client_without_mcp.get("/mcp")
+    assert response.status_code == 404
+
+    response = client_without_mcp.get("/mcp/tools")
+    assert response.status_code == 404
+
+    openapi = client_without_mcp.get("/openapi.json").json()
+    assert all(not path.startswith("/mcp") for path in openapi["paths"])
 
 
 def test_mcp_endpoint_exposes_sse_discovery(client: TestClient) -> None:

@@ -8,7 +8,7 @@ This document provides detailed reference information for NGINX configuration in
 2. [HTTPS/SSL Configuration](#httpsssl-configuration)
 3. [Authentication Configuration](#authentication-configuration)
 4. [Proxy Configuration](#proxy-configuration)
-5. [Load Balancing](#load-balancing)
+5. [Path-Based Routing](#path-based-routing)
 6. [Security Headers](#security-headers)
 7. [Rate Limiting](#rate-limiting)
 8. [Performance Tuning](#performance-tuning)
@@ -19,71 +19,42 @@ This document provides detailed reference information for NGINX configuration in
 ## Basic Configuration
 
 ### HTTP Server Block
-```nginx
+## Path-Based Routing
 server {
-  listen 80;
+### Upstream Blocks
   server_name _;
-  
-  location / {
-    # Proxy configuration here
-  }
+upstream instance1_backend {
+  server i3x2ua-1:8000;
+}
+```
+upstream instance2_backend {
+  server i3x2ua-2:8001;
+}
+
+upstream instance3_backend {
+  server i3x2ua-3:8002;
 }
 ```
 
+### URL Path Routing
 ### HTTPS Server Block
-```nginx
-server {
-  listen 443 ssl http2;
-  server_name api.example.com;
-  
-  ssl_certificate /etc/nginx/certs/fullchain.pem;
-  ssl_certificate_key /etc/nginx/certs/privkey.pem;
-  
-  location / {
-    # Proxy configuration here
-  }
+location /i3x/instance1/ {
+  rewrite ^/i3x/instance1/(.*) /$1 break;
+  proxy_pass http://instance1_backend;
 }
-```
 
----
+location /i3x/instance2/ {
+  rewrite ^/i3x/instance2/(.*) /$1 break;
+  proxy_pass http://instance2_backend;
+}
 
-## HTTPS/SSL Configuration
-
-### SSL Protocols and Ciphers
-```nginx
-# Recommended configuration
-ssl_protocols TLSv1.2 TLSv1.3;
-ssl_ciphers 'ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384';
-ssl_prefer_server_ciphers on;
-ssl_ecdh_curve auto;
-```
-
-### Session Configuration
-```nginx
-ssl_session_timeout 1d;
-ssl_session_cache shared:SSL:50m;
-ssl_session_tickets off;
-```
-
-### HTTP/2 Configuration
-```nginx
-listen 443 ssl http2;
-```
-
-### OCSP Stapling (Optional)
-```nginx
-ssl_stapling on;
-ssl_stapling_verify on;
-ssl_trusted_certificate /etc/nginx/certs/fullchain.pem;
-```
-
-### HSTS (HTTP Strict Transport Security)
-```nginx
-add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
-```
-
+location /i3x/instance3/ {
+  rewrite ^/i3x/instance3/(.*) /$1 break;
+  proxy_pass http://instance3_backend;
 ### HTTP to HTTPS Redirect
 ```nginx
+
+This deployment model routes requests by path to independent instances. It does not use NGINX load-balancing algorithms such as round-robin, least_conn, or ip_hash.
 server {
   listen 80;
   server_name api.example.com;

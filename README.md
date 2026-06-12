@@ -40,7 +40,7 @@ flowchart LR
 		McpRouter -->|tool calls| Router
 		Router --> Deps[Dependency Layer]
 		Deps --> ModelCache[(Model Cache)]
-		Deps --> SubSvc[Subscription Service]
+		Deps --> SubSvc[i3X Subscription Service]
 		Deps --> OpcClient[OPC UA Client]
 	end
 
@@ -82,7 +82,7 @@ sequenceDiagram
 	participant M as Model Cache/Builder
 	participant O as OPC UA Client
 	participant U as OPC UA Server
-	participant S as Subscription Service
+	participant S as i3X Subscription Service
 
 	Note over C,R: Read current values
 	C->>R: POST /v1/objects/value

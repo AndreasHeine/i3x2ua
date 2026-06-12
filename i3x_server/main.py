@@ -179,7 +179,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 def create_app() -> FastAPI:
     mcp_enabled = _env_flag("I3X_ENABLE_MCP")
-    app = FastAPI(title="i3X API Beta", version="beta", lifespan=lifespan)
+    description = (
+        "Industrial Information Interface eXchange API - 1.0 Beta. "
+        "Scope: read/query/subscribe are implemented; update/write operations are optional and may return 501 Not Implemented. "
+        "MCP endpoints are optional and available only when I3X_ENABLE_MCP=1."
+    )
+    app = FastAPI(title="i3X API Beta", version="beta", description=description, lifespan=lifespan)
     app.add_middleware(GZipMiddleware, minimum_size=1)
 
     openapi_doc_path = Path(__file__).resolve().parents[1] / "openapi.json"

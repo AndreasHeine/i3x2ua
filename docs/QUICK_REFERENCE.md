@@ -139,9 +139,65 @@ I3X_OPCUA_ENDPOINT=opc.tcp://server:4843
 I3X_OPCUA_USERNAME=user
 I3X_OPCUA_PASSWORD=pass
 
+# MCP Support (optional)
+I3X_ENABLE_MCP=0
+
 # Logging
 I3X_LOG_LEVEL=INFO
 ```
+
+---
+
+## MCP Support (Model Context Protocol)
+
+MCP is an optional feature that exposes the i3X API as tools for AI models and tool-calling clients.
+
+### Enable MCP
+
+To enable MCP tool support, set:
+
+```env
+I3X_ENABLE_MCP=1
+```
+
+If running without Docker, pass it to the startup command:
+
+```bash
+I3X_ENABLE_MCP=1 uv run uvicorn i3x_server.main:app --host 0.0.0.0 --port 8000
+```
+
+### MCP Scope and Capabilities
+
+| Capability | Status | Notes |
+|------------|--------|-------|
+| Tool discovery and listing | ✅ Supported | All read/query/subscribe operations exposed. |
+| Tool calling | ✅ Supported | Dispatches to REST API endpoints. |
+| JSON-RPC batch requests | ❌ Not supported | Send one request per call. |
+| Update/write operations | ⚠️ Optional | May return `501 Not Implemented` in this beta. |
+| Server-Sent Event streaming | ✅ Available | Via REST `/v1/subscriptions/stream` endpoint. |
+
+### MCP Endpoints
+
+- **Discovery**: `GET /mcp` — Returns SSE endpoint for MCP discovery.
+- **Tool listing**: `GET /mcp/tools` — Returns tool catalog in REST format.
+- **Tool calling**: `POST /mcp/call` — REST-style tool invocation.
+- **JSON-RPC**: `POST /mcp` — Standard JSON-RPC 2.0 interface.
+
+### With Authentication (BasicAuth + HTTPS)
+
+When `NGINX_BASIC_AUTH_ENABLED=1`, MCP clients must include credentials in requests:
+
+```bash
+curl -u admin:password https://your-domain.com/mcp/tools
+```
+
+For JSON-RPC clients (e.g., LM Studio), configure the MCP server URL as:
+
+```
+https://admin:password@your-domain.com/mcp
+```
+
+For detailed setup, see `docs/LM_STUDIO_MCP_GUIDE.md` and its capability matrix.
 
 ---
 

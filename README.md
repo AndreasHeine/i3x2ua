@@ -165,10 +165,14 @@ Active endpoints are exposed under `/v1` for:
 - object queries and values (`/objects`, `/objects/list`, `/objects/related`, `/objects/value`, `/objects/history`)
 - subscriptions (`/subscriptions`, `/subscriptions/register`, `/subscriptions/unregister`, `/subscriptions/sync`, `/subscriptions/list`, `/subscriptions/delete`, `/subscriptions/stream`)
 
+Beta scope emphasis: this implementation currently prioritizes read/query/subscribe operations.
+
 Optional MCP endpoints are exposed only when `I3X_ENABLE_MCP=1`:
 
 - discovery and tool catalog (`/mcp`, `/mcp/tools`)
 - JSON-RPC and tool call entry points (`/mcp`, `/mcp/call`)
+
+MCP scope emphasis: the MCP bridge is currently focused on tool calling (`initialize`, `tools/list`, `tools/call`) for this beta scope.
 
 ## Current Limitations
 
@@ -181,7 +185,7 @@ Optional MCP endpoints are exposed only when `I3X_ENABLE_MCP=1`:
 - i3X upstream specification materials: `i3X/spec/README.md`
 - i3X conformance tests: `i3X/conformance-tests/README.md`
 - OPC UA to i3X mapping profile: `docs/OPCUA_I3X_MAPPING_PROFILE.md`
-- LM Studio / MCP bridge guide: `docs/LM_STUDIO_MCP_GUIDE.md`
+- LM Studio / MCP bridge guide (including capability matrix): `docs/LM_STUDIO_MCP_GUIDE.md`
 - deployment guide index: `docs/PRODUCTION_DEPLOYMENT_INDEX.md`
 - quick ops reference: `docs/QUICK_REFERENCE.md`
 - Python coding requirements: `python-coding-reguirements.md`

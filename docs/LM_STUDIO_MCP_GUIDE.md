@@ -61,6 +61,24 @@ Common tools you can expect include:
 
 `streamSubscription` is not exposed as a normal tool because it is an SSE stream.
 
+## MCP Capability Matrix
+
+The MCP endpoint is focused on tool calling for the current beta scope.
+
+| Area | Status | Notes |
+|------|--------|-------|
+| MCP endpoint discovery (`GET /mcp`) | Supported | Returns SSE endpoint discovery payload. |
+| JSON-RPC `initialize` | Supported | Basic MCP handshake is implemented. |
+| JSON-RPC `tools/list` | Supported | Returns OpenAPI-derived tool catalog (+ overrides). |
+| JSON-RPC `tools/call` | Supported | Calls are dispatched internally to the existing REST handlers. |
+| JSON-RPC batch requests | Not supported | Send one JSON-RPC message per request. |
+| Streaming as MCP tool (`streamSubscription`) | Not exposed | SSE stream remains available via REST subscription endpoint. |
+| REST update/write endpoints via MCP tools | Exposed by OpenAPI but optional in beta | Some write/update operations can return `501 Not Implemented`. |
+
+### Beta Scope Reminder
+
+This server currently focuses on read/query/subscribe behavior. Update/write operations are optional in the i3X profile and may not be implemented in this beta.
+
 ## Tool Overrides
 
 You can tune tool descriptions, priorities, and keywords by editing [tool_overrides.json](../tool_overrides.json) at the repository root. The server loads that file at startup and merges any matching overrides into the generated MCP tool catalog.
@@ -106,6 +124,7 @@ If tool calls fail, the most common causes are:
 - The server was restarted and LM Studio still has an old connection.
 - The model asked for a value that does not exist in the address space.
 - The request was too broad or missing required fields.
+- The chosen tool maps to an optional beta operation that currently returns `501 Not Implemented`.
 
 ## Troubleshooting
 

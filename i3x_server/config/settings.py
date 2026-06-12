@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     opcua_client_key_path: str | None = Field(default=None)
     opcua_client_key_password: str | None = Field(default=None)
     opcua_server_cert_path: str | None = Field(default=None)
-    opcua_browse_concurrency: int = Field(default=16, ge=1)
+    opcua_browse_concurrency: int = Field(default=128, ge=1)
     opcua_metadata_cache_ttl_seconds: int = Field(default=300, ge=0)
     model_refresh_interval_seconds: int = Field(default=60, ge=0)
     model_preload_on_startup: bool = Field(default=True)

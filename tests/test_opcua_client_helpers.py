@@ -63,6 +63,52 @@ class _FakeSubscription:
         self.deleted = True
 
 
+class _FakeUaClient:
+    def __init__(self) -> None:
+        self.browse_calls = 0
+        self.browse_next_calls = 0
+        self.fail_browse_once = False
+        self.fail_browse_next_once = False
+        self.browse_continuation_point: bytes | None = None
+
+    async def browse(self, params: Any) -> list[Any]:
+        del params
+        self.browse_calls += 1
+        if self.fail_browse_once:
+            self.fail_browse_once = False
+            raise RuntimeError("connection is closed")
+        result = SimpleNamespace(
+            References=[],
+            ContinuationPoint=self.browse_continuation_point,
+        )
+        return [result]
+
+    async def browse_next(self, params: Any) -> list[Any]:
+        del params
+        self.browse_next_calls += 1
+        if self.fail_browse_next_once:
+            self.fail_browse_next_once = False
+            raise RuntimeError("connection is not open")
+        result = SimpleNamespace(
+            References=[],
+            ContinuationPoint=None,
+        )
+        return [result]
+
+
+class _FakeNodeId:
+    def __init__(self, value: str) -> None:
+        self._value = value
+
+    def to_string(self) -> str:
+        return self._value
+
+
+class _FakeBrowseNode:
+    def __init__(self, value: str) -> None:
+        self.nodeid = _FakeNodeId(value)
+
+
 def test_chunk_and_json_helpers() -> None:
     assert _chunked(["a", "b", "c"], 2) == [["a", "b"], ["c"]]
     assert _chunked_nodes([1, 2, 3], 2) == [[1, 2], [3]]
@@ -181,3 +227,83 @@ async def test_reconnect_calls_listeners_even_if_one_fails(monkeypatch: pytest.M
     assert fake.connected is True
     assert fake.disconnected is True
     assert called == ["fail", "ok"]
+
+
+@pytest.mark.asyncio
+async def test_reconnect_clears_metadata_caches(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
+    fake = _FakeClient()
+    cast(Any, client)._client = fake
+
+    cast(Any, client)._limits_cache = object()
+    cast(Any, client)._subscription_caps_cache = object()
+    cast(Any, client)._namespace_infos_cache = (1.0, [])
+    cast(Any, client)._object_types_cache = (1.0, [])
+
+    async def _noop() -> None:
+        return None
+
+    monkeypatch.setattr(client, "load_additional_typedefinitions", _noop)
+    monkeypatch.setattr(client, "_configure_security_if_needed", _noop)
+
+    await client._reconnect()
+
+    assert cast(Any, client)._limits_cache is None
+    assert cast(Any, client)._subscription_caps_cache is None
+    assert cast(Any, client)._namespace_infos_cache is None
+    assert cast(Any, client)._object_types_cache is None
+
+
+@pytest.mark.asyncio
+async def test_browse_retry_after_disconnect(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
+    fake_uaclient = _FakeUaClient()
+    fake_uaclient.fail_browse_once = True
+    cast(Any, client)._client = SimpleNamespace(uaclient=fake_uaclient)
+
+    reconnect_calls = 0
+
+    async def _fake_reconnect() -> None:
+        nonlocal reconnect_calls
+        reconnect_calls += 1
+
+    monkeypatch.setattr(client, "_reconnect", _fake_reconnect)
+
+    fake_node = _FakeBrowseNode("ns=1;i=100")
+    out = await client._browse_references_descriptions(
+        [fake_node],
+        max_nodes_per_browse=10,
+        reference_type_id=33,
+    )
+
+    assert reconnect_calls == 1
+    assert fake_uaclient.browse_calls == 2
+    assert len(out) == 1
+
+
+@pytest.mark.asyncio
+async def test_browse_next_retry_after_disconnect(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
+    fake_uaclient = _FakeUaClient()
+    fake_uaclient.fail_browse_next_once = True
+    fake_uaclient.browse_continuation_point = b"cp1"
+    cast(Any, client)._client = SimpleNamespace(uaclient=fake_uaclient)
+
+    reconnect_calls = 0
+
+    async def _fake_reconnect() -> None:
+        nonlocal reconnect_calls
+        reconnect_calls += 1
+
+    monkeypatch.setattr(client, "_reconnect", _fake_reconnect)
+
+    fake_node = _FakeBrowseNode("ns=1;i=200")
+    out = await client._browse_references_descriptions(
+        [fake_node],
+        max_nodes_per_browse=10,
+        reference_type_id=33,
+    )
+
+    assert reconnect_calls == 1
+    assert fake_uaclient.browse_next_calls == 2
+    assert len(out) == 1

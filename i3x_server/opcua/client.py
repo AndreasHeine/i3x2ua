@@ -265,6 +265,12 @@ class OpcUaClient:
                 logger.warning(
                     "OPC UA additional v1.03 data type definitions load failed endpoint=%s error=%s", self._endpoint, e
                 )
+            else:
+                logger.info(
+                    "OPC UA additional type definitions v1.03 load finished endpoint=%s duration_s=%.3f",
+                    self._endpoint,
+                    perf_counter() - started,
+                )
         else:
             logger.info(
                 "OPC UA additional type definitions load finished endpoint=%s duration_s=%.3f",
@@ -276,6 +282,7 @@ class OpcUaClient:
         started = perf_counter()
         logger.info("OPC UA disconnect started endpoint=%s", self._endpoint)
         await self._client.disconnect()
+        self._limits_cache = None
         self._namespace_infos_cache = None
         self._object_types_cache = None
         self._subscription_caps_cache = None
@@ -890,21 +897,6 @@ class OpcUaClient:
             )
             return None
 
-    async def _read_data_types_limited(
-        self,
-        entries: list[tuple[str, str, Any]],
-    ) -> list[tuple[str, str, str | None]]:
-        semaphore = asyncio.Semaphore(self._browse_concurrency)
-
-        async def worker(parent_id: str, property_name: str, node: Any) -> tuple[str, str, str | None]:
-            async with semaphore:
-                data_type = await self._read_data_type_or_none(node)
-                return (parent_id, property_name, data_type)
-
-        return await asyncio.gather(
-            *[worker(parent_id, property_name, node) for parent_id, property_name, node in entries]
-        )
-
     async def _read_object_type_members_limited(
         self,
         entries: list[tuple[str, str, str, str, NodeClass, Any]],
@@ -1095,7 +1087,7 @@ class OpcUaClient:
                 self._endpoint,
                 len(node_batch),
             )
-            browse_results = await self._client.uaclient.browse(params)
+            browse_results = await self._browse_with_retry(params=params, batch_size=len(node_batch))
             initial_references_total = sum(len(result.References) for result in browse_results)
             self._runtime_metrics.browse_initial_references += initial_references_total
             logger.debug(
@@ -1115,7 +1107,10 @@ class OpcUaClient:
                     next_params = ua.BrowseNextParameters()
                     next_params.ReleaseContinuationPoints = False
                     next_params.ContinuationPoints = [continuation_point]
-                    next_results = await self._client.uaclient.browse_next(next_params)
+                    next_results = await self._browse_next_with_retry(
+                        next_params=next_params,
+                        node_id=node.nodeid.to_string(),
+                    )
                     browse_next_calls += 1
                     self._runtime_metrics.browse_next_calls += 1
                     if not next_results:
@@ -1140,6 +1135,38 @@ class OpcUaClient:
                 results.append((node, refs))
 
         return results
+
+    async def _browse_with_retry(self, params: ua.BrowseParameters, batch_size: int) -> list[ua.BrowseResult]:
+        try:
+            return await self._client.uaclient.browse(params)
+        except Exception as exc:
+            if not self._should_retry_after_disconnect(exc):
+                raise
+            logger.warning(
+                "OPC UA browse retry after reconnect endpoint=%s batch_size=%d",
+                self._endpoint,
+                batch_size,
+            )
+            await self._reconnect()
+            return await self._client.uaclient.browse(params)
+
+    async def _browse_next_with_retry(
+        self,
+        next_params: ua.BrowseNextParameters,
+        node_id: str,
+    ) -> list[ua.BrowseResult]:
+        try:
+            return await self._client.uaclient.browse_next(next_params)
+        except Exception as exc:
+            if not self._should_retry_after_disconnect(exc):
+                raise
+            logger.warning(
+                "OPC UA browse-next retry after reconnect endpoint=%s node_id=%s",
+                self._endpoint,
+                node_id,
+            )
+            await self._reconnect()
+            return await self._client.uaclient.browse_next(next_params)
 
     async def read_value(self, node_id: str) -> Any:
         started = perf_counter()
@@ -1347,6 +1374,8 @@ class OpcUaClient:
             await self.load_additional_typedefinitions()
             self._limits_cache = None
             self._subscription_caps_cache = None
+            self._namespace_infos_cache = None
+            self._object_types_cache = None
             logger.info("OPC UA reconnect finished endpoint=%s", self._endpoint)
             listeners = list(self._reconnect_listeners)
 

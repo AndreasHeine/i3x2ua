@@ -62,6 +62,7 @@ async def get_or_build_model(request: Request) -> BuildResult:
         logger.info("Model build started")
         built = await builder.build()
         request.app.state.model_cache = built
+        request.app.state.object_type_context_cache = None
         logger.info(
             "Model build finished nodes=%d roots=%d properties=%d actions=%d duration_s=%.3f",
             len(built.nodes_by_id),

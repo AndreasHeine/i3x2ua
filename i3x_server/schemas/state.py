@@ -11,6 +11,9 @@ class BuildResult:
     instances_by_type_id: dict[str, list[str]]
     property_to_node: dict[str, str]
     action_to_method: dict[str, tuple[str, str]]
+    parent_by_id: dict[str, str] = field(default_factory=dict)
+    node_id_by_name: dict[str, str] = field(default_factory=dict)
+    node_id_by_type: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(slots=True)

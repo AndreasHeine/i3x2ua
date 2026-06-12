@@ -133,6 +133,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await opcua_client.connect()
     app.state.opcua_client = opcua_client
     app.state.model_builder = ModelBuilder(opcua_client)
+    app.state.object_type_context_cache = None
     app.state.subscription_service = SubscriptionService(
         opcua_client=opcua_client,
         interval_seconds=settings.subscription_interval_seconds,

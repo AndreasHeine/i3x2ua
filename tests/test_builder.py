@@ -61,8 +61,12 @@ async def test_model_builder_build_maps_nodes_children_properties_and_actions() 
     root_id = result.root_ids[0]
     assert property_id in result.children_by_id[root_id]
     assert action_id in result.children_by_id[root_id]
+    assert result.parent_by_id[property_id] == root_id
+    assert result.parent_by_id[action_id] == root_id
     assert result.property_to_node[property_id] == "ns=2;s=Temperature"
     assert result.action_to_method[action_id] == ("ns=2;s=Machine", "ns=2;s=Reset")
+    assert result.node_id_by_name["Machine"] == root_id
+    assert result.node_id_by_type["ns=1;i=11"] == property_id
 
 
 def test_kind_for_node_branches() -> None:

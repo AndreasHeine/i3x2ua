@@ -31,6 +31,9 @@ class ModelBuilder:
 
         nodes_by_id: dict[str, ModelNode] = {}
         children_by_id: dict[str, list[str]] = {}
+        parent_by_id: dict[str, str] = {}
+        node_id_by_name: dict[str, str] = {}
+        node_id_by_type: dict[str, str] = {}
         instances_by_type_id: dict[str, list[str]] = {}
         root_ids: list[str] = []
         property_to_node: dict[str, str] = {}
@@ -44,6 +47,11 @@ class ModelBuilder:
             mapped = map_node(opc_node, child_ids)
             nodes_by_id[mapped.id] = mapped
             children_by_id[mapped.id] = child_ids
+            for child_id in child_ids:
+                parent_by_id[child_id] = mapped.id
+            node_id_by_name.setdefault(mapped.name, mapped.id)
+            if isinstance(mapped.type, str) and mapped.type:
+                node_id_by_type.setdefault(mapped.type, mapped.id)
 
             if opc_node.parent_node_id is None:
                 root_ids.append(mapped.id)
@@ -65,6 +73,9 @@ class ModelBuilder:
             instances_by_type_id=instances_by_type_id,
             property_to_node=property_to_node,
             action_to_method=action_to_method,
+            parent_by_id=parent_by_id,
+            node_id_by_name=node_id_by_name,
+            node_id_by_type=node_id_by_type,
         )
         logger.info(
             "Model build phases browse_s=%.3f map_s=%.3f total_s=%.3f source_nodes=%d model_nodes=%d",

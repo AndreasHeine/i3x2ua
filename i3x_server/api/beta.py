@@ -4,16 +4,18 @@ import asyncio
 import base64
 import http
 import json
+import logging
 import os
 import re
 from collections.abc import Mapping
 from copy import deepcopy
-from dataclasses import fields, is_dataclass
+from dataclasses import dataclass, fields, is_dataclass
 from datetime import datetime, timezone
+from time import perf_counter
 from typing import Any, Generic, TypeVar
 
 from asyncua import ua
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
@@ -35,6 +37,7 @@ from i3x_server.schemas.state import BuildResult
 from i3x_server.subscriptions.service import SubscriptionService
 
 router = APIRouter(prefix="/v1", tags=["beta"])
+logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
@@ -144,6 +147,15 @@ def _bulk_response(results: list[BulkResultItem[T]]) -> BulkResponse[T]:
             detail=error_message,
         )
     return BulkResponse(success=all(item.success for item in results), results=results)
+
+
+@dataclass(slots=True)
+class _ObjectTypeContext:
+    namespace_infos: list[OpcUaNamespaceInfo]
+    object_types: list[OpcUaObjectTypeInfo]
+    element_ids_by_node_id: dict[str, str]
+    items: list[ObjectTypeResponse]
+    source_type_to_element_id: dict[str, str]
 
 
 class QueryCapabilities(BaseModel):
@@ -603,6 +615,23 @@ def _find_model_node(model: BuildResult, element_id: str) -> ModelNode | None:
     node = model.nodes_by_id.get(element_id)
     if node is not None:
         return node
+
+    raw_node_id_by_name = getattr(model, "node_id_by_name", None)
+    if isinstance(raw_node_id_by_name, dict):
+        indexed_name_id = raw_node_id_by_name.get(element_id)
+        if isinstance(indexed_name_id, str):
+            indexed_name_node = model.nodes_by_id.get(indexed_name_id)
+            if indexed_name_node is not None:
+                return indexed_name_node
+
+    raw_node_id_by_type = getattr(model, "node_id_by_type", None)
+    if isinstance(raw_node_id_by_type, dict):
+        indexed_type_id = raw_node_id_by_type.get(element_id)
+        if isinstance(indexed_type_id, str):
+            indexed_type_node = model.nodes_by_id.get(indexed_type_id)
+            if indexed_type_node is not None:
+                return indexed_type_node
+
     for candidate in model.nodes_by_id.values():
         if candidate.name == element_id:
             return candidate
@@ -612,6 +641,11 @@ def _find_model_node(model: BuildResult, element_id: str) -> ModelNode | None:
 
 
 def _parent_id_for_node(model: BuildResult, node_id: str) -> str | None:
+    raw_parent_by_id = getattr(model, "parent_by_id", None)
+    if isinstance(raw_parent_by_id, dict):
+        indexed_parent = raw_parent_by_id.get(node_id)
+        if isinstance(indexed_parent, str):
+            return indexed_parent
     for parent_id, child_ids in model.children_by_id.items():
         if node_id in child_ids:
             return parent_id
@@ -985,19 +1019,18 @@ def _collect_property_type_element_ids(
     return property_type_ids
 
 
-async def _object_type_element_ids_by_source_type(
+async def _build_object_type_context(
     model: BuildResult,
     namespace_infos: list[OpcUaNamespaceInfo],
     opcua_client: OpcUaClientProtocol,
-    object_types: list[OpcUaObjectTypeInfo] | None = None,
-) -> dict[str, str]:
-    resolved_object_types = object_types if object_types is not None else await opcua_client.get_object_types()
-    object_types_by_node_id = {item.node_id: item for item in resolved_object_types}
-    element_ids_by_node_id = _object_type_element_ids_by_node_id(resolved_object_types, namespace_infos)
-
+    object_types: list[OpcUaObjectTypeInfo],
+) -> _ObjectTypeContext:
+    started = perf_counter()
+    object_types_by_node_id = {item.node_id: item for item in object_types}
+    element_ids_by_node_id = _object_type_element_ids_by_node_id(object_types, namespace_infos)
     items = [
         _to_object_type(item, model, namespace_infos, object_types_by_node_id, element_ids_by_node_id, {})
-        for item in resolved_object_types
+        for item in object_types
     ]
     items.extend(_synthetic_object_types_from_structure_defs(items, namespace_infos))
 
@@ -1016,16 +1049,19 @@ async def _object_type_element_ids_by_source_type(
         unresolved_key = unresolved_id.lower()
         source_match = by_source_type_id.get(unresolved_key)
         if source_match is not None:
+            items.append(_object_type_alias_with_element_id(source_match, unresolved_id))
             continue
 
         datatype_item = _datatype_object_type_from_source_type_id(unresolved_id, namespace_infos)
         if datatype_item is not None:
+            items.append(datatype_item)
             by_source_type_id[unresolved_key] = datatype_item
             continue
 
         if unresolved_id in property_type_element_ids:
             opaque_datatype_item = _opaque_datatype_object_type_from_source_type_id(unresolved_id, namespace_infos)
             if opaque_datatype_item is not None:
+                items.append(opaque_datatype_item)
                 by_source_type_id[unresolved_key] = opaque_datatype_item
                 continue
 
@@ -1037,12 +1073,87 @@ async def _object_type_element_ids_by_source_type(
             lookup_budget,
         )
         if generic_item is not None:
+            items.append(generic_item)
             by_source_type_id[unresolved_key] = generic_item
             continue
 
-        by_source_type_id[unresolved_key] = _unknown_type_placeholder(unresolved_id, namespace_infos)
+        unknown_item = _unknown_type_placeholder(unresolved_id, namespace_infos)
+        items.append(unknown_item)
+        by_source_type_id[unresolved_key] = unknown_item
 
-    return {key: item.elementId for key, item in by_source_type_id.items()}
+    canonical_items = [
+        item.model_copy(update={"namespaceUri": _canonical_namespace_uri(item.namespaceUri, namespace_infos)})
+        for item in items
+    ]
+    source_type_to_element_id = {key: item.elementId for key, item in by_source_type_id.items()}
+    logger.debug(
+        "Object type context built model_nodes=%d object_types=%d items=%d duration_s=%.3f",
+        len(model.nodes_by_id),
+        len(object_types),
+        len(canonical_items),
+        perf_counter() - started,
+    )
+    return _ObjectTypeContext(
+        namespace_infos=namespace_infos,
+        object_types=object_types,
+        element_ids_by_node_id=element_ids_by_node_id,
+        items=canonical_items,
+        source_type_to_element_id=source_type_to_element_id,
+    )
+
+
+async def _get_object_type_context(
+    request: Request,
+    model: BuildResult,
+    opcua_client: OpcUaClientProtocol,
+    namespace_infos: list[OpcUaNamespaceInfo] | None = None,
+) -> _ObjectTypeContext:
+    started = perf_counter()
+    resolved_namespace_infos = (
+        namespace_infos if namespace_infos is not None else await opcua_client.get_namespace_infos()
+    )
+    object_types = await opcua_client.get_object_types()
+
+    cache = getattr(request.app.state, "object_type_context_cache", None)
+    model_token = id(model)
+    namespace_token = id(resolved_namespace_infos)
+    object_types_token = id(object_types)
+    if isinstance(cache, dict):
+        if (
+            cache.get("model_token") == model_token
+            and cache.get("namespace_token") == namespace_token
+            and cache.get("object_types_token") == object_types_token
+        ):
+            cached_context = cache.get("context")
+            if isinstance(cached_context, _ObjectTypeContext):
+                logger.debug(
+                    "Object type context cache hit model_nodes=%d object_types=%d duration_s=%.3f",
+                    len(model.nodes_by_id),
+                    len(object_types),
+                    perf_counter() - started,
+                )
+                return cached_context
+
+    context = await _build_object_type_context(
+        model=model,
+        namespace_infos=resolved_namespace_infos,
+        opcua_client=opcua_client,
+        object_types=object_types,
+    )
+    request.app.state.object_type_context_cache = {
+        "model_token": model_token,
+        "namespace_token": namespace_token,
+        "object_types_token": object_types_token,
+        "context": context,
+    }
+    logger.info(
+        "Object type context cache miss rebuilt model_nodes=%d object_types=%d items=%d duration_s=%.3f",
+        len(model.nodes_by_id),
+        len(object_types),
+        len(context.items),
+        perf_counter() - started,
+    )
+    return context
 
 
 def _resolved_type_element_id_for_node(
@@ -1441,13 +1552,13 @@ async def get_namespaces_v1(
 
 @router.get("/objecttypes", response_model=SuccessResponse[list[ObjectTypeResponse]])
 async def get_object_types_v1(
+    request: Request,
     namespace_uri: str | None = Query(default=None, alias="namespaceUri"),
     model: BuildResult = Depends(get_or_build_model),
     opcua_client: OpcUaClientProtocol = Depends(get_opcua_client),
 ) -> SuccessResponse[list[ObjectTypeResponse]]:
     try:
-        namespace_infos = await opcua_client.get_namespace_infos()
-        object_types = await opcua_client.get_object_types()
+        context = await _get_object_type_context(request, model, opcua_client)
     except Exception as exc:
         raise i3x_http_error(
             502,
@@ -1455,58 +1566,8 @@ async def get_object_types_v1(
             "Failed to read OPC UA object types",
             {"cause": str(exc)},
         ) from exc
-
-    object_types_by_node_id = {item.node_id: item for item in object_types}
-    element_ids_by_node_id = _object_type_element_ids_by_node_id(object_types, namespace_infos)
-    items = [
-        _to_object_type(item, model, namespace_infos, object_types_by_node_id, element_ids_by_node_id, {})
-        for item in object_types
-    ]
-    items.extend(_synthetic_object_types_from_structure_defs(items, namespace_infos))
-    referenced_type_element_ids = _collect_referenced_type_element_ids(
-        model,
-        namespace_infos,
-        element_ids_by_node_id,
-    )
-    property_type_element_ids = _collect_property_type_element_ids(model, namespace_infos)
-    known_ids = {item.elementId for item in items}
-    by_source_type_id = {item.sourceTypeId.lower(): item for item in items}
-    browse_name_cache: dict[str, str | None] = {}
-    lookup_budget = {"remaining": _LIVE_TYPE_NAME_LOOKUP_MAX_PER_REQUEST}
-    for unresolved_id in sorted(referenced_type_element_ids - known_ids):
-        unresolved_key = unresolved_id.lower()
-        source_match = by_source_type_id.get(unresolved_key)
-        if source_match is not None:
-            items.append(_object_type_alias_with_element_id(source_match, unresolved_id))
-            continue
-        datatype_item = _datatype_object_type_from_source_type_id(unresolved_id, namespace_infos)
-        if datatype_item is not None:
-            items.append(datatype_item)
-            by_source_type_id[unresolved_key] = datatype_item
-            continue
-        if unresolved_id in property_type_element_ids:
-            opaque_datatype_item = _opaque_datatype_object_type_from_source_type_id(unresolved_id, namespace_infos)
-            if opaque_datatype_item is not None:
-                items.append(opaque_datatype_item)
-                by_source_type_id[unresolved_key] = opaque_datatype_item
-                continue
-        generic_item = await _generic_object_type_from_source_type_id(
-            unresolved_id,
-            namespace_infos,
-            opcua_client,
-            browse_name_cache,
-            lookup_budget,
-        )
-        if generic_item is not None:
-            items.append(generic_item)
-            by_source_type_id[unresolved_key] = generic_item
-            continue
-        items.append(_unknown_type_placeholder(unresolved_id, namespace_infos))
-
-    items = [
-        item.model_copy(update={"namespaceUri": _canonical_namespace_uri(item.namespaceUri, namespace_infos)})
-        for item in items
-    ]
+    namespace_infos = context.namespace_infos
+    items = list(context.items)
 
     if namespace_uri:
         canonical_filter = _canonical_namespace_uri(namespace_uri, namespace_infos)
@@ -1516,13 +1577,13 @@ async def get_object_types_v1(
 
 @router.post("/objecttypes/query", response_model=BulkResponse[ObjectTypeResponse])
 async def query_object_types_v1(
+    request: Request,
     body: GetObjectTypesRequest,
     model: BuildResult = Depends(get_or_build_model),
     opcua_client: OpcUaClientProtocol = Depends(get_opcua_client),
 ) -> BulkResponse[ObjectTypeResponse]:
     try:
-        namespace_infos = await opcua_client.get_namespace_infos()
-        object_types = await opcua_client.get_object_types()
+        context = await _get_object_type_context(request, model, opcua_client)
     except Exception as exc:
         raise i3x_http_error(
             502,
@@ -1530,58 +1591,7 @@ async def query_object_types_v1(
             "Failed to query OPC UA object types",
             {"cause": str(exc)},
         ) from exc
-
-    object_types_by_node_id = {item.node_id: item for item in object_types}
-    element_ids_by_node_id = _object_type_element_ids_by_node_id(object_types, namespace_infos)
-    listed_types = [
-        _to_object_type(item, model, namespace_infos, object_types_by_node_id, element_ids_by_node_id, {})
-        for item in object_types
-    ]
-    listed_types.extend(_synthetic_object_types_from_structure_defs(listed_types, namespace_infos))
-    referenced_type_element_ids = _collect_referenced_type_element_ids(
-        model,
-        namespace_infos,
-        element_ids_by_node_id,
-    )
-    property_type_element_ids = _collect_property_type_element_ids(model, namespace_infos)
-    known_ids = {item.elementId for item in listed_types}
-    by_source_type_id = {item.sourceTypeId.lower(): item for item in listed_types}
-    browse_name_cache: dict[str, str | None] = {}
-    lookup_budget = {"remaining": _LIVE_TYPE_NAME_LOOKUP_MAX_PER_REQUEST}
-    for unresolved_id in sorted(referenced_type_element_ids - known_ids):
-        unresolved_key = unresolved_id.lower()
-        source_match = by_source_type_id.get(unresolved_key)
-        if source_match is not None:
-            listed_types.append(_object_type_alias_with_element_id(source_match, unresolved_id))
-            continue
-        datatype_item = _datatype_object_type_from_source_type_id(unresolved_id, namespace_infos)
-        if datatype_item is not None:
-            listed_types.append(datatype_item)
-            by_source_type_id[unresolved_key] = datatype_item
-            continue
-        if unresolved_id in property_type_element_ids:
-            opaque_datatype_item = _opaque_datatype_object_type_from_source_type_id(unresolved_id, namespace_infos)
-            if opaque_datatype_item is not None:
-                listed_types.append(opaque_datatype_item)
-                by_source_type_id[unresolved_key] = opaque_datatype_item
-                continue
-        generic_item = await _generic_object_type_from_source_type_id(
-            unresolved_id,
-            namespace_infos,
-            opcua_client,
-            browse_name_cache,
-            lookup_budget,
-        )
-        if generic_item is not None:
-            listed_types.append(generic_item)
-            by_source_type_id[unresolved_key] = generic_item
-            continue
-        listed_types.append(_unknown_type_placeholder(unresolved_id, namespace_infos))
-
-    listed_types = [
-        item.model_copy(update={"namespaceUri": _canonical_namespace_uri(item.namespaceUri, namespace_infos)})
-        for item in listed_types
-    ]
+    listed_types = context.items
 
     indexed = {item.elementId: item for item in listed_types}
     results: list[BulkResultItem[ObjectTypeResponse]] = []
@@ -1631,6 +1641,7 @@ async def query_relationship_types(body: GetRelationshipTypesRequest) -> BulkRes
 
 @router.get("/objects", response_model=SuccessResponse[list[ObjectInstanceResponse]])
 async def get_objects_v1(
+    request: Request,
     type_element_id: str | None = Query(default=None, alias="typeElementId"),
     include_metadata: bool = Query(default=False, alias="includeMetadata"),
     root: bool | None = Query(default=None),
@@ -1650,14 +1661,14 @@ async def get_objects_v1(
     object_type_element_ids_by_node_id: dict[str, str] = {}
     object_type_element_ids_by_source_type: dict[str, str] = {}
     try:
-        object_types = await opcua_client.get_object_types()
-        object_type_element_ids_by_node_id = _object_type_element_ids_by_node_id(object_types, namespace_infos)
-        object_type_element_ids_by_source_type = await _object_type_element_ids_by_source_type(
+        context = await _get_object_type_context(
+            request,
             model,
-            namespace_infos,
             opcua_client,
-            object_types,
+            namespace_infos=namespace_infos,
         )
+        object_type_element_ids_by_node_id = context.element_ids_by_node_id
+        object_type_element_ids_by_source_type = context.source_type_to_element_id
     except Exception:
         object_type_element_ids_by_node_id = {}
         object_type_element_ids_by_source_type = {}
@@ -1697,6 +1708,7 @@ async def get_objects_v1(
 
 @router.post("/objects/list", response_model=BulkResponse[ObjectInstanceResponse])
 async def list_objects_by_id_v1(
+    request: Request,
     body: GetObjectsRequest,
     model: BuildResult = Depends(get_or_build_model),
     opcua_client: OpcUaClientProtocol = Depends(get_opcua_client),
@@ -1714,14 +1726,14 @@ async def list_objects_by_id_v1(
     object_type_element_ids_by_node_id: dict[str, str] = {}
     object_type_element_ids_by_source_type: dict[str, str] = {}
     try:
-        object_types = await opcua_client.get_object_types()
-        object_type_element_ids_by_node_id = _object_type_element_ids_by_node_id(object_types, namespace_infos)
-        object_type_element_ids_by_source_type = await _object_type_element_ids_by_source_type(
+        context = await _get_object_type_context(
+            request,
             model,
-            namespace_infos,
             opcua_client,
-            object_types,
+            namespace_infos=namespace_infos,
         )
+        object_type_element_ids_by_node_id = context.element_ids_by_node_id
+        object_type_element_ids_by_source_type = context.source_type_to_element_id
     except Exception:
         object_type_element_ids_by_node_id = {}
         object_type_element_ids_by_source_type = {}
@@ -1757,6 +1769,7 @@ async def list_objects_by_id_v1(
 
 @router.post("/objects/related", response_model=BulkResponse[list[RelatedObjectResult]])
 async def query_related_objects_v1(
+    request: Request,
     body: GetRelatedObjectsRequest,
     model: BuildResult = Depends(get_or_build_model),
     opcua_client: OpcUaClientProtocol = Depends(get_opcua_client),
@@ -1774,14 +1787,14 @@ async def query_related_objects_v1(
     object_type_element_ids_by_node_id: dict[str, str] = {}
     object_type_element_ids_by_source_type: dict[str, str] = {}
     try:
-        object_types = await opcua_client.get_object_types()
-        object_type_element_ids_by_node_id = _object_type_element_ids_by_node_id(object_types, namespace_infos)
-        object_type_element_ids_by_source_type = await _object_type_element_ids_by_source_type(
+        context = await _get_object_type_context(
+            request,
             model,
-            namespace_infos,
             opcua_client,
-            object_types,
+            namespace_infos=namespace_infos,
         )
+        object_type_element_ids_by_node_id = context.element_ids_by_node_id
+        object_type_element_ids_by_source_type = context.source_type_to_element_id
     except Exception:
         object_type_element_ids_by_node_id = {}
         object_type_element_ids_by_source_type = {}

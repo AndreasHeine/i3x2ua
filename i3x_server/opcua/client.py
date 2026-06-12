@@ -901,6 +901,81 @@ class OpcUaClient:
         self,
         entries: list[tuple[str, str, str, str, NodeClass, Any]],
     ) -> list[tuple[str, OpcUaObjectTypeMemberInfo]]:
+        if not entries:
+            return []
+
+        all_nodes = [node for _, _, _, _, _, node in entries]
+        all_node_ids = [node.nodeid.to_string() for node in all_nodes]
+
+        description_by_node_id: dict[str, str | None] = {}
+        descriptions_batch_ok = True
+        try:
+            descriptions = await self._read_attribute_batch(all_nodes, AttributeIds.Description)
+            for node_id, description_value in zip(all_node_ids, descriptions, strict=True):
+                description_raw = self._extract_attribute_value(description_value)
+                text_value = getattr(description_raw, "Text", None)
+                if isinstance(text_value, str) and text_value.strip():
+                    description_by_node_id[node_id] = text_value
+                else:
+                    description_by_node_id[node_id] = None
+        except Exception:
+            descriptions_batch_ok = False
+            logger.debug(
+                "OPC UA member description batch read failed endpoint=%s",
+                self._endpoint,
+                exc_info=True,
+            )
+
+        variable_nodes = [node for _, _, _, _, node_class, node in entries if node_class == NodeClass.Variable]
+        variable_node_ids = [node.nodeid.to_string() for node in variable_nodes]
+
+        data_type_by_node_id: dict[str, str | None] = {}
+        data_type_batch_ok = True
+        if variable_nodes:
+            try:
+                data_types = await self._read_attribute_batch(variable_nodes, AttributeIds.DataType)
+                for node_id, data_type_value in zip(variable_node_ids, data_types, strict=True):
+                    data_type_raw = self._extract_attribute_value(data_type_value)
+                    if data_type_raw is None:
+                        data_type_by_node_id[node_id] = None
+                        continue
+                    if hasattr(data_type_raw, "to_string"):
+                        data_type_by_node_id[node_id] = data_type_raw.to_string()
+                    else:
+                        data_type_by_node_id[node_id] = str(data_type_raw)
+            except Exception:
+                data_type_batch_ok = False
+                logger.debug(
+                    "OPC UA member datatype batch read failed endpoint=%s",
+                    self._endpoint,
+                    exc_info=True,
+                )
+
+        value_rank_by_node_id: dict[str, int | None] = {}
+        value_rank_batch_ok = True
+        if variable_nodes:
+            try:
+                value_ranks = await self._read_attribute_batch(variable_nodes, AttributeIds.ValueRank)
+                for node_id, value_rank_value in zip(variable_node_ids, value_ranks, strict=True):
+                    value_rank_raw = self._extract_attribute_value(value_rank_value)
+                    if value_rank_raw is None:
+                        value_rank_by_node_id[node_id] = None
+                        continue
+                    if isinstance(value_rank_raw, int):
+                        value_rank_by_node_id[node_id] = value_rank_raw
+                    else:
+                        try:
+                            value_rank_by_node_id[node_id] = int(value_rank_raw)
+                        except (TypeError, ValueError):
+                            value_rank_by_node_id[node_id] = None
+            except Exception:
+                value_rank_batch_ok = False
+                logger.debug(
+                    "OPC UA member value-rank batch read failed endpoint=%s",
+                    self._endpoint,
+                    exc_info=True,
+                )
+
         semaphore = asyncio.Semaphore(self._browse_concurrency)
 
         async def worker(
@@ -912,15 +987,30 @@ class OpcUaClient:
             node: Any,
         ) -> tuple[str, OpcUaObjectTypeMemberInfo]:
             async with semaphore:
-                data_type = await self._read_data_type_or_none(node) if node_class == NodeClass.Variable else None
+                data_type: str | None = None
+                if node_class == NodeClass.Variable:
+                    if data_type_batch_ok:
+                        data_type = data_type_by_node_id.get(node_id)
+                    else:
+                        data_type = await self._read_data_type_or_none(node)
+
                 data_value = await self._read_data_value_or_none(node) if node_class == NodeClass.Variable else None
                 value = _variant_value_or_self(data_value)
                 variant_type, is_array = _variant_metadata(data_value)
-                value_rank = await self._read_value_rank_or_none(node) if node_class == NodeClass.Variable else None
+                if node_class == NodeClass.Variable:
+                    if value_rank_batch_ok:
+                        value_rank = value_rank_by_node_id.get(node_id)
+                    else:
+                        value_rank = await self._read_value_rank_or_none(node)
+                else:
+                    value_rank = None
                 if value_rank is not None and value_rank >= 1:
                     is_array = True
                 modelling_rule = await self._read_modelling_rule_or_none(node)
-                description = await self._read_description_or_none(node)
+                if descriptions_batch_ok:
+                    description = description_by_node_id.get(node_id)
+                else:
+                    description = await self._read_description_or_none(node)
                 return (
                     parent_id,
                     OpcUaObjectTypeMemberInfo(

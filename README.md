@@ -151,6 +151,24 @@ uv run uvicorn i3x_server.main:app --reload --host 127.0.0.1 --port 8000
 
 If you do not set `I3X_ENABLE_MCP`, the app starts without MCP support and `/mcp` returns `404`.
 
+Use encrypted OPC UA with the included sample client certificate (development/testing):
+
+```bash
+uv run python scripts/generate_opcua_client_cert.py
+```
+
+```powershell
+$env:I3X_OPCUA_SECURITY_MODE="SignAndEncrypt"
+$env:I3X_OPCUA_SECURITY_POLICY="Basic256Sha256"
+$env:I3X_OPCUA_CLIENT_CERT_PATH="./certs/opcua-client-sample/client-cert.pem"
+$env:I3X_OPCUA_CLIENT_KEY_PATH="./certs/opcua-client-sample/client-key.pem"
+uv run uvicorn i3x_server.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+The OPC UA server may require manually trusting the sample client certificate before the secure session can be established.
+
+If you create your own OPC UA client certificates, ensure they include OPC UA-compatible SAN and key usage fields (application URI, DNS names, clientAuth EKU, and signing/encipherment key usages) and match the server's exposed security mode/policy.
+
 OpenAPI/Swagger:
 
 - http://127.0.0.1:8000/openapi.json

@@ -126,6 +126,46 @@ The client supports:
 
 When security mode is not `None`, policy + certificate + key must be configured, otherwise startup fails fast with a clear configuration error.
 
+## Sample Client Certificate (Encrypted Connection)
+
+This repository includes a sample OPC UA client certificate/key pair for local encrypted connection tests:
+
+- `certs/opcua-client-sample/client-cert.pem`
+- `certs/opcua-client-sample/client-key.pem`
+
+To generate or refresh these files with an OPC UA-compatible profile:
+
+```bash
+uv run python scripts/generate_opcua_client_cert.py
+```
+
+Use it with these environment variables:
+
+```powershell
+$env:I3X_OPCUA_SECURITY_MODE="SignAndEncrypt"
+$env:I3X_OPCUA_SECURITY_POLICY="Basic256Sha256"
+$env:I3X_OPCUA_CLIENT_CERT_PATH="./certs/opcua-client-sample/client-cert.pem"
+$env:I3X_OPCUA_CLIENT_KEY_PATH="./certs/opcua-client-sample/client-key.pem"
+# Optional but recommended when your server requires pinning/trust by certificate file
+# $env:I3X_OPCUA_SERVER_CERT_PATH="./certs/opcua-server/server-cert.pem"
+uv run uvicorn i3x_server.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+Important:
+
+- The sample certificate is for development/testing only.
+- Many OPC UA servers require trusting the client certificate in their trust list before connection succeeds.
+- For production, generate and manage your own certificates and private keys.
+
+When generating your own OPC UA client certificate, include at least:
+
+- SAN application URI compatible with your client application identity (for `asyncua` default, `urn:example.org:FreeOpcUa:opcua-asyncio`)
+- SAN DNS entries for `localhost` and host name(s) used by deployment
+- Key Usage: `digitalSignature`, `nonRepudiation/contentCommitment`, `keyEncipherment`, `dataEncipherment`
+- EKU: `clientAuth` (and optionally `serverAuth` for broader compatibility)
+
+If these fields are missing or too restrictive, servers may reject the secure channel with errors like `BadCertificateUseNotAllowed`.
+
 ## Sequence Diagram: OPC UA Client And Server Communication
 
 ```mermaid

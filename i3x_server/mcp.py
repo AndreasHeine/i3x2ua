@@ -49,6 +49,13 @@ class McpToolDefinition:
         return asdict(self)
 
 
+@dataclass(frozen=True, slots=True)
+class _InternalASGIResponse:
+    status_code: int
+    headers: dict[str, str]
+    body: bytes
+
+
 def build_mcp_tools(
     openapi_spec: Mapping[str, Any],
     overrides: Mapping[str, Any] | None = None,
@@ -315,30 +322,93 @@ async def invoke_mcp_tool(request: Request, tool: McpToolDefinition, arguments: 
     if tool.body_required and request_body is None:
         raise i3x_http_error(400, "Bad Request", "Missing required body")
 
-    transport = httpx.ASGITransport(app=request.app)
-    request_kwargs: dict[str, Any] = {"params": query_params}
-    if request_body is not None:
-        request_kwargs["json"] = request_body
-
-    async with httpx.AsyncClient(
-        transport=transport,
-        base_url=_MCP_INTERNAL_BASE_URL,
-        timeout=30,
-    ) as client:
-        response = await client.request(tool.method, request_target, **request_kwargs)
+    response = await _invoke_internal_asgi(
+        app=request.app,
+        method=tool.method,
+        path=request_target,
+        query_params=query_params,
+        request_body=request_body,
+    )
 
     if response.headers.get("content-type", "").startswith("application/json"):
         try:
-            body = response.json()
-        except ValueError as exc:
+            body = json.loads(response.body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise i3x_http_error(502, "Bad Gateway", "Upstream response was not valid JSON") from exc
     else:
         body = {
-            "text": response.text,
+            "text": response.body.decode("utf-8", errors="replace"),
             "content_type": response.headers.get("content-type"),
         }
 
     return {"status_code": response.status_code, "body": body}
+
+
+async def _invoke_internal_asgi(
+    app: Any,
+    method: str,
+    path: str,
+    query_params: Mapping[str, Any],
+    request_body: Any,
+) -> _InternalASGIResponse:
+    query_string = str(httpx.QueryParams(query_params)).encode("ascii") if query_params else b""
+    body_bytes = b""
+    headers: list[tuple[bytes, bytes]] = [(b"host", b"mcp.local"), (b"accept", b"application/json")]
+    if request_body is not None:
+        body_bytes = json.dumps(request_body).encode("utf-8")
+        headers.append((b"content-type", b"application/json"))
+        headers.append((b"content-length", str(len(body_bytes)).encode("ascii")))
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": method.upper(),
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode("utf-8"),
+        "query_string": query_string,
+        "headers": headers,
+        "client": ("127.0.0.1", 0),
+        "server": ("mcp.local", 80),
+        "root_path": "",
+        "app": app,
+        "state": {},
+    }
+
+    request_sent = False
+    messages: list[dict[str, Any]] = []
+
+    async def receive() -> dict[str, Any]:
+        nonlocal request_sent
+        if request_sent:
+            return {"type": "http.disconnect"}
+        request_sent = True
+        return {"type": "http.request", "body": body_bytes, "more_body": False}
+
+    async def send(message: dict[str, Any]) -> None:
+        messages.append(message)
+
+    await app(scope, receive, send)
+
+    status_code = 500
+    response_headers: dict[str, str] = {}
+    response_chunks: list[bytes] = []
+
+    for message in messages:
+        if message.get("type") == "http.response.start":
+            status_code = int(message.get("status", 500))
+            raw_headers = message.get("headers", [])
+            for key, value in raw_headers:
+                response_headers[key.decode("latin-1").lower()] = value.decode("latin-1")
+        elif message.get("type") == "http.response.body":
+            response_chunks.append(message.get("body", b""))
+
+    return _InternalASGIResponse(
+        status_code=status_code,
+        headers=response_headers,
+        body=b"".join(response_chunks),
+    )
 
 
 def _payload_to_response(payload: Any) -> Response:

@@ -225,12 +225,28 @@ The default compose setup also enables container hardening (`read_only`, `tmpfs`
 Optional environment variables:
 
 - `I3X_ENABLE_MCP=1` to enable MCP support; it is disabled by default
+- `I3X_OPCUA_CERTS_DIR=./certs` to mount OPC UA client/server certificate files into the app container (`/app/certs`)
 - `NGINX_HTTPS_ENABLED=1` to enable TLS termination
 - `NGINX_SSL_CERTS_DIR=./certs` with `fullchain.pem` and `privkey.pem`
 - `NGINX_BASIC_AUTH_ENABLED=1` with `NGINX_BASIC_AUTH_USER` and `NGINX_BASIC_AUTH_PASSWORD`
 - `NGINX_SERVER_NAME` for the public host name
 
 If you enable HTTPS, mount or place the certificate files in the configured cert directory before starting Compose.
+
+If your OPC UA server runs on the Docker host machine, set `I3X_OPCUA_ENDPOINT` to `opc.tcp://host.docker.internal:<port>` instead of `127.0.0.1`.
+
+For local HTTPS testing with the nginx reverse proxy, generate sample certificates:
+
+```bash
+uv run python scripts/generate_https_dev_cert.py
+```
+
+Then use these environment values:
+
+- `NGINX_HTTPS_ENABLED=1`
+- `NGINX_SSL_CERTS_DIR=./certs`
+- `NGINX_SSL_CERTIFICATE=/etc/nginx/certs/https-sample/fullchain.pem`
+- `NGINX_SSL_CERTIFICATE_KEY=/etc/nginx/certs/https-sample/privkey.pem`
 
 ## Development
 

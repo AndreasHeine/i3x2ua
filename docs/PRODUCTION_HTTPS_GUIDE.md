@@ -91,6 +91,25 @@ chmod 400 certs/privkey.pem
 
 #### Option B: Using Self-Signed Certificate (Development Only)
 
+Cross-platform helper script (recommended for local development):
+
+```bash
+uv run python scripts/generate_https_dev_cert.py
+```
+
+This writes:
+
+- `certs/https-sample/fullchain.pem`
+- `certs/https-sample/privkey.pem`
+
+And can be used with:
+
+- `NGINX_SSL_CERTS_DIR=./certs`
+- `NGINX_SSL_CERTIFICATE=/etc/nginx/certs/https-sample/fullchain.pem`
+- `NGINX_SSL_CERTIFICATE_KEY=/etc/nginx/certs/https-sample/privkey.pem`
+
+Manual OpenSSL alternative:
+
 ```bash
 mkdir -p certs
 openssl req -x509 -newkey rsa:4096 \

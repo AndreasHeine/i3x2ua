@@ -76,7 +76,7 @@ location /i3x/instance3/ {
 }
 ```
 
-This deployment model routes requests by path to independent instances. It does not use NGINX load-balancing algorithms such as round-robin, least_conn, or ip_hash.
+This deployment model routes requests by path to independent instances. For upstream-based load balancing examples, see the Load Balancing section below.
 
 ---
 

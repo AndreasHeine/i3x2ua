@@ -57,6 +57,9 @@ async def _handle_jsonrpc(request: Request, message: dict[str, Any]) -> dict[str
             return None
         return _jsonrpc_error(message_id, -32600, "Invalid Request")
 
+    if message_id is None:
+        return None
+
     if method == "initialize":
         protocol_version = None
         if isinstance(params, dict):
@@ -111,8 +114,6 @@ async def _handle_jsonrpc(request: Request, message: dict[str, Any]) -> dict[str
             message_id, {"content": [{"type": "text", "text": json.dumps(body, ensure_ascii=False)}]}
         )
 
-    if message_id is None:
-        return None
     return _jsonrpc_error(message_id, -32601, f"Method not found: {method}")
 
 

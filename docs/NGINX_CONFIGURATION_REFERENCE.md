@@ -30,6 +30,17 @@ server {
 }
 ```
 
+## HTTPS/SSL Configuration
+
+### HTTP to HTTPS Redirect
+```nginx
+server {
+  listen 80;
+  server_name api.example.com;
+  return 301 https://$host$request_uri;
+}
+```
+
 ## Path-Based Routing
 
 ### Upstream Blocks
@@ -66,15 +77,6 @@ location /i3x/instance3/ {
 ```
 
 This deployment model routes requests by path to independent instances. It does not use NGINX load-balancing algorithms such as round-robin, least_conn, or ip_hash.
-
-### HTTP to HTTPS Redirect
-```nginx
-server {
-  listen 80;
-  server_name api.example.com;
-  return 301 https://$host$request_uri;
-}
-```
 
 ---
 

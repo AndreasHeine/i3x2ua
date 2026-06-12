@@ -1257,6 +1257,47 @@ def test_mcp_tools_call_request(client: TestClient) -> None:
     assert "success" in content[0]["text"]
 
 
+def test_mcp_initialize_notification_returns_no_response(client: TestClient) -> None:
+    response = client.post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "method": "initialize",
+            "params": {"protocolVersion": "2025-06-18"},
+        },
+    )
+
+    assert response.status_code == 202
+    assert response.text == "null"
+
+
+def test_mcp_tools_list_notification_returns_no_response(client: TestClient) -> None:
+    response = client.post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "method": "tools/list",
+        },
+    )
+
+    assert response.status_code == 202
+    assert response.text == "null"
+
+
+def test_mcp_tools_call_notification_returns_no_response(client: TestClient) -> None:
+    response = client.post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "method": "tools/call",
+            "params": {"name": "getNamespaces", "arguments": {}},
+        },
+    )
+
+    assert response.status_code == 202
+    assert response.text == "null"
+
+
 def test_mcp_call_allows_omitting_optional_query_parameters(client: TestClient) -> None:
     tools_response = client.get("/mcp/tools")
     assert tools_response.status_code == 200

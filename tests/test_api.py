@@ -1236,6 +1236,18 @@ def test_mcp_call_supports_body_arguments(client: TestClient) -> None:
     assert payload["results"][0]["result"]["isComposition"] is False
 
 
+@pytest.mark.parametrize("element_id", ["http://evil.example", "../evil"])
+def test_mcp_call_rejects_malicious_path_parameters(client: TestClient, element_id: str) -> None:
+    response = client.post(
+        "/mcp/call",
+        json={"tool": "updateObjectValue", "arguments": {"elementId": element_id, "body": {"value": 1}}},
+    )
+
+    assert response.status_code == 400
+    payload = response.json()
+    assert payload["error"]["message"] == "Invalid path parameter: elementId"
+
+
 def test_mcp_call_rejects_unknown_tool(client: TestClient) -> None:
     response = client.post("/mcp/call", json={"tool": "unknownTool", "arguments": {}})
     assert response.status_code == 400

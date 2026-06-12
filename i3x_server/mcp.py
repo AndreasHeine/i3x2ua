@@ -6,6 +6,7 @@ from copy import deepcopy
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 from fastapi import Request
@@ -204,6 +205,23 @@ def _resolve_ref(ref: str, components: Mapping[str, Any]) -> Any:
     return {"$ref": ref}
 
 
+def _safe_path_parameter_value(parameter_name: str, value: Any) -> str:
+    value_str = str(value)
+    parsed = urlsplit(value_str)
+    if (
+        parsed.scheme
+        or parsed.netloc
+        or "/" in value_str
+        or "\\" in value_str
+        or ".." in value_str
+        or "?" in value_str
+        or "#" in value_str
+        or value_str.strip() != value_str
+    ):
+        raise i3x_http_error(400, "Bad Request", f"Invalid path parameter: {parameter_name}")
+    return value_str
+
+
 async def call_mcp_tool(request: Request, tool: McpToolDefinition, arguments: Mapping[str, Any]) -> Response:
     payload = await invoke_mcp_tool(request, tool, arguments)
     return _payload_to_response(payload)
@@ -233,7 +251,8 @@ async def invoke_mcp_tool(request: Request, tool: McpToolDefinition, arguments: 
         placeholder = "{" + parameter_name + "}"
         if placeholder not in resolved_path:
             raise i3x_http_error(500, "Internal Error", f"Path placeholder not found for {parameter_name}")
-        resolved_path = resolved_path.replace(placeholder, str(arguments[parameter_name]))
+        safe_value = _safe_path_parameter_value(parameter_name, arguments[parameter_name])
+        resolved_path = resolved_path.replace(placeholder, safe_value)
 
     query_params = {
         parameter_name: arguments[parameter_name]

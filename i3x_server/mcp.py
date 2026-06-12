@@ -113,7 +113,9 @@ def build_mcp_tools(
 
             tools[operation_id] = McpToolDefinition(
                 name=operation_id,
-                description=str(override.get("description") or details.get("summary") or details.get("description") or ""),
+                description=str(
+                    override.get("description") or details.get("summary") or details.get("description") or ""
+                ),
                 method=method.upper(),
                 path=path,
                 input_schema={
@@ -181,8 +183,7 @@ def _resolve_schema(schema: Any, components: Mapping[str, Any]) -> Any:
     properties = resolved_schema.get("properties")
     if isinstance(properties, Mapping):
         resolved_schema["properties"] = {
-            str(name): _resolve_schema(value, components)
-            for name, value in properties.items()
+            str(name): _resolve_schema(value, components) for name, value in properties.items()
         }
 
     items = resolved_schema.get("items")

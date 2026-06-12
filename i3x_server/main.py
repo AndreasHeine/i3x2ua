@@ -18,8 +18,8 @@ from starlette.middleware.gzip import GZipMiddleware
 from i3x_server.api.beta import router as beta_router
 from i3x_server.api.mcp import router as mcp_router
 from i3x_server.config.settings import settings
-from i3x_server.model.builder import ModelBuilder
 from i3x_server.mcp import build_mcp_tools, get_api_prefix
+from i3x_server.model.builder import ModelBuilder
 from i3x_server.opcua.client import OpcUaClient
 from i3x_server.schemas.state import BuildResult
 from i3x_server.subscriptions.service import SubscriptionService

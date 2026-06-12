@@ -98,7 +98,9 @@ async def _handle_jsonrpc(request: Request, message: dict[str, Any]) -> dict[str
         if isinstance(body, dict) and "text" in body and "content_type" in body:
             content = [{"type": "text", "text": str(body["text"])}]
             return _jsonrpc_response(message_id, {"content": content})
-        return _jsonrpc_response(message_id, {"content": [{"type": "text", "text": json.dumps(body, ensure_ascii=False)}]})
+        return _jsonrpc_response(
+            message_id, {"content": [{"type": "text", "text": json.dumps(body, ensure_ascii=False)}]}
+        )
 
     if message_id is None:
         return None

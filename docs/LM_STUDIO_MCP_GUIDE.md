@@ -4,6 +4,8 @@ This guide explains how to connect LM Studio to the native MCP support built int
 
 LM Studio is used here as the reference MCP client, but the integration flow also applies to other MCP-capable AI tools.
 
+If you want to use i3x2ua MCP tools directly inside Visual Studio Code chat, see `docs/VSCODE_MCP_LIVE_DATA_GUIDE.md`.
+
 MCP support is opt-in. Start the server with `I3X_ENABLE_MCP=1` before following the steps below.
 
 Use this guide when you already have the i3Xua server running and want LM Studio to call it as a tool source.

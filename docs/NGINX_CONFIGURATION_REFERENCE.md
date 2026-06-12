@@ -19,14 +19,25 @@ This document provides detailed reference information for NGINX configuration in
 ## Basic Configuration
 
 ### HTTP Server Block
-## Path-Based Routing
+```nginx
 server {
+  listen 80;
+  server_name api.example.com;
+
+  location / {
+    proxy_pass http://i3x2ua_backend;
+  }
+}
+```
+
+## Path-Based Routing
+
 ### Upstream Blocks
-  server_name _;
+```nginx
 upstream instance1_backend {
   server i3x2ua-1:8000;
 }
-```
+
 upstream instance2_backend {
   server i3x2ua-2:8001;
 }
@@ -37,7 +48,7 @@ upstream instance3_backend {
 ```
 
 ### URL Path Routing
-### HTTPS Server Block
+```nginx
 location /i3x/instance1/ {
   rewrite ^/i3x/instance1/(.*) /$1 break;
   proxy_pass http://instance1_backend;
@@ -51,10 +62,13 @@ location /i3x/instance2/ {
 location /i3x/instance3/ {
   rewrite ^/i3x/instance3/(.*) /$1 break;
   proxy_pass http://instance3_backend;
-### HTTP to HTTPS Redirect
-```nginx
+}
+```
 
 This deployment model routes requests by path to independent instances. It does not use NGINX load-balancing algorithms such as round-robin, least_conn, or ip_hash.
+
+### HTTP to HTTPS Redirect
+```nginx
 server {
   listen 80;
   server_name api.example.com;

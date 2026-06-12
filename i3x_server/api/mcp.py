@@ -87,7 +87,16 @@ async def _handle_jsonrpc(request: Request, message: dict[str, Any]) -> dict[str
         if not isinstance(tools, Mapping) or tool_name not in tools:
             return _jsonrpc_error(message_id, -32602, f"Unknown tool {tool_name}")
         tool = tools[tool_name]
-        payload = await invoke_mcp_tool(request, tool, arguments)
+        try:
+            payload = await invoke_mcp_tool(request, tool, arguments)
+        except Exception as exc:
+            from fastapi import HTTPException
+
+            if isinstance(exc, HTTPException):
+                detail = exc.detail
+                error_text = detail if isinstance(detail, str) else json.dumps(detail, ensure_ascii=False)
+                return _jsonrpc_error(message_id, int(exc.status_code), error_text)
+            raise
         if not isinstance(payload, dict):
             return _jsonrpc_error(message_id, -32603, "Internal error")
         status_code = int(payload.get("status_code", 500))

@@ -288,13 +288,17 @@ async def invoke_mcp_tool(request: Request, tool: McpToolDefinition, arguments: 
     if tool.body_required or "body" in tool.input_schema.get("properties", {}):
         allowed_arguments.add("body")
 
+    required_fields = set(tool.input_schema.get("required", []))
+
     unexpected_arguments = sorted(set(arguments) - allowed_arguments)
     if unexpected_arguments:
         raise i3x_http_error(400, "Bad Request", f"Unexpected arguments: {', '.join(unexpected_arguments)}")
 
     missing_path_parameters = [name for name in tool.path_parameters if name not in arguments]
-    missing_query_parameters = [name for name in tool.query_parameters if name not in arguments]
-    missing_arguments = missing_path_parameters + missing_query_parameters
+    missing_required_query_parameters = [
+        name for name in tool.query_parameters if name in required_fields and name not in arguments
+    ]
+    missing_arguments = missing_path_parameters + missing_required_query_parameters
     if missing_arguments:
         raise i3x_http_error(400, "Bad Request", f"Missing required arguments: {', '.join(missing_arguments)}")
 

@@ -1257,6 +1257,52 @@ def test_mcp_tools_call_request(client: TestClient) -> None:
     assert "success" in content[0]["text"]
 
 
+def test_mcp_call_allows_omitting_optional_query_parameters(client: TestClient) -> None:
+    tools_response = client.get("/mcp/tools")
+    assert tools_response.status_code == 200
+    tools = tools_response.json()["tools"]
+
+    candidate_name: str | None = None
+    for name, tool in tools.items():
+        query_parameters = set(tool.get("query_parameters", []))
+        required_fields = set(tool.get("input_schema", {}).get("required", []))
+        required_query_parameters = query_parameters & required_fields
+        if (
+            query_parameters
+            and not required_query_parameters
+            and not tool.get("path_parameters")
+            and not tool.get("body_required", False)
+            and tool.get("method") == "GET"
+        ):
+            candidate_name = name
+            break
+
+    if candidate_name is None:
+        pytest.skip("No MCP tool with fully optional query parameters is available")
+
+    response = client.post("/mcp/call", json={"tool": candidate_name, "arguments": {}})
+    assert response.status_code == 200
+
+
+def test_mcp_jsonrpc_tools_call_returns_jsonrpc_error_for_http_exception(client: TestClient) -> None:
+    response = client.post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 301,
+            "method": "tools/call",
+            "params": {"name": "updateObjectValue", "arguments": {}},
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["jsonrpc"] == "2.0"
+    assert payload["id"] == 301
+    assert payload["error"]["code"] == 400
+    assert "Missing required arguments" in payload["error"]["message"]
+
+
 def test_mcp_call_dispatches_to_existing_api(client: TestClient) -> None:
     response = client.post("/mcp/call", json={"tool": "getNamespaces", "arguments": {}})
     assert response.status_code == 200

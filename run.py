@@ -17,9 +17,10 @@ def _load_local_env(env_path: str = ".env") -> None:
         if not key:
             continue
         value = value.strip()
-        if value.startswith(("\"", "'")) and value.endswith(("\"", "'")) and len(value) >= 2:
+        if value.startswith(('"', "'")) and value.endswith(('"', "'")) and len(value) >= 2:
             value = value[1:-1]
         os.environ.setdefault(key, value)
+
 
 if __name__ == "__main__":
     _load_local_env()

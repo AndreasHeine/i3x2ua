@@ -2203,6 +2203,7 @@ async def stream_subscription_v1(
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
         },
     )
 

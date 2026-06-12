@@ -1,6 +1,8 @@
 services:
   i3x2ua:
-    image: ghcr.io/andreasheine/i3x2ua:master
+    build:
+      context: .
+    image: i3x2ua-local
     container_name: i3x2ua
     restart: unless-stopped
     command:
@@ -65,6 +67,7 @@ services:
       NGINX_UPSTREAM_PORT: ${NGINX_UPSTREAM_PORT:-8000}
       NGINX_SERVER_NAME: ${NGINX_SERVER_NAME:-_}
       NGINX_HTTPS_ENABLED: ${NGINX_HTTPS_ENABLED:-1}
+      NGINX_HTTPS_REDIRECT_PORT: ${NGINX_HTTPS_REDIRECT_PORT:-8443}
       NGINX_SSL_CERTIFICATE: ${NGINX_SSL_CERTIFICATE:-/etc/nginx/certs/https-sample/fullchain.pem}
       NGINX_SSL_CERTIFICATE_KEY: ${NGINX_SSL_CERTIFICATE_KEY:-/etc/nginx/certs/https-sample/privkey.pem}
       NGINX_BASIC_AUTH_ENABLED: ${NGINX_BASIC_AUTH_ENABLED:-0}

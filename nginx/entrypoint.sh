@@ -21,6 +21,13 @@ auth_file="/etc/nginx/.htpasswd"
 cert_file="${NGINX_SSL_CERTIFICATE:-/etc/nginx/certs/fullchain.pem}"
 key_file="${NGINX_SSL_CERTIFICATE_KEY:-/etc/nginx/certs/privkey.pem}"
 realm="${NGINX_BASIC_AUTH_REALM:-i3x2ua}"
+redirect_https_port="${NGINX_HTTPS_REDIRECT_PORT:-443}"
+
+if [ "$redirect_https_port" = "443" ]; then
+  https_redirect_target="https://\$host\$request_uri"
+else
+  https_redirect_target="https://\$host:$redirect_https_port\$request_uri"
+fi
 
 auth_block=""
 if is_truthy "$basic_auth_enabled"; then
@@ -50,6 +57,23 @@ proxy_block=$(cat <<EOF
 EOF
 )
 
+sse_proxy_block=$(cat <<EOF
+      proxy_http_version 1.1;
+      proxy_set_header Host \$host;
+      proxy_set_header X-Real-IP \$remote_addr;
+      proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto \$scheme;
+      proxy_set_header X-Forwarded-Host \$host;
+      proxy_set_header X-Forwarded-Port \$server_port;
+      proxy_set_header Connection "";
+      proxy_buffering off;
+      proxy_cache off;
+      proxy_read_timeout 3600s;
+      proxy_send_timeout 3600s;
+      proxy_pass http://$upstream_host:$upstream_port;
+EOF
+)
+
 mkdir -p /etc/nginx/conf.d
 
 if is_truthy "$https_enabled"; then
@@ -64,7 +88,7 @@ if is_truthy "$https_enabled"; then
 server {
   listen 80;
   server_name $server_name;
-  return 301 https://\$host\$request_uri;
+  return 301 $https_redirect_target;
 }
 
 server {
@@ -74,6 +98,11 @@ server {
   ssl_certificate_key $key_file;
   ssl_protocols TLSv1.2 TLSv1.3;
   ssl_prefer_server_ciphers on;
+
+  location = /v1/subscriptions/stream {
+$(printf '%s\n' "$auth_block")
+$(printf '%s\n' "$sse_proxy_block")
+  }
 
   location / {
 $(printf '%s\n' "$auth_block")
@@ -86,6 +115,11 @@ else
 server {
   listen 80;
   server_name $server_name;
+
+  location = /v1/subscriptions/stream {
+$(printf '%s\n' "$auth_block")
+$(printf '%s\n' "$sse_proxy_block")
+  }
 
   location / {
 $(printf '%s\n' "$auth_block")

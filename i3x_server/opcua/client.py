@@ -1367,23 +1367,7 @@ class OpcUaClient:
 
         values: list[Any] = []
         for batch in _chunked(node_ids, batch_size):
-            self._runtime_metrics.read_calls += 1
-            self._runtime_metrics.read_nodes += len(batch)
-            nodes = [self._client.get_node(node_id) for node_id in batch]
-            try:
-                batch_values = await self._client.read_values(nodes)
-            except Exception as exc:
-                if not self._should_retry_after_disconnect(exc):
-                    raise
-                logger.warning(
-                    "OPC UA batch read retry after reconnect endpoint=%s batch_size=%d",
-                    self._endpoint,
-                    len(batch),
-                )
-                await self._reconnect()
-                retry_nodes = [self._client.get_node(node_id) for node_id in batch]
-                batch_values = await self._client.read_values(retry_nodes)
-            values.extend(batch_values)
+            values.extend(await self._read_values_batch_with_fallback(batch))
 
         logger.info(
             "OPC UA batch read ok endpoint=%s requested=%d batch_size=%d duration_s=%.3f",
@@ -1393,6 +1377,51 @@ class OpcUaClient:
             perf_counter() - started,
         )
         return values
+
+    async def _read_values_batch_with_fallback(self, node_ids: list[str]) -> list[Any]:
+        if not node_ids:
+            return []
+
+        self._runtime_metrics.read_calls += 1
+        self._runtime_metrics.read_nodes += len(node_ids)
+        nodes = [self._client.get_node(node_id) for node_id in node_ids]
+        try:
+            return list(await self._client.read_values(nodes))
+        except Exception as exc:
+            candidate_error = exc
+            if self._should_retry_after_disconnect(exc):
+                logger.warning(
+                    "OPC UA batch read retry after reconnect endpoint=%s batch_size=%d",
+                    self._endpoint,
+                    len(node_ids),
+                )
+                await self._reconnect()
+                retry_nodes = [self._client.get_node(node_id) for node_id in node_ids]
+                try:
+                    return list(await self._client.read_values(retry_nodes))
+                except Exception as retry_exc:
+                    candidate_error = retry_exc
+
+            if len(node_ids) <= 1:
+                logger.warning(
+                    "OPC UA single-node read failed endpoint=%s node_id=%s error=%s; returning null value",
+                    self._endpoint,
+                    node_ids[0],
+                    candidate_error,
+                )
+                return [None]
+
+            split_at = max(1, len(node_ids) // 2)
+            logger.warning(
+                "OPC UA batch read split fallback endpoint=%s batch_size=%d split_at=%d error=%s",
+                self._endpoint,
+                len(node_ids),
+                split_at,
+                candidate_error,
+            )
+            left = await self._read_values_batch_with_fallback(node_ids[:split_at])
+            right = await self._read_values_batch_with_fallback(node_ids[split_at:])
+            return left + right
 
     async def read_history_values(
         self,

@@ -9,6 +9,7 @@ import pytest
 
 from i3x_server.opcua.client import (
     OpcUaClient,
+    OpcUaOperationalLimits,
     _assert_file_exists,
     _chunked,
     _chunked_nodes,
@@ -307,3 +308,48 @@ async def test_browse_next_retry_after_disconnect(monkeypatch: pytest.MonkeyPatc
     assert reconnect_calls == 1
     assert fake_uaclient.browse_next_calls == 2
     assert len(out) == 1
+
+
+@pytest.mark.asyncio
+async def test_read_values_splits_batches_on_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _BatchLimitedClient:
+        def get_node(self, node_id: str) -> SimpleNamespace:
+            return SimpleNamespace(node_id=node_id)
+
+        async def read_values(self, nodes: list[Any]) -> list[Any]:
+            if len(nodes) > 1:
+                raise RuntimeError("too many operations")
+            return [f"value-{nodes[0].node_id}"]
+
+    client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
+    cast(Any, client)._client = _BatchLimitedClient()
+
+    async def _limits() -> OpcUaOperationalLimits:
+        return OpcUaOperationalLimits(max_nodes_per_browse=None, max_nodes_per_read=10)
+
+    monkeypatch.setattr(client, "get_operational_limits", _limits)
+
+    values = await client.read_values(["a", "b", "c"])
+    assert values == ["value-a", "value-b", "value-c"]
+
+
+@pytest.mark.asyncio
+async def test_read_values_returns_none_for_failing_single_node(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _AlwaysFailingClient:
+        def get_node(self, node_id: str) -> SimpleNamespace:
+            return SimpleNamespace(node_id=node_id)
+
+        async def read_values(self, nodes: list[Any]) -> list[Any]:
+            del nodes
+            raise RuntimeError("read failed")
+
+    client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
+    cast(Any, client)._client = _AlwaysFailingClient()
+
+    async def _limits() -> OpcUaOperationalLimits:
+        return OpcUaOperationalLimits(max_nodes_per_browse=None, max_nodes_per_read=10)
+
+    monkeypatch.setattr(client, "get_operational_limits", _limits)
+
+    values = await client.read_values(["only-node"])
+    assert values == [None]

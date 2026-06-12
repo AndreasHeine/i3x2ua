@@ -16,8 +16,9 @@ The diagram below is a true integration flowchart with a required path and optio
 flowchart TD
     A[User asks AI question in app]
     B[Orchestrator interprets intent]
-    BR{Model routing needed?}
-    BM[Primary model]
+    BR{Use dynamic model routing?}
+    MR[Model router selects best model]
+    BM[Default model]
     BF[Fallback model]
     C{Need live operational data?}
     C2{High-impact action?}
@@ -47,7 +48,7 @@ flowchart TD
     EV[Eval loop\nquality safety latency regressions]
 
     A --> B --> BR
-    BR -- Yes --> BM
+    BR -- Yes --> MR --> BM
     BR -- No --> BM
     BM -- Failure or low confidence --> BF
     BM --> C

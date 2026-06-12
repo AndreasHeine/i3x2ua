@@ -185,6 +185,7 @@ MCP scope emphasis: the MCP bridge is currently focused on tool calling (`initia
 - i3X upstream specification materials: `i3X/spec/README.md`
 - i3X conformance tests: `i3X/conformance-tests/README.md`
 - OPC UA to i3X mapping profile: `docs/OPCUA_I3X_MAPPING_PROFILE.md`
+- OPC UA client behavior and optimization guide: `docs/OPCUA_CLIENT_DOCUMENTATION.md`
 - LM Studio / MCP bridge guide (including capability matrix): `docs/LM_STUDIO_MCP_GUIDE.md`
 - deployment guide index: `docs/PRODUCTION_DEPLOYMENT_INDEX.md`
 - quick ops reference: `docs/QUICK_REFERENCE.md`

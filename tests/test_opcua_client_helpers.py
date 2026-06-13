@@ -238,6 +238,7 @@ async def test_configure_security_none_and_missing_config(tmp_path: Path) -> Non
 async def test_reconnect_calls_listeners_even_if_one_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
     fake = _FakeClient()
+    fake.get_node = lambda _id: _FakeNode(error=RuntimeError("connection is closed"))
     cast(Any, client)._client = fake
 
     called: list[str] = []
@@ -268,6 +269,7 @@ async def test_reconnect_calls_listeners_even_if_one_fails(monkeypatch: pytest.M
 async def test_reconnect_clears_metadata_caches(monkeypatch: pytest.MonkeyPatch) -> None:
     client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
     fake = _FakeClient()
+    fake.get_node = lambda _id: _FakeNode(error=RuntimeError("connection is closed"))
     cast(Any, client)._client = fake
 
     cast(Any, client)._limits_cache = object()
@@ -287,6 +289,19 @@ async def test_reconnect_clears_metadata_caches(monkeypatch: pytest.MonkeyPatch)
     assert cast(Any, client)._subscription_caps_cache is None
     assert cast(Any, client)._namespace_infos_cache is None
     assert cast(Any, client)._object_types_cache is None
+
+
+@pytest.mark.asyncio
+async def test_reconnect_short_circuits_when_connection_is_healthy() -> None:
+    client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
+    fake = _FakeClient()
+    cast(Any, client)._client = fake
+
+    await client._reconnect()
+
+    assert fake.connected is False
+    assert fake.disconnected is False
+    assert client.get_connection_snapshot().state == "Connected"
 
 
 @pytest.mark.asyncio

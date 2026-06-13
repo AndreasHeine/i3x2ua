@@ -431,20 +431,29 @@ class OpcUaClient:
         except asyncio.CancelledError:
             return
 
+    async def _is_connection_healthy(self) -> bool:
+        try:
+            data_value = await self._client.get_node("i=2256").read_data_value()
+        except Exception:
+            return False
+
+        status_code = getattr(data_value, "StatusCode", None)
+        return self._is_goodish_status(status_code)
+
     async def _probe_connection(self) -> None:
         if self._reconnect_lock.locked():
             return
-        try:
-            await self._client.get_node("i=2256").read_data_value()
+        if await self._is_connection_healthy():
             self._set_connection_state("Connected")
-        except Exception as exc:
-            self._set_connection_state("Reconnecting")
-            logger.warning("OPC UA connection probe failed endpoint=%s error=%s", self._endpoint, exc)
-            try:
-                await self._reconnect()
-            except Exception:
-                self._set_connection_state("Disconnected")
-                logger.warning("OPC UA connection probe reconnect failed endpoint=%s", self._endpoint, exc_info=True)
+            return
+
+        self._set_connection_state("Reconnecting")
+        logger.warning("OPC UA connection probe failed endpoint=%s", self._endpoint)
+        try:
+            await self._reconnect()
+        except Exception:
+            self._set_connection_state("Disconnected")
+            logger.warning("OPC UA connection probe reconnect failed endpoint=%s", self._endpoint, exc_info=True)
 
     async def browse_tree(self) -> list[OpcUaNodeInfo]:
         started = perf_counter()
@@ -1794,6 +1803,9 @@ class OpcUaClient:
     async def _reconnect(self) -> None:
         listeners: list[Callable[[], Awaitable[None]]]
         async with self._reconnect_lock:
+            if await self._is_connection_healthy():
+                self._set_connection_state("Connected")
+                return
             self._set_connection_state("Reconnecting")
             logger.info("OPC UA reconnect started endpoint=%s", self._endpoint)
             try:

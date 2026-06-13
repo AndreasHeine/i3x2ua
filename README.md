@@ -34,7 +34,7 @@ flowchart LR
 		Client[i3X Client]
 		McpConsumer[AI Agent]
 	end
-	Client <--> |HTTP JSON / HTML| Nginx[nginx Reverse Proxy]
+	Client <--> |i3X 1.0| Nginx[nginx Reverse Proxy]
 	McpConsumer <--> |optional /mcp JSON-RPC| Nginx
 	Nginx <--> |all app routes| API[FastAPI App i3x_server.main]
 

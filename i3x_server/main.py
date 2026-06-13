@@ -248,7 +248,7 @@ def create_app() -> FastAPI:
 <head>
 <meta charset=\"utf-8\" />
 <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
-<title>i3X Server</title>
+<title>The i3X API Gateway for OPC UA</title>
 <style>
     :root {{
         --bg-a: #f7f9fc;
@@ -326,7 +326,7 @@ def create_app() -> FastAPI:
     @app.get("/view", response_class=HTMLResponse, include_in_schema=False)
     async def api_viewer(endpoint: str, label: str = "") -> HTMLResponse:
         openapi_spec = custom_openapi()
-        title = "i3X API Gateway"
+        title = "i3X API Gateway for OPC UA"
         if isinstance(openapi_spec, dict):
             info = openapi_spec.get("info")
             if isinstance(info, dict):
@@ -338,7 +338,7 @@ def create_app() -> FastAPI:
 <head>
     <meta charset=\"utf-8\" />
     <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
-    <title>{label} - i3X Server</title>
+    <title>{label} - The i3X API Gateway for OPC UA</title>
     <style>
         :root {{
             --bg-a: #f7f9fc;
@@ -438,7 +438,7 @@ def create_app() -> FastAPI:
     @app.get("/mcp-tools-viewer", response_class=HTMLResponse, include_in_schema=False)
     async def mcp_tools_viewer() -> HTMLResponse:
         openapi_spec = custom_openapi()
-        title = "i3X API Gateway"
+        title = "i3X API Gateway for OPC UA"
         if isinstance(openapi_spec, dict):
             info = openapi_spec.get("info")
             if isinstance(info, dict):
@@ -450,7 +450,7 @@ def create_app() -> FastAPI:
 <head>
     <meta charset=\"utf-8\" />
     <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
-    <title>MCP Tools - i3X Server</title>
+    <title>MCP Tools</title>
     <style>
         :root {{
             --bg-a: #f7f9fc;

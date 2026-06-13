@@ -4,7 +4,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field, fields, is_dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
 from typing import Any, Protocol
@@ -118,6 +118,25 @@ class OpcUaRuntimeMetrics:
     method_calls: int = 0
 
 
+@dataclass(slots=True)
+class OpcUaRequestMetrics:
+    read_count: int = 0
+    write_count: int = 0
+    browse_count: int = 0
+    method_call_count: int = 0
+    history_read_count: int = 0
+    history_write_count: int = 0
+    failed_request_count: int = 0
+    goodish_qualities: list[str] = field(default_factory=lambda: ["Good", "Uncertain"])
+
+
+@dataclass(slots=True)
+class OpcUaConnectionSnapshot:
+    state: str
+    endpoint: str
+    since: datetime
+
+
 class OpcUaClientProtocol(Protocol):
     async def browse_tree(self) -> list[OpcUaNodeInfo]: ...
 
@@ -131,6 +150,10 @@ class OpcUaClientProtocol(Protocol):
 
     async def get_subscription_capabilities(self) -> OpcUaSubscriptionCapabilities: ...
 
+    def get_connection_snapshot(self) -> OpcUaConnectionSnapshot: ...
+
+    def snapshot_request_metrics(self) -> OpcUaRequestMetrics: ...
+
     async def read_value(self, node_id: str) -> Any: ...
 
     async def read_browse_name(self, node_id: str) -> str | None: ...
@@ -138,6 +161,8 @@ class OpcUaClientProtocol(Protocol):
     async def read_values(self, node_ids: list[str]) -> list[Any]: ...
 
     async def read_data_values(self, node_ids: list[str]) -> list[ua.DataValue]: ...
+
+    async def read_server_status_data_value(self) -> ua.DataValue: ...
 
     async def read_history_values(
         self,
@@ -212,12 +237,27 @@ class OpcUaClient:
         self._object_types_cache: tuple[float, list[OpcUaObjectTypeInfo]] | None = None
         self._reference_type_supertypes_cache: dict[str, list[str]] = {}
         self._runtime_metrics = OpcUaRuntimeMetrics()
+        self._request_metrics = OpcUaRequestMetrics()
+        self._goodish_quality_labels = {"good", "uncertain"}
+        self._connection_state = "Disconnected"
+        self._connection_state_since = datetime.now(tz=timezone.utc)
 
     def reset_runtime_metrics(self) -> None:
         self._runtime_metrics = OpcUaRuntimeMetrics()
+        self._request_metrics = OpcUaRequestMetrics()
 
     def snapshot_runtime_metrics(self) -> OpcUaRuntimeMetrics:
         return OpcUaRuntimeMetrics(**asdict(self._runtime_metrics))
+
+    def snapshot_request_metrics(self) -> OpcUaRequestMetrics:
+        return OpcUaRequestMetrics(**asdict(self._request_metrics))
+
+    def get_connection_snapshot(self) -> OpcUaConnectionSnapshot:
+        return OpcUaConnectionSnapshot(
+            state=self._connection_state,
+            endpoint=self._endpoint,
+            since=self._connection_state_since,
+        )
 
     async def resolve_reference_type_supertype_browse_names(self, reference_type_id: str) -> list[str]:
         if not isinstance(reference_type_id, str) or not reference_type_id:
@@ -295,6 +335,7 @@ class OpcUaClient:
             auto_reconnect=True,
             reconnect_max_delay=30.0,
         )
+        self._set_connection_state("Connected")
         session_duration_s = perf_counter() - session_started
         typedef_started = perf_counter()
         await self.load_additional_typedefinitions()
@@ -353,6 +394,7 @@ class OpcUaClient:
         started = perf_counter()
         logger.info("OPC UA disconnect started endpoint=%s", self._endpoint)
         await self._client.disconnect()
+        self._set_connection_state("Disconnected")
         self._limits_cache = None
         self._namespace_infos_cache = None
         self._object_types_cache = None
@@ -589,9 +631,12 @@ class OpcUaClient:
         self._runtime_metrics.read_calls += 1
         self._runtime_metrics.read_nodes += len(nodes)
         try:
-            return await self._client.read_attributes(nodes, attr=attr)
+            values = await self._client.read_attributes(nodes, attr=attr)
+            self._record_read_data_values(values)
+            return values
         except Exception as exc:
             if not self._should_retry_after_disconnect(exc):
+                self._record_failed_request()
                 raise
             logger.warning(
                 "OPC UA batch attribute read retry after reconnect endpoint=%s attr=%s batch_size=%d",
@@ -601,7 +646,9 @@ class OpcUaClient:
             )
             await self._reconnect()
             retry_nodes = [self._client.get_node(node.nodeid) for node in nodes]
-            return await self._client.read_attributes(retry_nodes, attr=attr)
+            values = await self._client.read_attributes(retry_nodes, attr=attr)
+            self._record_read_data_values(values)
+            return values
 
     async def _read_attribute_batch_limited(
         self,
@@ -1370,9 +1417,12 @@ class OpcUaClient:
 
     async def _browse_with_retry(self, params: ua.BrowseParameters, batch_size: int) -> list[ua.BrowseResult]:
         try:
-            return await self._client.uaclient.browse(params)
+            results = await self._client.uaclient.browse(params)
+            self._record_browse_results(results)
+            return results
         except Exception as exc:
             if not self._should_retry_after_disconnect(exc):
+                self._record_failed_request()
                 raise
             logger.warning(
                 "OPC UA browse retry after reconnect endpoint=%s batch_size=%d",
@@ -1380,7 +1430,9 @@ class OpcUaClient:
                 batch_size,
             )
             await self._reconnect()
-            return await self._client.uaclient.browse(params)
+            results = await self._client.uaclient.browse(params)
+            self._record_browse_results(results)
+            return results
 
     async def _browse_next_with_retry(
         self,
@@ -1388,9 +1440,12 @@ class OpcUaClient:
         node_id: str,
     ) -> list[ua.BrowseResult]:
         try:
-            return await self._client.uaclient.browse_next(next_params)
+            results = await self._client.uaclient.browse_next(next_params)
+            self._record_browse_results(results)
+            return results
         except Exception as exc:
             if not self._should_retry_after_disconnect(exc):
+                self._record_failed_request()
                 raise
             logger.warning(
                 "OPC UA browse-next retry after reconnect endpoint=%s node_id=%s",
@@ -1398,7 +1453,9 @@ class OpcUaClient:
                 node_id,
             )
             await self._reconnect()
-            return await self._client.uaclient.browse_next(next_params)
+            results = await self._client.uaclient.browse_next(next_params)
+            self._record_browse_results(results)
+            return results
 
     async def read_value(self, node_id: str) -> Any:
         started = perf_counter()
@@ -1407,6 +1464,7 @@ class OpcUaClient:
         node = self._client.get_node(node_id)
         try:
             value = await node.read_value()
+            self._record_read_success()
             logger.debug("OPC UA read ok node_id=%s duration_s=%.3f", node_id, perf_counter() - started)
             return value
         except Exception as exc:
@@ -1418,12 +1476,14 @@ class OpcUaClient:
                 )
                 await self._reconnect()
                 value = await self._client.get_node(node_id).read_value()
+                self._record_read_success()
                 logger.debug(
                     "OPC UA read ok after reconnect node_id=%s duration_s=%.3f",
                     node_id,
                     perf_counter() - started,
                 )
                 return value
+            self._record_failed_request()
             logger.exception("OPC UA read failed node_id=%s duration_s=%.3f", node_id, perf_counter() - started)
             raise
 
@@ -1493,7 +1553,9 @@ class OpcUaClient:
             async with semaphore:
                 node = self._client.get_node(node_id)
                 try:
-                    return await node.read_data_value()
+                    value = await node.read_data_value()
+                    self._record_read_data_values([value])
+                    return value
                 except Exception as exc:
                     if self._should_retry_after_disconnect(exc):
                         logger.warning(
@@ -1503,7 +1565,9 @@ class OpcUaClient:
                         )
                         await self._reconnect()
                         try:
-                            return await self._client.get_node(node_id).read_data_value()
+                            retry_value = await self._client.get_node(node_id).read_data_value()
+                            self._record_read_data_values([retry_value])
+                            return retry_value
                         except Exception:
                             pass
                     logger.warning(
@@ -1513,6 +1577,7 @@ class OpcUaClient:
                     )
                     dv = ua.DataValue()
                     dv.StatusCode = ua.StatusCode(ua.UInt32(0x80010000))
+                    self._record_read_data_values([dv])
                     return dv
 
         results: list[ua.DataValue] = []
@@ -1538,7 +1603,9 @@ class OpcUaClient:
         self._runtime_metrics.read_nodes += len(node_ids)
         nodes = [self._client.get_node(node_id) for node_id in node_ids]
         try:
-            return list(await self._client.read_values(nodes))
+            values = list(await self._client.read_values(nodes))
+            self._record_read_success()
+            return values
         except Exception as exc:
             candidate_error = exc
             if self._should_retry_after_disconnect(exc):
@@ -1550,11 +1617,14 @@ class OpcUaClient:
                 await self._reconnect()
                 retry_nodes = [self._client.get_node(node_id) for node_id in node_ids]
                 try:
-                    return list(await self._client.read_values(retry_nodes))
+                    values = list(await self._client.read_values(retry_nodes))
+                    self._record_read_success()
+                    return values
                 except Exception as retry_exc:
                     candidate_error = retry_exc
 
             if len(node_ids) <= 1:
+                self._record_failed_request()
                 logger.warning(
                     "OPC UA single-node read failed endpoint=%s node_id=%s error=%s; returning null value",
                     self._endpoint,
@@ -1599,8 +1669,10 @@ class OpcUaClient:
                         numvalues=0,
                         return_bounds=False,
                     )
+                    self._record_history_read_success()
                 except Exception as exc:
                     if not self._should_retry_after_disconnect(exc):
+                        self._record_failed_request()
                         raise
                     logger.warning(
                         "OPC UA history read retry after reconnect endpoint=%s node_id=%s",
@@ -1615,6 +1687,7 @@ class OpcUaClient:
                         numvalues=0,
                         return_bounds=False,
                     )
+                    self._record_history_read_success()
                 return node_id, values
 
         pairs = await asyncio.gather(*[worker(node_id) for node_id in node_ids])
@@ -1635,6 +1708,7 @@ class OpcUaClient:
         object_node = self._client.get_node(object_node_id)
         try:
             result = await object_node.call_method(method_node_id, *args)
+            self._record_method_success()
             logger.info(
                 "OPC UA method ok object_node_id=%s method_node_id=%s arg_count=%d duration_s=%.3f",
                 object_node_id,
@@ -1653,6 +1727,7 @@ class OpcUaClient:
                 await self._reconnect()
                 retry_object = self._client.get_node(object_node_id)
                 result = await retry_object.call_method(method_node_id, *args)
+                self._record_method_success()
                 logger.info(
                     "OPC UA method ok after reconnect object_node_id=%s method_node_id=%s arg_count=%d duration_s=%.3f",
                     object_node_id,
@@ -1661,6 +1736,7 @@ class OpcUaClient:
                     perf_counter() - started,
                 )
                 return result
+            self._record_failed_request()
             logger.exception(
                 "OPC UA method failed object_node_id=%s method_node_id=%s arg_count=%d duration_s=%.3f",
                 object_node_id,
@@ -1673,6 +1749,7 @@ class OpcUaClient:
     async def _reconnect(self) -> None:
         listeners: list[Callable[[], Awaitable[None]]]
         async with self._reconnect_lock:
+            self._set_connection_state("Reconnecting")
             logger.info("OPC UA reconnect started endpoint=%s", self._endpoint)
             try:
                 await self._client.disconnect()
@@ -1684,6 +1761,7 @@ class OpcUaClient:
                 reconnect_max_delay=30.0,
             )
             await self.load_additional_typedefinitions()
+            self._set_connection_state("Connected")
             self._limits_cache = None
             self._subscription_caps_cache = None
             self._namespace_infos_cache = None
@@ -1707,6 +1785,13 @@ class OpcUaClient:
 
     def add_reconnect_listener(self, listener: Callable[[], Awaitable[None]]) -> None:
         self._reconnect_listeners.append(listener)
+
+    async def read_server_status_data_value(self) -> ua.DataValue:
+        values = await self.read_data_values(["i=2256"])
+        if not values:
+            self._record_failed_request()
+            raise RuntimeError("OPC UA ServerStatus read returned no data value")
+        return values[0]
 
     async def create_datachange_subscription(self, publishing_interval_ms: float, handler: Any) -> Any:
         return await self._client.create_subscription(publishing_interval_ms, handler)
@@ -1774,6 +1859,68 @@ class OpcUaClient:
         security_string = ",".join(security_items)
         await self._client.set_security_string(security_string)
         self._using_security = True
+
+    def _set_connection_state(self, state: str) -> None:
+        if self._connection_state == state:
+            return
+        self._connection_state = state
+        self._connection_state_since = datetime.now(tz=timezone.utc)
+
+    def _is_goodish_status(self, status_code: Any) -> bool:
+        if status_code is None:
+            return True
+        is_uncertain = getattr(status_code, "is_uncertain", None)
+        if callable(is_uncertain):
+            try:
+                if bool(is_uncertain()):
+                    return "uncertain" in self._goodish_quality_labels
+            except Exception:
+                pass
+        is_good = getattr(status_code, "is_good", None)
+        if callable(is_good):
+            try:
+                if bool(is_good()):
+                    return "good" in self._goodish_quality_labels
+            except Exception:
+                pass
+        name = str(getattr(status_code, "name", status_code)).strip().lower()
+        if not name:
+            return False
+        if "uncertain" in name:
+            return "uncertain" in self._goodish_quality_labels
+        if "good" in name:
+            return "good" in self._goodish_quality_labels
+        return name in self._goodish_quality_labels
+
+    def _record_read_success(self) -> None:
+        self._request_metrics.read_count += 1
+
+    def _record_history_read_success(self) -> None:
+        self._request_metrics.history_read_count += 1
+
+    def _record_method_success(self) -> None:
+        self._request_metrics.method_call_count += 1
+
+    def _record_failed_request(self) -> None:
+        self._request_metrics.failed_request_count += 1
+
+    def _record_browse_results(self, results: list[ua.BrowseResult]) -> None:
+        if not results:
+            self._record_failed_request()
+            return
+        if all(self._is_goodish_status(getattr(result, "StatusCode", None)) for result in results):
+            self._request_metrics.browse_count += 1
+            return
+        self._record_failed_request()
+
+    def _record_read_data_values(self, values: list[ua.DataValue]) -> None:
+        if not values:
+            self._record_failed_request()
+            return
+        if all(self._is_goodish_status(value.StatusCode) for value in values):
+            self._record_read_success()
+            return
+        self._record_failed_request()
 
 
 def _chunked(values: list[str], size: int) -> list[list[str]]:

@@ -102,6 +102,8 @@ def build_mcp_tools(
     for path, methods in paths.items():
         if not isinstance(path, str) or not isinstance(methods, Mapping):
             continue
+        if path.startswith("/mcp"):
+            continue
         for method, details in methods.items():
             if not isinstance(method, str) or not isinstance(details, Mapping):
                 continue

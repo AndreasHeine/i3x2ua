@@ -19,7 +19,13 @@ from fastapi.testclient import TestClient
 from i3x_server.api.v1 import _expanded_node_id
 from i3x_server.main import create_app
 from i3x_server.mcp import _safe_internal_request_url, get_api_prefix
-from i3x_server.opcua.client import OpcUaNamespaceInfo, OpcUaSubscriptionCapabilities
+from i3x_server.opcua.client import (
+    OpcUaConnectionSnapshot,
+    OpcUaNamespaceInfo,
+    OpcUaOperationalLimits,
+    OpcUaRequestMetrics,
+    OpcUaSubscriptionCapabilities,
+)
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
 from i3x_server.subscriptions.service import SubscriptionService
@@ -120,6 +126,25 @@ class FakeOpcUaClient:
         }
         self._reads = 0
         self._listeners: list[Any] = []
+        self._connection_snapshot = OpcUaConnectionSnapshot(
+            state="Connected",
+            endpoint="opc.tcp://opcua.umati.app:4843",
+            since=datetime(2026, 1, 1, 8, 11, 24, tzinfo=timezone.utc),
+        )
+        self._request_metrics = OpcUaRequestMetrics(
+            read_count=2451,
+            write_count=0,
+            browse_count=189,
+            method_call_count=27,
+            history_read_count=62,
+            history_write_count=0,
+            failed_request_count=14,
+            goodish_qualities=["Good", "Uncertain"],
+        )
+        self._operational_limits = OpcUaOperationalLimits(
+            max_nodes_per_browse=1000,
+            max_nodes_per_read=1000,
+        )
 
     async def get_namespace_infos(self) -> list[OpcUaNamespaceInfo]:
         return [
@@ -248,6 +273,39 @@ class FakeOpcUaClient:
         del start_time, end_time
         return {node_id: self.history_values.get(node_id, []) for node_id in node_ids}
 
+    async def read_server_status_data_value(self) -> Any:
+        return SimpleNamespace(
+            Value=SimpleNamespace(
+                Value={
+                    "StartTime": datetime(2026, 1, 1, 8, 11, 22, tzinfo=timezone.utc),
+                    "CurrentTime": datetime(2026, 1, 1, 9, 3, 47, tzinfo=timezone.utc),
+                    "State": "Running",
+                    "BuildInfo": {
+                        "ProductUri": "urn:vendor:server",
+                        "ManufacturerName": "Vendor",
+                        "ProductName": "UA Server",
+                        "SoftwareVersion": "1.2.3",
+                        "BuildNumber": "20260613",
+                        "BuildDate": datetime(2026, 1, 1, 7, 59, 0, tzinfo=timezone.utc),
+                    },
+                    "SecondsTillShutdown": 0,
+                    "ShutdownReason": "",
+                }
+            ),
+            StatusCode=SimpleNamespace(name="Good", is_good=lambda: True, is_uncertain=lambda: False),
+            SourceTimestamp=datetime(2026, 1, 1, 9, 3, 47, tzinfo=timezone.utc),
+            ServerTimestamp=None,
+        )
+
+    def get_connection_snapshot(self) -> OpcUaConnectionSnapshot:
+        return self._connection_snapshot
+
+    def snapshot_request_metrics(self) -> OpcUaRequestMetrics:
+        return self._request_metrics
+
+    async def get_operational_limits(self) -> OpcUaOperationalLimits:
+        return self._operational_limits
+
     async def get_subscription_capabilities(self) -> OpcUaSubscriptionCapabilities:
         return OpcUaSubscriptionCapabilities(
             max_monitored_items_per_call=1,
@@ -343,6 +401,76 @@ def test_v1_info(client: TestClient) -> None:
     assert payload["result"]["specVersion"] == "1.0"
     assert payload["result"]["capabilities"]["query"]["history"] is True
     assert payload["result"]["capabilities"]["subscribe"]["stream"] is True
+
+
+def test_ua_state(client: TestClient) -> None:
+    response = client.get("/ua/state")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    result = payload["result"]
+    assert "nodeId" not in result
+    assert "hasTypeDefinition" not in result
+    assert "quality" not in result
+    assert "timestamp" not in result
+    assert result["State"] == "Running"
+    assert result["BuildInfo"]["ProductName"] == "UA Server"
+
+
+def test_ua_connection(client: TestClient) -> None:
+    response = client.get("/ua/connection")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    result = payload["result"]
+    assert result["state"] == "Connected"
+    assert result["endpoint"] == "opc.tcp://opcua.umati.app:4843"
+    assert result["since"].endswith("Z")
+
+
+def test_ua_limits(client: TestClient) -> None:
+    response = client.get("/ua/limits")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    result = payload["result"]
+    assert result["operationalLimits"]["maxNodesPerBrowse"] == 1000
+    assert result["operationalLimits"]["maxNodesPerRead"] == 1000
+    assert result["serverCapabilities"]["maxMonitoredItemsPerCall"] == 1
+    assert result["serverCapabilities"]["maxSubscriptions"] == 100
+
+
+def test_ua_metrics(client: TestClient) -> None:
+    response = client.get("/ua/metrics")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    result = payload["result"]
+    assert result["goodishQualities"] == ["Good", "Uncertain"]
+    assert result["readCount"] == 2451
+    assert result["writeCount"] == 0
+    assert result["browseCount"] == 189
+    assert result["methodCallCount"] == 27
+    assert result["historyReadCount"] == 62
+    assert result["historyWriteCount"] == 0
+    assert result["failedRequestCount"] == 14
+
+
+def test_ua_state_error_shape(client: TestClient) -> None:
+    app = _fastapi_app(client)
+
+    async def _raise_status_error() -> Any:
+        raise RuntimeError("boom")
+
+    app.state.opcua_client.read_server_status_data_value = _raise_status_error
+    response = client.get("/ua/state")
+    assert response.status_code == 502
+    payload = response.json()
+    assert payload["success"] is False
+    assert payload["error"]["code"] == 502
+    assert payload["error"]["message"] == "Failed to read OPC UA ServerStatus"
+    assert payload["responseDetail"]["status"] == 502
+    assert payload["responseDetail"]["detail"] == "Failed to read OPC UA ServerStatus"
 
 
 def test_v1_namespaces(client: TestClient) -> None:
@@ -1645,7 +1773,7 @@ def test_mcp_support_is_disabled_by_default(client_without_mcp: TestClient) -> N
     assert response.status_code == 404
 
     openapi = client_without_mcp.get("/openapi.json").json()
-    assert all(not path.startswith("/mcp") for path in openapi["paths"])
+    assert any(path.startswith("/mcp") for path in openapi["paths"])
 
 
 def test_mcp_endpoint_exposes_sse_discovery(client: TestClient) -> None:

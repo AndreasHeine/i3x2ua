@@ -17,6 +17,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.gzip import GZipMiddleware
 
 from i3x_server.api.mcp import router as mcp_router
+from i3x_server.api.ua import router as ua_router
 from i3x_server.api.v1 import router as v1_router
 from i3x_server.config.settings import settings
 from i3x_server.mcp import build_mcp_tools, get_api_prefix
@@ -205,12 +206,6 @@ def create_app() -> FastAPI:
         nonlocal openapi_override
         if openapi_override is None:
             openapi_override = json.loads(openapi_doc_path.read_text(encoding="utf-8"))
-            if not mcp_enabled:
-                paths = openapi_override.get("paths")
-                if isinstance(paths, dict):
-                    openapi_override["paths"] = {
-                        path: spec for path, spec in paths.items() if not path.startswith("/mcp")
-                    }
         return openapi_override
 
     app.openapi = custom_openapi  # type: ignore[method-assign]
@@ -318,6 +313,7 @@ def create_app() -> FastAPI:
         return response
 
     app.include_router(v1_router)
+    app.include_router(ua_router)
     if mcp_enabled:
         app.include_router(mcp_router)
     return app

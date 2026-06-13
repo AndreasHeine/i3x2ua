@@ -1156,6 +1156,289 @@
           }
         }
       }
+    },
+    "/ua/state": {
+      "servers": [
+        {
+          "url": "/"
+        }
+      ],
+      "get": {
+        "tags": [
+          "UA"
+        ],
+        "summary": "Get OPC UA Server State",
+        "description": "Returns OPC UA ServerStatus from node i=2256.",
+        "operationId": "getUaState",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse_UaStateResult_"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error — see error.code for the HTTP status code (400, 401, 403, 404, 500, etc.)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ua/connection": {
+      "servers": [
+        {
+          "url": "/"
+        }
+      ],
+      "get": {
+        "tags": [
+          "UA"
+        ],
+        "summary": "Get OPC UA Connection",
+        "description": "Returns current OPC UA connection state and endpoint.",
+        "operationId": "getUaConnection",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse_UaConnectionResult_"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error — see error.code for the HTTP status code (400, 401, 403, 404, 500, etc.)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ua/limits": {
+      "servers": [
+        {
+          "url": "/"
+        }
+      ],
+      "get": {
+        "tags": [
+          "UA"
+        ],
+        "summary": "Get OPC UA Limits",
+        "description": "Returns operational limits and server capabilities collected from the OPC UA server.",
+        "operationId": "getUaLimits",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse_UaLimitsResult_"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error — see error.code for the HTTP status code (400, 401, 403, 404, 500, etc.)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ua/metrics": {
+      "servers": [
+        {
+          "url": "/"
+        }
+      ],
+      "get": {
+        "tags": [
+          "UA"
+        ],
+        "summary": "Get OPC UA Metrics",
+        "description": "Returns operation counters and failed request count using Goodish response classification.",
+        "operationId": "getUaMetrics",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse_UaMetricsResult_"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error — see error.code for the HTTP status code (400, 401, 403, 404, 500, etc.)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/mcp": {
+      "servers": [
+        {
+          "url": "/"
+        }
+      ],
+      "get": {
+        "tags": [
+          "MCP"
+        ],
+        "summary": "MCP SSE Discovery",
+        "description": "Returns Server-Sent Events endpoint discovery for MCP clients.",
+        "operationId": "mcpSse",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "MCP"
+        ],
+        "summary": "MCP JSON-RPC",
+        "description": "MCP JSON-RPC endpoint.",
+        "operationId": "mcpJsonRpc",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/mcp/tools": {
+      "servers": [
+        {
+          "url": "/"
+        }
+      ],
+      "get": {
+        "tags": [
+          "MCP"
+        ],
+        "summary": "List MCP Tools",
+        "description": "Returns all generated MCP tools.",
+        "operationId": "listMcpTools",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/mcp/call": {
+      "servers": [
+        {
+          "url": "/"
+        }
+      ],
+      "post": {
+        "tags": [
+          "MCP"
+        ],
+        "summary": "Call MCP Tool",
+        "description": "Invokes one MCP tool by name with arguments.",
+        "operationId": "callMcpTool",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/McpCallRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error — see error.code for the HTTP status code (400, 401, 403, 404, 500, etc.)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -2162,6 +2445,25 @@
         ],
         "title": "ListSubscriptionsRequest"
       },
+      "McpCallRequest": {
+        "properties": {
+          "tool": {
+            "type": "string",
+            "title": "Tool"
+          },
+          "arguments": {
+            "type": "object",
+            "additionalProperties": true,
+            "title": "Arguments",
+            "default": {}
+          }
+        },
+        "type": "object",
+        "required": [
+          "tool"
+        ],
+        "title": "McpCallRequest"
+      },
       "Namespace": {
         "properties": {
           "uri": {
@@ -2810,6 +3112,98 @@
         ],
         "title": "SuccessResponse[ServerInfo]"
       },
+      "SuccessResponse_UaConnectionResult_": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UaConnectionResult"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "SuccessResponse[UaConnectionResult]"
+      },
+      "SuccessResponse_UaLimitsResult_": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UaLimitsResult"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "SuccessResponse[UaLimitsResult]"
+      },
+      "SuccessResponse_UaMetricsResult_": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UaMetricsResult"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "SuccessResponse[UaMetricsResult]"
+      },
+      "SuccessResponse_UaStateResult_": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UaStateResult"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "SuccessResponse[UaStateResult]"
+      },
       "SyncRequest": {
         "properties": {
           "clientId": {
@@ -2906,6 +3300,202 @@
           "timestamp"
         ],
         "title": "VQT"
+      },
+      "UaConnectionResult": {
+        "properties": {
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "endpoint": {
+            "type": "string",
+            "title": "Endpoint"
+          },
+          "since": {
+            "type": "string",
+            "title": "Since"
+          }
+        },
+        "type": "object",
+        "required": [
+          "state",
+          "endpoint",
+          "since"
+        ],
+        "title": "UaConnectionResult"
+      },
+      "UaLimitsResult": {
+        "properties": {
+          "operationalLimits": {
+            "$ref": "#/components/schemas/UaOperationalLimitsResult"
+          },
+          "serverCapabilities": {
+            "$ref": "#/components/schemas/UaServerCapabilitiesResult"
+          }
+        },
+        "type": "object",
+        "required": [
+          "operationalLimits",
+          "serverCapabilities"
+        ],
+        "title": "UaLimitsResult"
+      },
+      "UaMetricsResult": {
+        "properties": {
+          "goodishQualities": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Goodishqualities"
+          },
+          "readCount": {
+            "type": "integer",
+            "title": "Readcount"
+          },
+          "writeCount": {
+            "type": "integer",
+            "title": "Writecount"
+          },
+          "browseCount": {
+            "type": "integer",
+            "title": "Browsecount"
+          },
+          "methodCallCount": {
+            "type": "integer",
+            "title": "Methodcallcount"
+          },
+          "historyReadCount": {
+            "type": "integer",
+            "title": "Historyreadcount"
+          },
+          "historyWriteCount": {
+            "type": "integer",
+            "title": "Historywritecount"
+          },
+          "failedRequestCount": {
+            "type": "integer",
+            "title": "Failedrequestcount"
+          }
+        },
+        "type": "object",
+        "required": [
+          "goodishQualities",
+          "readCount",
+          "writeCount",
+          "browseCount",
+          "methodCallCount",
+          "historyReadCount",
+          "historyWriteCount",
+          "failedRequestCount"
+        ],
+        "title": "UaMetricsResult"
+      },
+      "UaOperationalLimitsResult": {
+        "properties": {
+          "maxNodesPerBrowse": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Maxnodesperbrowse"
+          },
+          "maxNodesPerRead": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Maxnodesperread"
+          }
+        },
+        "type": "object",
+        "required": [
+          "maxNodesPerBrowse",
+          "maxNodesPerRead"
+        ],
+        "title": "UaOperationalLimitsResult"
+      },
+      "UaServerCapabilitiesResult": {
+        "properties": {
+          "maxMonitoredItemsPerCall": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Maxmonitoreditemspercall"
+          },
+          "maxSubscriptions": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Maxsubscriptions"
+          },
+          "maxMonitoredItems": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Maxmonitoreditems"
+          },
+          "maxSubscriptionsPerSession": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Maxsubscriptionspersession"
+          },
+          "maxMonitoredItemsPerSubscription": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Maxmonitoreditemspersubscription"
+          }
+        },
+        "type": "object",
+        "required": [
+          "maxMonitoredItemsPerCall",
+          "maxSubscriptions",
+          "maxMonitoredItems",
+          "maxSubscriptionsPerSession",
+          "maxMonitoredItemsPerSubscription"
+        ],
+        "title": "UaServerCapabilitiesResult"
+      },
+      "UaStateResult": {
+        "properties": {},
+        "additionalProperties": true,
+        "type": "object",
+        "title": "UaStateResult"
       },
       "_QueryCapabilities": {
         "properties": {

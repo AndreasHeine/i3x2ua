@@ -14,6 +14,13 @@ class BuildResult:
     parent_by_id: dict[str, str] = field(default_factory=dict)
     node_id_by_name: dict[str, str] = field(default_factory=dict)
     node_id_by_type: dict[str, str] = field(default_factory=dict)
+    hierarchy_children_by_id: dict[str, list[str]] = field(default_factory=dict)
+    composition_children_by_id: dict[str, list[str]] = field(default_factory=dict)
+    graph_related_by_id: dict[str, list[tuple[str, str]]] = field(default_factory=dict)
+    relationships_by_id: dict[str, dict[str, list[str]]] = field(default_factory=dict)
+    hierarchy_parent_by_id: dict[str, str] = field(default_factory=dict)
+    composition_parent_by_id: dict[str, str] = field(default_factory=dict)
+    graph_relationship_names: set[str] = field(default_factory=set)
 
 
 @dataclass(slots=True)

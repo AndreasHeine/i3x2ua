@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import http
 import json
 import logging
 import os
@@ -15,7 +16,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.gzip import GZipMiddleware
 
-from i3x_server.api.beta import router as beta_router
+from i3x_server.api.v1 import router as v1_router
 from i3x_server.api.mcp import router as mcp_router
 from i3x_server.config.settings import settings
 from i3x_server.mcp import build_mcp_tools, get_api_prefix
@@ -25,6 +26,13 @@ from i3x_server.schemas.state import BuildResult
 from i3x_server.subscriptions.service import SubscriptionService
 
 logger = logging.getLogger(__name__)
+
+
+def _status_title(status_code: int) -> str:
+    try:
+        return http.HTTPStatus(status_code).phrase
+    except ValueError:
+        return "Error"
 
 
 def _env_flag(name: str, default: str = "0") -> bool:
@@ -137,6 +145,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.subscription_service = SubscriptionService(
         opcua_client=opcua_client,
         interval_seconds=settings.subscription_interval_seconds,
+        max_updates_per_subscription=settings.subscription_max_updates,
+        ttl_seconds=settings.subscription_ttl_seconds,
     )
     app.state.model_lock = asyncio.Lock()
     app.state.model_preload_task = None
@@ -180,12 +190,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 def create_app() -> FastAPI:
     mcp_enabled = _env_flag("I3X_ENABLE_MCP")
     description = (
-        "Industrial Information Interface eXchange API - 1.0 Beta. "
+        "Industrial Information Interface eXchange API - 1.0. "
         "Scope: read/query/subscribe are implemented; update/write operations are optional "
         "and may return 501 Not Implemented. "
         "MCP endpoints are optional and available only when I3X_ENABLE_MCP=1."
     )
-    app = FastAPI(title="i3X API Beta", version="beta", description=description, lifespan=lifespan)
+    app = FastAPI(title="i3X API 1.0", version="1.0", description=description, lifespan=lifespan)
     app.add_middleware(GZipMiddleware, minimum_size=1)
 
     openapi_doc_path = Path(__file__).resolve().parents[1] / "openapi.json"
@@ -211,13 +221,19 @@ def create_app() -> FastAPI:
         exc: RequestValidationError,
     ) -> JSONResponse:
         del request, exc
+        message = "Invalid request payload or parameters"
         return JSONResponse(
             status_code=400,
             content={
                 "success": False,
                 "error": {
                     "code": 400,
-                    "message": "Invalid request payload or parameters",
+                    "message": message,
+                },
+                "responseDetail": {
+                    "title": _status_title(400),
+                    "status": 400,
+                    "detail": message,
                 },
             },
         )
@@ -244,7 +260,7 @@ def create_app() -> FastAPI:
             message = str(detail) if detail else "Request failed"
         if response_detail is None:
             response_detail = {
-                "title": "Error",
+                "title": _status_title(int(exc.status_code)),
                 "status": int(exc.status_code),
                 "detail": message,
             }
@@ -254,6 +270,23 @@ def create_app() -> FastAPI:
                 "success": False,
                 "error": {"code": int(exc.status_code), "message": message},
                 "responseDetail": response_detail,
+            },
+        )
+
+    @app.exception_handler(Exception)
+    async def handle_unexpected_exception(request: Request, exc: Exception) -> JSONResponse:
+        logger.exception("Unhandled exception method=%s path=%s", request.method, request.url.path)
+        message = "Internal server error"
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "error": {"code": 500, "message": message},
+                "responseDetail": {
+                    "title": _status_title(500),
+                    "status": 500,
+                    "detail": message,
+                },
             },
         )
 
@@ -284,7 +317,7 @@ def create_app() -> FastAPI:
         )
         return response
 
-    app.include_router(beta_router)
+    app.include_router(v1_router)
     if mcp_enabled:
         app.include_router(mcp_router)
     return app

@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     model_preload_blocking: bool = Field(default=False)
     fail_startup_on_model_preload_error: bool = Field(default=False)
     subscription_interval_seconds: int = Field(default=5, ge=1)
+    subscription_max_updates: int = Field(default=10000, ge=1)
+    subscription_ttl_seconds: int = Field(default=300, ge=1)
     log_level: str = Field(default="INFO")
 
 

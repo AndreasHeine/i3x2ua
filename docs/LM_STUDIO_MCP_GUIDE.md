@@ -71,7 +71,7 @@ Common tools you can expect include:
 
 ## MCP Capability Matrix
 
-The MCP endpoint is focused on tool calling for the current beta scope.
+The MCP endpoint is focused on tool calling for the current implementation scope.
 
 | Area | Status | Notes |
 |------|--------|-------|
@@ -81,11 +81,11 @@ The MCP endpoint is focused on tool calling for the current beta scope.
 | JSON-RPC `tools/call` | Supported | Calls are dispatched internally to the existing REST handlers. |
 | JSON-RPC batch requests | Not supported | Send one JSON-RPC message per request. |
 | Streaming as MCP tool (`streamSubscription`) | Not exposed | SSE stream remains available via REST subscription endpoint. |
-| REST update/write endpoints via MCP tools | Exposed by OpenAPI but optional in beta | Some write/update operations can return `501 Not Implemented`. |
+| REST update/write endpoints via MCP tools | Exposed by OpenAPI and optional in i3X 1.0 | Some write/update operations can return `501 Not Implemented`. |
 
-### Beta Scope Reminder
+### Scope Reminder
 
-This server currently focuses on read/query/subscribe behavior. Update/write operations are optional in the i3X profile and may not be implemented in this beta.
+This server currently focuses on read/query/subscribe behavior. Update/write operations are optional in the i3X profile and may not be implemented in this deployment.
 
 ## Tool Overrides
 
@@ -132,7 +132,7 @@ If tool calls fail, the most common causes are:
 - The server was restarted and LM Studio still has an old connection.
 - The model asked for a value that does not exist in the address space.
 - The request was too broad or missing required fields.
-- The chosen tool maps to an optional beta operation that currently returns `501 Not Implemented`.
+- The chosen tool maps to an optional operation that currently returns `501 Not Implemented`.
 
 ## Troubleshooting
 

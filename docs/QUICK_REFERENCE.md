@@ -173,7 +173,7 @@ I3X_ENABLE_MCP=1 uv run uvicorn i3x_server.main:app --host 0.0.0.0 --port 8000
 | Tool discovery and listing | ✅ Supported | All read/query/subscribe operations exposed. |
 | Tool calling | ✅ Supported | Dispatches to REST API endpoints. |
 | JSON-RPC batch requests | ❌ Not supported | Send one request per call. |
-| Update/write operations | ⚠️ Optional | May return `501 Not Implemented` in this beta. |
+| Update/write operations | ⚠️ Optional | May return `501 Not Implemented` when not implemented in this deployment. |
 | Server-Sent Event streaming | ✅ Available | Via REST `/v1/subscriptions/stream` endpoint. |
 
 ### MCP Endpoints

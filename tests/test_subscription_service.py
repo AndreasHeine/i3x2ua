@@ -117,6 +117,7 @@ async def test_subscription_lifecycle_sync_wait_and_delete() -> None:
 
     deleted = await service.delete_subscriptions("c1", [subscription_id])
     assert deleted[0].success is True
+    await service.close()
 
 
 @pytest.mark.asyncio
@@ -125,6 +126,7 @@ async def test_unregister_unknown_and_updates_after_missing() -> None:
     model = _model()
     assert await service.unregister_items("c1", "missing", ["asset-root"], model=model) is False
     assert await service.updates_after("missing", 0) is None
+    await service.close()
 
 
 @pytest.mark.asyncio
@@ -142,6 +144,7 @@ async def test_handle_datachange_resolves_client_handle_mapping() -> None:
     synced = await service.sync("c1", subscription_id, acknowledge_sequence=0)
     assert synced is not None
     assert synced.updates[0].element_id == "prop-a"
+    await service.close()
 
 
 @pytest.mark.asyncio
@@ -166,6 +169,7 @@ async def test_polling_path_collects_updates() -> None:
     synced = await service.sync("c1", subscription_id, acknowledge_sequence=0)
     assert synced is not None
     assert len(synced.updates) >= 1
+    await service.close()
 
 
 @pytest.mark.asyncio
@@ -190,6 +194,79 @@ async def test_must_use_polling_limits_and_helpers() -> None:
     assert await service._must_use_polling(state, caps) is True
     assert _min_positive(None, 0, -1) is None
     assert _min_positive(None, 5, 2) == 2
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_sync_acknowledge_minus_one_clears_queue() -> None:
+    service = SubscriptionService(cast(OpcUaClientProtocol, FakeOpcUaClient()), interval_seconds=1)
+    created = await service.create_subscription(client_id="c1", display_name="s1")
+    subscription_id = created.subscription_id
+    model = _model()
+    assert await service.register_items("c1", subscription_id, ["asset-root"], max_depth=1, model=model) is True
+
+    await service.handle_datachange(subscription_id, "ns=2;s=Temperature", 1.0)
+    await service.handle_datachange(subscription_id, "ns=2;s=Pressure", 2.0)
+
+    synced = await service.sync("c1", subscription_id, acknowledge_sequence=-1)
+    assert synced is not None
+    assert synced.updates == []
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_sync_reports_stream_active_when_connected() -> None:
+    service = SubscriptionService(cast(OpcUaClientProtocol, FakeOpcUaClient()), interval_seconds=1)
+    created = await service.create_subscription(client_id="c1", display_name="s1")
+    subscription_id = created.subscription_id
+
+    generation = await service.activate_stream("c1", subscription_id)
+    assert generation == 1
+
+    synced = await service.sync("c1", subscription_id, acknowledge_sequence=0)
+    assert synced is not None
+    assert synced.stream_active is True
+
+    await service.deactivate_stream(subscription_id, generation)
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_sync_reports_queue_overflow_range() -> None:
+    service = SubscriptionService(
+        cast(OpcUaClientProtocol, FakeOpcUaClient()),
+        interval_seconds=1,
+        max_updates_per_subscription=2,
+    )
+    created = await service.create_subscription(client_id="c1", display_name="s1")
+    subscription_id = created.subscription_id
+    model = _model()
+    assert await service.register_items("c1", subscription_id, ["asset-root"], max_depth=1, model=model) is True
+
+    await service.handle_datachange(subscription_id, "ns=2;s=Temperature", 1.0)
+    await service.handle_datachange(subscription_id, "ns=2;s=Pressure", 2.0)
+    await service.handle_datachange(subscription_id, "ns=2;s=Temperature", 3.0)
+
+    synced = await service.sync("c1", subscription_id, acknowledge_sequence=0)
+    assert synced is not None
+    assert synced.queue_overflow is True
+    assert synced.dropped_from_sequence == 1
+    assert synced.dropped_to_sequence == 1
+    assert [item.sequence_number for item in synced.updates] == [2, 3]
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_subscription_ttl_expires_inactive_subscription() -> None:
+    service = SubscriptionService(cast(OpcUaClientProtocol, FakeOpcUaClient()), interval_seconds=1, ttl_seconds=1)
+    created = await service.create_subscription(client_id="c1", display_name="s1")
+    subscription_id = created.subscription_id
+
+    await asyncio.sleep(2.2)
+
+    synced = await service.sync("c1", subscription_id, acknowledge_sequence=0)
+    assert synced is None
+    await service.close()
 
 
 def test_collect_property_source_mappings_depth_limit() -> None:

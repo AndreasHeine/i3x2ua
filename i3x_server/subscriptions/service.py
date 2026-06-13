@@ -27,6 +27,10 @@ class SubscriptionUpdate:
 @dataclass(slots=True)
 class SubscriptionSyncResult:
     updates: list[SubscriptionUpdate]
+    queue_overflow: bool = False
+    dropped_from_sequence: int | None = None
+    dropped_to_sequence: int | None = None
+    stream_active: bool = False
 
 
 @dataclass(slots=True)
@@ -66,6 +70,10 @@ class _SubscriptionState:
     runtime: _SubscriptionRuntime = field(default_factory=_SubscriptionRuntime)
     update_event: asyncio.Event = field(default_factory=asyncio.Event)
     active_stream_generation: int = 0
+    stream_connected: bool = False
+    dropped_from_sequence: int | None = None
+    dropped_to_sequence: int | None = None
+    last_activity_monotonic: float = 0.0
 
 
 class _DataChangeHandler:
@@ -89,13 +97,59 @@ class _DataChangeHandler:
 
 
 class SubscriptionService:
-    def __init__(self, opcua_client: OpcUaClientProtocol, interval_seconds: int) -> None:
+    def __init__(
+        self,
+        opcua_client: OpcUaClientProtocol,
+        interval_seconds: int,
+        max_updates_per_subscription: int = 10000,
+        ttl_seconds: int = 300,
+    ) -> None:
         self._opcua_client = opcua_client
         self._interval_seconds = max(1, interval_seconds)
+        self._max_updates_per_subscription = max(1, max_updates_per_subscription)
+        self._ttl_seconds = max(1, ttl_seconds)
         self._lock = asyncio.Lock()
         self._subscriptions: dict[str, _SubscriptionState] = {}
         self._cache: dict[str, Any] = {}
+        self._cleanup_task: asyncio.Task[None] | None = None
         self._opcua_client.add_reconnect_listener(self._handle_client_reconnect)
+
+    def _now_monotonic(self) -> float:
+        return asyncio.get_running_loop().time()
+
+    def _touch(self, state: _SubscriptionState) -> None:
+        state.last_activity_monotonic = self._now_monotonic()
+
+    def _ensure_cleanup_task(self) -> None:
+        if self._cleanup_task is None or self._cleanup_task.done():
+            self._cleanup_task = asyncio.create_task(self._cleanup_loop())
+
+    async def _cleanup_loop(self) -> None:
+        try:
+            while True:
+                await asyncio.sleep(max(1, self._interval_seconds))
+                stale_ids: list[str] = []
+                now = self._now_monotonic()
+                async with self._lock:
+                    for state in self._subscriptions.values():
+                        if state.stream_connected:
+                            continue
+                        if now - state.last_activity_monotonic >= self._ttl_seconds:
+                            stale_ids.append(state.subscription_id)
+
+                    removed: list[_SubscriptionState] = []
+                    for subscription_id in stale_ids:
+                        state = self._subscriptions.pop(subscription_id, None)
+                        if state is None:
+                            continue
+                        state.update_event.set()
+                        removed.append(state)
+
+                for state in removed:
+                    logger.info("Subscription expired by TTL subscription_id=%s", state.subscription_id)
+                    await self._stop_runtime(state)
+        except asyncio.CancelledError:
+            return
 
     async def _handle_client_reconnect(self) -> None:
         async with self._lock:
@@ -116,13 +170,24 @@ class SubscriptionService:
         for subscription in subscriptions:
             await self._stop_runtime(subscription)
 
+        cleanup_task = self._cleanup_task
+        self._cleanup_task = None
+        if cleanup_task is not None:
+            cleanup_task.cancel()
+            try:
+                await cleanup_task
+            except asyncio.CancelledError:
+                pass
+
     async def create_subscription(self, client_id: str | None, display_name: str | None) -> SubscriptionDetail:
+        self._ensure_cleanup_task()
         subscription_id = f"sub-{uuid4()}"
         state = _SubscriptionState(
             subscription_id=subscription_id,
             client_id=client_id,
             display_name=display_name,
             monitored_objects={},
+            last_activity_monotonic=self._now_monotonic(),
         )
         async with self._lock:
             self._subscriptions[subscription_id] = state
@@ -198,6 +263,7 @@ class SubscriptionService:
         max_depth: int,
         model: BuildResult,
     ) -> bool:
+        self._ensure_cleanup_task()
         async with self._lock:
             state = self._subscriptions.get(subscription_id)
             if state is None or (client_id is not None and state.client_id != client_id):
@@ -210,6 +276,7 @@ class SubscriptionService:
             )
             state.monitored_node_ids = monitored_node_ids
             state.node_to_element_id = node_to_element_id
+            self._touch(state)
 
         await self._reconfigure_runtime(subscription_id)
         return True
@@ -221,6 +288,7 @@ class SubscriptionService:
         element_ids: list[str],
         model: BuildResult,
     ) -> bool:
+        self._ensure_cleanup_task()
         async with self._lock:
             state = self._subscriptions.get(subscription_id)
             if state is None or (client_id is not None and state.client_id != client_id):
@@ -233,6 +301,7 @@ class SubscriptionService:
             )
             state.monitored_node_ids = monitored_node_ids
             state.node_to_element_id = node_to_element_id
+            self._touch(state)
 
         await self._reconfigure_runtime(subscription_id)
         return True
@@ -241,23 +310,62 @@ class SubscriptionService:
         self,
         client_id: str | None,
         subscription_id: str,
-        acknowledge_sequence: int,
+        acknowledge_sequence: int | None,
+        allow_when_stream_active: bool = False,
     ) -> SubscriptionSyncResult | None:
+        self._ensure_cleanup_task()
         async with self._lock:
             state = self._subscriptions.get(subscription_id)
             if state is None or (client_id is not None and state.client_id != client_id):
                 return None
-            state.updates = [item for item in state.updates if item.sequence_number > acknowledge_sequence]
-            return SubscriptionSyncResult(updates=list(state.updates))
+
+            if state.stream_connected and not allow_when_stream_active:
+                return SubscriptionSyncResult(updates=[], stream_active=True)
+
+            if acknowledge_sequence == -1:
+                state.updates.clear()
+            elif isinstance(acknowledge_sequence, int):
+                if 0 <= acknowledge_sequence <= state.sequence_number:
+                    state.updates = [item for item in state.updates if item.sequence_number > acknowledge_sequence]
+
+            result = SubscriptionSyncResult(
+                updates=list(state.updates),
+                queue_overflow=state.dropped_from_sequence is not None,
+                dropped_from_sequence=state.dropped_from_sequence,
+                dropped_to_sequence=state.dropped_to_sequence,
+            )
+            state.dropped_from_sequence = None
+            state.dropped_to_sequence = None
+            self._touch(state)
+            return result
 
     async def activate_stream(self, client_id: str | None, subscription_id: str) -> int | None:
+        self._ensure_cleanup_task()
         async with self._lock:
             state = self._subscriptions.get(subscription_id)
             if state is None or (client_id is not None and state.client_id != client_id):
                 return None
             state.active_stream_generation += 1
+            state.stream_connected = True
+            self._touch(state)
             state.update_event.set()
             return state.active_stream_generation
+
+    async def deactivate_stream(self, subscription_id: str, generation: int) -> None:
+        async with self._lock:
+            state = self._subscriptions.get(subscription_id)
+            if state is None:
+                return
+            if state.active_stream_generation == generation:
+                state.stream_connected = False
+                self._touch(state)
+
+    async def has_active_stream(self, client_id: str | None, subscription_id: str) -> bool | None:
+        async with self._lock:
+            state = self._subscriptions.get(subscription_id)
+            if state is None or (client_id is not None and state.client_id != client_id):
+                return None
+            return state.stream_connected
 
     async def is_stream_active(self, subscription_id: str, generation: int) -> bool:
         async with self._lock:
@@ -280,10 +388,13 @@ class SubscriptionService:
         after_sequence: int,
         timeout_seconds: int = 15,
     ) -> list[SubscriptionUpdate] | None:
+        self._ensure_cleanup_task()
         async with self._lock:
             state = self._subscriptions.get(subscription_id)
             if state is None or (client_id is not None and state.client_id != client_id):
                 return None
+
+            self._touch(state)
 
             current = [item for item in state.updates if item.sequence_number > after_sequence]
             if current:
@@ -301,6 +412,7 @@ class SubscriptionService:
             state = self._subscriptions.get(subscription_id)
             if state is None or (client_id is not None and state.client_id != client_id):
                 return None
+            self._touch(state)
             return [item for item in state.updates if item.sequence_number > after_sequence]
 
     async def handle_datachange(
@@ -322,6 +434,7 @@ class SubscriptionService:
                     resolved_node_id = mapped
 
             self._append_update(state, resolved_node_id, value)
+            self._touch(state)
 
     async def _reconfigure_runtime(self, subscription_id: str) -> None:
         async with self._lock:
@@ -469,6 +582,11 @@ class SubscriptionService:
         element_id = state.node_to_element_id.get(node_id)
         if element_id is None:
             element_id = state.node_to_element_id.get(node_id.lower(), node_id)
+        if len(state.updates) >= self._max_updates_per_subscription:
+            dropped = state.updates.pop(0)
+            if state.dropped_from_sequence is None:
+                state.dropped_from_sequence = dropped.sequence_number
+            state.dropped_to_sequence = dropped.sequence_number
         state.updates.append(
             SubscriptionUpdate(
                 sequence_number=state.sequence_number,

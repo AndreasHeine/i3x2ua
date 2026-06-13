@@ -68,7 +68,7 @@ async def _handle_jsonrpc(request: Request, message: dict[str, Any]) -> dict[str
             message_id,
             {
                 "protocolVersion": protocol_version or "2025-06-18",
-                "serverInfo": {"name": "i3x2ua", "version": "beta"},
+                "serverInfo": {"name": "i3x", "version": "1.0"},
                 "capabilities": {"tools": {"listChanged": False}},
             },
         )

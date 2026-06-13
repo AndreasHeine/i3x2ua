@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import base64
 import json
@@ -16,7 +16,7 @@ from asyncua import ua
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
-from i3x_server.api.beta import _expanded_node_id
+from i3x_server.api.v1 import _expanded_node_id
 from i3x_server.main import create_app
 from i3x_server.mcp import _safe_internal_request_url, get_api_prefix
 from i3x_server.opcua.client import OpcUaNamespaceInfo, OpcUaSubscriptionCapabilities
@@ -218,6 +218,26 @@ class FakeOpcUaClient:
             results.append(value)
         return results
 
+    async def read_data_values(self, node_ids: list[str]) -> list[Any]:
+        self._reads += 1
+        results: list[Any] = []
+        for node_id in node_ids:
+            base = self.values.get(node_id, 1.0)
+            if isinstance(base, (bytes, bytearray, memoryview)):
+                value = bytes(base)
+            else:
+                value = float(base) + self._reads
+                self.values[node_id] = value
+            results.append(
+                SimpleNamespace(
+                    Value=SimpleNamespace(Value=value),
+                    StatusCode=SimpleNamespace(name="Good", is_good=lambda: True),
+                    SourceTimestamp=datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc),
+                    ServerTimestamp=None,
+                )
+            )
+        return results
+
     async def read_history_values(
         self,
         node_ids: list[str],
@@ -314,7 +334,7 @@ def test_invoke_action(client: TestClient) -> None:
     assert response.status_code == 404
 
 
-def test_beta_info(client: TestClient) -> None:
+def test_v1_info(client: TestClient) -> None:
     response = client.get("/v1/info")
     assert response.status_code == 200
     payload = response.json()
@@ -324,7 +344,7 @@ def test_beta_info(client: TestClient) -> None:
     assert payload["result"]["capabilities"]["subscribe"]["stream"] is True
 
 
-def test_beta_namespaces(client: TestClient) -> None:
+def test_v1_namespaces(client: TestClient) -> None:
     response = client.get("/v1/namespaces")
     assert response.status_code == 200
     payload = response.json()
@@ -332,7 +352,7 @@ def test_beta_namespaces(client: TestClient) -> None:
     assert len(payload["result"]) == 3
 
 
-def test_beta_objecttypes(client: TestClient) -> None:
+def test_v1_objecttypes(client: TestClient) -> None:
     response = client.get("/v1/objecttypes")
     assert response.status_code == 200
     payload = response.json()
@@ -378,10 +398,8 @@ def test_beta_objecttypes(client: TestClient) -> None:
     assert thresholds_def["properties"]["max"]["type"] == "number"
     assert isinstance(first["related"], dict)
     assert [item["elementId"] for item in first["related"]["instances"]] == ["asset-root"]
-    assert first["related"]["instances"][0]["metadata"]["relationships"]["HasChildren"] == [
-        "property-abc",
-        "action-def",
-    ]
+    assert first["related"]["instances"][0]["metadata"]["relationships"]["HasChildren"] == ["action-def"]
+    assert first["related"]["instances"][0]["metadata"]["relationships"]["HasComponent"] == ["property-abc"]
 
     synthetic = next(
         item for item in payload["result"] if item["sourceTypeId"] == "nsu=http://example.com/custom;i=3001"
@@ -404,7 +422,7 @@ def test_beta_objecttypes(client: TestClient) -> None:
     assert [item["elementId"] for item in second["related"]["instances"]] == ["sensor-root"]
 
 
-def test_beta_objecttypes_namespace_uri_is_declared(client: TestClient) -> None:
+def test_v1_objecttypes_namespace_uri_is_declared(client: TestClient) -> None:
     namespaces_response = client.get("/v1/namespaces")
     assert namespaces_response.status_code == 200
     namespaces_payload = namespaces_response.json()
@@ -420,7 +438,7 @@ def test_beta_objecttypes_namespace_uri_is_declared(client: TestClient) -> None:
     assert missing == []
 
 
-def test_beta_objecttypes_namespace_filter_is_canonicalized(client: TestClient) -> None:
+def test_v1_objecttypes_namespace_filter_is_canonicalized(client: TestClient) -> None:
     response = client.get("/v1/objecttypes", params={"namespaceUri": "HTTP://EXAMPLE.COM/CUSTOM/"})
     assert response.status_code == 200
     payload = response.json()
@@ -429,7 +447,7 @@ def test_beta_objecttypes_namespace_filter_is_canonicalized(client: TestClient) 
     assert all(item["namespaceUri"] == "http://example.com/custom" for item in payload["result"])
 
 
-def test_beta_objecttypes_query(client: TestClient) -> None:
+def test_v1_objecttypes_query(client: TestClient) -> None:
     list_response = client.get("/v1/objecttypes")
     assert list_response.status_code == 200
     listed = list_response.json()["result"]
@@ -447,7 +465,7 @@ def test_beta_objecttypes_query(client: TestClient) -> None:
     assert payload["results"][1]["error"]["code"] == 404
 
 
-def test_beta_objecttypes_includes_builtin_scalar_datatype_reference(client: TestClient) -> None:
+def test_v1_objecttypes_includes_builtin_scalar_datatype_reference(client: TestClient) -> None:
     app = _fastapi_app(client)
     app.state.model_cache.nodes_by_id["property-builtin-12"] = ModelNode(
         id="property-builtin-12",
@@ -475,7 +493,7 @@ def test_beta_objecttypes_includes_builtin_scalar_datatype_reference(client: Tes
     assert builtin["displayName"] != "UnknownType"
 
 
-def test_beta_objecttypes_includes_builtin_localizedtext_structured_schema(client: TestClient) -> None:
+def test_v1_objecttypes_includes_builtin_localizedtext_structured_schema(client: TestClient) -> None:
     app = _fastapi_app(client)
     app.state.model_cache.nodes_by_id["property-builtin-21"] = ModelNode(
         id="property-builtin-21",
@@ -505,7 +523,7 @@ def test_beta_objecttypes_includes_builtin_localizedtext_structured_schema(clien
     assert set(localized_text["schema"]["properties"]["Text"]["type"]) == {"null", "string"}
 
 
-def test_beta_objecttypes_resolves_standard_structured_datatype(client: TestClient) -> None:
+def test_v1_objecttypes_resolves_standard_structured_datatype(client: TestClient) -> None:
     @dataclass(slots=True)
     class _StdStruct96:
         Name: str | None = None
@@ -544,7 +562,7 @@ def test_beta_objecttypes_resolves_standard_structured_datatype(client: TestClie
         ua_any.extension_objects_by_datatype = previous_registry
 
 
-def test_beta_objecttypes_registers_source_type_alias_element_id(client: TestClient) -> None:
+def test_v1_objecttypes_registers_source_type_alias_element_id(client: TestClient) -> None:
     app = _fastapi_app(client)
     app.state.model_cache.nodes_by_id["property-struct-alias"] = ModelNode(
         id="property-struct-alias",
@@ -573,7 +591,7 @@ def test_beta_objecttypes_registers_source_type_alias_element_id(client: TestCli
     assert alias["schema"]["x-opcua-nodeId"] == "nsu=http://example.com/custom;i=3001"
 
 
-def test_beta_objecttypes_does_not_register_action_source_node_id_as_object_type(client: TestClient) -> None:
+def test_v1_objecttypes_does_not_register_action_source_node_id_as_object_type(client: TestClient) -> None:
     app = _fastapi_app(client)
     app.state.model_cache.nodes_by_id["action-ua-11492"] = ModelNode(
         id="action-ua-11492",
@@ -598,7 +616,7 @@ def test_beta_objecttypes_does_not_register_action_source_node_id_as_object_type
     assert unresolved == []
 
 
-def test_beta_objecttypes_registers_standard_ua_optionset_datatype_as_known(client: TestClient) -> None:
+def test_v1_objecttypes_registers_standard_ua_optionset_datatype_as_known(client: TestClient) -> None:
     app = _fastapi_app(client)
     app.state.model_cache.nodes_by_id["property-ua-95"] = ModelNode(
         id="property-ua-95",
@@ -628,7 +646,7 @@ def test_beta_objecttypes_registers_standard_ua_optionset_datatype_as_known(clie
     assert resolved["schema"]["oneOf"][0]["type"] == "integer"
 
 
-def test_beta_objecttypes_registers_standard_ua_structured_datatype_as_known(client: TestClient) -> None:
+def test_v1_objecttypes_registers_standard_ua_structured_datatype_as_known(client: TestClient) -> None:
     app = _fastapi_app(client)
     app.state.model_cache.nodes_by_id["property-ua-865"] = ModelNode(
         id="property-ua-865",
@@ -658,7 +676,7 @@ def test_beta_objecttypes_registers_standard_ua_structured_datatype_as_known(cli
     assert resolved["schema"]["type"] == "object"
 
 
-def test_beta_objecttypes_registers_standard_ua_role_permission_as_known(client: TestClient) -> None:
+def test_v1_objecttypes_registers_standard_ua_role_permission_as_known(client: TestClient) -> None:
     app = _fastapi_app(client)
     app.state.model_cache.nodes_by_id["property-ua-96"] = ModelNode(
         id="property-ua-96",
@@ -688,7 +706,7 @@ def test_beta_objecttypes_registers_standard_ua_role_permission_as_known(client:
     assert resolved["schema"]["type"] == "object"
 
 
-def test_beta_objecttypes_registers_generic_custom_nodeid_type_as_known(client: TestClient) -> None:
+def test_v1_objecttypes_registers_generic_custom_nodeid_type_as_known(client: TestClient) -> None:
     app = _fastapi_app(client)
     app.state.model_cache.nodes_by_id["property-custom-inferred"] = ModelNode(
         id="property-custom-inferred",
@@ -717,7 +735,7 @@ def test_beta_objecttypes_registers_generic_custom_nodeid_type_as_known(client: 
     assert isinstance(resolved["schema"].get("oneOf"), list)
 
 
-def test_beta_objecttypes_unresolved_standard_property_datatype_gets_fallback_schema(client: TestClient) -> None:
+def test_v1_objecttypes_unresolved_standard_property_datatype_gets_fallback_schema(client: TestClient) -> None:
     app = _fastapi_app(client)
     app.state.model_cache.nodes_by_id["property-ua-14119"] = ModelNode(
         id="property-ua-14119",
@@ -747,12 +765,12 @@ def test_beta_objecttypes_unresolved_standard_property_datatype_gets_fallback_sc
     assert resolved["schema"]["x-opcua-nodeId"] == "nsu=http://opcfoundation.org/UA/;i=14119"
 
 
-def test_beta_objecttypes_generic_standard_id_uses_browse_name_lookup(
+def test_v1_objecttypes_generic_standard_id_uses_browse_name_lookup(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("i3x_server.api.beta._ENABLE_LIVE_TYPE_NAME_LOOKUP", True)
-    monkeypatch.setattr("i3x_server.api.beta._LIVE_TYPE_NAME_LOOKUP_MAX_PER_REQUEST", 100)
+    monkeypatch.setattr("i3x_server.api.v1._ENABLE_LIVE_TYPE_NAME_LOOKUP", True)
+    monkeypatch.setattr("i3x_server.api.v1._LIVE_TYPE_NAME_LOOKUP_MAX_PER_REQUEST", 100)
 
     app = _fastapi_app(client)
     app.state.model_cache.nodes_by_id["property-ua-17364"] = ModelNode(
@@ -781,7 +799,7 @@ def test_beta_objecttypes_generic_standard_id_uses_browse_name_lookup(
     assert resolved["schema"]["title"] == "PublishSubscribe_SetSecurityKeys"
 
 
-def test_beta_objecttypes_does_not_publish_null_opcua_type_id(client: TestClient) -> None:
+def test_v1_objecttypes_does_not_publish_null_opcua_type_id(client: TestClient) -> None:
     app = _fastapi_app(client)
     app.state.model_cache.nodes_by_id["asset-null-type"] = ModelNode(
         id="asset-null-type",
@@ -805,7 +823,7 @@ def test_beta_objecttypes_does_not_publish_null_opcua_type_id(client: TestClient
     assert all(item["sourceTypeId"] != "nsu=http://opcfoundation.org/UA/;i=0" for item in payload["result"])
 
 
-def test_beta_relationshiptypes(client: TestClient) -> None:
+def test_v1_relationshiptypes(client: TestClient) -> None:
     response = client.get("/v1/relationshiptypes")
     assert response.status_code == 200
     payload = response.json()
@@ -816,7 +834,7 @@ def test_beta_relationshiptypes(client: TestClient) -> None:
     assert "HasParent" in ids
 
 
-def test_beta_relationshiptypes_query(client: TestClient) -> None:
+def test_v1_relationshiptypes_query(client: TestClient) -> None:
     response = client.post(
         "/v1/relationshiptypes/query",
         json={"elementIds": ["HasComponent", "missing-relationship"]},
@@ -830,7 +848,7 @@ def test_beta_relationshiptypes_query(client: TestClient) -> None:
     assert payload["results"][1]["error"]["code"] == 404
 
 
-def test_beta_objects_list(client: TestClient) -> None:
+def test_v1_objects_list(client: TestClient) -> None:
     object_types = client.get("/v1/objecttypes").json()["result"]
     expected_type_element_id = object_types[0]["elementId"]
 
@@ -844,7 +862,232 @@ def test_beta_objects_list(client: TestClient) -> None:
     assert first["typeElementId"] == expected_type_element_id
 
 
-def test_beta_objects_list_include_metadata_uses_expanded_source_type_id(client: TestClient) -> None:
+def test_v1_objects_root_uses_hierarchy_only(client: TestClient) -> None:
+    response = client.get("/v1/objects", params={"root": "true"})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+
+    element_ids = {item["elementId"] for item in payload["result"]}
+    assert element_ids == {"asset-root", "sensor-root"}
+
+
+def test_v1_objects_root_excludes_composition_only_children(client: TestClient) -> None:
+    app = _fastapi_app(client)
+    app.state.model_cache.hierarchy_parent_by_id = {}
+    app.state.model_cache.composition_parent_by_id = {
+        "sensor-root": "asset-root",
+    }
+
+    response = client.get("/v1/objects", params={"root": "true"})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+
+    element_ids = {item["elementId"] for item in payload["result"]}
+    assert element_ids == {"asset-root"}
+
+
+def test_v1_objects_related_uses_relationships_map_including_graph(client: TestClient) -> None:
+    app = _fastapi_app(client)
+    app.state.model_cache.relationships_by_id = {
+        "asset-root": {
+            "HasChildren": ["action-def"],
+            "HasComponent": ["property-abc"],
+            "Monitors": ["sensor-root"],
+        },
+        "action-def": {"HasParent": ["asset-root"]},
+        "property-abc": {"ComponentOf": ["asset-root"]},
+        "sensor-root": {},
+    }
+
+    response = client.post(
+        "/v1/objects/related",
+        json={"elementIds": ["asset-root"], "includeMetadata": False},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+
+    related = payload["results"][0]["result"]
+    by_relationship = {item["sourceRelationship"]: item["object"]["elementId"] for item in related}
+    assert by_relationship["HasChildren"] == "action-def"
+    assert by_relationship["HasComponent"] == "property-abc"
+    assert by_relationship["Monitors"] == "sensor-root"
+
+
+def test_v1_objects_related_missing_element_item_includes_response_detail(client: TestClient) -> None:
+    response = client.post(
+        "/v1/objects/related",
+        json={"elementIds": ["asset-root", "does-not-exist"]},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is False
+    failing = next(item for item in payload["results"] if not item["success"])
+    assert failing["elementId"] == "does-not-exist"
+    assert failing["error"]["code"] == 404
+    assert failing["responseDetail"]["status"] == 404
+    assert failing["responseDetail"]["title"] == "Not Found"
+    assert isinstance(failing["responseDetail"]["detail"], str)
+
+
+def test_v1_objects_list_missing_element_item_includes_response_detail(client: TestClient) -> None:
+    response = client.post(
+        "/v1/objects/list",
+        json={"elementIds": ["asset-root", "does-not-exist"]},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is False
+    failing = next(item for item in payload["results"] if not item["success"])
+    assert failing["elementId"] == "does-not-exist"
+    assert failing["error"]["code"] == 404
+    assert failing["responseDetail"]["status"] == 404
+    assert failing["responseDetail"]["title"] == "Not Found"
+
+
+def test_v1_value_missing_element_item_includes_response_detail(client: TestClient) -> None:
+    response = client.post(
+        "/v1/objects/value",
+        json={"elementIds": ["property-abc", "does-not-exist"], "maxDepth": 1},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is False
+    failing = next(item for item in payload["results"] if not item["success"])
+    assert failing["elementId"] == "does-not-exist"
+    assert failing["error"]["code"] == 404
+    assert failing["responseDetail"]["status"] == 404
+    assert failing["responseDetail"]["title"] == "Not Found"
+
+
+def test_v1_is_composition_true_when_composition_children_exist(client: TestClient) -> None:
+    app = _fastapi_app(client)
+    app.state.model_cache.composition_children_by_id = {"asset-root": ["property-abc"]}
+
+    response = client.post(
+        "/v1/objects/value",
+        json={"elementIds": ["asset-root"], "maxDepth": 1},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["results"][0]["success"] is True
+    assert payload["results"][0]["result"]["isComposition"] is True
+
+
+def test_v1_value_query_container_node_returns_goodnodata_without_direct_read(client: TestClient) -> None:
+    app = _fastapi_app(client)
+    called = False
+
+    async def read_data_values(node_ids: list[str]) -> list[Any]:
+        nonlocal called
+        called = True
+        assert "ns=2;s=Machine" not in node_ids
+        return []
+
+    app.state.opcua_client.read_data_values = read_data_values
+
+    response = client.post(
+        "/v1/objects/value",
+        json={"elementIds": ["asset-root"], "maxDepth": 1},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    assert called is False
+
+    result = payload["results"][0]["result"]
+    assert result["value"] is None
+    assert result["quality"] == "GoodNoData"
+
+
+def test_v1_is_composition_false_when_no_composition_children(client: TestClient) -> None:
+    app = _fastapi_app(client)
+    app.state.model_cache.composition_children_by_id = {}
+
+    response = client.post(
+        "/v1/objects/value",
+        json={"elementIds": ["property-abc"], "maxDepth": 1},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["results"][0]["success"] is True
+    assert payload["results"][0]["result"]["isComposition"] is False
+
+
+def test_v1_value_recursion_uses_composition_not_hierarchy(client: TestClient) -> None:
+    app = _fastapi_app(client)
+    property_id = "property-abc"
+    child_asset_id = "asset-child"
+    child_prop_id = "child-prop"
+
+    app.state.model_cache.nodes_by_id[child_asset_id] = ModelNode(
+        id=child_asset_id,
+        name="ChildAsset",
+        kind="asset",
+        type=None,
+        children=[child_prop_id],
+        source_node_id="ns=2;s=ChildAsset",
+    )
+    app.state.model_cache.nodes_by_id[child_prop_id] = ModelNode(
+        id=child_prop_id,
+        name="ChildProp",
+        kind="property",
+        type="ns=1;i=11",
+        children=[],
+        source_node_id="ns=2;s=ChildProp",
+    )
+    app.state.model_cache.property_to_node[child_prop_id] = "ns=2;s=ChildProp"
+    app.state.model_cache.children_by_id[child_prop_id] = []
+    app.state.model_cache.children_by_id[child_asset_id] = [child_prop_id]
+
+    # asset-root has child-asset-id in hierarchy but NOT in composition
+    app.state.model_cache.hierarchy_children_by_id["asset-root"] = [property_id, "action-def", child_asset_id]
+    app.state.model_cache.composition_children_by_id["asset-root"] = [property_id]
+    app.state.model_cache.composition_children_by_id[child_asset_id] = []
+
+    app.state.opcua_client.values["ns=2;s=ChildProp"] = 5.0
+
+    response = client.post(
+        "/v1/objects/value",
+        json={"elementIds": ["asset-root"], "maxDepth": 5},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    result = payload["results"][0]["result"]
+    component_ids = set((result.get("components") or {}).keys())
+    assert property_id in component_ids
+    assert child_prop_id not in component_ids
+
+
+def test_v1_objects_related_graph_relationships_appear_in_result(client: TestClient) -> None:
+    app = _fastapi_app(client)
+    app.state.model_cache.relationships_by_id = {
+        "asset-root": {
+            "HasChildren": ["action-def"],
+            "HasComponent": ["property-abc"],
+            "Monitors": ["sensor-root"],
+            "ConnectedTo": ["sensor-root"],
+        },
+        "action-def": {"HasParent": ["asset-root"]},
+        "property-abc": {"ComponentOf": ["asset-root"]},
+        "sensor-root": {},
+    }
+
+    response = client.post(
+        "/v1/objects/related",
+        json={"elementIds": ["asset-root"]},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    related = payload["results"][0]["result"]
+    relationship_types = {item["sourceRelationship"] for item in related}
+    assert "Monitors" in relationship_types
+    assert "ConnectedTo" in relationship_types
+
+
+def test_v1_objects_list_include_metadata_uses_expanded_source_type_id(client: TestClient) -> None:
     response = client.post(
         "/v1/objects/list",
         json={"elementIds": ["property-abc"], "includeMetadata": True},
@@ -859,7 +1102,26 @@ def test_beta_objects_list_include_metadata_uses_expanded_source_type_id(client:
     assert metadata["sourceTypeId"] == "nsu=http://example.com/runtime;s=Temperature"
 
 
-def test_beta_objects_list_property_null_type_resolves_to_unknown_type(client: TestClient) -> None:
+def test_v1_objects_list_include_metadata_exposes_composition_parent_id(client: TestClient) -> None:
+    app = _fastapi_app(client)
+    app.state.model_cache.composition_parent_by_id = {
+        "sensor-root": "asset-root",
+        "property-abc": "asset-root",
+    }
+
+    response = client.post(
+        "/v1/objects/list",
+        json={"elementIds": ["sensor-root"], "includeMetadata": True},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+
+    metadata = payload["results"][0]["result"]["metadata"]
+    assert metadata["compositionParentId"] == "asset-root"
+
+
+def test_v1_objects_list_property_null_type_resolves_to_unknown_type(client: TestClient) -> None:
     app = _fastapi_app(client)
     app.state.model_cache.nodes_by_id["property-null-type"] = ModelNode(
         id="property-null-type",
@@ -890,7 +1152,7 @@ def test_beta_objects_list_property_null_type_resolves_to_unknown_type(client: T
     assert result["typeElementId"] in known_type_ids
 
 
-def test_beta_history_query(client: TestClient) -> None:
+def test_v1_history_query(client: TestClient) -> None:
     response = client.post(
         "/v1/objects/history",
         json={
@@ -908,7 +1170,7 @@ def test_beta_history_query(client: TestClient) -> None:
     assert len(payload["results"][0]["result"]["values"]) == 2
 
 
-def test_beta_value_query_serializes_binary_values(client: TestClient) -> None:
+def test_v1_value_query_serializes_binary_values(client: TestClient) -> None:
     _fastapi_app(client).state.opcua_client.values["ns=2;s=Temperature"] = b"\xff\x00"
 
     response = client.post(
@@ -928,29 +1190,35 @@ def test_beta_value_query_serializes_binary_values(client: TestClient) -> None:
     }
 
 
-def test_beta_value_query_serializes_structured_object_arrays(client: TestClient) -> None:
-    async def read_values(node_ids: list[str]) -> list[Any]:
+def test_v1_value_query_serializes_structured_object_arrays(client: TestClient) -> None:
+    async def read_data_values(node_ids: list[str]) -> list[Any]:
         assert node_ids == ["ns=2;s=Temperature"]
+        value = [
+            FakeExtensionObject(
+                "ns=1;i=3001",
+                FakeMachineConfig(
+                    thresholds=FakeMachineThresholds(min=10.0, max=120.5),
+                    mode="auto",
+                ),
+            ),
+            FakeExtensionObject(
+                "ns=1;i=3001",
+                FakeMachineConfig(
+                    thresholds=FakeMachineThresholds(min=12.0, max=130.0),
+                    mode="manual",
+                ),
+            ),
+        ]
         return [
-            [
-                FakeExtensionObject(
-                    "ns=1;i=3001",
-                    FakeMachineConfig(
-                        thresholds=FakeMachineThresholds(min=10.0, max=120.5),
-                        mode="auto",
-                    ),
-                ),
-                FakeExtensionObject(
-                    "ns=1;i=3001",
-                    FakeMachineConfig(
-                        thresholds=FakeMachineThresholds(min=12.0, max=130.0),
-                        mode="manual",
-                    ),
-                ),
-            ]
+            SimpleNamespace(
+                Value=SimpleNamespace(Value=value),
+                StatusCode=SimpleNamespace(name="Good", is_good=lambda: True),
+                SourceTimestamp=datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc),
+                ServerTimestamp=None,
+            )
         ]
 
-    _fastapi_app(client).state.opcua_client.read_values = read_values
+    _fastapi_app(client).state.opcua_client.read_data_values = read_data_values
 
     response = client.post(
         "/v1/objects/value",
@@ -981,7 +1249,7 @@ def test_beta_value_query_serializes_structured_object_arrays(client: TestClient
     ]
 
 
-def test_beta_history_query_serializes_binary_values(client: TestClient) -> None:
+def test_v1_history_query_serializes_binary_values(client: TestClient) -> None:
     _fastapi_app(client).state.opcua_client.history_values["ns=2;s=Temperature"] = [
         SimpleNamespace(
             Value=SimpleNamespace(Value=b"\xff\x00"),
@@ -1023,7 +1291,7 @@ def test_expanded_node_id_rewrites_node_id_strings() -> None:
     assert _expanded_node_id("ns=1;i=1001", namespaces) == "nsu=http://example.com/custom;i=1001"
 
 
-def test_beta_history_query_missing_object(client: TestClient) -> None:
+def test_v1_history_query_missing_object(client: TestClient) -> None:
     response = client.post(
         "/v1/objects/history",
         json={
@@ -1040,7 +1308,7 @@ def test_beta_history_query_missing_object(client: TestClient) -> None:
     assert payload["results"][0]["error"]["code"] == 404
 
 
-def test_beta_history_query_invalid_time_range(client: TestClient) -> None:
+def test_v1_history_query_invalid_time_range(client: TestClient) -> None:
     response = client.post(
         "/v1/objects/history",
         json={
@@ -1054,7 +1322,119 @@ def test_beta_history_query_invalid_time_range(client: TestClient) -> None:
     assert payload["error"]["code"] == 400
 
 
-def test_beta_subscription_lifecycle(client: TestClient) -> None:
+def test_v1_value_query_propagates_source_quality_and_timestamp(client: TestClient) -> None:
+    async def read_data_values(node_ids: list[str]) -> list[Any]:
+        return [
+            SimpleNamespace(
+                Value=SimpleNamespace(Value=99.5),
+                StatusCode=SimpleNamespace(name="Uncertain", is_good=lambda: False),
+                SourceTimestamp=datetime(2026, 3, 15, 8, 30, tzinfo=timezone.utc),
+                ServerTimestamp=None,
+            )
+            for _ in node_ids
+        ]
+
+    _fastapi_app(client).state.opcua_client.read_data_values = read_data_values
+
+    response = client.post(
+        "/v1/objects/value",
+        json={"elementIds": ["property-abc"], "maxDepth": 1},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    result = payload["results"][0]["result"]
+    assert result["quality"] == "Uncertain"
+    assert result["timestamp"] == "2026-03-15T08:30:00Z"
+    assert result["value"] == 99.5
+
+
+def test_v1_value_query_bad_quality_null_value_is_allowed(client: TestClient) -> None:
+    async def read_data_values(node_ids: list[str]) -> list[Any]:
+        return [
+            SimpleNamespace(
+                Value=SimpleNamespace(Value=None),
+                StatusCode=SimpleNamespace(name="Bad", is_good=lambda: False),
+                SourceTimestamp=datetime(2026, 3, 15, 8, 0, tzinfo=timezone.utc),
+                ServerTimestamp=None,
+            )
+            for _ in node_ids
+        ]
+
+    _fastapi_app(client).state.opcua_client.read_data_values = read_data_values
+
+    response = client.post(
+        "/v1/objects/value",
+        json={"elementIds": ["property-abc"], "maxDepth": 1},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    result = payload["results"][0]["result"]
+    assert result["quality"] == "Bad"
+    assert result["value"] is None
+
+
+def test_v1_value_query_null_with_good_quality_normalized_to_goodnodata(client: TestClient) -> None:
+    async def read_data_values(node_ids: list[str]) -> list[Any]:
+        return [
+            SimpleNamespace(
+                Value=SimpleNamespace(Value=None),
+                StatusCode=SimpleNamespace(name="Good", is_good=lambda: True),
+                SourceTimestamp=datetime(2026, 3, 15, 8, 0, tzinfo=timezone.utc),
+                ServerTimestamp=None,
+            )
+            for _ in node_ids
+        ]
+
+    _fastapi_app(client).state.opcua_client.read_data_values = read_data_values
+
+    response = client.post(
+        "/v1/objects/value",
+        json={"elementIds": ["property-abc"], "maxDepth": 1},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    result = payload["results"][0]["result"]
+    assert result["value"] is None
+    assert result["quality"] == "GoodNoData"
+
+
+def test_v1_validation_error_includes_response_detail(client: TestClient) -> None:
+    response = client.post(
+        "/v1/objects/value",
+        json={"maxDepth": 1},
+    )
+    assert response.status_code == 400
+    payload = response.json()
+    assert payload["success"] is False
+    assert payload["error"]["code"] == 400
+    assert payload["responseDetail"]["status"] == 400
+    assert payload["responseDetail"]["title"] == "Bad Request"
+
+
+def test_v1_404_error_includes_response_detail(client: TestClient) -> None:
+    response = client.post(
+        "/v1/subscriptions/sync",
+        json={"clientId": "my-app-instance-001", "subscriptionId": "missing"},
+    )
+    assert response.status_code == 404
+    payload = response.json()
+    assert payload["success"] is False
+    assert payload["error"]["code"] == 404
+    assert payload["responseDetail"]["status"] == 404
+    assert payload["responseDetail"]["title"] == "Not Found"
+
+
+def test_v1_501_error_includes_response_detail(client: TestClient) -> None:
+    response = client.put("/v1/objects/some-id/value")
+    assert response.status_code == 501
+    payload = response.json()
+    assert payload["success"] is False
+    assert payload["error"]["code"] == 501
+    assert payload["responseDetail"]["status"] == 501
+    assert payload["responseDetail"]["title"] == "Not Implemented"
+
+
+def test_v1_subscription_lifecycle(client: TestClient) -> None:
     client_id = "my-app-instance-001"
     created = client.post(
         "/v1/subscriptions",
@@ -1108,7 +1488,7 @@ def test_beta_subscription_lifecycle(client: TestClient) -> None:
     assert deleted_payload["results"][0]["success"] is True
 
 
-def test_beta_subscription_sync_serializes_binary_values(client: TestClient) -> None:
+def test_v1_subscription_sync_serializes_binary_values(client: TestClient) -> None:
     created = client.post(
         "/v1/subscriptions",
         json={"clientId": "my-app-instance-001", "displayName": "Binary Monitor"},
@@ -1137,7 +1517,71 @@ def test_beta_subscription_sync_serializes_binary_values(client: TestClient) -> 
     }
 
 
-def test_beta_subscription_stream_not_found(client: TestClient) -> None:
+def test_v1_subscription_sync_rejects_when_stream_active(client: TestClient) -> None:
+    created = client.post(
+        "/v1/subscriptions",
+        json={"clientId": "my-app-instance-001", "displayName": "Stream Lock"},
+    )
+    assert created.status_code == 200
+    subscription_id = created.json()["result"]["subscriptionId"]
+
+    service = _fastapi_app(client).state.subscription_service
+    state = service._subscriptions[subscription_id]
+    state.stream_connected = True
+    state.active_stream_generation = 1
+
+    synced = client.post(
+        "/v1/subscriptions/sync",
+        json={
+            "clientId": "my-app-instance-001",
+            "subscriptionId": subscription_id,
+            "acknowledgeSequence": 0,
+        },
+    )
+    assert synced.status_code == 400
+    payload = synced.json()
+    assert payload["success"] is False
+    assert payload["error"]["code"] == 400
+
+    state.stream_connected = False
+
+
+def test_v1_subscription_sync_returns_206_on_overflow(client: TestClient) -> None:
+    created = client.post(
+        "/v1/subscriptions",
+        json={"clientId": "my-app-instance-001", "displayName": "Overflow Monitor"},
+    )
+    assert created.status_code == 200
+    subscription_id = created.json()["result"]["subscriptionId"]
+
+    service = _fastapi_app(client).state.subscription_service
+    service._max_updates_per_subscription = 2
+    state = service._subscriptions[subscription_id]
+    state.node_to_element_id["ns=2;s=Overflow1"] = "ns=2;s=Overflow1"
+    state.node_to_element_id["ns=2;s=Overflow2"] = "ns=2;s=Overflow2"
+    state.node_to_element_id["ns=2;s=Overflow3"] = "ns=2;s=Overflow3"
+
+    service._append_update(state, "ns=2;s=Overflow1", 1)
+    service._append_update(state, "ns=2;s=Overflow2", 2)
+    service._append_update(state, "ns=2;s=Overflow3", 3)
+
+    synced = client.post(
+        "/v1/subscriptions/sync",
+        json={
+            "clientId": "my-app-instance-001",
+            "subscriptionId": subscription_id,
+            "acknowledgeSequence": 0,
+        },
+    )
+    assert synced.status_code == 206
+    payload = synced.json()
+    assert payload["success"] is True
+    assert isinstance(payload["result"], list)
+    assert payload["responseDetail"]["status"] == 206
+    assert "Dropped sequence numbers" in payload["responseDetail"]["detail"]
+
+
+def test_v1_subscription_stream_not_found(client: TestClient) -> None:
     response = client.post(
         "/v1/subscriptions/stream",
         json={"clientId": "my-app-instance-001", "subscriptionId": "missing"},
@@ -1145,7 +1589,7 @@ def test_beta_subscription_stream_not_found(client: TestClient) -> None:
     assert response.status_code == 404
 
 
-def test_beta_subscription_stream_not_found_with_ack_fields(client: TestClient) -> None:
+def test_v1_subscription_stream_not_found_with_ack_fields(client: TestClient) -> None:
     response_ack = client.post(
         "/v1/subscriptions/stream",
         json={"clientId": "my-app-instance-001", "subscriptionId": "missing", "acknowledgeSequence": 4},
@@ -1416,3 +1860,4 @@ def test_mcp_call_strips_host_from_runtime_api_prefix(client: TestClient) -> Non
 
     response = client.post("/mcp/call", json={"tool": "getNamespaces", "arguments": {}})
     assert response.status_code == 200
+

@@ -118,7 +118,7 @@ Expected behavior:
 
 - Verify the OPC UA backend is reachable and contains requested IDs.
 - Reduce query scope (fewer IDs, tighter date range).
-- Check if the selected operation is optional beta behavior that may return `501 Not Implemented`.
+- Check if the selected operation is optional behavior that may return `501 Not Implemented`.
 
 ### No live updates appear
 

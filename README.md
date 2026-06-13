@@ -34,7 +34,7 @@ flowchart LR
 	Nginx -->|/v1| API[FastAPI App i3x_server.main]
 
 	subgraph App[Application Core]
-		API --> Router[Beta Router /v1]
+		API --> Router[V1 Router /v1]
 		API -. optional /mcp .-> McpRouter[MCP Router /mcp]
 		McpRouter -->|generated tools| McpTools[(MCP Tool Catalog)]
 		McpRouter -->|tool calls| Router
@@ -112,7 +112,7 @@ sequenceDiagram
 	S-->>R: sequence updates
 	R-->>C: SSE data events + keepalive
 
-	Note over C,R: Write API paths exist in spec but return 501 in this beta implementation
+	Note over C,R: Write API paths exist in spec but can return 501 when optional update operations are not implemented
 ```
 
 ## Quick Start
@@ -183,14 +183,14 @@ Active endpoints are exposed under `/v1` for:
 - object queries and values (`/objects`, `/objects/list`, `/objects/related`, `/objects/value`, `/objects/history`)
 - subscriptions (`/subscriptions`, `/subscriptions/register`, `/subscriptions/unregister`, `/subscriptions/sync`, `/subscriptions/list`, `/subscriptions/delete`, `/subscriptions/stream`)
 
-Beta scope emphasis: this implementation currently prioritizes read/query/subscribe operations.
+Current scope emphasis: this implementation currently prioritizes read/query/subscribe operations.
 
 Optional MCP endpoints are exposed only when `I3X_ENABLE_MCP=1`:
 
 - discovery and tool catalog (`/mcp`, `/mcp/tools`)
 - JSON-RPC and tool call entry points (`/mcp`, `/mcp/call`)
 
-MCP scope emphasis: the MCP bridge is currently focused on tool calling (`initialize`, `tools/list`, `tools/call`) for this beta scope.
+MCP scope emphasis: the MCP bridge is currently focused on tool calling (`initialize`, `tools/list`, `tools/call`) for the current implementation scope.
 
 ## Current Limitations
 
@@ -257,3 +257,63 @@ uv run mypy .
 uv run pytest -q
 uv run pytest -q --cov=i3x_server --cov-report=term-missing
 ```
+
+## Production Deployment and i3X Strict Compliance
+
+This application implements the i3X API specification and is designed to run **behind a reverse proxy** that is responsible for:
+
+- **TLS termination** — the app itself serves plain HTTP; all HTTPS is handled by nginx.
+- **Authentication and authorization** — the app has no built-in auth layer; token validation, basic auth, or mTLS are enforced at the proxy level.
+
+### Required reverse proxy responsibilities for strict i3X compliance
+
+| Requirement | Implementation |
+|---|---|
+| TLS (HTTPS) for all client-facing traffic | nginx `ssl_certificate` + `ssl_certificate_key` |
+| Client authentication (API key / OAuth / mTLS) | nginx `auth_request` or `satisfy any` directives |
+| Rate limiting | nginx `limit_req_zone` |
+| Access logging | nginx `access_log` |
+
+See the [NGINX configuration reference](docs/NGINX_CONFIGURATION_REFERENCE.md) and [HTTPS guide](docs/PRODUCTION_HTTPS_GUIDE.md) for details.
+
+### OPC UA → i3X Relationship Mapping
+
+The model builder maps OPC UA reference types to i3X relationship planes.
+Classification is based on the reference type id and recursively resolved supertypes
+(following `HasSubtype` inverse for `ReferenceType` nodes):
+
+| OPC UA Reference | i3X Relationship Plane | i3X Types |
+|---|---|---|
+| `HierarchicalReferences`, `Organizes` and recursively resolved subtypes | Hierarchy | `HasChildren` / `HasParent` |
+| `HasComponent`, `HasOrderedComponent`, `HasProperty` and recursively resolved subtypes | Composition | `HasComponent` / `ComponentOf` |
+| `NonHierarchicalReferences` and recursively resolved subtypes | Graph | custom label |
+| `HasTypeDefinition` | Type metadata only | — |
+| `HasSubtype` | Type metadata only | — |
+
+If a reference type cannot be classified after id/name/supertype checks, it is mapped
+deterministically to the Graph plane.
+
+`POST /objects/value` and `POST /objects/history` recurse through **composition** children only when `maxDepth > 1`. Hierarchy-only children are never included in value recursion.
+
+### maxDepth Semantics (Hierarchy vs Composition)
+
+Value/history recursion follows only the composition plane (`HasComponent` / `ComponentOf`).
+Hierarchy edges (`HasChildren` / `HasParent`) are used for structure/navigation and root selection, not for value recursion.
+
+| Request | Traversal behavior |
+|---|---|
+| `maxDepth = 1` | No recursion. Return only the requested element's value/history payload. |
+| `maxDepth = 2` | Include direct composition children only. |
+| `maxDepth = n (>1)` | Include composition descendants up to depth `n-1` from the root query element. |
+| `maxDepth = 0` | Unlimited recursion across composition descendants. |
+
+Example:
+
+- Hierarchy: `Plant -> Line -> Pump`
+- Composition: `Pump -> Temperature`, `Pump -> Pressure`
+
+`POST /objects/value` for `Plant` with `maxDepth = 0` does **not** include `Pump` values via hierarchy.
+`POST /objects/value` for `Pump` with `maxDepth = 0` includes `Temperature` and `Pressure` as `components`.
+
+`POST /objects/related` returns relationships across all three planes (hierarchy, composition, and graph) for each requested element.
+

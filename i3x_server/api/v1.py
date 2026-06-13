@@ -17,7 +17,7 @@ from typing import Any, Generic, TypeVar
 from asyncua import ua
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from i3x_server.dependencies import get_opcua_client, get_or_build_model, get_subscription_service
@@ -36,7 +36,7 @@ from i3x_server.schemas.objecttype_schema import (
 from i3x_server.schemas.state import BuildResult
 from i3x_server.subscriptions.service import SubscriptionService
 
-router = APIRouter(prefix="/v1", tags=["beta"])
+router = APIRouter(prefix="/v1", tags=["v1"])
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
@@ -205,6 +205,7 @@ class ObjectInstanceMetadata(BaseModel):
     typeNamespaceUri: str | None = None
     sourceTypeId: str | None = None
     description: str | None = None
+    compositionParentId: str | None = None
     relationships: dict[str, Any] | None = None
     extendedAttributes: dict[str, Any] | None = None
     system: dict[str, Any] | None = None
@@ -291,10 +292,18 @@ class RegisterMonitoredItemsRequest(BaseModel):
 
 
 class SyncRequest(BaseModel):
+    """Request body for polling pending subscription updates."""
+
     clientId: str | None = None
     subscriptionId: str
     acknowledgeSequence: int | None = Field(
         default=None,
+        description=(
+            "Last sequence number the client has processed. All updates with a sequence number "
+            "<= this value are removed from the pending queue. "
+            "Pass -1 to acknowledge and discard all pending updates. "
+            "Omit or pass null on the first call to receive all buffered updates without discarding any."
+        ),
         validation_alias=AliasChoices("acknowledgeSequence", "lastSequenceNumber"),
     )
 
@@ -310,11 +319,18 @@ class DeleteSubscriptionsRequest(BaseModel):
 
 
 class StreamRequest(BaseModel):
+    """Request body for opening a Server-Sent Events stream for subscription updates."""
+
     clientId: str | None = None
     subscriptionId: str
     acknowledgeSequence: int | None = Field(
         default=None,
         ge=0,
+        description=(
+            "Last sequence number the client has already processed. Updates with a sequence number "
+            "<= this value are discarded before the stream starts. "
+            "Omit to start streaming from the next unacknowledged update."
+        ),
         validation_alias=AliasChoices("acknowledgeSequence", "lastSequenceNumber"),
     )
 
@@ -578,37 +594,67 @@ def _object_type_related_instances(
     return related
 
 
-def _relationship_type_items() -> list[RelationshipType]:
-    return [
+_I3X_NAMESPACE = "https://cesmii.org/i3x"
+_OPCUA_NAMESPACE = "https://opcfoundation.org/UA/"
+
+
+def _relationship_type_items(model: BuildResult | None = None) -> list[RelationshipType]:
+    items = [
         RelationshipType(
             elementId="HasParent",
             displayName="HasParent",
-            namespaceUri="https://cesmii.org/i3x",
+            namespaceUri=_I3X_NAMESPACE,
             relationshipId="HasParent",
             reverseOf="HasChildren",
         ),
         RelationshipType(
             elementId="HasChildren",
             displayName="HasChildren",
-            namespaceUri="https://cesmii.org/i3x",
+            namespaceUri=_I3X_NAMESPACE,
             relationshipId="HasChildren",
             reverseOf="HasParent",
         ),
         RelationshipType(
             elementId="HasComponent",
             displayName="HasComponent",
-            namespaceUri="https://cesmii.org/i3x",
+            namespaceUri=_I3X_NAMESPACE,
             relationshipId="HasComponent",
             reverseOf="ComponentOf",
         ),
         RelationshipType(
             elementId="ComponentOf",
             displayName="ComponentOf",
-            namespaceUri="https://cesmii.org/i3x",
+            namespaceUri=_I3X_NAMESPACE,
             relationshipId="ComponentOf",
             reverseOf="HasComponent",
         ),
     ]
+    if model is not None:
+        graph_names = getattr(model, "graph_relationship_names", None) or set()
+        existing = {item.elementId for item in items}
+        for name in sorted(graph_names):
+            if name in existing:
+                continue
+            reverse_name = f"inverseOf_{name}"
+            items.append(
+                RelationshipType(
+                    elementId=name,
+                    displayName=name,
+                    namespaceUri=_OPCUA_NAMESPACE,
+                    relationshipId=name,
+                    reverseOf=reverse_name,
+                )
+            )
+            items.append(
+                RelationshipType(
+                    elementId=reverse_name,
+                    displayName=reverse_name,
+                    namespaceUri=_OPCUA_NAMESPACE,
+                    relationshipId=reverse_name,
+                    reverseOf=name,
+                )
+            )
+    return items
 
 
 def _find_model_node(model: BuildResult, element_id: str) -> ModelNode | None:
@@ -641,15 +687,137 @@ def _find_model_node(model: BuildResult, element_id: str) -> ModelNode | None:
 
 
 def _parent_id_for_node(model: BuildResult, node_id: str) -> str | None:
+    if node_id in model.root_ids:
+        return None
+
+    raw_hierarchy_parent_by_id = getattr(model, "hierarchy_parent_by_id", None)
+    if isinstance(raw_hierarchy_parent_by_id, dict):
+        if node_id in raw_hierarchy_parent_by_id:
+            indexed_parent = raw_hierarchy_parent_by_id.get(node_id)
+            if isinstance(indexed_parent, str):
+                return indexed_parent
+        else:
+            # Node has no hierarchy parent; if it's an asset/event, it's a root
+            node = model.nodes_by_id.get(node_id)
+            if node and node.kind in {"asset", "eventSource"}:
+                return None
+            # For properties and other kinds, continue with fallback lookup
+
     raw_parent_by_id = getattr(model, "parent_by_id", None)
     if isinstance(raw_parent_by_id, dict):
         indexed_parent = raw_parent_by_id.get(node_id)
         if isinstance(indexed_parent, str):
             return indexed_parent
+
+    raw_hierarchy_children_by_id = getattr(model, "hierarchy_children_by_id", None)
+    if isinstance(raw_hierarchy_children_by_id, dict):
+        for parent_id, child_ids in raw_hierarchy_children_by_id.items():
+            if node_id in child_ids:
+                return parent_id
+
     for parent_id, child_ids in model.children_by_id.items():
         if node_id in child_ids:
             return parent_id
     return None
+
+
+def _hierarchy_children_for_node(model: BuildResult, node: ModelNode) -> list[str]:
+    raw_hierarchy_children_by_id = getattr(model, "hierarchy_children_by_id", None)
+    if isinstance(raw_hierarchy_children_by_id, dict):
+        if node.id in raw_hierarchy_children_by_id:
+            children = raw_hierarchy_children_by_id.get(node.id, [])
+            if isinstance(children, list):
+                return [child_id for child_id in children if isinstance(child_id, str)]
+
+    return [
+        child_id
+        for child_id in model.children_by_id.get(node.id, [])
+        if (model.nodes_by_id.get(child_id) is not None and model.nodes_by_id[child_id].kind != "property")
+    ]
+
+
+def _composition_children_for_node(model: BuildResult, node: ModelNode) -> list[str]:
+    raw_composition_children_by_id = getattr(model, "composition_children_by_id", None)
+    if isinstance(raw_composition_children_by_id, dict):
+        if node.id in raw_composition_children_by_id:
+            children = raw_composition_children_by_id.get(node.id, [])
+            if isinstance(children, list):
+                return [child_id for child_id in children if isinstance(child_id, str)]
+
+    return [
+        child_id
+        for child_id in model.children_by_id.get(node.id, [])
+        if (model.nodes_by_id.get(child_id) is not None and model.nodes_by_id[child_id].kind == "property")
+    ]
+
+
+def _relationships_for_node(model: BuildResult, node: ModelNode) -> dict[str, list[str]]:
+    raw_relationships_by_id = getattr(model, "relationships_by_id", None)
+    if isinstance(raw_relationships_by_id, dict):
+        raw_for_node = raw_relationships_by_id.get(node.id)
+        if isinstance(raw_for_node, dict) and raw_for_node:
+            normalized: dict[str, list[str]] = {}
+            for relationship_name, targets in raw_for_node.items():
+                if not isinstance(relationship_name, str):
+                    continue
+                if isinstance(targets, list):
+                    normalized_targets = [item for item in targets if isinstance(item, str)]
+                elif isinstance(targets, str):
+                    normalized_targets = [targets]
+                else:
+                    normalized_targets = []
+                if normalized_targets:
+                    normalized[relationship_name] = normalized_targets
+            if normalized:
+                return normalized
+
+    parent_id = _parent_id_for_node(model, node.id)
+    relationships: dict[str, list[str]] = {}
+    if parent_id is not None:
+        relationships["HasParent"] = [parent_id]
+    hierarchy_children = _hierarchy_children_for_node(model, node)
+    if hierarchy_children:
+        relationships["HasChildren"] = hierarchy_children
+    composition_children = _composition_children_for_node(model, node)
+    if composition_children:
+        relationships["HasComponent"] = composition_children
+    return relationships
+
+
+def _relationship_type_for_name(name: str, node: ModelNode) -> RelationshipType:
+    if name == "HasChildren":
+        return RelationshipType(
+            elementId="HasChildren",
+            displayName="HasChildren",
+            namespaceUri="https://cesmii.org/i3x",
+            relationshipId="HasChildren",
+            reverseOf="HasParent",
+        )
+    if name == "HasParent":
+        return _relationship_type_to_parent(node)
+    if name == "HasComponent":
+        return RelationshipType(
+            elementId="HasComponent",
+            displayName="HasComponent",
+            namespaceUri="https://cesmii.org/i3x",
+            relationshipId="HasComponent",
+            reverseOf="ComponentOf",
+        )
+    if name == "ComponentOf":
+        return RelationshipType(
+            elementId="ComponentOf",
+            displayName="ComponentOf",
+            namespaceUri="https://cesmii.org/i3x",
+            relationshipId="ComponentOf",
+            reverseOf="HasComponent",
+        )
+    return RelationshipType(
+        elementId=name,
+        displayName=name,
+        namespaceUri="https://cesmii.org/i3x",
+        relationshipId=name,
+        reverseOf="",
+    )
 
 
 def _to_object_instance(
@@ -685,15 +853,23 @@ def _to_object_instance(
     metadata = None
     if include_metadata:
         relationships: dict[str, Any] = {}
-        parent_id = _parent_id_for_node(model, node.id)
-        if parent_id is not None:
-            relationships["HasParent"] = parent_id
-        if node.children:
-            relationships["HasChildren"] = list(node.children)
+        normalized_relationships = _relationships_for_node(model, node)
+        for relationship_name, targets in normalized_relationships.items():
+            if relationship_name == "HasParent":
+                relationships[relationship_name] = targets[0]
+            else:
+                relationships[relationship_name] = targets
+        composition_parent_id: str | None = None
+        raw_composition_parent_by_id = getattr(model, "composition_parent_by_id", None)
+        if isinstance(raw_composition_parent_by_id, dict):
+            indexed_composition_parent = raw_composition_parent_by_id.get(node.id)
+            if isinstance(indexed_composition_parent, str):
+                composition_parent_id = indexed_composition_parent
         metadata = ObjectInstanceMetadata(
             typeNamespaceUri=type_namespace_uri,
             sourceTypeId=source_type_id_expanded,
             description=f"Derived from model node {node.name}",
+            compositionParentId=composition_parent_id,
             relationships=relationships,
         )
     return ObjectInstanceResponse(
@@ -701,7 +877,7 @@ def _to_object_instance(
         displayName=node.name,
         typeElementId=type_element_id,
         parentId=_parent_id_for_node(model, node.id),
-        isComposition=bool(node.children),
+        isComposition=bool(_composition_children_for_node(model, node)),
         isExtended=False,
         metadata=metadata,
     )
@@ -805,6 +981,21 @@ def _vqt_from_any(value: Any) -> VQT:
     return VQT(value=_to_json_safe_value(value), quality="Good", timestamp=_now_iso())
 
 
+def _vqt_from_data_value(data_value: Any) -> VQT:
+    variant = getattr(data_value, "Value", None)
+    raw_value = getattr(variant, "Value", variant)
+    status_code = getattr(data_value, "StatusCode", None)
+    quality = _normalize_quality(status_code)
+    source_timestamp = getattr(data_value, "SourceTimestamp", None)
+    server_timestamp = getattr(data_value, "ServerTimestamp", None)
+    timestamp_dt = source_timestamp or server_timestamp
+    timestamp = _normalize_timestamp(timestamp_dt)
+    safe_value = _to_json_safe_value(raw_value)
+    if safe_value is None and quality not in ("Bad", "GoodNoData"):
+        quality = "GoodNoData"
+    return VQT(value=safe_value, quality=quality, timestamp=timestamp)
+
+
 def _collect_value_component_nodes(model: BuildResult, root: ModelNode, max_depth: int) -> list[ModelNode]:
     if max_depth == 1:
         return []
@@ -822,7 +1013,11 @@ def _collect_value_component_nodes(model: BuildResult, root: ModelNode, max_dept
         if max_depth > 0 and depth >= max_depth:
             continue
 
-        for child_id in model.children_by_id.get(node_id, []):
+        current_node = model.nodes_by_id.get(node_id)
+        if current_node is None:
+            continue
+
+        for child_id in _composition_children_for_node(model, current_node):
             child = model.nodes_by_id.get(child_id)
             if child is None:
                 continue
@@ -857,7 +1052,11 @@ def _collect_history_source_nodes(model: BuildResult, root: ModelNode, max_depth
         if max_depth != 0 and depth >= max_depth:
             continue
 
-        for child_id in model.children_by_id.get(current_id, []):
+        current_node = model.nodes_by_id.get(current_id)
+        if current_node is None:
+            continue
+
+        for child_id in _composition_children_for_node(model, current_node):
             queue.append((child_id, depth + 1))
 
     return results
@@ -866,18 +1065,27 @@ def _collect_history_source_nodes(model: BuildResult, root: ModelNode, max_depth
 def _normalize_quality(status_code: Any) -> str:
     if status_code is None:
         return "Good"
+    is_uncertain = getattr(status_code, "is_uncertain", None)
+    if callable(is_uncertain):
+        try:
+            if bool(is_uncertain()):
+                return "Uncertain"
+        except Exception:
+            pass
+    name = getattr(status_code, "name", "")
+    label = str(name) if name else ""
+    if "uncertain" in label.lower():
+        return "Uncertain"
     is_good = getattr(status_code, "is_good", None)
     if callable(is_good):
         try:
             return "Good" if bool(is_good()) else "Bad"
         except Exception:
             pass
-    name = getattr(status_code, "name", "")
-    label = str(name) if name else str(status_code)
-    if "uncertain" in label.lower():
-        return "Uncertain"
     if "good" in label.lower():
         return "Good"
+    if label:
+        return "Bad"
     return "Bad"
 
 
@@ -1613,16 +1821,20 @@ async def query_object_types_v1(
 @router.get("/relationshiptypes", response_model=SuccessResponse[list[RelationshipType]])
 async def get_relationship_types(
     namespace_uri: str | None = Query(default=None, alias="namespaceUri"),
+    model: BuildResult = Depends(get_or_build_model),
 ) -> SuccessResponse[list[RelationshipType]]:
-    items = _relationship_type_items()
+    items = _relationship_type_items(model)
     if namespace_uri is not None:
         items = [item for item in items if item.namespaceUri == namespace_uri]
     return SuccessResponse(result=items)
 
 
 @router.post("/relationshiptypes/query", response_model=BulkResponse[RelationshipType])
-async def query_relationship_types(body: GetRelationshipTypesRequest) -> BulkResponse[RelationshipType]:
-    items = {item.elementId: item for item in _relationship_type_items()}
+async def query_relationship_types(
+    body: GetRelationshipTypesRequest,
+    model: BuildResult = Depends(get_or_build_model),
+) -> BulkResponse[RelationshipType]:
+    items = {item.elementId: item for item in _relationship_type_items(model)}
     results: list[BulkResultItem[RelationshipType]] = []
     for element_id in body.elementIds:
         match = items.get(element_id)
@@ -1674,7 +1886,25 @@ async def get_objects_v1(
         object_type_element_ids_by_source_type = {}
 
     if root is True:
-        nodes = [model.nodes_by_id[node_id] for node_id in model.root_ids if node_id in model.nodes_by_id]
+        hierarchy_parent_ids = set()
+        raw_hierarchy_parent_by_id = getattr(model, "hierarchy_parent_by_id", None)
+        if isinstance(raw_hierarchy_parent_by_id, dict):
+            hierarchy_parent_ids = {node_id for node_id in raw_hierarchy_parent_by_id.keys() if isinstance(node_id, str)}
+        composition_parent_ids = set()
+        raw_composition_parent_by_id = getattr(model, "composition_parent_by_id", None)
+        if isinstance(raw_composition_parent_by_id, dict):
+            composition_parent_ids = {node_id for node_id in raw_composition_parent_by_id.keys() if isinstance(node_id, str)}
+        nodes = [
+            node
+            for node in model.nodes_by_id.values()
+            if (
+                node.id not in hierarchy_parent_ids
+                and node.id not in composition_parent_ids
+                and node.kind in {"asset", "eventSource"}
+            )
+        ]
+        if not nodes:
+            nodes = [model.nodes_by_id[node_id] for node_id in model.root_ids if node_id in model.nodes_by_id]
     else:
         nodes = list(model.nodes_by_id.values())
     if type_element_id is not None:
@@ -1767,7 +1997,17 @@ async def list_objects_by_id_v1(
     return _bulk_response(results)
 
 
-@router.post("/objects/related", response_model=BulkResponse[list[RelatedObjectResult]])
+@router.post(
+    "/objects/related",
+    response_model=BulkResponse[list[RelatedObjectResult]],
+    summary="Query related objects",
+    description=(
+        "Return all objects related to the requested elements across all relationship planes: "
+        "hierarchy (`HasChildren`, `HasParent`), composition (`HasComponent`, `ComponentOf`), and graph (custom/non-hierarchical). "
+        "Use `relationshipType` to filter results to a specific named relationship. "
+        "Failing items include an item-level `responseDetail` alongside `error`."
+    ),
+)
 async def query_related_objects_v1(
     request: Request,
     body: GetRelatedObjectsRequest,
@@ -1812,46 +2052,28 @@ async def query_related_objects_v1(
             )
             continue
         related: list[RelatedObjectResult] = []
-        parent_id = _parent_id_for_node(model, node.id)
-        if parent_id is not None:
-            parent = model.nodes_by_id.get(parent_id)
-            if parent is not None:
-                parent_relationship = _relationship_type_to_parent(node)
-                if body.relationshipType is None or parent_relationship.elementId == body.relationshipType:
-                    related.append(
-                        RelatedObjectResult(
-                            sourceRelationship=parent_relationship.displayName,
-                            object=_to_object_instance(
-                                model,
-                                parent,
-                                include_metadata=body.includeMetadata,
-                                namespace_infos=namespace_infos,
-                                object_type_element_ids_by_node_id=object_type_element_ids_by_node_id,
-                                object_type_element_ids_by_source_type=object_type_element_ids_by_source_type,
-                            ),
-                        )
-                    )
-
-        for child_id in model.children_by_id.get(node.id, []):
-            child = model.nodes_by_id.get(child_id)
-            if child is None:
-                continue
-            relationship = _relationship_type_for_child(child)
+        relationship_map = _relationships_for_node(model, node)
+        for relationship_name, target_ids in relationship_map.items():
+            relationship = _relationship_type_for_name(relationship_name, node)
             if body.relationshipType is not None and relationship.elementId != body.relationshipType:
                 continue
-            related.append(
-                RelatedObjectResult(
-                    sourceRelationship=relationship.displayName,
-                    object=_to_object_instance(
-                        model,
-                        child,
-                        include_metadata=body.includeMetadata,
-                        namespace_infos=namespace_infos,
-                        object_type_element_ids_by_node_id=object_type_element_ids_by_node_id,
-                        object_type_element_ids_by_source_type=object_type_element_ids_by_source_type,
-                    ),
+            for target_id in target_ids:
+                target = model.nodes_by_id.get(target_id)
+                if target is None:
+                    continue
+                related.append(
+                    RelatedObjectResult(
+                        sourceRelationship=relationship.displayName,
+                        object=_to_object_instance(
+                            model,
+                            target,
+                            include_metadata=body.includeMetadata,
+                            namespace_infos=namespace_infos,
+                            object_type_element_ids_by_node_id=object_type_element_ids_by_node_id,
+                            object_type_element_ids_by_source_type=object_type_element_ids_by_source_type,
+                        ),
+                    )
                 )
-            )
         results.append(
             BulkResultItem[list[RelatedObjectResult]](
                 success=True,
@@ -1862,7 +2084,19 @@ async def query_related_objects_v1(
     return _bulk_response(results)
 
 
-@router.post("/objects/value", response_model=BulkResponse[CurrentValueResult])
+@router.post(
+    "/objects/value",
+    response_model=BulkResponse[CurrentValueResult],
+    summary="Query last known values",
+    description=(
+        "Return the last known value, quality, and timestamp for one or more objects. "
+        "Quality and timestamp are sourced directly from the OPC UA server; quality values are `Good`, `Uncertain`, or `Bad`. "
+        "A null value with `Good` or `Uncertain` quality is normalized to `GoodNoData`. "
+        "When `maxDepth > 1`, component values are recursed using the **composition** adjacency only — "
+        "hierarchy-only children are never included. "
+        "Failing items include an item-level `responseDetail` alongside `error`."
+    ),
+)
 async def query_last_known_values_v1(
     body: GetObjectValueRequest,
     model: BuildResult = Depends(get_or_build_model),
@@ -1876,7 +2110,8 @@ async def query_last_known_values_v1(
         node = _find_model_node(model, element_id)
         if node is None:
             continue
-        node_ids.append(node.source_node_id)
+        if node.kind == "property":
+            node_ids.append(node.source_node_id)
         ordered_nodes.append((element_id, node))
         component_nodes = _collect_value_component_nodes(model, node, requested_depth)
         component_nodes_by_element_id[element_id] = component_nodes
@@ -1885,11 +2120,8 @@ async def query_last_known_values_v1(
     values_by_node_id: dict[str, Any] = {}
     if node_ids:
         try:
-            raw_values = await opcua_client.read_values(node_ids)
-            if isinstance(raw_values, dict):
-                values_by_node_id = {str(key): value for key, value in raw_values.items()}
-            else:
-                values_by_node_id = {node_id: value for node_id, value in zip(node_ids, raw_values, strict=False)}
+            raw_data_values = await opcua_client.read_data_values(node_ids)
+            values_by_node_id = {node_id: dv for node_id, dv in zip(node_ids, raw_data_values, strict=False)}
         except Exception as exc:
             raise i3x_http_error(
                 502,
@@ -1912,14 +2144,15 @@ async def query_last_known_values_v1(
             )
             continue
 
-        root_vqt = _vqt_from_any(values_by_node_id.get(node.source_node_id))
+        root_vqt = _vqt_from_data_value(values_by_node_id[node.source_node_id]) if node.source_node_id in values_by_node_id else VQT(value=None, quality="GoodNoData", timestamp=_now_iso())
         component_nodes = component_nodes_by_element_id.get(element_id, [])
         components: dict[str, VQT] = {}
         for component_node in component_nodes:
-            components[component_node.id] = _vqt_from_any(values_by_node_id.get(component_node.source_node_id))
+            comp_dv = values_by_node_id.get(component_node.source_node_id)
+            components[component_node.id] = _vqt_from_data_value(comp_dv) if comp_dv is not None else VQT(value=None, quality="GoodNoData", timestamp=_now_iso())
 
         result = CurrentValueResult(
-            isComposition=bool(node.children),
+            isComposition=bool(_composition_children_for_node(model, node)),
             value=root_vqt.value,
             quality=root_vqt.quality,
             timestamp=root_vqt.timestamp,
@@ -1929,7 +2162,17 @@ async def query_last_known_values_v1(
     return _bulk_response(results)
 
 
-@router.post("/objects/history", response_model=BulkResponse[HistoricalValueResult])
+@router.post(
+    "/objects/history",
+    response_model=BulkResponse[HistoricalValueResult],
+    summary="Query historical values",
+    description=(
+        "Return historical values for one or more objects within the specified time range. "
+        "Values are ordered by source timestamp ascending. "
+        "Component recursion follows the **composition** adjacency only — hierarchy-only children are excluded. "
+        "Failing items include an item-level `responseDetail` alongside `error`."
+    ),
+)
 async def query_historical_values_v1(
     body: GetObjectHistoryRequest,
     model: BuildResult = Depends(get_or_build_model),
@@ -2003,7 +2246,7 @@ async def query_historical_values_v1(
                 success=True,
                 elementId=element_id,
                 result=HistoricalValueResult(
-                    isComposition=bool(node.children),
+                    isComposition=bool(_composition_children_for_node(model, node)),
                     values=values,
                 ),
             )
@@ -2121,7 +2364,19 @@ async def remove_monitored_items_v1(
     return _bulk_response(results)
 
 
-@router.post("/subscriptions/stream")
+@router.post(
+    "/subscriptions/stream",
+    summary="Stream subscription updates via SSE",
+    description=(
+        "Open a Server-Sent Events (SSE) stream for a subscription. "
+        "Each `data:` event carries a JSON array of updates with `sequenceNumber`, `elementId`, `value`, `quality`, and `timestamp`. "
+        "A `: connected` comment is sent immediately on connection. "
+        "A `: keepalive` comment is sent periodically when there are no new updates. "
+        "An `event: close` message is sent when the stream is terminated server-side. "
+        "While a stream is active, `POST /subscriptions/sync` will return HTTP 400 for the same subscription. "
+        "Opening a new stream for the same subscription closes the prior stream generation."
+    ),
+)
 async def stream_subscription_v1(
     body: StreamRequest,
     opcua_client: OpcUaClientProtocol = Depends(get_opcua_client),
@@ -2149,7 +2404,8 @@ async def stream_subscription_v1(
     acknowledged = await subscription_service.sync(
         client_id=client_id,
         subscription_id=body.subscriptionId,
-        acknowledge_sequence=body.acknowledgeSequence or 0,
+        acknowledge_sequence=body.acknowledgeSequence,
+        allow_when_stream_active=True,
     )
     if acknowledged is None:
         raise i3x_http_error(
@@ -2159,43 +2415,46 @@ async def stream_subscription_v1(
         )
 
     async def event_stream() -> Any:
-        # Send an immediate SSE comment so clients can confirm stream establishment quickly.
-        yield ": connected\n\n"
-        last_sequence = body.acknowledgeSequence or 0
-        while True:
-            is_active = await subscription_service.is_stream_active(body.subscriptionId, stream_generation)
-            if not is_active:
-                yield "event: close\ndata: {}\n\n"
-                return
+        try:
+            # Send an immediate SSE comment so clients can confirm stream establishment quickly.
+            yield ": connected\n\n"
+            last_sequence = body.acknowledgeSequence or 0
+            while True:
+                is_active = await subscription_service.is_stream_active(body.subscriptionId, stream_generation)
+                if not is_active:
+                    yield "event: close\ndata: {}\n\n"
+                    return
 
-            updates = await subscription_service.wait_for_updates(
-                client_id=client_id,
-                subscription_id=body.subscriptionId,
-                after_sequence=last_sequence,
-                timeout_seconds=15,
-            )
+                updates = await subscription_service.wait_for_updates(
+                    client_id=client_id,
+                    subscription_id=body.subscriptionId,
+                    after_sequence=last_sequence,
+                    timeout_seconds=15,
+                )
 
-            if updates is None:
-                yield "event: close\ndata: {}\n\n"
-                return
+                if updates is None:
+                    yield "event: close\ndata: {}\n\n"
+                    return
 
-            if not updates:
-                yield ": keepalive\n\n"
-                continue
+                if not updates:
+                    yield ": keepalive\n\n"
+                    continue
 
-            last_sequence = updates[-1].sequence_number
-            payload = [
-                {
-                    "sequenceNumber": item.sequence_number,
-                    "elementId": _expanded_node_id(item.element_id, namespace_infos),
-                    "value": _to_json_safe_value(item.value),
-                    "quality": item.quality,
-                    "timestamp": item.timestamp,
-                }
-                for item in updates
-            ]
-            encoded_payload = jsonable_encoder(payload)
-            yield f"data: {json.dumps(encoded_payload)}\n\n"
+                last_sequence = updates[-1].sequence_number
+                payload = [
+                    {
+                        "sequenceNumber": item.sequence_number,
+                        "elementId": _expanded_node_id(item.element_id, namespace_infos),
+                        "value": _to_json_safe_value(item.value),
+                        "quality": item.quality,
+                        "timestamp": item.timestamp,
+                    }
+                    for item in updates
+                ]
+                encoded_payload = jsonable_encoder(payload)
+                yield f"data: {json.dumps(encoded_payload)}\n\n"
+        finally:
+            await subscription_service.deactivate_stream(body.subscriptionId, stream_generation)
 
     return StreamingResponse(
         event_stream(),
@@ -2208,12 +2467,22 @@ async def stream_subscription_v1(
     )
 
 
-@router.post("/subscriptions/sync")
+@router.post(
+    "/subscriptions/sync",
+    summary="Sync subscription updates",
+    description=(
+        "Return all pending updates for a subscription and acknowledge previously received ones. "
+        "Set `acknowledgeSequence` to the last sequence number the client processed to discard older entries from the queue. "
+        "Pass `acknowledgeSequence=-1` to acknowledge and discard **all** pending updates. "
+        "Returns HTTP 206 with a `responseDetail` if updates were dropped due to queue overflow since the last sync. "
+        "Returns HTTP 400 if the subscription has an active SSE stream — close the stream before calling sync."
+    ),
+)
 async def sync_subscription_v1(
     body: SyncRequest,
     opcua_client: OpcUaClientProtocol = Depends(get_opcua_client),
     subscription_service: SubscriptionService = Depends(get_subscription_service),
-) -> SuccessResponse[list[SyncUpdate]]:
+) -> Any:
     client_id = _require_client_id(body.clientId, "/subscriptions/sync")
     namespace_infos: list[OpcUaNamespaceInfo] = []
     try:
@@ -2221,10 +2490,24 @@ async def sync_subscription_v1(
     except Exception:
         namespace_infos = []
 
+    active_stream = await subscription_service.has_active_stream(client_id=client_id, subscription_id=body.subscriptionId)
+    if active_stream is None:
+        raise i3x_http_error(
+            404,
+            "SubscriptionNotFound",
+            f"Subscription '{body.subscriptionId}' not found",
+        )
+    if active_stream:
+        raise i3x_http_error(
+            400,
+            "BadRequest",
+            "Subscription has an active stream; close stream before calling sync",
+        )
+
     synced = await subscription_service.sync(
         client_id=client_id,
         subscription_id=body.subscriptionId,
-        acknowledge_sequence=body.acknowledgeSequence or 0,
+        acknowledge_sequence=body.acknowledgeSequence,
     )
     if synced is None:
         raise i3x_http_error(
@@ -2232,18 +2515,36 @@ async def sync_subscription_v1(
             "SubscriptionNotFound",
             f"Subscription '{body.subscriptionId}' not found",
         )
-    return SuccessResponse(
-        result=[
-            SyncUpdate(
-                sequenceNumber=item.sequence_number,
-                elementId=_expanded_node_id(item.element_id, namespace_infos),
-                value=_to_json_safe_value(item.value),
-                quality=item.quality,
-                timestamp=item.timestamp,
-            )
-            for item in synced.updates
-        ]
-    )
+    result_payload = [
+        SyncUpdate(
+            sequenceNumber=item.sequence_number,
+            elementId=_expanded_node_id(item.element_id, namespace_infos),
+            value=_to_json_safe_value(item.value),
+            quality=item.quality,
+            timestamp=item.timestamp,
+        ).model_dump(mode="json")
+        for item in synced.updates
+    ]
+
+    if synced.queue_overflow:
+        detail = (
+            "Updates were dropped from the subscription queue. "
+            f"Dropped sequence numbers {synced.dropped_from_sequence} through {synced.dropped_to_sequence}."
+        )
+        return JSONResponse(
+            status_code=206,
+            content={
+                "success": True,
+                "result": result_payload,
+                "responseDetail": {
+                    "title": "Updates dropped due to queue overflow",
+                    "status": 206,
+                    "detail": detail,
+                },
+            },
+        )
+
+    return SuccessResponse(result=result_payload)
 
 
 @router.post("/subscriptions/delete")

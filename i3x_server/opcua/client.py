@@ -37,6 +37,14 @@ class OpcUaNodeInfo:
     data_type: str | None
     type_definition_id: str | None = None
     event_notifier: bool = False
+    outgoing_references: list[OpcUaReferenceInfo] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class OpcUaReferenceInfo:
+    target_node_id: str
+    reference_type_id: str
+    reference_browse_name: str
 
 
 @dataclass(slots=True)
@@ -129,6 +137,8 @@ class OpcUaClientProtocol(Protocol):
 
     async def read_values(self, node_ids: list[str]) -> list[Any]: ...
 
+    async def read_data_values(self, node_ids: list[str]) -> list[ua.DataValue]: ...
+
     async def read_history_values(
         self,
         node_ids: list[str],
@@ -200,6 +210,7 @@ class OpcUaClient:
         self._subscription_caps_cache: OpcUaSubscriptionCapabilities | None = None
         self._namespace_infos_cache: tuple[float, list[OpcUaNamespaceInfo]] | None = None
         self._object_types_cache: tuple[float, list[OpcUaObjectTypeInfo]] | None = None
+        self._reference_type_supertypes_cache: dict[str, list[str]] = {}
         self._runtime_metrics = OpcUaRuntimeMetrics()
 
     def reset_runtime_metrics(self) -> None:
@@ -207,6 +218,66 @@ class OpcUaClient:
 
     def snapshot_runtime_metrics(self) -> OpcUaRuntimeMetrics:
         return OpcUaRuntimeMetrics(**asdict(self._runtime_metrics))
+
+    async def resolve_reference_type_supertype_browse_names(self, reference_type_id: str) -> list[str]:
+        if not isinstance(reference_type_id, str) or not reference_type_id:
+            return []
+
+        cached = self._reference_type_supertypes_cache.get(reference_type_id)
+        if cached is not None:
+            return list(cached)
+
+        discovered_names: list[str] = []
+        seen_names: set[str] = set()
+        visited_type_ids: set[str] = set()
+        pending_type_ids: list[str] = [reference_type_id]
+
+        while pending_type_ids:
+            current_type_id = pending_type_ids.pop()
+            if current_type_id in visited_type_ids:
+                continue
+            visited_type_ids.add(current_type_id)
+
+            type_node = self._client.get_node(current_type_id)
+            try:
+                browse_name_obj = await type_node.read_browse_name()
+                browse_name = getattr(browse_name_obj, "Name", None)
+                if isinstance(browse_name, str) and browse_name and browse_name not in seen_names:
+                    seen_names.add(browse_name)
+                    discovered_names.append(browse_name)
+            except Exception:
+                logger.debug(
+                    "OPC UA browse name read failed for reference type endpoint=%s reference_type_id=%s",
+                    self._endpoint,
+                    current_type_id,
+                    exc_info=True,
+                )
+
+            try:
+                supertype_refs_by_node = await self._browse_references_descriptions(
+                    [type_node],
+                    max_nodes_per_browse=1,
+                    reference_type_id=ObjectIds.HasSubtype,
+                    browse_direction=ua.BrowseDirection.Inverse,
+                    include_subtypes=False,
+                )
+            except Exception:
+                logger.debug(
+                    "OPC UA supertype browse failed endpoint=%s reference_type_id=%s",
+                    self._endpoint,
+                    current_type_id,
+                    exc_info=True,
+                )
+                continue
+
+            for _, refs in supertype_refs_by_node:
+                for ref in refs:
+                    supertype_id = ref.NodeId.to_string()
+                    if isinstance(supertype_id, str) and supertype_id and supertype_id not in visited_type_ids:
+                        pending_type_ids.append(supertype_id)
+
+        self._reference_type_supertypes_cache[reference_type_id] = list(discovered_names)
+        return list(discovered_names)
 
     async def connect(self) -> None:
         started = perf_counter()
@@ -322,6 +393,19 @@ class OpcUaClient:
             node_infos = await self._read_node_infos_limited(filtered_entries)
             output.extend(node_infos)
 
+            node_info_by_id = {item.node_id: item for item in node_infos}
+
+            all_refs = await self._browse_references_descriptions(
+                [node for node, _ in filtered_entries],
+                max_nodes_per_browse=max_nodes_per_browse,
+                reference_type_id=ObjectIds.References,
+            )
+            for parent_node, refs in all_refs:
+                info = node_info_by_id.get(parent_node.nodeid.to_string())
+                if info is None:
+                    continue
+                info.outgoing_references = self._to_reference_infos(refs)
+
             nodes = [node for node, _ in filtered_entries]
             browsed = await self._browse_children_descriptions(nodes, max_nodes_per_browse)
             for parent_node, refs in browsed:
@@ -336,6 +420,21 @@ class OpcUaClient:
             perf_counter() - started,
         )
         self._runtime_metrics.browse_tree_nodes_last = len(output)
+        return output
+
+    def _to_reference_infos(self, refs: list[ua.ReferenceDescription]) -> list[OpcUaReferenceInfo]:
+        output: list[OpcUaReferenceInfo] = []
+        for ref in refs:
+            target_node_id = ref.NodeId.to_string()
+            reference_type_id = ref.ReferenceTypeId.to_string()
+            reference_browse_name = ref.BrowseName.Name
+            output.append(
+                OpcUaReferenceInfo(
+                    target_node_id=target_node_id,
+                    reference_type_id=reference_type_id,
+                    reference_browse_name=reference_browse_name,
+                )
+            )
         return output
 
     async def _read_node_info(self, node: Any, parent_node_id: str | None) -> OpcUaNodeInfo:
@@ -1189,6 +1288,8 @@ class OpcUaClient:
         nodes: list[Any],
         max_nodes_per_browse: int,
         reference_type_id: int,
+        browse_direction: ua.BrowseDirection = ua.BrowseDirection.Forward,
+        include_subtypes: bool = True,
     ) -> list[tuple[Any, list[ua.ReferenceDescription]]]:
         if not nodes:
             return []
@@ -1199,9 +1300,9 @@ class OpcUaClient:
             for node in node_batch:
                 desc = ua.BrowseDescription()
                 desc.NodeId = node.nodeid
-                desc.BrowseDirection = ua.BrowseDirection.Forward
+                desc.BrowseDirection = browse_direction
                 desc.ReferenceTypeId = ua.NodeId(ua.Int32(reference_type_id))
-                desc.IncludeSubtypes = True
+                desc.IncludeSubtypes = include_subtypes
                 desc.NodeClassMask = ua.NodeClass.Unspecified
                 desc.ResultMask = ua.BrowseResultMask.All
                 browse_descriptions.append(desc)
@@ -1377,6 +1478,57 @@ class OpcUaClient:
             perf_counter() - started,
         )
         return values
+
+    async def read_data_values(self, node_ids: list[str]) -> list[ua.DataValue]:
+        if not node_ids:
+            return []
+
+        started = perf_counter()
+        limits = await self.get_operational_limits()
+        max_nodes = limits.max_nodes_per_read or len(node_ids)
+        batch_size = max(1, min(max_nodes, len(node_ids)))
+        semaphore = asyncio.Semaphore(min(batch_size, self._browse_concurrency))
+
+        async def _read_one(node_id: str) -> ua.DataValue:
+            async with semaphore:
+                node = self._client.get_node(node_id)
+                try:
+                    return await node.read_data_value()
+                except Exception as exc:
+                    if self._should_retry_after_disconnect(exc):
+                        logger.warning(
+                            "OPC UA data-value read retry after reconnect node_id=%s endpoint=%s",
+                            node_id,
+                            self._endpoint,
+                        )
+                        await self._reconnect()
+                        try:
+                            return await self._client.get_node(node_id).read_data_value()
+                        except Exception:
+                            pass
+                    logger.warning(
+                        "OPC UA data-value read failed node_id=%s; returning Bad null",
+                        node_id,
+                        exc_info=True,
+                    )
+                    dv = ua.DataValue()
+                    dv.StatusCode = ua.StatusCode(ua.StatusCodes.BadUnexpectedError)
+                    return dv
+
+        results: list[ua.DataValue] = []
+        for chunk in _chunked(node_ids, batch_size):
+            chunk_results = await asyncio.gather(*[_read_one(nid) for nid in chunk])
+            results.extend(chunk_results)
+
+        self._runtime_metrics.read_calls += 1
+        self._runtime_metrics.read_nodes += len(node_ids)
+        logger.info(
+            "OPC UA batch data-value read ok endpoint=%s requested=%d duration_s=%.3f",
+            self._endpoint,
+            len(node_ids),
+            perf_counter() - started,
+        )
+        return results
 
     async def _read_values_batch_with_fallback(self, node_ids: list[str]) -> list[Any]:
         if not node_ids:

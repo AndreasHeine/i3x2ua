@@ -26,8 +26,13 @@ def test_classify_opcua_reference_hierarchy_organizes() -> None:
 
 
 def test_classify_opcua_reference_composition_hascomponent() -> None:
-    result = classify_opcua_reference("ns=0;i=47", "HasComponent")
+    result = classify_opcua_reference("ns=0;i=47", "HasComponent", target_node_class="Variable")
     assert result == "composition"
+
+
+def test_classify_opcua_reference_hierarchy_hascomponent_to_object() -> None:
+    result = classify_opcua_reference("ns=0;i=47", "HasComponent", target_node_class="Object")
+    assert result == "hierarchy"
 
 
 def test_classify_opcua_reference_composition_hasproperty() -> None:
@@ -66,6 +71,25 @@ def test_classify_opcua_reference_subtype_of_hascomponent_maps_composition() -> 
         supertype_browse_names=["Aggregates", "HasComponent"],
     )
     assert result == "composition"
+
+
+def test_classify_opcua_reference_nonhierarchical_root_wins_over_hierarchical() -> None:
+    result = classify_opcua_reference(
+        "ns=2;i=7777",
+        "VendorAmbiguous",
+        supertype_browse_names=["HasComponent", "HierarchicalReferences", "NonHierarchicalReferences"],
+        target_node_class="Object",
+    )
+    assert result == "graph"
+
+
+def test_classify_opcua_reference_hierarchical_root_defaults_to_hierarchy() -> None:
+    result = classify_opcua_reference(
+        "ns=2;i=8888",
+        "VendorHierarchyOnly",
+        supertype_browse_names=["HierarchicalReferences", "HasChild"],
+    )
+    assert result == "hierarchy"
 
 
 def test_classify_opcua_reference_unknown_defaults_to_graph() -> None:

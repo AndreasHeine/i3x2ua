@@ -131,6 +131,7 @@ class ModelBuilder:
                     supertype_browse_names=reference_supertypes_by_id.get(reference_type_id)
                     if isinstance(reference_type_id, str)
                     else None,
+                    target_node_class=child_node.node_class,
                 )
 
                 if relationship_class == "composition":

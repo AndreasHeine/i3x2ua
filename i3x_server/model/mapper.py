@@ -56,7 +56,26 @@ _TYPE_META_REFERENCE_NODE_IDS = {
 
 _GRAPH_REFERENCE_NODE_IDS = {
     "i31",  # References (base for non-hierarchical) (ns=0;i=31)
+    "i32",  # NonHierarchicalReferences (ns=0;i=32)
 }
+
+
+def _classify_hierarchical_family(tokens: set[str], target_node_class: str | None) -> ReferenceClass:
+    target_class_known = isinstance(target_node_class, str)
+    target_is_variable = target_class_known and target_node_class == "Variable"
+
+    has_property_lineage = bool(tokens & {"hasproperty", "propertyof", "i46"})
+    has_component_lineage = bool(tokens & {"hascomponent", "hasorderedcomponent", "i47", "i48"})
+
+    if has_property_lineage:
+        return "composition"
+    if has_component_lineage:
+        # HasComponent-style relationships become hierarchy for non-Variable targets.
+        # This keeps machine->machine as i3X hierarchy while machine->variable is composition.
+        if target_class_known and not target_is_variable:
+            return "hierarchy"
+        return "composition"
+    return "hierarchy"
 
 
 def _normalize_token(value: str | None) -> str:
@@ -78,20 +97,9 @@ def classify_opcua_reference(
     reference_type_node_id: str | None,
     reference_browse_name: str | None,
     supertype_browse_names: list[str] | None = None,
+    target_node_class: str | None = None,
 ) -> ReferenceClass:
-    # Check node ID mappings first (most reliable - OPC UA std references)
-    if reference_type_node_id:
-        node_id_normalized = _normalize_token(reference_type_node_id)
-        if node_id_normalized in _TYPE_META_REFERENCE_NODE_IDS:
-            return "type-meta"
-        if node_id_normalized in _COMPOSITION_REFERENCE_NODE_IDS:
-            return "composition"
-        if node_id_normalized in _HIERARCHY_REFERENCE_NODE_IDS:
-            return "hierarchy"
-        if node_id_normalized in _GRAPH_REFERENCE_NODE_IDS:
-            return "graph"
-
-    # Fall back to browse name matching (for custom reference types)
+    # Build a normalized view of the full reference-type lineage.
     tokens = {
         _normalize_token(reference_type_node_id),
         _normalize_token(reference_browse_name),
@@ -102,11 +110,33 @@ def classify_opcua_reference(
 
     if tokens & _TYPE_META_REFERENCE_NAMES:
         return "type-meta"
+    if tokens & _TYPE_META_REFERENCE_NODE_IDS:
+        return "type-meta"
+
+    # Ancestry-root-first classification:
+    # NonHierarchicalReferences wins if both roots appear in a malformed lineage.
+    has_nonhierarchical_root = bool(tokens & (_GRAPH_REFERENCE_NAMES | {"i32"}))
+    has_hierarchical_root = bool(tokens & (_HIERARCHY_REFERENCE_NAMES | {"i33"}))
+
+    if has_nonhierarchical_root:
+        return "graph"
+    if has_hierarchical_root:
+        return _classify_hierarchical_family(tokens, target_node_class)
+
+    # Compatibility fallback when ancestry roots are unavailable.
+    if tokens & _TYPE_META_REFERENCE_NAMES:
+        return "type-meta"
     if tokens & _COMPOSITION_REFERENCE_NAMES:
-        return "composition"
+        return _classify_hierarchical_family(tokens, target_node_class)
+    if tokens & _COMPOSITION_REFERENCE_NODE_IDS:
+        return _classify_hierarchical_family(tokens, target_node_class)
     if tokens & _HIERARCHY_REFERENCE_NAMES:
         return "hierarchy"
+    if tokens & _HIERARCHY_REFERENCE_NODE_IDS:
+        return "hierarchy"
     if tokens & _GRAPH_REFERENCE_NAMES:
+        return "graph"
+    if tokens & _GRAPH_REFERENCE_NODE_IDS:
         return "graph"
     return "graph"
 

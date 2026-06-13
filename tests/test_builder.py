@@ -164,6 +164,44 @@ class FakeOpcuaWithReferenceSubtypeResolution:
         return []
 
 
+class FakeOpcuaWithAmbiguousReferenceSubtypeResolution:
+    async def browse_tree(self) -> list[OpcUaNodeInfo]:
+        return [
+            OpcUaNodeInfo(
+                node_id="ns=2;s=Machine",
+                parent_node_id=None,
+                browse_name="Machine",
+                display_name="Machine",
+                node_class="Object",
+                data_type=None,
+                type_definition_id="ns=1;i=1001",
+                event_notifier=False,
+                outgoing_references=[
+                    OpcUaReferenceInfo(
+                        target_node_id="ns=2;s=Addon",
+                        reference_type_id="ns=2;i=6001",
+                        reference_browse_name="VendorHasComponentLike",
+                    ),
+                ],
+            ),
+            OpcUaNodeInfo(
+                node_id="ns=2;s=Addon",
+                parent_node_id="ns=2;s=Machine",
+                browse_name="Addon",
+                display_name="Addon",
+                node_class="Object",
+                data_type=None,
+                type_definition_id="ns=1;i=1002",
+                event_notifier=False,
+            ),
+        ]
+
+    async def resolve_reference_type_supertype_browse_names(self, reference_type_id: str) -> list[str]:
+        if reference_type_id == "ns=2;i=6001":
+            return ["HasComponent", "HierarchicalReferences", "NonHierarchicalReferences"]
+        return []
+
+
 @pytest.mark.asyncio
 async def test_model_builder_build_maps_nodes_children_properties_and_actions() -> None:
     builder = ModelBuilder(cast(OpcUaClientProtocol, FakeOpcuaForBuilder()))
@@ -234,8 +272,20 @@ async def test_model_builder_uses_reference_supertypes_for_subtype_classificatio
     machine_id = result.node_id_by_name["Machine"]
     addon_id = result.node_id_by_name["Addon"]
 
-    assert result.relationships_by_id[machine_id]["HasComponent"] == [addon_id]
-    assert result.relationships_by_id[addon_id]["ComponentOf"] == [machine_id]
+    assert result.relationships_by_id[machine_id]["HasChildren"] == [addon_id]
+    assert result.relationships_by_id[addon_id]["HasParent"] == [machine_id]
+
+
+@pytest.mark.asyncio
+async def test_model_builder_nonhierarchical_supertype_takes_precedence() -> None:
+    builder = ModelBuilder(cast(OpcUaClientProtocol, FakeOpcuaWithAmbiguousReferenceSubtypeResolution()))
+    result = await builder.build()
+
+    machine_id = result.node_id_by_name["Machine"]
+    addon_id = result.node_id_by_name["Addon"]
+
+    assert result.relationships_by_id[machine_id]["VendorHasComponentLike"] == [addon_id]
+    assert result.relationships_by_id[addon_id]["inverseOf_VendorHasComponentLike"] == [machine_id]
 
 
 def test_kind_for_node_branches() -> None:

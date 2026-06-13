@@ -478,16 +478,6 @@ def _to_namespace(item: OpcUaNamespaceInfo) -> Namespace:
 
 
 def _display_name_for_uri(uri: str) -> str:
-    lower = uri.lower()
-    if "cesmii.org/i3x" in lower:
-        return "I3X"
-    if "isa.org/isa95" in lower:
-        return "ISA95"
-    if "abelara.com" in lower and lower.rstrip("/").endswith("/equipment"):
-        return "Abelara Equipment"
-    if "thinkiq.com" in lower and lower.rstrip("/").endswith("/equipment"):
-        return "ThinkIQ Equipment"
-
     parsed_path = uri.split("//", 1)[-1]
     tail = parsed_path.rsplit("/", 1)[-1] if "/" in parsed_path else parsed_path
     token = tail.replace("-", " ").replace("_", " ")

@@ -302,42 +302,7 @@ See the [NGINX configuration reference](docs/NGINX_CONFIGURATION_REFERENCE.md) a
 
 ### OPC UA → i3X Relationship Mapping
 
-The model builder maps OPC UA reference types to i3X relationship planes.
-Classification is based on the reference type id and recursively resolved supertypes
-(following `HasSubtype` inverse for `ReferenceType` nodes):
+Relationship mapping rules and depth semantics are documented centrally in:
 
-| OPC UA Reference | i3X Relationship Plane | i3X Types |
-|---|---|---|
-| `HierarchicalReferences`, `Organizes` and recursively resolved subtypes | Hierarchy | `HasChildren` / `HasParent` |
-| `HasComponent`, `HasOrderedComponent`, `HasProperty` and recursively resolved subtypes | Composition | `HasComponent` / `ComponentOf` |
-| `NonHierarchicalReferences` and recursively resolved subtypes | Graph | custom label |
-| `HasTypeDefinition` | Type metadata only | — |
-| `HasSubtype` | Type metadata only | — |
-
-If a reference type cannot be classified after id/name/supertype checks, it is mapped
-deterministically to the Graph plane.
-
-`POST /objects/value` and `POST /objects/history` recurse through **composition** children only when `maxDepth > 1`. Hierarchy-only children are never included in value recursion.
-
-### maxDepth Semantics (Hierarchy vs Composition)
-
-Value/history recursion follows only the composition plane (`HasComponent` / `ComponentOf`).
-Hierarchy edges (`HasChildren` / `HasParent`) are used for structure/navigation and root selection, not for value recursion.
-
-| Request | Traversal behavior |
-|---|---|
-| `maxDepth = 1` | No recursion. Return only the requested element's value/history payload. |
-| `maxDepth = 2` | Include direct composition children only. |
-| `maxDepth = n (>1)` | Include composition descendants up to depth `n-1` from the root query element. |
-| `maxDepth = 0` | Unlimited recursion across composition descendants. |
-
-Example:
-
-- Hierarchy: `Plant -> Line -> Pump`
-- Composition: `Pump -> Temperature`, `Pump -> Pressure`
-
-`POST /objects/value` for `Plant` with `maxDepth = 0` does **not** include `Pump` values via hierarchy.
-`POST /objects/value` for `Pump` with `maxDepth = 0` includes `Temperature` and `Pressure` as `components`.
-
-`POST /objects/related` returns relationships across all three planes (hierarchy, composition, and graph) for each requested element.
+- `docs/OPCUA_I3X_MAPPING_PROFILE.md`
 

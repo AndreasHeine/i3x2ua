@@ -326,6 +326,7 @@ def create_app() -> FastAPI:
 
     @app.get("/view", response_class=HTMLResponse, include_in_schema=False)
     async def api_viewer(endpoint: str, label: str = "") -> HTMLResponse:
+        del label
         openapi_spec = custom_openapi()
         title = "i3X API Gateway for OPC UA"
         if isinstance(openapi_spec, dict):
@@ -333,10 +334,20 @@ def create_app() -> FastAPI:
             if isinstance(info, dict):
                 title = str(info.get("title", title))
 
+        known_view_targets = {
+            "/v1/info": "i3X Server Info",
+            "/ua/state": "OPC UA State",
+            "/ua/connection": "OPC UA Connection",
+            "/ua/limits": "OPC UA Limits",
+            "/ua/metrics": "OPC UA Metrics",
+        }
+        selected_endpoint = endpoint if endpoint in known_view_targets else "/v1/info"
+        selected_label = known_view_targets.get(selected_endpoint, "API Result")
+
         safe_title = escape(title)
-        safe_label_text = escape(label or "API Result")
-        safe_page_title = escape(label) if label else "API Result"
-        endpoint_js = json.dumps(endpoint)
+        safe_label_text = escape(selected_label)
+        safe_page_title = escape(selected_label)
+        endpoint_js = json.dumps(selected_endpoint)
 
         html = f"""
 <!doctype html>
@@ -449,6 +460,7 @@ def create_app() -> FastAPI:
             info = openapi_spec.get("info")
             if isinstance(info, dict):
                 title = str(info.get("title", title))
+        safe_title = escape(title)
 
         html = f"""
 <!doctype html>
@@ -561,7 +573,7 @@ def create_app() -> FastAPI:
     <div class=\"container\">
         <div class=\"hero\">
             <img class=\"logo\" src=\"/static/logo-small.png\" alt=\"i3X logo\" />
-            <h2 class=\"hero-title\">{title}</h2>
+            <h2 class=\"hero-title\">{safe_title}</h2>
         </div>
         <div class=\"header\">
             <h1>MCP Tools</h1>

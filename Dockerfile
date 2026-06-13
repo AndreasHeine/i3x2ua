@@ -41,6 +41,7 @@ RUN apt-get update \
 COPY --from=builder /app/.venv /app/.venv
 COPY i3x_server /app/i3x_server
 COPY openapi.json /app/openapi.json
+COPY static /app/static
 
 USER app
 

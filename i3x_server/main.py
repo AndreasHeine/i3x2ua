@@ -212,7 +212,11 @@ def create_app() -> FastAPI:
 
     app.openapi = custom_openapi  # type: ignore[method-assign]
 
-    static_dir = Path(__file__).resolve().parents[1] / "img"
+    project_root = Path(__file__).resolve().parents[1]
+    static_dir = project_root / "static"
+    # Backward-compatible fallback for local setups that still use the legacy img folder.
+    if not static_dir.exists():
+        static_dir = project_root / "img"
     if static_dir.exists():
         app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 

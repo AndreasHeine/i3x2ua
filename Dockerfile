@@ -24,6 +24,8 @@ RUN uv sync --no-dev --frozen
 
 FROM python:3.12-slim AS runtime
 
+ARG BUILD_VERSION=master
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PATH="/app/.venv/bin:${PATH}"
@@ -42,6 +44,8 @@ COPY --from=builder /app/.venv /app/.venv
 COPY i3x_server /app/i3x_server
 COPY openapi.json /app/openapi.json
 COPY static /app/static
+RUN printf "%s\n" "${BUILD_VERSION}" > /app/server-version.txt \
+    && chown app:app /app/server-version.txt
 
 USER app
 

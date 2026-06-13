@@ -50,6 +50,26 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
+      - name: Determine server build version
+        id: build_version
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            value="${{ github.event.release.tag_name }}"
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            value="${{ github.event.inputs.tag }}"
+          else
+            value="${{ github.ref_name }}"
+          fi
+
+          value="${value#refs/tags/}"
+          if [[ -z "${value}" ]]; then
+            value="master"
+          fi
+
+          echo "build_version=${value}" >> "$GITHUB_OUTPUT"
+          echo "Resolved BUILD_VERSION=${value}"
+
       - name: Build and push Docker image
         uses: docker/build-push-action@v7
         with:
@@ -57,3 +77,5 @@ jobs:
           push: true
           tags: ${{ steps.metadata.outputs.tags }}
           labels: ${{ steps.metadata.outputs.labels }}
+          build-args: |
+            BUILD_VERSION=${{ steps.build_version.outputs.build_version }}

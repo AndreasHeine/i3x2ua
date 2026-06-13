@@ -466,15 +466,13 @@ def test_api_viewer_page(client: TestClient) -> None:
 
 
 def test_api_viewer_escapes_query_inputs(client: TestClient) -> None:
-    response = client.get(
-        '/view?endpoint=";alert(1);//&label=%3Cscript%3Ealert(1)%3C/script%3E'
-    )
+    response = client.get('/view?endpoint=";alert(1);//&label=%3Cscript%3Ealert(1)%3C/script%3E')
     assert response.status_code == 200
     text = response.text
 
     assert "<script>alert(1)</script>" not in text
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" not in text
-    assert 'params.get(\'endpoint\')' in text
+    assert "params.get('endpoint')" in text
     assert "Object.prototype.hasOwnProperty.call(knownViewTargets, requested)" in text
     assert "'/v1/info'" in text
 

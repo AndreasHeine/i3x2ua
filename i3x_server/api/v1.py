@@ -37,6 +37,7 @@ from i3x_server.schemas.objecttype_schema import (
 )
 from i3x_server.schemas.state import BuildResult
 from i3x_server.subscriptions.service import SubscriptionService
+from i3x_server.version import get_server_version
 
 router = APIRouter(prefix="/v1", tags=["v1"])
 logger = logging.getLogger(__name__)
@@ -399,7 +400,7 @@ def _server_name_from_openapi(default_name: str = "The i3X API Gateway for OPC U
 def _build_server_info() -> ServerInfo:
     return ServerInfo(
         specVersion="1.0",
-        serverVersion="0.1.0",
+        serverVersion=get_server_version(),
         serverName=_server_name_from_openapi(),
         capabilities=_supported_capabilities(),
     )

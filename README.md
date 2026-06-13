@@ -234,6 +234,14 @@ Run with compose:
 docker compose up -d
 ```
 
+Build your own image with an explicit server version for `/v1/info`:
+
+```bash
+docker build --build-arg BUILD_VERSION=1.1.0 -t i3x2ua:1.1.0 .
+```
+
+If `BUILD_VERSION` is not set, the API falls back to `master`.
+
 The stack now starts the API behind an nginx reverse proxy. The app container stays internal, while nginx exposes HTTP and optional HTTPS.
 
 The default compose setup also enables container hardening (`read_only`, `tmpfs`, dropped Linux capabilities, `no-new-privileges`).

@@ -20,8 +20,7 @@ See the [LICENSE](LICENSE) file for the full legal text.
 **Sponsors at USD 1/month or higher are granted a commercial license while sponsorship remains active, as defined in the sponsor terms.**
 **This enables commercial use without AGPL copyleft obligations during active sponsorship.**
 
-[![Sponsor @AndreasHeine](https://img.shields.io/badge/Sponsor-GitHub%20Sponsors-181717?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/AndreasHeine)
-[Sponsor @AndreasHeine on GitHub Sponsors](https://github.com/sponsors/AndreasHeine)
+[Sponsor @AndreasHeine via GitHub Sponsors](https://github.com/sponsors/AndreasHeine)
 
 See [COMMERCIAL_LICENSE.md](COMMERCIAL_LICENSE.md) for full grant scope, limits, grace period, and verification details.
 

@@ -325,8 +325,7 @@ def create_app() -> FastAPI:
         return HTMLResponse(content=html)
 
     @app.get("/view", response_class=HTMLResponse, include_in_schema=False)
-    async def api_viewer(endpoint: str, label: str = "") -> HTMLResponse:
-        del label
+    async def api_viewer() -> HTMLResponse:
         openapi_spec = custom_openapi()
         title = "i3X API Gateway for OPC UA"
         if isinstance(openapi_spec, dict):
@@ -334,20 +333,7 @@ def create_app() -> FastAPI:
             if isinstance(info, dict):
                 title = str(info.get("title", title))
 
-        known_view_targets = {
-            "/v1/info": "i3X Server Info",
-            "/ua/state": "OPC UA State",
-            "/ua/connection": "OPC UA Connection",
-            "/ua/limits": "OPC UA Limits",
-            "/ua/metrics": "OPC UA Metrics",
-        }
-        selected_endpoint = endpoint if endpoint in known_view_targets else "/v1/info"
-        selected_label = known_view_targets.get(selected_endpoint, "API Result")
-
         safe_title = escape(title)
-        safe_label_text = escape(selected_label)
-        safe_page_title = escape(selected_label)
-        endpoint_js = json.dumps(selected_endpoint)
 
         html = f"""
 <!doctype html>
@@ -355,7 +341,7 @@ def create_app() -> FastAPI:
 <head>
     <meta charset=\"utf-8\" />
     <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
-    <title>{safe_page_title} - The i3X API Gateway for OPC UA</title>
+    <title>API Result - The i3X API Gateway for OPC UA</title>
     <style>
         :root {{
             --bg-a: #f7f9fc;
@@ -428,13 +414,27 @@ def create_app() -> FastAPI:
             <h2 class="hero-title">{safe_title}</h2>
         </div>
         <div class=\"header\">
-            <h1>{safe_label_text}</h1>
+            <h1 id="viewer-title">Loading...</h1>
             <a class=\"back-link\" href=\"/\">&larr; Back</a>
         </div>
         <div class=\"code-block\"><pre id=\"result\" class=\"loading\">Loading...</pre></div>
     </div>
     <script>
-        fetch({endpoint_js})
+        const knownViewTargets = {{
+            '/v1/info': 'i3X Server Info',
+            '/ua/state': 'OPC UA State',
+            '/ua/connection': 'OPC UA Connection',
+            '/ua/limits': 'OPC UA Limits',
+            '/ua/metrics': 'OPC UA Metrics',
+        }};
+        const params = new URLSearchParams(window.location.search);
+        const requested = params.get('endpoint') || '/v1/info';
+        const endpoint = Object.prototype.hasOwnProperty.call(knownViewTargets, requested)
+            ? requested
+            : '/v1/info';
+        document.getElementById('viewer-title').textContent = knownViewTargets[endpoint] || 'API Result';
+
+        fetch(endpoint)
             .then((r) => r.json())
             .then((d) => {{
                 const p = document.getElementById('result');
@@ -706,6 +706,23 @@ def create_app() -> FastAPI:
                 },
             },
         )
+
+    @app.middleware("http")
+    async def add_security_headers(
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        if response.headers.get("content-type", "").startswith("text/html"):
+            response.headers.setdefault(
+                "Content-Security-Policy",
+                "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
+                "script-src 'self' 'unsafe-inline'; connect-src 'self'; object-src 'none'; "
+                "base-uri 'none'; frame-ancestors 'none'",
+            )
+        return response
 
     @app.middleware("http")
     async def log_http_requests(

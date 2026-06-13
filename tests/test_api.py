@@ -458,7 +458,9 @@ def test_api_viewer_escapes_query_inputs(client: TestClient) -> None:
 
     assert "<script>alert(1)</script>" not in text
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" not in text
-    assert "fetch(\"/v1/info\")" in text
+    assert 'params.get(\'endpoint\')' in text
+    assert "Object.prototype.hasOwnProperty.call(knownViewTargets, requested)" in text
+    assert "'/v1/info'" in text
 
 
 def test_mcp_tools_viewer_page(client: TestClient) -> None:

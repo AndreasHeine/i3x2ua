@@ -1,4 +1,4 @@
-# i3X API Gateway for OPC UA — REST, MCP & Real-Time Streaming
+# The i3X API Gateway for OPC UA — REST, MCP & Real-Time Streaming
 
 **FastAPI gateway implementing the i3X API over OPC UA — exposes OPC UA address spaces as standardized REST and MCP endpoints with JSON responses, OpenAPI docs, and Server-Sent Event subscriptions. Built for teams that do not have deep OPC UA expertise.**
 

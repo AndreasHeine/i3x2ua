@@ -720,11 +720,22 @@ def create_app() -> FastAPI:
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("Referrer-Policy", "no-referrer")
         if response.headers.get("content-type", "").startswith("text/html"):
+            is_docs_route = request.url.path.startswith("/docs") or request.url.path.startswith(
+                "/redoc"
+            )
+            csp_value = (
+                "default-src 'self'; img-src 'self' data: https://fastapi.tiangolo.com; "
+                "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+                "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+                "connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+                if is_docs_route
+                else "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
+                "script-src 'self' 'unsafe-inline'; connect-src 'self'; object-src 'none'; "
+                "base-uri 'none'; frame-ancestors 'none'"
+            )
             response.headers.setdefault(
                 "Content-Security-Policy",
-                "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
-                "script-src 'self' 'unsafe-inline'; connect-src 'self'; object-src 'none'; "
-                "base-uri 'none'; frame-ancestors 'none'",
+                csp_value,
             )
         return response
 

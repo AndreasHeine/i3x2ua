@@ -433,6 +433,22 @@ def test_landing_page_with_mcp_disabled(client_without_mcp: TestClient) -> None:
     assert 'href="/mcp"' not in text
 
 
+def test_docs_csp_allows_swagger_cdn_assets(client: TestClient) -> None:
+    response = client.get("/docs")
+    assert response.status_code == 200
+    csp = response.headers.get("Content-Security-Policy", "")
+    assert "https://cdn.jsdelivr.net" in csp
+    assert "https://fastapi.tiangolo.com" in csp
+
+
+def test_landing_page_csp_remains_strict(client: TestClient) -> None:
+    response = client.get("/")
+    assert response.status_code == 200
+    csp = response.headers.get("Content-Security-Policy", "")
+    assert "https://cdn.jsdelivr.net" not in csp
+    assert "https://fastapi.tiangolo.com" not in csp
+
+
 def test_static_logo_is_served(client: TestClient) -> None:
     response = client.get("/static/logo-small.png")
     assert response.status_code == 200

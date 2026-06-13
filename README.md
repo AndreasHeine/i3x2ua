@@ -211,6 +211,23 @@ MCP scope emphasis: the MCP bridge is currently focused on tool calling (`initia
 
 ## Docker
 
+Quickstart (Docker image):
+
+```bash
+docker run -d --name i3x2ua-master -p 8080:8000 -e I3X_ENABLE_MCP=1 -e I3X_OPCUA_ENDPOINT=opc.tcp://opcua.umati.app:4843 ghcr.io/andreasheine/i3x2ua:master
+```
+
+Multiline (bash):
+
+```bash
+docker run -d \
+	--name i3x2ua-master \
+	-p 8080:8000 \
+	-e I3X_ENABLE_MCP=1 \
+	-e I3X_OPCUA_ENDPOINT=opc.tcp://opcua.umati.app:4843 \
+	ghcr.io/andreasheine/i3x2ua:master
+```
+
 Run with compose:
 
 ```bash

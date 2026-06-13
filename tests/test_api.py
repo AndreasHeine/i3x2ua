@@ -4,7 +4,7 @@ import base64
 import json
 import os
 import time
-from collections.abc import Generator
+from collections.abc import Generator, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -401,6 +401,62 @@ def test_v1_info(client: TestClient) -> None:
     assert payload["result"]["specVersion"] == "1.0"
     assert payload["result"]["capabilities"]["query"]["history"] is True
     assert payload["result"]["capabilities"]["subscribe"]["stream"] is True
+
+
+def test_landing_page_with_mcp_enabled(client: TestClient) -> None:
+    response = client.get("/")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    text = response.text
+    assert "/static/logo-small.png" in text
+    assert "i3X API Gateway for OPC UA" in text
+    assert "Turn any OPC UA server into" in text
+    assert 'href="/docs"' in text
+    assert 'href="/view?endpoint=/v1/info' in text
+    assert 'href="/view?endpoint=/ua/state' in text
+    assert 'href="/view?endpoint=/ua/connection' in text
+    assert 'href="/view?endpoint=/ua/limits' in text
+    assert 'href="/view?endpoint=/ua/metrics' in text
+    assert 'href="/mcp-tools-viewer"' in text
+
+
+def test_landing_page_with_mcp_disabled(client_without_mcp: TestClient) -> None:
+    response = client_without_mcp.get("/")
+    assert response.status_code == 200
+    text = response.text
+    assert 'href="/docs"' in text
+    assert 'href="/view?endpoint=/v1/info' in text
+    assert 'href="/view?endpoint=/ua/state' in text
+    assert 'href="/view?endpoint=/ua/connection' in text
+    assert 'href="/view?endpoint=/ua/limits' in text
+    assert 'href="/view?endpoint=/ua/metrics' in text
+    assert 'href="/mcp"' not in text
+
+
+def test_static_logo_is_served(client: TestClient) -> None:
+    response = client.get("/static/logo-small.png")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("image/")
+
+
+def test_api_viewer_page(client: TestClient) -> None:
+    response = client.get("/view?endpoint=/v1/info&label=Server%20Info")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert "Server Info" in response.text
+    assert "Back" in response.text
+    assert "/static/logo-small.png" in response.text
+    assert "i3X API Gateway for OPC UA" in response.text
+
+
+def test_mcp_tools_viewer_page(client: TestClient) -> None:
+    response = client.get("/mcp-tools-viewer")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert "MCP Tools" in response.text
+    assert "Back" in response.text
+    assert "/static/logo-small.png" in response.text
+    assert "i3X API Gateway for OPC UA" in response.text
 
 
 def test_ua_state(client: TestClient) -> None:
@@ -1741,6 +1797,352 @@ def test_openapi_json_is_source_of_truth(client: TestClient) -> None:
     assert response.json() == expected
 
 
+def _resolve_openapi_schema(schema: Any, components: Mapping[str, Any]) -> Any:
+    if not isinstance(schema, Mapping):
+        return schema
+
+    if "$ref" in schema:
+        ref = schema["$ref"]
+        if not isinstance(ref, str):
+            return dict(schema)
+        prefix = "#/components/schemas/"
+        if not ref.startswith(prefix):
+            return {"$ref": ref}
+        schema_name = ref.removeprefix(prefix)
+        schemas = components.get("schemas", {})
+        if isinstance(schemas, Mapping) and schema_name in schemas:
+            return _resolve_openapi_schema(schemas[schema_name], components)
+        return {"$ref": ref}
+
+    resolved: dict[str, Any] = dict(schema)
+    for key in ("allOf", "anyOf", "oneOf"):
+        value = resolved.get(key)
+        if isinstance(value, list):
+            resolved[key] = [_resolve_openapi_schema(item, components) for item in value]
+
+    properties = resolved.get("properties")
+    if isinstance(properties, Mapping):
+        resolved["properties"] = {
+            str(name): _resolve_openapi_schema(value, components) for name, value in properties.items()
+        }
+
+    items = resolved.get("items")
+    if items is not None:
+        resolved["items"] = _resolve_openapi_schema(items, components)
+
+    return resolved
+
+
+def _pick_concrete_schema(schema: Any) -> Any:
+    if not isinstance(schema, Mapping):
+        return schema
+
+    for key in ("anyOf", "oneOf"):
+        variants = schema.get(key)
+        if isinstance(variants, list) and variants:
+            for variant in variants:
+                if isinstance(variant, Mapping) and variant.get("type") == "null":
+                    continue
+                return _pick_concrete_schema(variant)
+            return _pick_concrete_schema(variants[0])
+
+    return schema
+
+
+def _sample_from_schema(schema: Any, *, property_name: str = "") -> Any:
+    concrete = _pick_concrete_schema(schema)
+    if not isinstance(concrete, Mapping):
+        return "sample"
+
+    enum_values = concrete.get("enum")
+    if isinstance(enum_values, list) and enum_values:
+        return enum_values[0]
+
+    schema_type = concrete.get("type")
+    if isinstance(schema_type, list):
+        non_null_types = [item for item in schema_type if item != "null"]
+        schema_type = non_null_types[0] if non_null_types else schema_type[0]
+
+    if schema_type == "string":
+        lowered = property_name.lower()
+        if "time" in lowered:
+            return "2026-01-01T00:00:00Z"
+        if lowered.endswith("id") or lowered.endswith("ids"):
+            return "property-abc"
+        return "sample"
+
+    if schema_type == "integer":
+        minimum = concrete.get("minimum")
+        if isinstance(minimum, int):
+            return minimum
+        return 1
+
+    if schema_type == "number":
+        minimum = concrete.get("minimum")
+        if isinstance(minimum, (int, float)):
+            return float(minimum)
+        return 1.0
+
+    if schema_type == "boolean":
+        return False
+
+    if schema_type == "array":
+        item_schema = concrete.get("items", {"type": "string"})
+        return [_sample_from_schema(item_schema, property_name=property_name.removesuffix("s"))]
+
+    properties = concrete.get("properties")
+    if schema_type == "object" or isinstance(properties, Mapping):
+        if not isinstance(properties, Mapping):
+            return {}
+        required = concrete.get("required", [])
+        if not isinstance(required, list):
+            required = []
+        result: dict[str, Any] = {}
+        for key in required:
+            if not isinstance(key, str):
+                continue
+            result[key] = _sample_from_schema(properties.get(key, {}), property_name=key)
+        return result
+
+    return {}
+
+
+def _build_required_mcp_arguments(input_schema: Mapping[str, Any]) -> dict[str, Any]:
+    properties = input_schema.get("properties", {})
+    required = input_schema.get("required", [])
+    if not isinstance(properties, Mapping) or not isinstance(required, list):
+        return {}
+
+    args: dict[str, Any] = {}
+    for name in required:
+        if not isinstance(name, str):
+            continue
+        args[name] = _sample_from_schema(properties.get(name, {}), property_name=name)
+    return args
+
+
+def _with_runtime_argument_overrides(
+    tool_name: str,
+    arguments: Mapping[str, Any],
+    *,
+    subscription_id: str | None,
+) -> dict[str, Any]:
+    result = dict(arguments)
+
+    if "elementId" in result:
+        result["elementId"] = "property-abc"
+
+    body = result.get("body")
+    if isinstance(body, Mapping):
+        body_dict = dict(body)
+        if "elementIds" in body_dict:
+            body_dict["elementIds"] = ["property-abc"]
+        if tool_name == "queryHistoricalValues":
+            body_dict.setdefault("startTime", "2026-01-01T00:00:00Z")
+            body_dict.setdefault("endTime", "2026-01-02T00:00:00Z")
+            body_dict.setdefault("maxDepth", 1)
+        if tool_name == "updateObjectValue":
+            body_dict = {"value": 123}
+        if tool_name == "createSubscription":
+            body_dict.setdefault("clientId", "mcp-runtime-smoke")
+            body_dict.setdefault("displayName", "MCP Runtime Smoke")
+        if subscription_id is not None:
+            if "subscriptionId" in body_dict:
+                body_dict["subscriptionId"] = subscription_id
+            if "subscriptionIds" in body_dict:
+                body_dict["subscriptionIds"] = [subscription_id]
+        result["body"] = body_dict
+
+    return result
+
+
+def test_mcp_tool_input_schemas_match_openapi_contract(client: TestClient) -> None:
+    openapi = client.get("/openapi.json").json()
+    tools_payload = client.get("/mcp/tools").json()
+    tools = tools_payload["tools"]
+
+    components = openapi.get("components", {})
+    assert isinstance(components, Mapping)
+
+    paths = openapi.get("paths", {})
+    assert isinstance(paths, Mapping)
+
+    for path, methods in paths.items():
+        if not isinstance(path, str) or not isinstance(methods, Mapping):
+            continue
+        if path.startswith("/mcp"):
+            continue
+
+        for method, details in methods.items():
+            if not isinstance(method, str) or not isinstance(details, Mapping):
+                continue
+            operation_id = details.get("operationId")
+            if not isinstance(operation_id, str) or operation_id == "streamSubscription":
+                continue
+
+            assert operation_id in tools, f"Missing MCP tool for operationId={operation_id}"
+            tool = tools[operation_id]
+
+            assert tool["method"] == method.upper()
+            assert tool["path"] == path
+
+            input_schema = tool.get("inputSchema", {})
+            assert input_schema.get("type") == "object"
+            assert input_schema.get("additionalProperties") is False
+
+            properties = input_schema.get("properties", {})
+            required = set(input_schema.get("required", []))
+            assert isinstance(properties, Mapping)
+
+            expected_required: set[str] = set()
+            expected_property_names: set[str] = set()
+
+            for parameter in details.get("parameters", []):
+                if not isinstance(parameter, Mapping):
+                    continue
+                parameter_name = parameter.get("name")
+                if not isinstance(parameter_name, str):
+                    continue
+                expected_property_names.add(parameter_name)
+                expected_schema = _resolve_openapi_schema(parameter.get("schema", {"type": "string"}), components)
+                assert properties.get(parameter_name) == expected_schema
+                if parameter.get("required"):
+                    expected_required.add(parameter_name)
+
+            request_body = details.get("requestBody")
+            if isinstance(request_body, Mapping):
+                content = request_body.get("content", {})
+                if isinstance(content, Mapping):
+                    app_json = content.get("application/json")
+                    if isinstance(app_json, Mapping) and "schema" in app_json:
+                        expected_property_names.add("body")
+                        expected_body_schema = _resolve_openapi_schema(app_json["schema"], components)
+                        assert properties.get("body") == expected_body_schema
+                        if request_body.get("required"):
+                            expected_required.add("body")
+
+            assert set(properties.keys()) == expected_property_names
+            assert required == expected_required
+
+
+def test_mcp_non_subscription_tools_runtime_smoke(client: TestClient) -> None:
+    tools_response = client.get("/mcp/tools")
+    assert tools_response.status_code == 200
+    tools = tools_response.json()["tools"]
+
+    skipped_tools = {
+        "createSubscription",
+        "registerMonitoredItems",
+        "removeMonitoredItems",
+        "syncSubscription",
+        "deleteSubscriptions",
+        "listSubscriptions",
+    }
+
+    for tool_name, tool in tools.items():
+        if tool_name in skipped_tools:
+            continue
+
+        input_schema = tool.get("inputSchema", {})
+        assert isinstance(input_schema, Mapping)
+        arguments = _build_required_mcp_arguments(input_schema)
+        arguments = _with_runtime_argument_overrides(tool_name, arguments, subscription_id=None)
+
+        response = client.post("/mcp/call", json={"tool": tool_name, "arguments": arguments})
+        assert response.status_code in {200, 206, 404, 501}, (
+            f"Unexpected status for {tool_name} with args {arguments}: {response.status_code} {response.text}"
+        )
+
+        if response.status_code == 400:
+            payload = response.json()
+            message = payload.get("error", {}).get("message", "")
+            assert "Missing required arguments" not in message
+            assert "Unexpected arguments" not in message
+            assert "Missing required body" not in message
+
+
+def test_mcp_subscription_tools_runtime_lifecycle(client: TestClient) -> None:
+    create_response = client.post(
+        "/mcp/call",
+        json={
+            "tool": "createSubscription",
+            "arguments": {"body": {"clientId": "mcp-runtime-smoke", "displayName": "MCP Runtime Smoke"}},
+        },
+    )
+    assert create_response.status_code == 200
+    create_payload = create_response.json()
+    subscription_id = create_payload["result"]["subscriptionId"]
+
+    register_response = client.post(
+        "/mcp/call",
+        json={
+            "tool": "registerMonitoredItems",
+            "arguments": {
+                "body": {
+                    "clientId": "mcp-runtime-smoke",
+                    "subscriptionId": subscription_id,
+                    "elementIds": ["property-abc"],
+                    "maxDepth": 1,
+                }
+            },
+        },
+    )
+    assert register_response.status_code == 200
+
+    list_response = client.post(
+        "/mcp/call",
+        json={
+            "tool": "listSubscriptions",
+            "arguments": {"body": {"clientId": "mcp-runtime-smoke", "subscriptionIds": [subscription_id]}},
+        },
+    )
+    assert list_response.status_code == 200
+    list_payload = list_response.json()
+    assert list_payload["results"][0]["result"]["subscriptionId"] == subscription_id
+
+    sync_response = client.post(
+        "/mcp/call",
+        json={
+            "tool": "syncSubscription",
+            "arguments": {
+                "body": {
+                    "clientId": "mcp-runtime-smoke",
+                    "subscriptionId": subscription_id,
+                    "lastSequenceNumber": 0,
+                }
+            },
+        },
+    )
+    assert sync_response.status_code == 200
+
+    remove_response = client.post(
+        "/mcp/call",
+        json={
+            "tool": "removeMonitoredItems",
+            "arguments": {
+                "body": {
+                    "clientId": "mcp-runtime-smoke",
+                    "subscriptionId": subscription_id,
+                    "elementIds": ["property-abc"],
+                    "maxDepth": 1,
+                }
+            },
+        },
+    )
+    assert remove_response.status_code == 200
+
+    delete_response = client.post(
+        "/mcp/call",
+        json={
+            "tool": "deleteSubscriptions",
+            "arguments": {"body": {"clientId": "mcp-runtime-smoke", "subscriptionIds": [subscription_id]}},
+        },
+    )
+    assert delete_response.status_code == 200
+    delete_payload = delete_response.json()
+    assert delete_payload["results"][0]["success"] is True
+
+
 def test_mcp_tools_are_generated_from_openapi(client: TestClient) -> None:
     response = client.get("/mcp/tools")
     assert response.status_code == 200
@@ -1763,6 +2165,7 @@ def test_mcp_tools_are_generated_from_openapi(client: TestClient) -> None:
     assert value_tool["method"] == "POST"
     assert value_tool["path"] == "/objects/value"
     assert value_tool["input_schema"]["properties"]["body"]["properties"]["elementIds"]["type"] == "array"
+    assert value_tool["inputSchema"]["properties"]["body"]["properties"]["elementIds"]["type"] == "array"
 
 
 def test_mcp_support_is_disabled_by_default(client_without_mcp: TestClient) -> None:

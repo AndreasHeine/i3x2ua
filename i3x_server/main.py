@@ -12,7 +12,8 @@ from time import perf_counter
 
 from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.gzip import GZipMiddleware
 
@@ -209,6 +210,409 @@ def create_app() -> FastAPI:
         return openapi_override
 
     app.openapi = custom_openapi  # type: ignore[method-assign]
+
+    static_dir = Path(__file__).resolve().parents[1] / "img"
+    if static_dir.exists():
+        app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
+    @app.get("/", response_class=HTMLResponse, include_in_schema=False)
+    async def landing() -> HTMLResponse:
+        openapi_spec = custom_openapi()
+        title = "i3X API Gateway"
+        description = ""
+        if isinstance(openapi_spec, dict):
+            info = openapi_spec.get("info")
+            if isinstance(info, dict):
+                title = str(info.get("title", title))
+                description = str(info.get("description", ""))
+
+        links: list[tuple[str, str]] = [
+            ("API Documentation", "/docs"),
+            ("i3X Server Info", "/view?endpoint=/v1/info&label=i3X%20Server%20Info"),
+            ("OPC UA State", "/view?endpoint=/ua/state&label=OPC%20UA%20State"),
+            ("OPC UA Connection", "/view?endpoint=/ua/connection&label=OPC%20UA%20Connection"),
+            ("OPC UA Limits", "/view?endpoint=/ua/limits&label=OPC%20UA%20Limits"),
+            ("OPC UA Metrics", "/view?endpoint=/ua/metrics&label=OPC%20UA%20Metrics"),
+        ]
+        if mcp_enabled:
+            links.append(("MCP Tools", "/mcp-tools-viewer"))
+
+        cards = "".join(
+            f'<a class="card" href="{href}"><span>{label}</span><span class="arrow">&rarr;</span></a>'
+            for label, href in links
+        )
+
+        html = f"""
+<!doctype html>
+<html lang=\"en\">
+<head>
+<meta charset=\"utf-8\" />
+<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+<title>i3X Server</title>
+<style>
+    :root {{
+        --bg-a: #f7f9fc;
+        --bg-b: #e9eef7;
+        --panel: #ffffffcc;
+        --text: #162033;
+        --muted: #5e6b80;
+        --line: #d7e0ef;
+        --accent: #0b6ef3;
+        --accent-soft: #e8f1ff;
+        --radius: 14px;
+        --shadow: 0 14px 40px rgba(16, 29, 56, 0.08);
+    }}
+    * {{ box-sizing: border-box; }}
+    html, body {{ height: 100%; margin: 0; }}
+    body {{
+        font-family: "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+        color: var(--text);
+        background: radial-gradient(circle at 15% 10%, #ffffff, var(--bg-a) 40%, var(--bg-b) 100%);
+        display: grid;
+        place-items: center;
+        padding: 24px;
+    }}
+    .shell {{
+        width: min(920px, 100%);
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: calc(var(--radius) + 4px);
+        box-shadow: var(--shadow);
+        backdrop-filter: blur(6px);
+        overflow: hidden;
+    }}
+    .hero {{
+        padding: 38px 28px 24px;
+        display: grid;
+        place-items: center;
+        gap: 14px;
+        text-align: center;
+    }}
+    .logo {{ width: min(230px, 60vw); height: auto; display: block; }}
+    h1 {{ margin: 0; font-weight: 650; letter-spacing: 0.2px; font-size: clamp(1.2rem, 1rem + 1vw, 1.8rem); }}
+    p {{ margin: 0; color: var(--muted); max-width: 60ch; line-height: 1.45; }}
+    .grid {{ display: grid; gap: 10px; grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 0 20px 22px; }}
+    .card {{
+        text-decoration: none;
+        color: var(--text);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        padding: 12px 14px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        background: #fff;
+        transition: border-color .2s ease, transform .2s ease, background-color .2s ease;
+    }}
+    .card:hover {{ border-color: #bdd4fb; background: var(--accent-soft); transform: translateY(-1px); }}
+    .arrow {{ color: var(--accent); font-size: 1.1rem; }}
+    @media (max-width: 700px) {{ .grid {{ grid-template-columns: 1fr; }} .hero {{ padding-top: 28px; }} }}
+</style>
+</head>
+<body>
+<main class=\"shell\">
+    <section class=\"hero\">
+        <img class=\"logo\" src=\"/static/logo-small.png\" alt=\"i3X logo\" />
+        <h1>{title}</h1>
+        <p>{description}</p>
+    </section>
+    <section class=\"grid\">{cards}</section>
+</main>
+</body>
+</html>
+"""
+        return HTMLResponse(content=html)
+
+    @app.get("/view", response_class=HTMLResponse, include_in_schema=False)
+    async def api_viewer(endpoint: str, label: str = "") -> HTMLResponse:
+        openapi_spec = custom_openapi()
+        title = "i3X API Gateway"
+        if isinstance(openapi_spec, dict):
+            info = openapi_spec.get("info")
+            if isinstance(info, dict):
+                title = str(info.get("title", title))
+
+        html = f"""
+<!doctype html>
+<html lang=\"en\">
+<head>
+    <meta charset=\"utf-8\" />
+    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+    <title>{label} - i3X Server</title>
+    <style>
+        :root {{
+            --bg-a: #f7f9fc;
+            --bg-b: #e9eef7;
+            --panel: #ffffffcc;
+            --text: #162033;
+            --muted: #5e6b80;
+            --line: #d7e0ef;
+            --accent: #0b6ef3;
+            --accent-soft: #e8f1ff;
+            --radius: 14px;
+            --shadow: 0 14px 40px rgba(16, 29, 56, 0.08);
+        }}
+        * {{ box-sizing: border-box; }}
+        html, body {{ height: 100%; margin: 0; }}
+        body {{
+            font-family: "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+            color: var(--text);
+            background: radial-gradient(circle at 15% 10%, #fff, var(--bg-a) 40%, var(--bg-b) 100%);
+            padding: 24px;
+        }}
+        .container {{ max-width: 920px; margin: 0 auto; }}
+        .hero, .header, .code-block {{
+            background: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: calc(var(--radius) + 4px);
+            box-shadow: var(--shadow);
+            backdrop-filter: blur(6px);
+        }}
+        .hero {{
+            padding: 28px;
+            margin-bottom: 20px;
+            display: grid;
+            place-items: center;
+            gap: 12px;
+            text-align: center;
+        }}
+        .logo {{ width: min(120px, 30vw); height: auto; }}
+        .hero-title {{ margin: 0; font-weight: 650; font-size: 1.4rem; }}
+        .header {{
+            padding: 28px;
+            margin-bottom: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }}
+        h1 {{ margin: 0; font-weight: 650; font-size: 1.6rem; }}
+        .back-link {{ text-decoration: none; color: var(--accent); font-size: 0.95rem; }}
+        .code-block {{ padding: 12px; }}
+        pre {{
+            margin: 0;
+            padding: 20px;
+            overflow: auto;
+            line-height: 1.5;
+            font-family: "Monaco", "Menlo", "Ubuntu Mono", monospace;
+            font-size: 0.9rem;
+            background: #fff;
+            border: 1px solid var(--line);
+            border-radius: var(--radius);
+        }}
+        .loading {{ padding: 24px; text-align: center; color: var(--muted); }}
+        .error {{ padding: 24px; color: #dc2626; }}
+        pre:not(.loading):not(.error):hover {{ background: var(--accent-soft); }}
+    </style>
+</head>
+<body>
+    <div class=\"container\">
+        <div class=\"hero\">
+            <img class=\"logo\" src=\"/static/logo-small.png\" alt=\"i3X logo\" />
+            <h2 class=\"hero-title\">{title}</h2>
+        </div>
+        <div class=\"header\">
+            <h1>{label or "API Result"}</h1>
+            <a class=\"back-link\" href=\"/\">&larr; Back</a>
+        </div>
+        <div class=\"code-block\"><pre id=\"result\" class=\"loading\">Loading...</pre></div>
+    </div>
+    <script>
+        fetch('{endpoint}')
+            .then((r) => r.json())
+            .then((d) => {{
+                const p = document.getElementById('result');
+                p.textContent = JSON.stringify(d, null, 2);
+                p.className = '';
+            }})
+            .catch((e) => {{
+                const p = document.getElementById('result');
+                p.textContent = 'Error: ' + e.message;
+                p.className = 'error';
+            }});
+    </script>
+</body>
+</html>
+"""
+        return HTMLResponse(content=html)
+
+    @app.get("/mcp-tools-viewer", response_class=HTMLResponse, include_in_schema=False)
+    async def mcp_tools_viewer() -> HTMLResponse:
+        openapi_spec = custom_openapi()
+        title = "i3X API Gateway"
+        if isinstance(openapi_spec, dict):
+            info = openapi_spec.get("info")
+            if isinstance(info, dict):
+                title = str(info.get("title", title))
+
+        html = f"""
+<!doctype html>
+<html lang=\"en\">
+<head>
+    <meta charset=\"utf-8\" />
+    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+    <title>MCP Tools - i3X Server</title>
+    <style>
+        :root {{
+            --bg-a: #f7f9fc;
+            --bg-b: #e9eef7;
+            --panel: #ffffffcc;
+            --text: #162033;
+            --muted: #5e6b80;
+            --line: #d7e0ef;
+            --accent: #0b6ef3;
+            --accent-soft: #e8f1ff;
+            --radius: 14px;
+            --shadow: 0 14px 40px rgba(16, 29, 56, 0.08);
+        }}
+        * {{ box-sizing: border-box; }}
+        html, body {{ height: 100%; margin: 0; }}
+        body {{
+            font-family: "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+            color: var(--text);
+            background: radial-gradient(circle at 15% 10%, #fff, var(--bg-a) 40%, var(--bg-b) 100%);
+            padding: 24px;
+        }}
+        .container {{ max-width: 1100px; margin: 0 auto; }}
+        .hero, .header, .table-wrap {{
+            background: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: calc(var(--radius) + 4px);
+            box-shadow: var(--shadow);
+            backdrop-filter: blur(6px);
+        }}
+        .hero {{
+            padding: 24px;
+            margin-bottom: 16px;
+            display: grid;
+            place-items: center;
+            gap: 10px;
+            text-align: center;
+        }}
+        .logo {{ width: min(110px, 30vw); height: auto; }}
+        .hero-title {{ margin: 0; font-weight: 650; font-size: 1.2rem; }}
+        .header {{
+            padding: 20px 24px;
+            margin-bottom: 16px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }}
+        h1 {{ margin: 0; font-size: 1.5rem; font-weight: 650; }}
+        .back-link {{ text-decoration: none; color: var(--accent); font-weight: 500; }}
+        table {{
+            width: 100%;
+            border-collapse: separate;
+            border-spacing: 0 10px;
+            padding: 0 12px 12px;
+        }}
+        th {{
+            text-align: left;
+            vertical-align: top;
+            padding: 10px 12px;
+            font-size: 0.9rem;
+            color: #334155;
+            font-weight: 650;
+            border-bottom: 1px solid var(--line);
+        }}
+        td {{
+            text-align: left;
+            vertical-align: top;
+            padding: 12px 14px;
+            font-size: 0.95rem;
+            background: #fff;
+            border-top: 1px solid var(--line);
+            border-bottom: 1px solid var(--line);
+        }}
+        tbody tr td:first-child {{
+            border-left: 1px solid var(--line);
+            border-top-left-radius: 12px;
+            border-bottom-left-radius: 12px;
+        }}
+        tbody tr td:last-child {{
+            border-right: 1px solid var(--line);
+            border-top-right-radius: 12px;
+            border-bottom-right-radius: 12px;
+        }}
+        tbody tr:hover td {{ background: var(--accent-soft); }}
+        .tool-name {{ font-family: "Consolas", "Monaco", monospace; color: #0b6ef3; font-weight: 600; }}
+        .schema {{
+            margin: 0;
+            white-space: pre-wrap;
+            font-family: "Consolas", "Monaco", monospace;
+            font-size: 0.82rem;
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            padding: 10px;
+            max-height: 160px;
+            overflow: auto;
+        }}
+        .loading, .error {{ padding: 20px; }}
+        .error {{ color: #b91c1c; }}
+    </style>
+</head>
+<body>
+    <div class=\"container\">
+        <div class=\"hero\">
+            <img class=\"logo\" src=\"/static/logo-small.png\" alt=\"i3X logo\" />
+            <h2 class=\"hero-title\">{title}</h2>
+        </div>
+        <div class=\"header\">
+            <h1>MCP Tools</h1>
+            <a class=\"back-link\" href=\"/\">&larr; Back</a>
+        </div>
+        <div class=\"table-wrap\"><div id=\"tools-content\" class=\"loading\">Loading tools...</div></div>
+    </div>
+    <script>
+        function esc(v) {{
+            return String(v)
+                .replaceAll('&', '&amp;')
+                .replaceAll('<', '&lt;')
+                .replaceAll('>', '&gt;')
+                .replaceAll('"', '&quot;')
+                .replaceAll("'", '&#39;');
+        }}
+        fetch('/mcp/tools')
+            .then((r) => r.json())
+            .then((d) => {{
+                const m = document.getElementById('tools-content');
+                const t = d.tools || {{}};
+                const ns = Object.keys(t);
+                if (ns.length === 0) {{
+                    m.className = 'error';
+                    m.textContent = 'No MCP tools available.';
+                    return;
+                }}
+                let rows = '';
+                for (const n of ns) {{
+                    const it = t[n] || {{}};
+                    const schema = it.inputSchema || it.input_schema || {{}};
+                    rows += `<tr>`
+                        + `<td class=\"tool-name\">${{esc(n)}}</td>`
+                        + `<td>${{esc(it.description || 'No description available')}}</td>`
+                        + `<td><pre class=\"schema\">${{esc(JSON.stringify(schema, null, 2))}}</pre></td>`
+                        + `</tr>`;
+                }}
+                m.className = '';
+                m.innerHTML = `<table>`
+                    + `<thead><tr>`
+                    + `<th style=\"width:24%\">Tool</th>`
+                    + `<th style=\"width:36%\">Description</th>`
+                    + `<th style=\"width:40%\">Input Schema</th>`
+                    + `</tr></thead>`
+                    + `<tbody>${{rows}}</tbody>`
+                    + `</table>`;
+            }})
+            .catch((e) => {{
+                const m = document.getElementById('tools-content');
+                m.className = 'error';
+                m.textContent = 'Error loading tools: ' + e.message;
+            }});
+    </script>
+</body>
+</html>
+"""
+        return HTMLResponse(content=html)
 
     @app.exception_handler(RequestValidationError)
     async def handle_request_validation_error(

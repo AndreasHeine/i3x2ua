@@ -1908,7 +1908,7 @@ class OpcUaClient:
         if not results:
             self._record_failed_request()
             return
-        if all(self._is_goodish_status(result.StatusCode) for result in results):
+        if all(self._is_goodish_status(getattr(result, "StatusCode", None)) for result in results):
             self._request_metrics.browse_count += 1
             return
         self._record_failed_request()

@@ -1,7 +1,7 @@
 {
   "openapi": "3.1.0",
   "info": {
-    "title": "i3X API Gateway for OPC UA",
+    "title": "The i3X API Gateway for OPC UA",
     "description": "Turn any OPC UA server into an i3X-compliant REST and MCP Enabled API with OpenAPI docs, JSON, and live SSE streams. No OPC UA expertise required.",
     "version": "v1.1"
   },

@@ -121,7 +121,16 @@ async def _handle_jsonrpc(request: Request, message: dict[str, Any]) -> dict[str
 async def list_tools(request: Request) -> dict[str, Any]:
     tools = getattr(request.app.state, "mcp_tools", {})
     if isinstance(tools, Mapping):
-        return {"tools": {name: tool.to_dict() for name, tool in tools.items()}}
+        payload: dict[str, dict[str, Any]] = {}
+        for name, tool in tools.items():
+            item = tool.to_dict()
+            # Keep legacy snake_case fields while exposing MCP-compatible camelCase.
+            item["inputSchema"] = item.get("input_schema", {})
+            item["pathParameters"] = item.get("path_parameters", [])
+            item["queryParameters"] = item.get("query_parameters", [])
+            item["bodyRequired"] = item.get("body_required", False)
+            payload[name] = item
+        return {"tools": payload}
     return {"tools": {}}
 
 

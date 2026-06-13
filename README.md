@@ -8,23 +8,29 @@
 
 ## **Industrial Information Interoperability eXchange (i3X)**
 
-The Industrial Information Interoperability Exchange (i3X™) is an open, common API initiative proposed to address a growing interoperability challenge in modern manufacturing architectures: **manufacturing data silo proliferation and API chaos**. As manufacturers adopt heterogeneous software stacks from multiple vendors, the industry risks repeating past fragmentation seen with protocols, platforms, and namespaces - this time at the API layer.
+> The Industrial Information Interoperability Exchange (i3X™) is an open, common API initiative proposed to address a growing interoperability challenge in modern manufacturing architectures: **manufacturing data silo proliferation and API chaos**. As manufacturers adopt heterogeneous software stacks from multiple vendors, the industry risks repeating past fragmentation seen with protocols, platforms, and namespaces - this time at the API layer.
 
 ## License
 
-### Personal use only. 
-All rights reserved. See the [LICENSE](LICENSE) file for details.
+### Open Source License (AGPL-3.0-or-later)
+This project is licensed under the GNU Affero General Public License v3.0 or later.
+See the [LICENSE](LICENSE) file for the full legal text.
 
 ### Commercial Licensing
-Commercial use, distribution, or modification of this code is strictly prohibited under the standard license. If you want to use this project for commercial purposes, please purchase a commercial license.
+**Sponsors at USD 1/month or higher are granted a commercial license while sponsorship remains active, as defined in the sponsor terms.**
+**This enables commercial use without AGPL copyleft obligations during active sponsorship.**
 
-However, you can automatically acquire a commercial license by sponsoring this project on GitHub. Commercial use is permitted as long as you maintain an active sponsorship at the **[$1 a month]** level or higher.
+[![Sponsor @AndreasHeine on GitHub Sponsors](https://img.shields.io/badge/Sponsor-GitHub%20Sponsors-181717?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/AndreasHeine)
 
-Get your commercial license instantly here:
-* **Become a Sponsor:** [Sponsor me on GitHub](https://github.com/sponsors/AndreasHeine)
+See [COMMERCIAL_LICENSE.md](COMMERCIAL_LICENSE.md) for full grant scope, limits, grace period, and verification details.
 
-Alternatively, for custom licensing agreements or one-time purchases, please contact me directly:
-* **Email:** info@andreas-heine.net
+### Third-Party and Upstream Components
+This repository includes third-party and upstream materials with their own licenses, including the bundled `i3X/` subtree.
+See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for details.
+
+### Contributions
+By contributing to this repository, you agree that your contributions are provided under AGPL-3.0-or-later for the open-source distribution and may be included in commercially licensed distributions of this project.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for sign-off requirements and contribution workflow.
 
 ## Architecture Overview
 
@@ -208,6 +214,8 @@ MCP scope emphasis: the MCP bridge is currently focused on tool calling (`initia
 - quick ops reference: `docs/QUICK_REFERENCE.md`
 - Python coding requirements: `python-coding-reguirements.md`
 - API definition: `openapi.json`
+- contribution guide: `CONTRIBUTING.md`
+- release notes: `CHANGELOG.md`
 
 ## Docker
 

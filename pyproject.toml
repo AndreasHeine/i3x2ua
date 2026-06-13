@@ -2,7 +2,11 @@
 name = "i3x2ua"
 version = "0.1.0"
 description = "i3X REST server backed by OPC UA"
+license = { file = "LICENSE" }
 requires-python = ">=3.10,<3.13"
+classifiers = [
+    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+]
 dependencies = [
     "asyncua==2.0.0",
     "fastapi>=0.115.0",
@@ -11,6 +15,10 @@ dependencies = [
     "pydantic-settings>=2.3.0",
     "uvicorn>=0.30.0",
 ]
+
+[project.urls]
+Repository = "https://github.com/AndreasHeine/i3x2ua"
+Commercial-Licensing = "mailto:info@andreas-heine.net"
 
 [project.optional-dependencies]
 dev = [

@@ -1,0 +1,61 @@
+name: DCO Check
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  dco:
+    name: Verify Signed-off-by trailers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Verify DCO sign-offs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            range="${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
+          else
+            before="${{ github.event.before }}"
+            if [[ -z "${before}" || "${before}" == "0000000000000000000000000000000000000000" ]]; then
+              range="${{ github.sha }}"
+            else
+              range="${before}..${{ github.sha }}"
+            fi
+          fi
+
+          echo "Checking commit range: ${range}"
+
+          mapfile -t commits < <(git rev-list --no-merges "${range}")
+
+          if [[ ${#commits[@]} -eq 0 ]]; then
+            echo "No non-merge commits to verify."
+            exit 0
+          fi
+
+          failed=0
+          for sha in "${commits[@]}"; do
+            if ! git log -1 --pretty=%B "${sha}" | grep -Eiq '^Signed-off-by:\s+.+<.+>$'; then
+              echo "Missing Signed-off-by trailer in commit ${sha}"
+              failed=1
+            fi
+          done
+
+          if [[ ${failed} -ne 0 ]]; then
+            echo "DCO check failed. Amend commits with: git commit --amend -s"
+            exit 1
+          fi
+
+          echo "DCO check passed."

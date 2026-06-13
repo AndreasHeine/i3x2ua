@@ -30,11 +30,17 @@ Alternatively, for custom licensing agreements or one-time purchases, please con
 
 ```mermaid
 flowchart LR
-	Client[i3X Client / Consumer] -->|HTTP JSON| Nginx[nginx Reverse Proxy]
-	Nginx -->|/v1| API[FastAPI App i3x_server.main]
+	subgraph Consumer[Consumer]
+		Client[i3X Client]
+		McpConsumer[AI Agent]
+	end
+	Client <--> |HTTP JSON / HTML| Nginx[nginx Reverse Proxy]
+	McpConsumer <--> |optional /mcp JSON-RPC| Nginx
+	Nginx <--> |all app routes| API[FastAPI App i3x_server.main]
 
 	subgraph App[Application Core]
 		API --> Router[V1 Router /v1]
+		API --> UaRouter[UA Router /ua]
 		API -. optional /mcp .-> McpRouter[MCP Router /mcp]
 		McpRouter -->|generated tools| McpTools[(MCP Tool Catalog)]
 		McpRouter -->|tool calls| Router
@@ -42,36 +48,29 @@ flowchart LR
 		Deps --> ModelCache[(Model Cache)]
 		Deps --> SubSvc[i3X Subscription Service]
 		Deps --> OpcClient[OPC UA Client]
-	end
+		API --> Ui[Landing + viewers / / /docs /view /mcp-tools-viewer]
 
-	subgraph Model[Model Layer]
-		Builder[Model Builder] --> Mapper[Node Mapper]
-		Mapper --> BuildResult[BuildResult Indexes]
-		BuildResult --> ModelCache
+		subgraph Model[Model Layer]
+			Builder[Model Builder] --> Mapper[Node Mapper]
+			Mapper --> BuildResult[BuildResult Indexes]
+			BuildResult --> ModelCache
+		end
 	end
 
 	OpcClient -->|browse tree + metadata| Builder
 	OpcClient -->|read values/history| Router
+	OpcClient -->|connection/state/limits/metrics| UaRouter
 	OpcClient <-->|OPC UA binary protocol| UaServer[(External OPC UA Server)]
 	UaServer -->|address space browse + read + history + events| OpcClient
 	Router -.->|write endpoints currently not implemented| OpcClient
-	Router -->|object/value/history responses| Client
-
-	subgraph Subs[Subscribe Flow]
-		Router -->|create/register/sync/list/delete/stream| SubSvc
-		SubSvc -->|native subscription when limits allow| OpcClient
-		SubSvc -->|polling fallback| OpcClient
-		SubSvc -->|SSE updates| Router
-		Router -->|text/event-stream| Client
-	end
-
-	subgraph Startup[Lifecycle]
-		StartupCfg[Settings env I3X_* + I3X_ENABLE_MCP] --> API
-		API -->|startup| OpcClient
-		API -->|optional preload| Builder
-		API -->|shutdown| SubSvc
-		API -->|shutdown| OpcClient
-	end
+	Router -->|object/value/history responses| Nginx
+	UaRouter -->|operational state and limits| Nginx
+	Ui -->|HTML pages and docs links| Nginx
+	Router -->|create/register/sync/list/delete/stream| SubSvc
+	SubSvc -->|native subscription when limits allow| OpcClient
+	SubSvc -->|polling fallback| OpcClient
+	SubSvc -->|SSE updates| Router
+	Router -->|text/event-stream| Nginx
 ```
 
 ```mermaid

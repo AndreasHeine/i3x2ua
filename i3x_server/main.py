@@ -7,6 +7,7 @@ import logging
 import os
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
+from html import escape
 from pathlib import Path
 from time import perf_counter
 
@@ -332,13 +333,18 @@ def create_app() -> FastAPI:
             if isinstance(info, dict):
                 title = str(info.get("title", title))
 
+        safe_title = escape(title)
+        safe_label_text = escape(label or "API Result")
+        safe_page_title = escape(label) if label else "API Result"
+        endpoint_js = json.dumps(endpoint)
+
         html = f"""
 <!doctype html>
 <html lang=\"en\">
 <head>
     <meta charset=\"utf-8\" />
     <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
-    <title>{label} - The i3X API Gateway for OPC UA</title>
+    <title>{safe_page_title} - The i3X API Gateway for OPC UA</title>
     <style>
         :root {{
             --bg-a: #f7f9fc;
@@ -408,16 +414,16 @@ def create_app() -> FastAPI:
     <div class=\"container\">
         <div class=\"hero\">
             <img class=\"logo\" src=\"/static/logo-small.png\" alt=\"i3X logo\" />
-            <h2 class=\"hero-title\">{title}</h2>
+            <h2 class="hero-title">{safe_title}</h2>
         </div>
         <div class=\"header\">
-            <h1>{label or "API Result"}</h1>
+            <h1>{safe_label_text}</h1>
             <a class=\"back-link\" href=\"/\">&larr; Back</a>
         </div>
         <div class=\"code-block\"><pre id=\"result\" class=\"loading\">Loading...</pre></div>
     </div>
     <script>
-        fetch('{endpoint}')
+        fetch({endpoint_js})
             .then((r) => r.json())
             .then((d) => {{
                 const p = document.getElementById('result');

@@ -449,6 +449,18 @@ def test_api_viewer_page(client: TestClient) -> None:
     assert "i3X API Gateway for OPC UA" in response.text
 
 
+def test_api_viewer_escapes_query_inputs(client: TestClient) -> None:
+    response = client.get(
+        '/view?endpoint=";alert(1);//&label=%3Cscript%3Ealert(1)%3C/script%3E'
+    )
+    assert response.status_code == 200
+    text = response.text
+
+    assert "<script>alert(1)</script>" not in text
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in text
+    assert 'fetch("\\\";alert(1);//")' in text
+
+
 def test_mcp_tools_viewer_page(client: TestClient) -> None:
     response = client.get("/mcp-tools-viewer")
     assert response.status_code == 200

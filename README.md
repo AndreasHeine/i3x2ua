@@ -21,6 +21,7 @@ See the [LICENSE](LICENSE) file for the full legal text.
 **This enables commercial use without AGPL copyleft obligations during active sponsorship.**
 
 [![Sponsor @AndreasHeine](https://img.shields.io/badge/Sponsor-GitHub%20Sponsors-181717?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/AndreasHeine)
+[Sponsor @AndreasHeine on GitHub Sponsors](https://github.com/sponsors/AndreasHeine)
 
 See [COMMERCIAL_LICENSE.md](COMMERCIAL_LICENSE.md) for full grant scope, limits, grace period, and verification details.
 

@@ -1512,7 +1512,7 @@ class OpcUaClient:
                         exc_info=True,
                     )
                     dv = ua.DataValue()
-                    dv.StatusCode = ua.StatusCode(ua.StatusCodes.BadUnexpectedError)
+                    dv.StatusCode = ua.StatusCode(ua.UInt32(0x80010000))
                     return dv
 
         results: list[ua.DataValue] = []

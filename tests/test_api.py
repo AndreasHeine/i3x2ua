@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import base64
 import json
@@ -223,6 +223,7 @@ class FakeOpcUaClient:
         results: list[Any] = []
         for node_id in node_ids:
             base = self.values.get(node_id, 1.0)
+            value: Any
             if isinstance(base, (bytes, bytearray, memoryview)):
                 value = bytes(base)
             else:
@@ -1860,4 +1861,3 @@ def test_mcp_call_strips_host_from_runtime_api_prefix(client: TestClient) -> Non
 
     response = client.post("/mcp/call", json={"tool": "getNamespaces", "arguments": {}})
     assert response.status_code == 200
-

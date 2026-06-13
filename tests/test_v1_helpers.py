@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
@@ -279,4 +279,3 @@ def test_not_implemented_and_server_info() -> None:
     assert caps.query.history is True
     info = v1._build_server_info()
     assert info.specVersion == "1.0"
-

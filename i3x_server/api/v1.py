@@ -712,6 +712,8 @@ def _parent_id_for_node(model: BuildResult, node_id: str) -> str | None:
     raw_hierarchy_children_by_id = getattr(model, "hierarchy_children_by_id", None)
     if isinstance(raw_hierarchy_children_by_id, dict):
         for parent_id, child_ids in raw_hierarchy_children_by_id.items():
+            if not isinstance(parent_id, str) or not isinstance(child_ids, list):
+                continue
             if node_id in child_ids:
                 return parent_id
 
@@ -1889,11 +1891,15 @@ async def get_objects_v1(
         hierarchy_parent_ids = set()
         raw_hierarchy_parent_by_id = getattr(model, "hierarchy_parent_by_id", None)
         if isinstance(raw_hierarchy_parent_by_id, dict):
-            hierarchy_parent_ids = {node_id for node_id in raw_hierarchy_parent_by_id.keys() if isinstance(node_id, str)}
+            hierarchy_parent_ids = {
+                node_id for node_id in raw_hierarchy_parent_by_id.keys() if isinstance(node_id, str)
+            }
         composition_parent_ids = set()
         raw_composition_parent_by_id = getattr(model, "composition_parent_by_id", None)
         if isinstance(raw_composition_parent_by_id, dict):
-            composition_parent_ids = {node_id for node_id in raw_composition_parent_by_id.keys() if isinstance(node_id, str)}
+            composition_parent_ids = {
+                node_id for node_id in raw_composition_parent_by_id.keys() if isinstance(node_id, str)
+            }
         nodes = [
             node
             for node in model.nodes_by_id.values()
@@ -2003,7 +2009,8 @@ async def list_objects_by_id_v1(
     summary="Query related objects",
     description=(
         "Return all objects related to the requested elements across all relationship planes: "
-        "hierarchy (`HasChildren`, `HasParent`), composition (`HasComponent`, `ComponentOf`), and graph (custom/non-hierarchical). "
+        "hierarchy (`HasChildren`, `HasParent`), composition (`HasComponent`, `ComponentOf`), "
+        "and graph (custom/non-hierarchical). "
         "Use `relationshipType` to filter results to a specific named relationship. "
         "Failing items include an item-level `responseDetail` alongside `error`."
     ),
@@ -2090,7 +2097,8 @@ async def query_related_objects_v1(
     summary="Query last known values",
     description=(
         "Return the last known value, quality, and timestamp for one or more objects. "
-        "Quality and timestamp are sourced directly from the OPC UA server; quality values are `Good`, `Uncertain`, or `Bad`. "
+        "Quality and timestamp are sourced directly from the OPC UA server; quality values are "
+        "`Good`, `Uncertain`, or `Bad`. "
         "A null value with `Good` or `Uncertain` quality is normalized to `GoodNoData`. "
         "When `maxDepth > 1`, component values are recursed using the **composition** adjacency only — "
         "hierarchy-only children are never included. "
@@ -2144,12 +2152,20 @@ async def query_last_known_values_v1(
             )
             continue
 
-        root_vqt = _vqt_from_data_value(values_by_node_id[node.source_node_id]) if node.source_node_id in values_by_node_id else VQT(value=None, quality="GoodNoData", timestamp=_now_iso())
+        root_vqt = (
+            _vqt_from_data_value(values_by_node_id[node.source_node_id])
+            if node.source_node_id in values_by_node_id
+            else VQT(value=None, quality="GoodNoData", timestamp=_now_iso())
+        )
         component_nodes = component_nodes_by_element_id.get(element_id, [])
         components: dict[str, VQT] = {}
         for component_node in component_nodes:
             comp_dv = values_by_node_id.get(component_node.source_node_id)
-            components[component_node.id] = _vqt_from_data_value(comp_dv) if comp_dv is not None else VQT(value=None, quality="GoodNoData", timestamp=_now_iso())
+            components[component_node.id] = (
+                _vqt_from_data_value(comp_dv)
+                if comp_dv is not None
+                else VQT(value=None, quality="GoodNoData", timestamp=_now_iso())
+            )
 
         result = CurrentValueResult(
             isComposition=bool(_composition_children_for_node(model, node)),
@@ -2369,7 +2385,8 @@ async def remove_monitored_items_v1(
     summary="Stream subscription updates via SSE",
     description=(
         "Open a Server-Sent Events (SSE) stream for a subscription. "
-        "Each `data:` event carries a JSON array of updates with `sequenceNumber`, `elementId`, `value`, `quality`, and `timestamp`. "
+        "Each `data:` event carries a JSON array of updates with `sequenceNumber`, "
+        "`elementId`, `value`, `quality`, and `timestamp`. "
         "A `: connected` comment is sent immediately on connection. "
         "A `: keepalive` comment is sent periodically when there are no new updates. "
         "An `event: close` message is sent when the stream is terminated server-side. "
@@ -2472,7 +2489,8 @@ async def stream_subscription_v1(
     summary="Sync subscription updates",
     description=(
         "Return all pending updates for a subscription and acknowledge previously received ones. "
-        "Set `acknowledgeSequence` to the last sequence number the client processed to discard older entries from the queue. "
+        "Set `acknowledgeSequence` to the last sequence number the client processed to discard "
+        "older entries from the queue. "
         "Pass `acknowledgeSequence=-1` to acknowledge and discard **all** pending updates. "
         "Returns HTTP 206 with a `responseDetail` if updates were dropped due to queue overflow since the last sync. "
         "Returns HTTP 400 if the subscription has an active SSE stream — close the stream before calling sync."
@@ -2490,7 +2508,10 @@ async def sync_subscription_v1(
     except Exception:
         namespace_infos = []
 
-    active_stream = await subscription_service.has_active_stream(client_id=client_id, subscription_id=body.subscriptionId)
+    active_stream = await subscription_service.has_active_stream(
+        client_id=client_id,
+        subscription_id=body.subscriptionId,
+    )
     if active_stream is None:
         raise i3x_http_error(
             404,

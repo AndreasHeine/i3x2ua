@@ -16,8 +16,8 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.gzip import GZipMiddleware
 
-from i3x_server.api.v1 import router as v1_router
 from i3x_server.api.mcp import router as mcp_router
+from i3x_server.api.v1 import router as v1_router
 from i3x_server.config.settings import settings
 from i3x_server.mcp import build_mcp_tools, get_api_prefix
 from i3x_server.model.builder import ModelBuilder

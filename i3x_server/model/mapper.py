@@ -39,23 +39,23 @@ _GRAPH_REFERENCE_NAMES = {
 # OPC UA standard reference type node IDs (namespace 0)
 # These use normalized form (alphanumeric only, matching _normalize_token output)
 _HIERARCHY_REFERENCE_NODE_IDS = {
-    "i35",       # Organizes (ns=0;i=35)
-    "i33",       # HierarchicalReferences (ns=0;i=33)
+    "i35",  # Organizes (ns=0;i=35)
+    "i33",  # HierarchicalReferences (ns=0;i=33)
 }
 
 _COMPOSITION_REFERENCE_NODE_IDS = {
-    "i47",       # HasComponent (ns=0;i=47)
-    "i48",       # HasOrderedComponent (ns=0;i=48)
-    "i46",       # HasProperty (ns=0;i=46)
+    "i47",  # HasComponent (ns=0;i=47)
+    "i48",  # HasOrderedComponent (ns=0;i=48)
+    "i46",  # HasProperty (ns=0;i=46)
 }
 
 _TYPE_META_REFERENCE_NODE_IDS = {
-    "i40",       # HasTypeDefinition (ns=0;i=40)
-    "i45",       # HasSubtype (ns=0;i=45)
+    "i40",  # HasTypeDefinition (ns=0;i=40)
+    "i45",  # HasSubtype (ns=0;i=45)
 }
 
 _GRAPH_REFERENCE_NODE_IDS = {
-     "i31",       # References (base for non-hierarchical) (ns=0;i=31)
+    "i31",  # References (base for non-hierarchical) (ns=0;i=31)
 }
 
 
@@ -90,7 +90,7 @@ def classify_opcua_reference(
             return "hierarchy"
         if node_id_normalized in _GRAPH_REFERENCE_NODE_IDS:
             return "graph"
-    
+
     # Fall back to browse name matching (for custom reference types)
     tokens = {
         _normalize_token(reference_type_node_id),

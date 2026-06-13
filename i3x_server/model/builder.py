@@ -112,8 +112,10 @@ class ModelBuilder:
             else:
                 for child_source in child_sources:
                     child_node = by_source_node[child_source]
-                    reference_browse_name = "HasProperty" if child_node.node_class == "Variable" else "Organizes"
-                    reference_entries.append((child_source, None, reference_browse_name))
+                    fallback_reference_browse_name = (
+                        "HasProperty" if child_node.node_class == "Variable" else "Organizes"
+                    )
+                    reference_entries.append((child_source, None, fallback_reference_browse_name))
 
             seen_relationship_edges: set[tuple[str, str]] = set()
             for target_source_id, reference_type_id, reference_browse_name in reference_entries:

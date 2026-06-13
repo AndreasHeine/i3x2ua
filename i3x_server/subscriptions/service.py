@@ -139,9 +139,9 @@ class SubscriptionService:
 
                     removed: list[_SubscriptionState] = []
                     for subscription_id in stale_ids:
-                        state = self._subscriptions.pop(subscription_id, None)
-                        if state is None:
+                        if subscription_id not in self._subscriptions:
                             continue
+                        state = self._subscriptions.pop(subscription_id)
                         state.update_event.set()
                         removed.append(state)
 

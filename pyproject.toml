@@ -18,7 +18,7 @@ dependencies = [
 
 [project.urls]
 Repository = "https://github.com/AndreasHeine/i3x2ua"
-Commercial-Licensing = "mailto:info@andreas-heine.net"
+Commercial-Licensing = "https://github.com/sponsors/AndreasHeine"
 
 [project.optional-dependencies]
 dev = [

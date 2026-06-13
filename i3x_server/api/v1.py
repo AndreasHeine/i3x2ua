@@ -11,6 +11,8 @@ from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass, fields, is_dataclass
 from datetime import datetime, timezone
+from functools import lru_cache
+from pathlib import Path
 from time import perf_counter
 from typing import Any, Generic, TypeVar
 
@@ -379,11 +381,26 @@ def _supported_capabilities() -> ServerCapabilities:
     )
 
 
+@lru_cache(maxsize=1)
+def _server_name_from_openapi(default_name: str = "The i3X API Gateway for OPC UA") -> str:
+    openapi_path = Path(__file__).resolve().parents[2] / "openapi.json"
+    try:
+        openapi_doc = json.loads(openapi_path.read_text(encoding="utf-8"))
+        info = openapi_doc.get("info")
+        if isinstance(info, Mapping):
+            title = info.get("title")
+            if isinstance(title, str) and title.strip():
+                return title.strip()
+    except Exception:
+        logger.debug("Failed to read OpenAPI title for server info", exc_info=True)
+    return default_name
+
+
 def _build_server_info() -> ServerInfo:
     return ServerInfo(
         specVersion="1.0",
         serverVersion="0.1.0",
-        serverName="i3X OPC UA Provider",
+        serverName=_server_name_from_openapi(),
         capabilities=_supported_capabilities(),
     )
 

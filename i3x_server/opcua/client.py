@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -196,6 +197,7 @@ class OpcUaClient:
         server_cert_path: str | None = None,
         browse_concurrency: int = 16,
         metadata_cache_ttl_seconds: int = 300,
+        connection_monitor_interval_seconds: int = 5,
     ) -> None:
         self._endpoint = endpoint
         self._username = username.strip() if isinstance(username, str) and username.strip() else None
@@ -241,6 +243,8 @@ class OpcUaClient:
         self._goodish_quality_labels = {"good", "uncertain"}
         self._connection_state = "Disconnected"
         self._connection_state_since = datetime.now(tz=timezone.utc)
+        self._connection_monitor_interval_seconds = max(0, connection_monitor_interval_seconds)
+        self._connection_monitor_task: asyncio.Task[None] | None = None
 
     def reset_runtime_metrics(self) -> None:
         self._runtime_metrics = OpcUaRuntimeMetrics()
@@ -343,6 +347,7 @@ class OpcUaClient:
         limits_started = perf_counter()
         self._limits_cache = await self.get_operational_limits()
         limits_duration_s = perf_counter() - limits_started
+        self._ensure_connection_monitor_task()
         logger.info(
             "OPC UA limits endpoint=%s max_nodes_per_browse=%s max_nodes_per_read=%s",
             self._endpoint,
@@ -393,6 +398,7 @@ class OpcUaClient:
     async def disconnect(self) -> None:
         started = perf_counter()
         logger.info("OPC UA disconnect started endpoint=%s", self._endpoint)
+        await self._stop_connection_monitor_task()
         await self._client.disconnect()
         self._set_connection_state("Disconnected")
         self._limits_cache = None
@@ -400,6 +406,45 @@ class OpcUaClient:
         self._object_types_cache = None
         self._subscription_caps_cache = None
         logger.info("OPC UA disconnect finished endpoint=%s duration_s=%.3f", self._endpoint, perf_counter() - started)
+
+    def _ensure_connection_monitor_task(self) -> None:
+        if self._connection_monitor_interval_seconds <= 0:
+            return
+        if self._connection_monitor_task is not None and not self._connection_monitor_task.done():
+            return
+        self._connection_monitor_task = asyncio.create_task(self._connection_monitor_loop())
+
+    async def _stop_connection_monitor_task(self) -> None:
+        task = self._connection_monitor_task
+        self._connection_monitor_task = None
+        if task is None:
+            return
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+
+    async def _connection_monitor_loop(self) -> None:
+        try:
+            while True:
+                await asyncio.sleep(self._connection_monitor_interval_seconds)
+                await self._probe_connection()
+        except asyncio.CancelledError:
+            return
+
+    async def _probe_connection(self) -> None:
+        if self._reconnect_lock.locked():
+            return
+        try:
+            await self._client.get_node("i=2256").read_data_value()
+            self._set_connection_state("Connected")
+        except Exception as exc:
+            self._set_connection_state("Reconnecting")
+            logger.warning("OPC UA connection probe failed endpoint=%s error=%s", self._endpoint, exc)
+            try:
+                await self._reconnect()
+            except Exception:
+                self._set_connection_state("Disconnected")
+                logger.warning("OPC UA connection probe reconnect failed endpoint=%s", self._endpoint, exc_info=True)
 
     async def browse_tree(self) -> list[OpcUaNodeInfo]:
         started = perf_counter()
@@ -1777,7 +1822,20 @@ class OpcUaClient:
 
     def _should_retry_after_disconnect(self, exc: Exception) -> bool:
         text = str(exc).lower()
-        return "connection is closed" in text or "connection is not open" in text
+        reconnect_markers = (
+            "connection is closed",
+            "connection is not open",
+            "connection reset",
+            "broken pipe",
+            "socket",
+            "transport closed",
+            "timed out",
+            "timeout",
+            "badsessionclosed",
+            "badsessionidinvalid",
+            "badsecurechannelclosed",
+        )
+        return any(marker in text for marker in reconnect_markers)
 
     def _is_too_many_operations_error(self, exc: Exception) -> bool:
         text = str(exc).lower()

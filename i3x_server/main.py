@@ -126,16 +126,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         server_cert_path=settings.opcua_server_cert_path,
         browse_concurrency=settings.opcua_browse_concurrency,
         metadata_cache_ttl_seconds=settings.opcua_metadata_cache_ttl_seconds,
+        connection_monitor_interval_seconds=settings.opcua_connection_monitor_interval_seconds,
     )
     skip_connect = os.getenv("I3X_SKIP_OPCUA_CONNECT", "0") == "1"
     logger.info(
         "App startup opcua_endpoint=%s skip_connect=%s log_level=%s "
-        "browse_concurrency=%d metadata_cache_ttl_seconds=%d auth_configured=%s security_mode=%s mcp_enabled=%s",
+        "browse_concurrency=%d metadata_cache_ttl_seconds=%d connection_monitor_interval_seconds=%d "
+        "auth_configured=%s security_mode=%s mcp_enabled=%s",
         settings.opcua_endpoint,
         skip_connect,
         settings.log_level,
         settings.opcua_browse_concurrency,
         settings.opcua_metadata_cache_ttl_seconds,
+        settings.opcua_connection_monitor_interval_seconds,
         bool(settings.opcua_username and settings.opcua_password),
         settings.opcua_security_mode,
         mcp_enabled,
@@ -436,9 +439,10 @@ def create_app() -> FastAPI:
         const endpoint = Object.prototype.hasOwnProperty.call(knownViewTargets, requested)
             ? requested
             : '/v1/info';
+        const refreshMs = endpoint.startsWith('/ua/') ? 2000 : 0;
         document.getElementById('viewer-title').textContent = knownViewTargets[endpoint] || 'API Result';
 
-        fetch(endpoint)
+        const load = () => fetch(endpoint, {{ cache: 'no-store' }})
             .then((r) => r.json())
             .then((d) => {{
                 const p = document.getElementById('result');
@@ -450,6 +454,11 @@ def create_app() -> FastAPI:
                 p.textContent = 'Error: ' + e.message;
                 p.className = 'error';
             }});
+
+        load();
+        if (refreshMs > 0) {{
+            setInterval(load, refreshMs);
+        }}
     </script>
 </body>
 </html>

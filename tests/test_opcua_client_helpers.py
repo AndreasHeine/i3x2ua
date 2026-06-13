@@ -27,6 +27,11 @@ class _FakeNode:
             raise self._error
         return self._value
 
+    async def read_data_value(self) -> Any:
+        if self._error is not None:
+            raise self._error
+        return self._value
+
 
 class _FakeClient:
     def __init__(self) -> None:
@@ -146,7 +151,36 @@ async def test_read_positive_int_and_retry_detection() -> None:
     assert await client._read_positive_int("ns=0;i=1") is None
 
     assert client._should_retry_after_disconnect(RuntimeError("connection is closed")) is True
+    assert client._should_retry_after_disconnect(RuntimeError("Connection reset by peer")) is True
+    assert client._should_retry_after_disconnect(RuntimeError("BadSessionClosed")) is True
     assert client._should_retry_after_disconnect(RuntimeError("different error")) is False
+
+
+@pytest.mark.asyncio
+async def test_probe_connection_marks_connected_after_success() -> None:
+    client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
+    cast(Any, client)._client = SimpleNamespace(get_node=lambda _id: _FakeNode(SimpleNamespace()))
+    client._set_connection_state("Reconnecting")
+
+    await client._probe_connection()
+
+    assert client.get_connection_snapshot().state == "Connected"
+
+
+@pytest.mark.asyncio
+async def test_probe_connection_marks_disconnected_if_reconnect_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
+    cast(Any, client)._client = SimpleNamespace(get_node=lambda _id: _FakeNode(error=RuntimeError("socket closed")))
+    client._set_connection_state("Connected")
+
+    async def _fail_reconnect() -> None:
+        raise RuntimeError("still down")
+
+    monkeypatch.setattr(client, "_reconnect", _fail_reconnect)
+
+    await client._probe_connection()
+
+    assert client.get_connection_snapshot().state == "Disconnected"
 
 
 @pytest.mark.asyncio

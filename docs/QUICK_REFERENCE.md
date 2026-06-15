@@ -172,7 +172,10 @@ I3X_ENABLE_MCP=1 uv run uvicorn i3x_server.main:app --host 0.0.0.0 --port 8000
 |------------|--------|-------|
 | Tool discovery and listing | ✅ Supported | All read/query/subscribe operations exposed. |
 | Tool calling | ✅ Supported | Dispatches to REST API endpoints. |
-| JSON-RPC batch requests | ❌ Not supported | Send one request per call. |
+| Prompt discovery and execution | ✅ Supported | `prompts/list`, `prompts/get`, `prompts/execute` via JSON-RPC and REST. |
+| Resource listing and reading | ✅ Supported | `resources/list`, `resources/read` via JSON-RPC and REST. |
+| Root listing | ✅ Supported | `roots/list` via JSON-RPC and REST. |
+| JSON-RPC batch requests | ✅ Supported | Array request payloads are handled per JSON-RPC 2.0. |
 | Update/write operations | ⚠️ Optional | May return `501 Not Implemented` when not implemented in this deployment. |
 | Server-Sent Event streaming | ✅ Available | Via REST `/v1/subscriptions/stream` endpoint. |
 
@@ -181,6 +184,12 @@ I3X_ENABLE_MCP=1 uv run uvicorn i3x_server.main:app --host 0.0.0.0 --port 8000
 - **Discovery**: `GET /mcp` — Returns SSE endpoint for MCP discovery.
 - **Tool listing**: `GET /mcp/tools` — Returns tool catalog in REST format.
 - **Tool calling**: `POST /mcp/call` — REST-style tool invocation.
+- **Prompt listing**: `GET /mcp/prompts` — Returns prompt metadata.
+- **Prompt definition**: `GET /mcp/prompts/{name}` — Returns a full prompt definition.
+- **Prompt execution**: `POST /mcp/prompts/execute` — Renders and executes prompt templates.
+- **Resource listing**: `GET /mcp/resources` — Returns MCP resources.
+- **Resource reading**: `POST /mcp/resources/read` — Reads a resource by URI.
+- **Root listing**: `GET /mcp/roots` — Returns available MCP roots.
 - **JSON-RPC**: `POST /mcp` — Standard JSON-RPC 2.0 interface.
 
 ### With Authentication (BasicAuth + HTTPS)

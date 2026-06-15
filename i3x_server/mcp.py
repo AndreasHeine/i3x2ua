@@ -59,6 +59,22 @@ def load_overrides(path: str | Path = "tool_overrides.json") -> dict[str, Any]:
     return overrides if isinstance(overrides, dict) else {}
 
 
+def load_tool_overrides(path: str | Path = "tool_overrides.json") -> dict[str, Any]:
+    overrides = load_overrides(path)
+    tools = overrides.get("tools")
+    if isinstance(tools, Mapping):
+        return dict(tools)
+    return overrides
+
+
+def load_prompt_overrides(path: str | Path = "tool_overrides.json") -> dict[str, Any]:
+    overrides = load_overrides(path)
+    prompts = overrides.get("prompts")
+    if isinstance(prompts, Mapping):
+        return dict(prompts)
+    return {}
+
+
 @dataclass(frozen=True, slots=True)
 class McpToolDefinition:
     name: str
@@ -88,7 +104,7 @@ def build_mcp_tools(
     overrides: Mapping[str, Any] | None = None,
 ) -> dict[str, McpToolDefinition]:
     if overrides is None:
-        overrides = load_overrides()
+        overrides = load_tool_overrides()
 
     components = openapi_spec.get("components")
     if not isinstance(components, Mapping):

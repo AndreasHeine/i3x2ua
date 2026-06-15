@@ -22,9 +22,10 @@ from i3x_server.api.mcp import router as mcp_router
 from i3x_server.api.ua import router as ua_router
 from i3x_server.api.v1 import router as v1_router
 from i3x_server.config.settings import settings
-from i3x_server.mcp import build_mcp_tools, get_api_prefix
+from i3x_server.mcp import build_mcp_tools, get_api_prefix, load_prompt_overrides
 from i3x_server.model.builder import ModelBuilder
 from i3x_server.opcua.client import OpcUaClient
+from i3x_server.prompts.registry import PromptRegistry
 from i3x_server.schemas.state import BuildResult
 from i3x_server.subscriptions.service import SubscriptionService
 
@@ -161,6 +162,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         openapi_spec = app.openapi()
         app.state.mcp_tools = build_mcp_tools(openapi_spec)
         app.state.mcp_api_prefix = get_api_prefix(openapi_spec)
+        project_root = Path(__file__).resolve().parents[1]
+        prompt_dir = project_root / "prompts"
+        app.state.mcp_prompts = PromptRegistry.load_from_directory(
+            prompt_dir,
+            overrides=load_prompt_overrides(),
+        )
+        logger.info(
+            "MCP prompt registry loaded path=%s count=%d",
+            prompt_dir,
+            len(app.state.mcp_prompts.list_metadata()),
+        )
     if skip_connect:
         app.state.model_cache = BuildResult(
             nodes_by_id={},

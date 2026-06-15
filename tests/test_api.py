@@ -2301,6 +2301,9 @@ def test_mcp_endpoint_exposes_sse_discovery(client: TestClient) -> None:
     assert response.headers["content-type"].startswith("text/event-stream")
     assert "event: endpoint" in response.text
     assert "/mcp" in response.text
+    assert '"method": "notifications/prompts/list_changed"' in response.text
+    assert '"method": "notifications/resources/list_changed"' in response.text
+    assert '"method": "notifications/roots/list_changed"' in response.text
 
 
 def test_mcp_initialize_request(client: TestClient) -> None:
@@ -2319,6 +2322,9 @@ def test_mcp_initialize_request(client: TestClient) -> None:
     assert payload["id"] == 1
     assert payload["result"]["protocolVersion"] == "2025-06-18"
     assert payload["result"]["capabilities"]["tools"]["listChanged"] is False
+    assert payload["result"]["capabilities"]["prompts"]["listChanged"] is True
+    assert payload["result"]["capabilities"]["resources"]["listChanged"] is True
+    assert payload["result"]["capabilities"]["roots"]["listChanged"] is True
 
 
 def test_mcp_tools_list_request(client: TestClient) -> None:
@@ -2330,6 +2336,180 @@ def test_mcp_tools_list_request(client: TestClient) -> None:
     payload = response.json()
     tools = payload["result"]["tools"]
     assert any(tool["name"] == "getNamespaces" for tool in tools)
+
+
+def test_mcp_prompts_list_rest(client: TestClient) -> None:
+    response = client.get("/mcp/prompts")
+    assert response.status_code == 200
+    payload = response.json()
+    prompts = payload["prompts"]
+    assert any(item["name"] == "analyze_machine_state" for item in prompts)
+    assert any(item["name"] == "opcua_diagnostics" for item in prompts)
+
+
+def test_mcp_prompts_get_rest(client: TestClient) -> None:
+    response = client.get("/mcp/prompts/analyze_machine_state")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["name"] == "analyze_machine_state"
+    assert payload["inputs"] == ["telemetry"]
+    assert "{{telemetry}}" in payload["template"]
+
+
+def test_mcp_prompts_execute_rest(client: TestClient) -> None:
+    response = client.post(
+        "/mcp/prompts/execute",
+        json={"name": "opcua_diagnostics", "parameters": {"telemetry": "temperature=80"}},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["name"] == "opcua_diagnostics"
+    assert "temperature=80" in payload["rendered"]
+
+
+def test_mcp_prompts_list_request(client: TestClient) -> None:
+    response = client.post(
+        "/mcp",
+        json={"jsonrpc": "2.0", "id": 21, "method": "prompts/list"},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    prompts = payload["result"]["prompts"]
+    assert any(prompt["name"] == "analyze_machine_state" for prompt in prompts)
+
+
+def test_mcp_resources_list_rest(client: TestClient) -> None:
+    response = client.get("/mcp/resources")
+    assert response.status_code == 200
+    payload = response.json()
+    resources = payload["resources"]
+    assert any(item["uri"] == "i3x://openapi" for item in resources)
+    assert any(item["uri"] == "i3x://tool-overrides" for item in resources)
+
+
+def test_mcp_resource_read_rest(client: TestClient) -> None:
+    response = client.post("/mcp/resources/read", json={"uri": "i3x://openapi"})
+    assert response.status_code == 200
+    payload = response.json()
+    contents = payload["contents"]
+    assert len(contents) == 1
+    assert contents[0]["uri"] == "i3x://openapi"
+    assert contents[0]["mimeType"] == "application/json"
+
+
+def test_mcp_roots_list_rest(client: TestClient) -> None:
+    response = client.get("/mcp/roots")
+    assert response.status_code == 200
+    payload = response.json()
+    roots = payload["roots"]
+    assert any(item["uri"] == "i3x://roots/asset-root" for item in roots)
+
+
+def test_mcp_resources_list_request(client: TestClient) -> None:
+    response = client.post(
+        "/mcp",
+        json={"jsonrpc": "2.0", "id": 24, "method": "resources/list"},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    resources = payload["result"]["resources"]
+    assert any(item["uri"] == "i3x://docs/quick-reference" for item in resources)
+
+
+def test_mcp_resources_read_request(client: TestClient) -> None:
+    response = client.post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 25,
+            "method": "resources/read",
+            "params": {"uri": "i3x://tool-overrides"},
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    contents = payload["result"]["contents"]
+    assert len(contents) == 1
+    assert contents[0]["uri"] == "i3x://tool-overrides"
+
+
+def test_mcp_roots_list_request(client: TestClient) -> None:
+    response = client.post(
+        "/mcp",
+        json={"jsonrpc": "2.0", "id": 26, "method": "roots/list"},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    roots = payload["result"]["roots"]
+    assert any(item["uri"] == "i3x://roots/asset-root" for item in roots)
+
+
+def test_mcp_batch_request_returns_multiple_results(client: TestClient) -> None:
+    response = client.post(
+        "/mcp",
+        json=[
+            {"jsonrpc": "2.0", "id": 27, "method": "tools/list"},
+            {"jsonrpc": "2.0", "id": 28, "method": "prompts/list"},
+        ],
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert isinstance(payload, list)
+    assert len(payload) == 2
+    ids = {item["id"] for item in payload}
+    assert ids == {27, 28}
+
+
+def test_mcp_empty_batch_returns_invalid_request(client: TestClient) -> None:
+    response = client.post("/mcp", json=[])
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["error"]["code"] == -32600
+
+
+def test_mcp_invalid_jsonrpc_version_returns_invalid_request(client: TestClient) -> None:
+    response = client.post(
+        "/mcp",
+        json={"jsonrpc": "1.0", "id": 29, "method": "tools/list"},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["id"] == 29
+    assert payload["error"]["code"] == -32600
+
+
+def test_mcp_prompts_get_request(client: TestClient) -> None:
+    response = client.post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 22,
+            "method": "prompts/get",
+            "params": {"name": "opcua_diagnostics"},
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    prompt = payload["result"]
+    assert prompt["name"] == "opcua_diagnostics"
+    assert prompt["inputs"] == ["telemetry"]
+
+
+def test_mcp_prompts_execute_request(client: TestClient) -> None:
+    response = client.post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 23,
+            "method": "prompts/execute",
+            "params": {"name": "analyze_machine_state", "parameters": {"telemetry": "temperature=80"}},
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    result = payload["result"]
+    assert result["name"] == "analyze_machine_state"
+    assert "temperature=80" in result["rendered"]
 
 
 def test_mcp_tools_call_request(client: TestClient) -> None:

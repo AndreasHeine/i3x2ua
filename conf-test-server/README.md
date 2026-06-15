@@ -39,7 +39,9 @@ Each machine includes:
 - `Speed` (Double)
 - `IsRunning` (Boolean)
 
-The numeric variables are continuously updated and marked with historizing/access flags.
+All four variables are marked with historizing/access flags.
+The numeric variables are continuously updated, and `IsRunning` toggles periodically so history queries can return boolean samples as well.
+On startup, the fixture also reads back a few raw history points from each signal and logs a warning if the history backend is not returning samples.
 
 ## Helpful tuning
 

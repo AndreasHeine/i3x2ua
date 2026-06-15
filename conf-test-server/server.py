@@ -24,6 +24,7 @@ class SignalNode:
 	amplitude: float
 	period_seconds: float
 	phase: float
+	variant_type: ua.VariantType
 
 
 class ConformanceFixtureServer:
@@ -57,6 +58,7 @@ class ConformanceFixtureServer:
 
 		logger.info("Starting OPC UA conformance fixture endpoint=%s", self._endpoint)
 		async with self._server:
+			await self._verify_seeded_history()
 			logger.info(
 				"Fixture ready: live updates every %.2fs, seeded history=%d minutes",
 				self._update_interval_seconds,
@@ -133,11 +135,13 @@ class ConformanceFixtureServer:
 		await self._set_historizing_flags(temperature)
 		await self._set_historizing_flags(pressure)
 		await self._set_historizing_flags(speed)
+		await self._set_historizing_flags(run_state)
 
 		return [
-			SignalNode("Temperature", temperature, temperature_base, 3.4, 40.0, 0.2),
-			SignalNode("Pressure", pressure, pressure_base, 0.18, 31.0, 1.1),
-			SignalNode("Speed", speed, speed_base, 55.0, 47.0, 2.2),
+			SignalNode("Temperature", temperature, temperature_base, 3.4, 40.0, 0.2, ua.VariantType.Double),
+			SignalNode("Pressure", pressure, pressure_base, 0.18, 31.0, 1.1, ua.VariantType.Double),
+			SignalNode("Speed", speed, speed_base, 55.0, 47.0, 2.2, ua.VariantType.Double),
+			SignalNode("IsRunning", run_state, 1.0, 1.0, 18.0, 0.0, ua.VariantType.Boolean),
 		]
 
 	async def _set_historizing_flags(self, node: Any) -> None:
@@ -188,13 +192,7 @@ class ConformanceFixtureServer:
 		while t <= now:
 			epoch = t.timestamp()
 			for signal_node in self._signals:
-				value = self._signal_value(signal_node, epoch)
-				data_value = ua.DataValue(
-					Value=ua.Variant(round(value, 3), ua.VariantType.Double),
-					SourceTimestamp=t,
-					ServerTimestamp=t,
-				)
-				await signal_node.node.write_value(data_value)
+				await signal_node.node.write_value(self._data_value_for_signal(signal_node, epoch, t))
 			seeded_samples += 1
 			t += timedelta(seconds=self._history_sample_seconds)
 
@@ -209,18 +207,66 @@ class ConformanceFixtureServer:
 			now = datetime.now(tz=timezone.utc)
 			epoch = now.timestamp()
 			for signal_node in self._signals:
-				value = self._signal_value(signal_node, epoch)
-				data_value = ua.DataValue(
-					Value=ua.Variant(round(value, 3), ua.VariantType.Double),
-					SourceTimestamp=now,
-					ServerTimestamp=now,
-				)
-				await signal_node.node.write_value(data_value)
+				await signal_node.node.write_value(self._data_value_for_signal(signal_node, epoch, now))
 			await asyncio.sleep(self._update_interval_seconds)
+
+	async def _verify_seeded_history(self) -> None:
+		if self._history_seed_minutes <= 0:
+			logger.info("Skipping startup history verification because history seeding is disabled")
+			return
+
+		now = datetime.now(tz=timezone.utc)
+		start = now - timedelta(minutes=max(self._history_seed_minutes, 1))
+		verified = 0
+
+		for signal_node in self._signals:
+			try:
+				values = await signal_node.node.read_raw_history(
+					starttime=start,
+					endtime=now,
+					numvalues=3,
+					return_bounds=False,
+				)
+			except TypeError:
+				values = await signal_node.node.read_raw_history(start, now, 3, False)
+			except Exception:
+				logger.exception("Startup history verification failed for signal=%s", signal_node.name)
+				continue
+
+			if values:
+				verified += 1
+				logger.info(
+					"Verified startup history signal=%s samples=%d",
+					signal_node.name,
+					len(values),
+				)
+			else:
+				logger.warning("Startup history verification returned no samples for signal=%s", signal_node.name)
+
+		if verified != len(self._signals):
+			logger.warning(
+				"Startup history verification incomplete verified=%d total=%d",
+				verified,
+				len(self._signals),
+			)
 
 	def _signal_value(self, signal_node: SignalNode, epoch_seconds: float) -> float:
 		angle = (2.0 * math.pi * epoch_seconds / signal_node.period_seconds) + signal_node.phase
 		return signal_node.base + (signal_node.amplitude * math.sin(angle))
+
+	def _signal_payload(self, signal_node: SignalNode, epoch_seconds: float) -> bool | float:
+		value = self._signal_value(signal_node, epoch_seconds)
+		if signal_node.variant_type == ua.VariantType.Boolean:
+			return value >= signal_node.base
+		return round(value, 3)
+
+	def _data_value_for_signal(self, signal_node: SignalNode, epoch_seconds: float, timestamp: datetime) -> ua.DataValue:
+		payload = self._signal_payload(signal_node, epoch_seconds)
+		return ua.DataValue(
+			Value=ua.Variant(payload, signal_node.variant_type),
+			SourceTimestamp=timestamp,
+			ServerTimestamp=timestamp,
+		)
 
 	def _install_signal_handlers(self) -> None:
 		loop = asyncio.get_running_loop()

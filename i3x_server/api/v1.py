@@ -291,7 +291,14 @@ class RegisterMonitoredItemsRequest(BaseModel):
     clientId: str | None = None
     subscriptionId: str
     elementIds: list[str]
-    maxDepth: int | None = 1
+    maxDepth: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Maximum composition depth to monitor beneath each registered object. "
+            "Omit or pass null to monitor all descendant properties."
+        ),
+    )
 
 
 class SyncRequest(BaseModel):
@@ -363,6 +370,11 @@ class SyncUpdate(BaseModel):
     value: Any
     quality: str
     timestamp: str
+
+
+class SyncBatch(BaseModel):
+    sequenceNumber: int
+    updates: list[SyncUpdate] = Field(default_factory=list)
 
 
 def _not_implemented(feature: str) -> None:
@@ -2319,7 +2331,7 @@ async def register_monitored_items_v1(
     subscription_service: SubscriptionService = Depends(get_subscription_service),
 ) -> BulkResponse[None]:
     client_id = _require_client_id(body.clientId, "/subscriptions/register")
-    max_depth = body.maxDepth or 1
+    max_depth = 0 if body.maxDepth is None else body.maxDepth
     known_ids: list[str] = []
     results: list[BulkResultItem[None]] = []
     for element_id in body.elementIds:
@@ -2544,7 +2556,7 @@ async def sync_subscription_v1(
             "SubscriptionNotFound",
             f"Subscription '{body.subscriptionId}' not found",
         )
-    result_payload = [
+    update_payload = [
         SyncUpdate(
             sequenceNumber=item.sequence_number,
             elementId=_expanded_node_id(item.element_id, namespace_infos),
@@ -2554,6 +2566,14 @@ async def sync_subscription_v1(
         ).model_dump(mode="json")
         for item in synced.updates
     ]
+    result_payload: list[dict[str, Any]] = []
+    if update_payload:
+        result_payload = [
+            SyncBatch(
+                sequenceNumber=synced.updates[-1].sequence_number,
+                updates=[SyncUpdate(**item) for item in update_payload],
+            ).model_dump(mode="json")
+        ]
 
     if synced.queue_overflow:
         detail = (

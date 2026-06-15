@@ -1690,7 +1690,66 @@ def test_v1_subscription_lifecycle(client: TestClient) -> None:
     assert sync_payload["success"] is True
     assert isinstance(sync_payload["result"], list)
     if sync_payload["result"]:
-        assert sync_payload["result"][0]["elementId"]
+        assert sync_payload["result"][0]["sequenceNumber"] >= 1
+        assert isinstance(sync_payload["result"][0]["updates"], list)
+        assert sync_payload["result"][0]["updates"][0]["elementId"]
+
+
+def test_v1_subscription_register_omitted_maxdepth_monitors_descendant_properties(client: TestClient) -> None:
+    client_id = "my-app-instance-001"
+    app = _fastapi_app(client)
+    model = app.state.model_cache
+    model.nodes_by_id["asset-child"] = ModelNode(
+        id="asset-child",
+        name="Nested Asset",
+        kind="asset",
+        type=None,
+        children=["property-def"],
+        source_node_id="ns=2;s=NestedAsset",
+        source_type_id="ns=1;i=1003",
+    )
+    model.nodes_by_id["property-def"] = ModelNode(
+        id="property-def",
+        name="Pressure",
+        kind="property",
+        type="ns=1;i=11",
+        children=[],
+        source_node_id="ns=2;s=Pressure",
+    )
+    model.children_by_id["asset-child"] = ["property-def"]
+    model.children_by_id["property-def"] = []
+    model.children_by_id["asset-root"] = ["property-abc", "action-def", "asset-child"]
+    model.property_to_node["property-def"] = "ns=2;s=Pressure"
+    app.state.opcua_client.values["ns=2;s=Pressure"] = 17.5
+
+    created = client.post(
+        "/v1/subscriptions",
+        json={"clientId": client_id, "displayName": "Deep Monitor"},
+    )
+    assert created.status_code == 200
+    subscription_id = created.json()["result"]["subscriptionId"]
+
+    register = client.post(
+        "/v1/subscriptions/register",
+        json={
+            "clientId": client_id,
+            "subscriptionId": subscription_id,
+            "elementIds": ["asset-root"],
+        },
+    )
+    assert register.status_code == 200
+
+    synced = client.post(
+        "/v1/subscriptions/sync",
+        json={"clientId": client_id, "subscriptionId": subscription_id},
+    )
+    assert synced.status_code == 200
+    payload = synced.json()
+    assert payload["success"] is True
+    assert len(payload["result"]) == 1
+    updates = payload["result"][0]["updates"]
+    element_ids = {item["elementId"] for item in updates}
+    assert {"property-abc", "property-def"}.issubset(element_ids)
 
     deleted = client.post(
         "/v1/subscriptions/delete",
@@ -1724,10 +1783,39 @@ def test_v1_subscription_sync_serializes_binary_values(client: TestClient) -> No
     assert synced.status_code == 200
     payload = synced.json()
     assert payload["success"] is True
-    assert payload["result"][0]["value"] == {
+    assert payload["result"][0]["updates"][0]["value"] == {
         "encoding": "base64",
         "data": base64.b64encode(b"\xff\x00").decode("ascii"),
     }
+
+
+def test_v1_subscription_sync_null_value_uses_goodnodata(client: TestClient) -> None:
+    created = client.post(
+        "/v1/subscriptions",
+        json={"clientId": "my-app-instance-001", "displayName": "Null Monitor"},
+    )
+    assert created.status_code == 200
+    subscription_id = created.json()["result"]["subscriptionId"]
+
+    service = _fastapi_app(client).state.subscription_service
+    state = service._subscriptions[subscription_id]
+    state.node_to_element_id["ns=2;s=NullValue"] = "ns=2;s=NullValue"
+
+    service._append_update(state, "ns=2;s=NullValue", None)
+
+    synced = client.post(
+        "/v1/subscriptions/sync",
+        json={
+            "clientId": "my-app-instance-001",
+            "subscriptionId": subscription_id,
+            "acknowledgeSequence": 0,
+        },
+    )
+    assert synced.status_code == 200
+    payload = synced.json()
+    assert payload["success"] is True
+    assert payload["result"][0]["updates"][0]["value"] is None
+    assert payload["result"][0]["updates"][0]["quality"] == "GoodNoData"
 
 
 def test_v1_subscription_sync_rejects_when_stream_active(client: TestClient) -> None:

@@ -64,6 +64,7 @@ class _SubscriptionState:
     monitored_node_ids: set[str] = field(default_factory=set)
     node_to_element_id: dict[str, str] = field(default_factory=dict)
     handle_to_node_id: dict[int, str] = field(default_factory=dict)
+    last_values_by_node_id: dict[str, Any] = field(default_factory=dict)
     updates: list[SubscriptionUpdate] = field(default_factory=list)
     sequence_number: int = 0
     mode: str = "idle"
@@ -100,17 +101,18 @@ class SubscriptionService:
     def __init__(
         self,
         opcua_client: OpcUaClientProtocol,
-        interval_seconds: int,
+        interval_seconds: float,
         max_updates_per_subscription: int = 10000,
         ttl_seconds: int = 300,
+        seed_initial_values: bool = True,
     ) -> None:
         self._opcua_client = opcua_client
-        self._interval_seconds = max(1, interval_seconds)
+        self._interval_seconds = max(0.1, float(interval_seconds))
         self._max_updates_per_subscription = max(1, max_updates_per_subscription)
         self._ttl_seconds = max(1, ttl_seconds)
+        self._seed_initial_values = seed_initial_values
         self._lock = asyncio.Lock()
         self._subscriptions: dict[str, _SubscriptionState] = {}
-        self._cache: dict[str, Any] = {}
         self._cleanup_task: asyncio.Task[None] | None = None
         self._opcua_client.add_reconnect_listener(self._handle_client_reconnect)
 
@@ -127,7 +129,7 @@ class SubscriptionService:
     async def _cleanup_loop(self) -> None:
         try:
             while True:
-                await asyncio.sleep(max(1, self._interval_seconds))
+                await asyncio.sleep(max(0.1, self._interval_seconds))
                 stale_ids: list[str] = []
                 now = self._now_monotonic()
                 async with self._lock:
@@ -276,6 +278,9 @@ class SubscriptionService:
             )
             state.monitored_node_ids = monitored_node_ids
             state.node_to_element_id = node_to_element_id
+            state.last_values_by_node_id = {
+                node_id: value for node_id, value in state.last_values_by_node_id.items() if node_id in monitored_node_ids
+            }
             self._touch(state)
 
         await self._reconfigure_runtime(subscription_id)
@@ -301,6 +306,9 @@ class SubscriptionService:
             )
             state.monitored_node_ids = monitored_node_ids
             state.node_to_element_id = node_to_element_id
+            state.last_values_by_node_id = {
+                node_id: value for node_id, value in state.last_values_by_node_id.items() if node_id in monitored_node_ids
+            }
             self._touch(state)
 
         await self._reconfigure_runtime(subscription_id)
@@ -314,6 +322,7 @@ class SubscriptionService:
         allow_when_stream_active: bool = False,
     ) -> SubscriptionSyncResult | None:
         self._ensure_cleanup_task()
+        should_refresh = False
         async with self._lock:
             state = self._subscriptions.get(subscription_id)
             if state is None or (client_id is not None and state.client_id != client_id):
@@ -327,6 +336,18 @@ class SubscriptionService:
             elif isinstance(acknowledge_sequence, int):
                 if 0 <= acknowledge_sequence <= state.sequence_number:
                     state.updates = [item for item in state.updates if item.sequence_number > acknowledge_sequence]
+
+            should_refresh = acknowledge_sequence is None and not state.updates and bool(state.monitored_node_ids)
+
+            self._touch(state)
+
+        if should_refresh:
+            await self._refresh_changed_values(subscription_id)
+
+        async with self._lock:
+            state = self._subscriptions.get(subscription_id)
+            if state is None or (client_id is not None and state.client_id != client_id):
+                return None
 
             result = SubscriptionSyncResult(
                 updates=list(state.updates),
@@ -455,16 +476,19 @@ class SubscriptionService:
 
         if should_poll:
             await self._start_polling(state)
+            await self._seed_initial_updates(subscription_id)
             return
 
         try:
             await self._start_native_subscription(state)
+            await self._seed_initial_updates(subscription_id)
         except Exception:
             logger.exception(
                 "Native OPC UA subscription failed; switching to polling",
                 extra={"subscription_id": state.subscription_id},
             )
             await self._start_polling(state)
+            await self._seed_initial_updates(subscription_id)
 
     async def _must_use_polling(self, state: _SubscriptionState, caps: OpcUaSubscriptionCapabilities) -> bool:
         node_count = len(state.monitored_node_ids)
@@ -572,16 +596,52 @@ class SubscriptionService:
         except asyncio.CancelledError:
             return
 
-    def _append_update(self, state: _SubscriptionState, node_id: str, value: Any) -> None:
-        current = self._cache.get(node_id)
-        if current == value:
+    async def _seed_initial_updates(self, subscription_id: str) -> None:
+        if not self._seed_initial_values:
             return
 
-        self._cache[node_id] = value
+        await self._refresh_changed_values(subscription_id)
+
+    async def _refresh_changed_values(self, subscription_id: str) -> None:
+        node_ids: list[str] = []
+
+        async with self._lock:
+            state = self._subscriptions.get(subscription_id)
+            if state is None or state.mode == "idle":
+                return
+            node_ids = sorted(state.monitored_node_ids)
+
+        if not node_ids:
+            return
+
+        try:
+            values = await self._opcua_client.read_values(node_ids)
+        except Exception:
+            logger.exception("Initial subscription snapshot failed", extra={"subscription_id": subscription_id})
+            return
+
+        async with self._lock:
+            state = self._subscriptions.get(subscription_id)
+            if state is None:
+                return
+            for node_id, value in zip(node_ids, values, strict=False):
+                if node_id not in state.monitored_node_ids:
+                    continue
+                self._append_update(state, node_id, value)
+            self._touch(state)
+
+    def _append_update(self, state: _SubscriptionState, node_id: str, value: Any) -> None:
+        has_current = node_id in state.last_values_by_node_id
+        current = state.last_values_by_node_id.get(node_id)
+        if has_current and current == value:
+            return
+
+        state.last_values_by_node_id[node_id] = value
         state.sequence_number += 1
         element_id = state.node_to_element_id.get(node_id)
         if element_id is None:
             element_id = state.node_to_element_id.get(node_id.lower(), node_id)
+        quality = "GoodNoData" if value is None else "Good"
         if len(state.updates) >= self._max_updates_per_subscription:
             dropped = state.updates.pop(0)
             if state.dropped_from_sequence is None:
@@ -593,7 +653,7 @@ class SubscriptionService:
                 element_id=element_id,
                 node_id=node_id,
                 value=value,
-                quality="Good",
+                quality=quality,
                 timestamp=_format_utc_timestamp(datetime.now(timezone.utc)),
             )
         )
@@ -661,7 +721,7 @@ class SubscriptionService:
                 result[node.source_node_id] = node.id
                 continue
 
-            if depth >= depth_limit:
+            if depth_limit != 0 and depth >= depth_limit:
                 continue
 
             for child_id in model.children_by_id.get(node.id, []):

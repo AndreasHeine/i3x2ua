@@ -121,6 +121,118 @@ async def test_subscription_lifecycle_sync_wait_and_delete() -> None:
 
 
 @pytest.mark.asyncio
+async def test_register_seeds_initial_sync_updates() -> None:
+    service = SubscriptionService(cast(OpcUaClientProtocol, FakeOpcUaClient()), interval_seconds=1)
+    created = await service.create_subscription(client_id="c1", display_name="s1")
+    subscription_id = created.subscription_id
+
+    model = _model()
+    assert await service.register_items("c1", subscription_id, ["asset-root"], max_depth=1, model=model) is True
+
+    synced = await service.sync("c1", subscription_id, acknowledge_sequence=0)
+    assert synced is not None
+    assert [item.element_id for item in synced.updates] == ["prop-a"]
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_sync_acknowledge_sequence_removes_returned_updates() -> None:
+    service = SubscriptionService(cast(OpcUaClientProtocol, FakeOpcUaClient()), interval_seconds=1)
+    created = await service.create_subscription(client_id="c1", display_name="s1")
+    subscription_id = created.subscription_id
+
+    model = _model()
+    assert await service.register_items("c1", subscription_id, ["asset-root"], max_depth=2, model=model) is True
+
+    first = await service.sync("c1", subscription_id, acknowledge_sequence=0)
+    assert first is not None
+    assert [item.sequence_number for item in first.updates] == [1, 2]
+
+    second = await service.sync("c1", subscription_id, acknowledge_sequence=2)
+    assert second is not None
+    assert second.updates == []
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_sync_refreshes_changed_values_when_queue_empty_and_no_ack() -> None:
+    client = FakeOpcUaClient()
+    service = SubscriptionService(
+        cast(OpcUaClientProtocol, client),
+        interval_seconds=0.2,
+        seed_initial_values=True,
+    )
+    created = await service.create_subscription(client_id="c1", display_name="s1")
+    subscription_id = created.subscription_id
+
+    model = _model()
+    assert await service.register_items("c1", subscription_id, ["asset-root"], max_depth=1, model=model) is True
+
+    first = await service.sync("c1", subscription_id, acknowledge_sequence=None)
+    assert first is not None
+    assert first.updates
+    last = first.updates[-1].sequence_number
+
+    second = await service.sync("c1", subscription_id, acknowledge_sequence=last)
+    assert second is not None
+    assert second.updates == []
+
+    third = await service.sync("c1", subscription_id, acknowledge_sequence=None)
+    assert third is not None
+    assert third.updates
+    assert all(item.sequence_number > last for item in third.updates)
+    assert client.read_values_calls >= 2
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_initial_snapshot_is_not_suppressed_across_subscriptions() -> None:
+    service = SubscriptionService(cast(OpcUaClientProtocol, FakeOpcUaClient()), interval_seconds=1)
+    model = _model()
+
+    first_created = await service.create_subscription(client_id="c1", display_name="s1")
+    second_created = await service.create_subscription(client_id="c2", display_name="s2")
+
+    assert await service.register_items("c1", first_created.subscription_id, ["asset-root"], max_depth=1, model=model) is True
+    assert await service.register_items("c2", second_created.subscription_id, ["asset-root"], max_depth=1, model=model) is True
+
+    first_sync = await service.sync("c1", first_created.subscription_id, acknowledge_sequence=0)
+    second_sync = await service.sync("c2", second_created.subscription_id, acknowledge_sequence=0)
+
+    assert first_sync is not None
+    assert second_sync is not None
+    assert [item.element_id for item in first_sync.updates] == ["prop-a"]
+    assert [item.element_id for item in second_sync.updates] == ["prop-a"]
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_register_does_not_seed_initial_sync_when_disabled() -> None:
+    service = SubscriptionService(
+        cast(OpcUaClientProtocol, FakeOpcUaClient()),
+        interval_seconds=1,
+        seed_initial_values=False,
+    )
+    created = await service.create_subscription(client_id="c1", display_name="s1")
+    subscription_id = created.subscription_id
+
+    model = _model()
+    assert await service.register_items("c1", subscription_id, ["asset-root"], max_depth=1, model=model) is True
+
+    synced = await service.sync("c1", subscription_id, acknowledge_sequence=0)
+    assert synced is not None
+    assert synced.updates == []
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_subscription_service_accepts_subsecond_interval() -> None:
+    service = SubscriptionService(cast(OpcUaClientProtocol, FakeOpcUaClient()), interval_seconds=0.25)
+    assert service._interval_seconds == 0.25
+    await service.close()
+
+
+@pytest.mark.asyncio
 async def test_unregister_unknown_and_updates_after_missing() -> None:
     service = SubscriptionService(cast(OpcUaClientProtocol, FakeOpcUaClient()), interval_seconds=1)
     model = _model()
@@ -211,6 +323,24 @@ async def test_sync_acknowledge_minus_one_clears_queue() -> None:
     synced = await service.sync("c1", subscription_id, acknowledge_sequence=-1)
     assert synced is not None
     assert synced.updates == []
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_null_subscription_update_uses_goodnodata_quality() -> None:
+    service = SubscriptionService(cast(OpcUaClientProtocol, FakeOpcUaClient()), interval_seconds=1)
+    created = await service.create_subscription(client_id="c1", display_name="s1")
+    subscription_id = created.subscription_id
+
+    async with service._lock:
+        state = service._subscriptions[subscription_id]
+        state.node_to_element_id["ns=2;s=Temperature"] = "prop-a"
+
+    await service.handle_datachange(subscription_id, "ns=2;s=Temperature", None)
+    synced = await service.sync("c1", subscription_id, acknowledge_sequence=0)
+    assert synced is not None
+    assert synced.updates[0].value is None
+    assert synced.updates[0].quality == "GoodNoData"
     await service.close()
 
 

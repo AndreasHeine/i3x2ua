@@ -490,6 +490,8 @@ def _is_structure_value(value: Any) -> bool:
         return False
     if isinstance(value, Mapping):
         return True
+    if isinstance(value, Enum):
+        return False
     if is_dataclass(value):
         return True
     if hasattr(value, "__dict__"):
@@ -710,6 +712,15 @@ def _schema_for_annotation(annotation: Any, registry: _SchemaRegistry) -> dict[s
             return {"type": "string"}
         if annotation is bool:
             return {"type": "boolean"}
+        if issubclass(annotation, Enum):
+            enum_values = [item.value for item in annotation]
+            if enum_values and all(isinstance(value, int) and not isinstance(value, bool) for value in enum_values):
+                return {
+                    "type": "integer",
+                    "enum": enum_values,
+                    "x-opcua-enumNames": [item.name for item in annotation],
+                }
+            return {"type": "string", "enum": [item.name for item in annotation]}
         if _is_integer_annotation_type(annotation):
             return {"type": "integer"}
         if _is_number_annotation_type(annotation):
@@ -718,8 +729,6 @@ def _schema_for_annotation(annotation: Any, registry: _SchemaRegistry) -> dict[s
             return {"type": "string", "format": "date-time"}
         if _is_variant_annotation_type(annotation):
             return {}
-        if issubclass(annotation, Enum):
-            return {"type": "string", "enum": [item.name for item in annotation]}
         if _is_structured_class(annotation):
             return _reference_or_register_structure_from_type(
                 f"py-annotation:{annotation.__module__.lower()}.{annotation.__name__.lower()}",
@@ -804,13 +813,16 @@ def _schema_for_annotation_string(annotation: str, registry: _SchemaRegistry) ->
         return scalar_map[lowered]
 
     structure_type = _resolve_structure_type_by_name(normalized)
-    if isinstance(structure_type, type) and _is_structured_class(structure_type):
-        return _reference_or_register_structure_from_type(
-            f"ua-annotation:{structure_type.__module__.lower()}.{structure_type.__name__.lower()}",
-            structure_type,
-            registry,
-            {},
-        )
+    if isinstance(structure_type, type):
+        if issubclass(structure_type, Enum):
+            return _schema_for_annotation(structure_type, registry)
+        if _is_structured_class(structure_type):
+            return _reference_or_register_structure_from_type(
+                f"ua-annotation:{structure_type.__module__.lower()}.{structure_type.__name__.lower()}",
+                structure_type,
+                registry,
+                {},
+            )
 
     imported_type = _resolve_type_from_module_path(normalized)
     if isinstance(imported_type, type) and _is_structured_class(imported_type):

@@ -6,6 +6,7 @@ from dataclasses import dataclass, field, make_dataclass
 from types import SimpleNamespace
 from typing import Any, cast
 
+import pytest
 from asyncua import ua
 
 from i3x_server.opcua.client import OpcUaNamespaceInfo, OpcUaObjectTypeInfo, OpcUaObjectTypeMemberInfo
@@ -496,6 +497,52 @@ def test_generated_dep_annotation_is_evaluated_in_owner_module_context() -> None
 def test_uint32_annotation_maps_to_integer() -> None:
     schema = objecttype_schema._schema_for_annotation(ua.UInt32, objecttype_schema._SchemaRegistry())
     assert schema["type"] == "integer"
+
+
+def test_enum_annotation_string_maps_to_integer_enum() -> None:
+    schema = objecttype_schema._schema_for_annotation_string("ua.ServerState", objecttype_schema._SchemaRegistry())
+    assert schema["type"] == "integer"
+    assert isinstance(schema.get("enum"), list)
+    assert schema.get("x-opcua-enumNames")
+
+
+def test_server_status_datatype_state_schema_maps_to_integer() -> None:
+    schema = objecttype_schema.build_data_type_schema(
+        "nsu=http://opcfoundation.org/UA/;i=862",
+        [OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/", display_name="UA")],
+    )
+    assert isinstance(schema, dict)
+    state_schema = schema["properties"]["State"]
+    assert state_schema["type"] == "integer"
+    assert isinstance(state_schema.get("enum"), list)
+
+
+@pytest.mark.parametrize(
+    ("data_type_id", "field_name"),
+    [
+        ("nsu=http://opcfoundation.org/UA/;i=853", "ServerState"),
+        ("nsu=http://opcfoundation.org/UA/;i=862", "State"),
+        ("nsu=http://opcfoundation.org/UA/;i=12079", "AxisScaleType"),
+        ("nsu=http://opcfoundation.org/UA/;i=19316", "Status"),
+    ],
+)
+def test_enum_like_fields_in_standard_datatypes_do_not_degrade_to_object(
+    data_type_id: str,
+    field_name: str,
+) -> None:
+    schema = objecttype_schema.build_data_type_schema(
+        data_type_id,
+        [OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/", display_name="UA")],
+    )
+    if not isinstance(schema, dict):
+        pytest.skip(f"Datatype schema unavailable in this asyncua build: {data_type_id}")
+    properties = schema.get("properties")
+    if not isinstance(properties, dict) or field_name not in properties:
+        pytest.skip(f"Field unavailable in this asyncua build: {data_type_id}.{field_name}")
+
+    field_schema = properties[field_name]
+    assert isinstance(field_schema, dict)
+    assert field_schema.get("type") == "integer"
 
 
 def test_guess_generated_dependency_type_prefers_parameter_for_joborderparameters() -> None:

@@ -279,7 +279,9 @@ class SubscriptionService:
             state.monitored_node_ids = monitored_node_ids
             state.node_to_element_id = node_to_element_id
             state.last_values_by_node_id = {
-                node_id: value for node_id, value in state.last_values_by_node_id.items() if node_id in monitored_node_ids
+                node_id: value
+                for node_id, value in state.last_values_by_node_id.items()
+                if node_id in monitored_node_ids
             }
             self._touch(state)
 
@@ -307,7 +309,9 @@ class SubscriptionService:
             state.monitored_node_ids = monitored_node_ids
             state.node_to_element_id = node_to_element_id
             state.last_values_by_node_id = {
-                node_id: value for node_id, value in state.last_values_by_node_id.items() if node_id in monitored_node_ids
+                node_id: value
+                for node_id, value in state.last_values_by_node_id.items()
+                if node_id in monitored_node_ids
             }
             self._touch(state)
 

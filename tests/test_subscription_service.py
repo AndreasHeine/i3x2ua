@@ -193,8 +193,26 @@ async def test_initial_snapshot_is_not_suppressed_across_subscriptions() -> None
     first_created = await service.create_subscription(client_id="c1", display_name="s1")
     second_created = await service.create_subscription(client_id="c2", display_name="s2")
 
-    assert await service.register_items("c1", first_created.subscription_id, ["asset-root"], max_depth=1, model=model) is True
-    assert await service.register_items("c2", second_created.subscription_id, ["asset-root"], max_depth=1, model=model) is True
+    assert (
+        await service.register_items(
+            "c1",
+            first_created.subscription_id,
+            ["asset-root"],
+            max_depth=1,
+            model=model,
+        )
+        is True
+    )
+    assert (
+        await service.register_items(
+            "c2",
+            second_created.subscription_id,
+            ["asset-root"],
+            max_depth=1,
+            model=model,
+        )
+        is True
+    )
 
     first_sync = await service.sync("c1", first_created.subscription_id, acknowledge_sequence=0)
     second_sync = await service.sync("c2", second_created.subscription_id, acknowledge_sequence=0)
@@ -409,7 +427,10 @@ def test_collect_property_source_mappings_depth_limit() -> None:
         max_depth=0,
     )
     assert set(mappings_depth1.values()) == {"prop-a"}
-    assert mappings_unbounded == {}
+    assert mappings_unbounded == {
+        "ns=2;s=Temperature": "prop-a",
+        "ns=2;s=Pressure": "prop-b",
+    }
 
 
 def test_append_update_deduplicates_same_value() -> None:

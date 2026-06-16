@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -12,6 +13,12 @@ from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
 
 logger = logging.getLogger(__name__)
+_STREAM_DEBUG_ENABLED = os.getenv("I3X_DEBUG_SUBSCRIPTION_STREAM", "0").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 
 @dataclass(slots=True)
@@ -83,15 +90,17 @@ class _DataChangeHandler:
         self._subscription_id = subscription_id
 
     def datachange_notification(self, node: Any, val: Any, data: Any) -> None:
-        node_id = node.nodeid.to_string()
+        try:
+            node_id = node.nodeid.to_string()
+        except Exception:
+            node_id = str(node)
         client_handle: int | None = None
         monitored_item = getattr(data, "monitored_item", None)
         if monitored_item is not None:
             raw_handle = getattr(monitored_item, "ClientHandle", None)
-            if isinstance(raw_handle, int):
-                client_handle = raw_handle
+            client_handle = _to_client_handle(raw_handle)
 
-        asyncio.create_task(self._service.handle_datachange(self._subscription_id, node_id, val, client_handle))
+        self._service.schedule_datachange(self._subscription_id, node_id, val, client_handle)
 
     def event_notification(self, event: Any) -> None:
         return None
@@ -114,9 +123,81 @@ class SubscriptionService:
         self._lock = asyncio.Lock()
         self._subscriptions: dict[str, _SubscriptionState] = {}
         self._cleanup_task: asyncio.Task[None] | None = None
+        self._event_loop: asyncio.AbstractEventLoop | None = None
         self._opcua_client.add_reconnect_listener(self._handle_client_reconnect)
 
+    def _remember_event_loop(self) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        if self._event_loop is None or self._event_loop.is_closed():
+            self._event_loop = loop
+
+    def _start_datachange_task(
+        self,
+        subscription_id: str,
+        node_id: str,
+        value: Any,
+        client_handle: int | None,
+    ) -> None:
+        coroutine = self.handle_datachange(subscription_id, node_id, value, client_handle)
+        try:
+            task = asyncio.create_task(coroutine)
+        except RuntimeError:
+            coroutine.close()
+            raise
+
+        def _log_task_error(done: asyncio.Task[None]) -> None:
+            with_context = {
+                "subscription_id": subscription_id,
+                "node_id": node_id,
+                "client_handle": client_handle,
+            }
+            try:
+                done.result()
+            except Exception:
+                logger.exception("OPC UA datachange handling failed", extra=with_context)
+
+        task.add_done_callback(_log_task_error)
+
+    def schedule_datachange(
+        self,
+        subscription_id: str,
+        node_id: str,
+        value: Any,
+        client_handle: int | None = None,
+    ) -> None:
+        target_loop = self._event_loop
+        if target_loop is not None and target_loop.is_closed():
+            target_loop = None
+
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            current_loop = None
+
+        if target_loop is None and current_loop is not None:
+            # Capture the app loop lazily on first callback when not already known.
+            self._event_loop = current_loop
+            self._start_datachange_task(subscription_id, node_id, value, client_handle)
+            return
+
+        if current_loop is not None and target_loop is current_loop:
+            self._start_datachange_task(subscription_id, node_id, value, client_handle)
+            return
+
+        if target_loop is None:
+            logger.warning(
+                "Dropping OPC UA datachange because no running event loop is available",
+                extra={"subscription_id": subscription_id, "node_id": node_id},
+            )
+            return
+
+        target_loop.call_soon_threadsafe(self._start_datachange_task, subscription_id, node_id, value, client_handle)
+
     def _now_monotonic(self) -> float:
+        self._remember_event_loop()
         return asyncio.get_running_loop().time()
 
     def _touch(self, state: _SubscriptionState) -> None:
@@ -374,6 +455,14 @@ class SubscriptionService:
             state.stream_connected = True
             self._touch(state)
             state.update_event.set()
+            if _STREAM_DEBUG_ENABLED:
+                logger.info(
+                    "Subscription service activate stream subscription_id=%s generation=%s monitored_nodes=%s mode=%s",
+                    subscription_id,
+                    state.active_stream_generation,
+                    len(state.monitored_node_ids),
+                    state.mode,
+                )
             return state.active_stream_generation
 
     async def deactivate_stream(self, subscription_id: str, generation: int) -> None:
@@ -384,6 +473,12 @@ class SubscriptionService:
             if state.active_stream_generation == generation:
                 state.stream_connected = False
                 self._touch(state)
+                if _STREAM_DEBUG_ENABLED:
+                    logger.info(
+                        "Subscription service deactivate stream subscription_id=%s generation=%s",
+                        subscription_id,
+                        generation,
+                    )
 
     async def has_active_stream(self, client_id: str | None, subscription_id: str) -> bool | None:
         async with self._lock:
@@ -414,6 +509,7 @@ class SubscriptionService:
         timeout_seconds: int = 15,
     ) -> list[SubscriptionUpdate] | None:
         self._ensure_cleanup_task()
+        should_refresh_after_timeout = False
         async with self._lock:
             state = self._subscriptions.get(subscription_id)
             if state is None or (client_id is not None and state.client_id != client_id):
@@ -427,11 +523,33 @@ class SubscriptionService:
 
             state.update_event.clear()
             wait_event = state.update_event
+            should_refresh_after_timeout = state.mode == "native" and bool(state.monitored_node_ids)
 
         try:
             await asyncio.wait_for(wait_event.wait(), timeout=timeout_seconds)
         except TimeoutError:
-            return []
+            if should_refresh_after_timeout:
+                if _STREAM_DEBUG_ENABLED:
+                    logger.info(
+                        "Subscription service wait timeout refresh subscription_id=%s after_sequence=%s",
+                        subscription_id,
+                        after_sequence,
+                    )
+                await self._refresh_changed_values(subscription_id)
+            async with self._lock:
+                state = self._subscriptions.get(subscription_id)
+                if state is None or (client_id is not None and state.client_id != client_id):
+                    return None
+                self._touch(state)
+                updates = [item for item in state.updates if item.sequence_number > after_sequence]
+                if _STREAM_DEBUG_ENABLED:
+                    logger.info(
+                        "Subscription service wait timeout result subscription_id=%s updates=%s after_sequence=%s",
+                        subscription_id,
+                        len(updates),
+                        after_sequence,
+                    )
+                return updates
 
         async with self._lock:
             state = self._subscriptions.get(subscription_id)
@@ -527,8 +645,13 @@ class SubscriptionService:
         handle_to_node_id: dict[int, str] = {}
         if isinstance(handles, list):
             for handle, node_id in zip(handles, sorted_node_ids, strict=False):
-                if isinstance(handle, int):
-                    handle_to_node_id[handle] = node_id
+                normalized = _to_client_handle(handle)
+                if normalized is not None:
+                    handle_to_node_id[normalized] = node_id
+        else:
+            normalized = _to_client_handle(handles)
+            if normalized is not None and sorted_node_ids:
+                handle_to_node_id[normalized] = sorted_node_ids[0]
 
         async with self._lock:
             live = self._subscriptions.get(state.subscription_id)
@@ -645,6 +768,11 @@ class SubscriptionService:
         element_id = state.node_to_element_id.get(node_id)
         if element_id is None:
             element_id = state.node_to_element_id.get(node_id.lower(), node_id)
+        if element_id == node_id and len(state.monitored_objects) == 1:
+            # Compatibility fallback: if native callback mapping misses for a
+            # single registered object, emit that object id so consumers can
+            # still match updates to the active subscription row.
+            element_id = next(iter(state.monitored_objects.keys()))
         quality = "GoodNoData" if value is None else "Good"
         if len(state.updates) >= self._max_updates_per_subscription:
             dropped = state.updates.pop(0)
@@ -739,6 +867,27 @@ def _min_positive(*values: int | None) -> int | None:
     if not positive:
         return None
     return min(positive)
+
+
+def _to_client_handle(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        pass
+
+    nested_value = getattr(value, "Value", None)
+    if nested_value is None:
+        return None
+    try:
+        return int(nested_value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _format_utc_timestamp(value: datetime) -> str:

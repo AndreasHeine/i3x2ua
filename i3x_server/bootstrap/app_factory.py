@@ -16,6 +16,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipMiddleware
 
 from i3x_server.api.mcp import router as mcp_router
@@ -281,6 +282,15 @@ def create_app() -> FastAPI:
     )
     app = FastAPI(title="i3X API 1.0", version="1.0", description=description, lifespan=lifespan)
     app.add_middleware(GZipMiddleware, minimum_size=1)
+    cors_origins = settings.cors_allowed_origins
+    if cors_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=cors_origins,
+            allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+            allow_headers=["Content-Type", "Accept", "Authorization"],
+            allow_credentials=False,
+        )
 
     openapi_doc_path = PROJECT_ROOT / "openapi.json"
     openapi_override: dict[str, object] | None = None

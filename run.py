@@ -27,8 +27,6 @@ if __name__ == "__main__":
     if os.name == "nt":
         # Keep local dev requests on localhost stable unless explicitly overridden.
         os.environ.setdefault("I3X_HOST", "127.0.0.1")
-    # Keep local dev startup responsive unless the caller explicitly set a value.
-    os.environ.setdefault("I3X_SKIP_OPCUA_CONNECT", "1")
     _load_local_env()
     host = os.getenv("I3X_HOST", "0.0.0.0")
     port = os.getenv("I3X_PORT", "8000")

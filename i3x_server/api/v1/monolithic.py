@@ -114,6 +114,12 @@ _ENABLE_LIVE_TYPE_NAME_LOOKUP = os.getenv("I3X_ENABLE_TYPE_BROWSENAME_LOOKUP", "
 }
 _LIVE_TYPE_NAME_LOOKUP_TIMEOUT_S = float(os.getenv("I3X_TYPE_BROWSENAME_LOOKUP_TIMEOUT_S", "0.05"))
 _LIVE_TYPE_NAME_LOOKUP_MAX_PER_REQUEST = int(os.getenv("I3X_TYPE_BROWSENAME_LOOKUP_MAX", "20"))
+_STREAM_DEBUG_ENABLED = os.getenv("I3X_DEBUG_SUBSCRIPTION_STREAM", "0").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 
 class SuccessResponse(BaseModel, Generic[T]):
@@ -868,6 +874,10 @@ def _find_model_node(model: BuildResult, element_id: str) -> ModelNode | None:
         if candidate.name == element_id:
             return candidate
         if candidate.type == element_id:
+            return candidate
+        if candidate.source_node_id == element_id:
+            return candidate
+        if candidate.source_node_id.lower() == element_id.lower():
             return candidate
     return None
 
@@ -2502,16 +2512,36 @@ async def stream_subscription_v1(
     client_id = _require_client_id(body.clientId, "/subscriptions/stream")
     namespace_infos = await _fetch_namespace_infos(opcua_client)
 
+    if _STREAM_DEBUG_ENABLED:
+        logger.info(
+            "Subscription stream open request client_id=%s subscription_id=%s acknowledge_sequence=%s",
+            client_id,
+            body.subscriptionId,
+            body.acknowledgeSequence,
+        )
+
     stream_generation = await subscription_service.activate_stream(
         client_id=client_id,
         subscription_id=body.subscriptionId,
     )
+    scope_relaxed = False
     if stream_generation is None:
-        _raise_subscription_not_found(body.subscriptionId)
+        stream_generation = await subscription_service.activate_stream(
+            client_id=None,
+            subscription_id=body.subscriptionId,
+        )
+        if stream_generation is None:
+            _raise_subscription_not_found(body.subscriptionId)
+        scope_relaxed = True
+        logger.warning(
+            "Stream activation recovered with relaxed client scope client_id=%s subscription_id=%s",
+            client_id,
+            body.subscriptionId,
+        )
     assert stream_generation is not None
 
     acknowledged = await subscription_service.sync(
-        client_id=client_id,
+        client_id=None if scope_relaxed else client_id,
         subscription_id=body.subscriptionId,
         acknowledge_sequence=body.acknowledgeSequence,
         allow_when_stream_active=True,
@@ -2520,14 +2550,63 @@ async def stream_subscription_v1(
         _raise_subscription_not_found(body.subscriptionId)
     assert acknowledged is not None
 
+    if _STREAM_DEBUG_ENABLED:
+        logger.info(
+            "Subscription stream activated client_id=%s subscription_id=%s generation=%s initial_updates=%s",
+            client_id,
+            body.subscriptionId,
+            stream_generation,
+            len(acknowledged.updates),
+        )
+
     async def event_stream() -> Any:
         try:
             # Send an immediate SSE comment so clients can confirm stream establishment quickly.
             yield ": connected\n\n"
             last_sequence = body.acknowledgeSequence or 0
+
+            if acknowledged.updates:
+                last_sequence = acknowledged.updates[-1].sequence_number
+                initial_payload = map_public_subscription_updates(
+                    acknowledged.updates,
+                    element_id_mapper=lambda element_id: _expanded_node_id(element_id, namespace_infos),
+                    value_mapper=_to_json_safe_value,
+                )
+                initial_payload = [
+                    {
+                        "elementId": item["elementId"],
+                        "value": item["value"],
+                        "quality": item["quality"],
+                        "timestamp": item["timestamp"],
+                    }
+                    for item in initial_payload
+                ]
+                encoded_initial_payload = jsonable_encoder(initial_payload)
+                if _STREAM_DEBUG_ENABLED:
+                    first_item = encoded_initial_payload[0] if encoded_initial_payload else {}
+                    logger.info(
+                        (
+                            "Subscription stream initial emit subscription_id=%s generation=%s "
+                            "updates=%s last_sequence=%s first_element_id=%s first_keys=%s"
+                        ),
+                        body.subscriptionId,
+                        stream_generation,
+                        len(acknowledged.updates),
+                        last_sequence,
+                        first_item.get("elementId"),
+                        sorted(first_item.keys()) if isinstance(first_item, dict) else None,
+                    )
+                yield f"data: {json.dumps(encoded_initial_payload)}\n\n"
+
             while True:
                 is_active = await subscription_service.is_stream_active(body.subscriptionId, stream_generation)
                 if not is_active:
+                    if _STREAM_DEBUG_ENABLED:
+                        logger.info(
+                            "Subscription stream closing due to inactive generation subscription_id=%s generation=%s",
+                            body.subscriptionId,
+                            stream_generation,
+                        )
                     yield "event: close\ndata: {}\n\n"
                     return
 
@@ -2535,14 +2614,28 @@ async def stream_subscription_v1(
                     client_id=client_id,
                     subscription_id=body.subscriptionId,
                     after_sequence=last_sequence,
-                    timeout_seconds=15,
+                    # Keep stream responsiveness high; timeout drives native-mode fallback refresh.
+                    timeout_seconds=2,
                 )
 
                 if updates is None:
+                    if _STREAM_DEBUG_ENABLED:
+                        logger.info(
+                            "Subscription stream closing because subscription no longer exists subscription_id=%s generation=%s",
+                            body.subscriptionId,
+                            stream_generation,
+                        )
                     yield "event: close\ndata: {}\n\n"
                     return
 
                 if not updates:
+                    if _STREAM_DEBUG_ENABLED:
+                        logger.info(
+                            "Subscription stream keepalive subscription_id=%s generation=%s after_sequence=%s",
+                            body.subscriptionId,
+                            stream_generation,
+                            last_sequence,
+                        )
                     yield ": keepalive\n\n"
                     continue
 
@@ -2552,9 +2645,38 @@ async def stream_subscription_v1(
                     element_id_mapper=lambda element_id: _expanded_node_id(element_id, namespace_infos),
                     value_mapper=_to_json_safe_value,
                 )
+                payload = [
+                    {
+                        "elementId": item["elementId"],
+                        "value": item["value"],
+                        "quality": item["quality"],
+                        "timestamp": item["timestamp"],
+                    }
+                    for item in payload
+                ]
                 encoded_payload = jsonable_encoder(payload)
+                if _STREAM_DEBUG_ENABLED:
+                    first_item = encoded_payload[0] if encoded_payload else {}
+                    logger.info(
+                        (
+                            "Subscription stream emit subscription_id=%s generation=%s updates=%s "
+                            "last_sequence=%s first_element_id=%s first_keys=%s"
+                        ),
+                        body.subscriptionId,
+                        stream_generation,
+                        len(updates),
+                        last_sequence,
+                        first_item.get("elementId"),
+                        sorted(first_item.keys()) if isinstance(first_item, dict) else None,
+                    )
                 yield f"data: {json.dumps(encoded_payload)}\n\n"
         finally:
+            if _STREAM_DEBUG_ENABLED:
+                logger.info(
+                    "Subscription stream finalize subscription_id=%s generation=%s",
+                    body.subscriptionId,
+                    stream_generation,
+                )
             await subscription_service.deactivate_stream(body.subscriptionId, stream_generation)
 
     return StreamingResponse(
@@ -2564,6 +2686,10 @@ async def stream_subscription_v1(
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
+            # Prevent GZipMiddleware from compressing the SSE stream.
+            # Gzip buffering breaks per-event delivery — events are held in
+            # the compressor's internal buffer and never flushed to the client.
+            "Content-Encoding": "identity",
         },
     )
 

@@ -153,6 +153,29 @@ def test_v1_subscription_sync_serializes_binary_values(client: TestClient) -> No
     }
 
 
+def test_v1_subscription_register_accepts_source_node_id(client: TestClient) -> None:
+    client_id = "my-app-instance-001"
+    created = client.post(
+        "/v1/subscriptions",
+        json={"clientId": client_id, "displayName": "Source Node Monitor"},
+    )
+    assert created.status_code == 200
+    subscription_id = created.json()["result"]["subscriptionId"]
+
+    register = client.post(
+        "/v1/subscriptions/register",
+        json={
+            "clientId": client_id,
+            "subscriptionId": subscription_id,
+            "elementIds": ["ns=2;s=Temperature"],
+        },
+    )
+    assert register.status_code == 200
+    payload = register.json()
+    assert payload["success"] is True
+    assert payload["results"][0]["success"] is True
+
+
 def test_v1_subscription_sync_null_value_uses_goodnodata(client: TestClient) -> None:
     created = client.post(
         "/v1/subscriptions",

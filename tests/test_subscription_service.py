@@ -13,6 +13,7 @@ from i3x_server.infrastructure.opcua.client import (
 )
 from i3x_server.infrastructure.subscriptions.service import (
     SubscriptionService,
+    _DataChangeHandler,
     _min_positive,
     _SubscriptionState,
 )
@@ -278,6 +279,149 @@ async def test_handle_datachange_resolves_client_handle_mapping() -> None:
 
 
 @pytest.mark.asyncio
+async def test_datachange_handler_schedules_from_non_eventloop_thread() -> None:
+    service = SubscriptionService(cast(OpcUaClientProtocol, FakeOpcUaClient()), interval_seconds=1)
+    created = await service.create_subscription(client_id="c1", display_name=None)
+    subscription_id = created.subscription_id
+
+    async with service._lock:
+        state = service._subscriptions[subscription_id]
+        state.node_to_element_id["ns=2;s=Temperature"] = "prop-a"
+
+    handler = _DataChangeHandler(service, subscription_id)
+    fake_node = SimpleNamespace(nodeid=SimpleNamespace(to_string=lambda: "ns=2;s=Temperature"))
+    fake_data = SimpleNamespace(monitored_item=SimpleNamespace(ClientHandle=7))
+
+    await asyncio.to_thread(handler.datachange_notification, fake_node, 23.5, fake_data)
+
+    for _ in range(20):
+        synced = await service.sync("c1", subscription_id, acknowledge_sequence=0)
+        assert synced is not None
+        if synced.updates:
+            break
+        await asyncio.sleep(0.01)
+
+    assert synced.updates
+    assert synced.updates[0].element_id == "prop-a"
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_datachange_handler_schedules_from_other_running_loop() -> None:
+    service = SubscriptionService(cast(OpcUaClientProtocol, FakeOpcUaClient()), interval_seconds=1)
+    created = await service.create_subscription(client_id="c1", display_name=None)
+    subscription_id = created.subscription_id
+
+    async with service._lock:
+        state = service._subscriptions[subscription_id]
+        state.node_to_element_id["ns=2;s=Temperature"] = "prop-a"
+
+    handler = _DataChangeHandler(service, subscription_id)
+    fake_node = SimpleNamespace(nodeid=SimpleNamespace(to_string=lambda: "ns=2;s=Temperature"))
+    fake_data = SimpleNamespace(monitored_item=SimpleNamespace(ClientHandle=7))
+
+    def _invoke_from_other_loop() -> None:
+        async def _run() -> None:
+            handler.datachange_notification(fake_node, 24.5, fake_data)
+            await asyncio.sleep(0.01)
+
+        asyncio.run(_run())
+
+    await asyncio.to_thread(_invoke_from_other_loop)
+
+    for _ in range(20):
+        synced = await service.sync("c1", subscription_id, acknowledge_sequence=0)
+        assert synced is not None
+        if synced.updates:
+            break
+        await asyncio.sleep(0.01)
+
+    assert synced.updates
+    assert synced.updates[0].element_id == "prop-a"
+    await service.close()
+
+
+class _IntLikeHandle:
+    def __init__(self, value: int) -> None:
+        self._value = value
+
+    def __int__(self) -> int:
+        return self._value
+
+
+class _SingleHandleOpcUaClient(FakeOpcUaClient):
+    async def subscribe_data_changes(self, subscription: Any, node_ids: list[str]) -> int:
+        del subscription, node_ids
+        return 11
+
+
+@pytest.mark.asyncio
+async def test_datachange_handler_accepts_int_like_client_handle() -> None:
+    service = SubscriptionService(cast(OpcUaClientProtocol, FakeOpcUaClient()), interval_seconds=1)
+    created = await service.create_subscription(client_id="c1", display_name=None)
+    subscription_id = created.subscription_id
+
+    async with service._lock:
+        state = service._subscriptions[subscription_id]
+        state.handle_to_node_id[11] = "ns=2;s=Temperature"
+        state.node_to_element_id["ns=2;s=Temperature"] = "prop-a"
+
+    handler = _DataChangeHandler(service, subscription_id)
+    fake_node = SimpleNamespace(nodeid=SimpleNamespace(to_string=lambda: "ns=2;s=DifferentFormat"))
+    fake_data = SimpleNamespace(monitored_item=SimpleNamespace(ClientHandle=_IntLikeHandle(11)))
+    handler.datachange_notification(fake_node, 31.2, fake_data)
+
+    for _ in range(20):
+        synced = await service.sync("c1", subscription_id, acknowledge_sequence=0)
+        assert synced is not None
+        if synced.updates:
+            break
+        await asyncio.sleep(0.01)
+
+    assert synced.updates
+    assert synced.updates[0].element_id == "prop-a"
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_single_monitored_node_maps_single_int_handle() -> None:
+    service = SubscriptionService(cast(OpcUaClientProtocol, _SingleHandleOpcUaClient()), interval_seconds=1)
+    created = await service.create_subscription(client_id="c1", display_name=None)
+    subscription_id = created.subscription_id
+
+    model = _model()
+    assert await service.register_items("c1", subscription_id, ["prop-a"], max_depth=1, model=model) is True
+
+    await service.handle_datachange(subscription_id, "ns=2;s=Unmapped", 44.2, client_handle=11)
+    synced = await service.sync("c1", subscription_id, acknowledge_sequence=0)
+    assert synced is not None
+    assert synced.updates
+    assert synced.updates[-1].element_id == "prop-a"
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_single_monitored_object_fallbacks_element_id_when_mapping_missing() -> None:
+    service = SubscriptionService(cast(OpcUaClientProtocol, FakeOpcUaClient()), interval_seconds=1)
+    created = await service.create_subscription(client_id="c1", display_name=None)
+    subscription_id = created.subscription_id
+
+    model = _model()
+    assert await service.register_items("c1", subscription_id, ["prop-a"], max_depth=1, model=model) is True
+
+    async with service._lock:
+        state = service._subscriptions[subscription_id]
+        state.node_to_element_id.clear()
+
+    await service.handle_datachange(subscription_id, "nsu=http://example/;s=Temperature", 60.1)
+    synced = await service.sync("c1", subscription_id, acknowledge_sequence=0)
+    assert synced is not None
+    assert synced.updates
+    assert synced.updates[-1].element_id == "prop-a"
+    await service.close()
+
+
+@pytest.mark.asyncio
 async def test_polling_path_collects_updates() -> None:
     client = FakeOpcUaClient()
     service = SubscriptionService(cast(OpcUaClientProtocol, client), interval_seconds=1)
@@ -299,6 +443,28 @@ async def test_polling_path_collects_updates() -> None:
     synced = await service.sync("c1", subscription_id, acknowledge_sequence=0)
     assert synced is not None
     assert len(synced.updates) >= 1
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_wait_for_updates_refreshes_native_timeout_without_callbacks() -> None:
+    client = FakeOpcUaClient()
+    service = SubscriptionService(cast(OpcUaClientProtocol, client), interval_seconds=1)
+    created = await service.create_subscription(client_id="c1", display_name="native")
+    subscription_id = created.subscription_id
+
+    model = _model()
+    await service.register_items("c1", subscription_id, ["asset-root"], max_depth=1, model=model)
+
+    async with service._lock:
+        state = service._subscriptions[subscription_id]
+        # Simulate native mode with a stale queue and no callback notifications.
+        state.mode = "native"
+        state.updates.clear()
+
+    updates = await service.wait_for_updates("c1", subscription_id, after_sequence=0, timeout_seconds=0)
+    assert updates is not None
+    assert updates
     await service.close()
 
 

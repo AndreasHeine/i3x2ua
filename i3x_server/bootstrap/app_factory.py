@@ -24,7 +24,7 @@ from i3x_server.api.v1 import router as v1_router
 from i3x_server.config.settings import settings
 from i3x_server.infrastructure.opcua.client import OpcUaClient
 from i3x_server.infrastructure.subscriptions.service import SubscriptionService
-from i3x_server.mcp import build_mcp_tools, get_api_prefix, load_prompt_overrides
+from i3x_server.mcp import build_mcp_tools, get_api_prefix, init_mcp_metrics, load_prompt_overrides
 from i3x_server.model.builder import ModelBuilder
 from i3x_server.prompts.registry import PromptRegistry
 from i3x_server.schemas.state import BuildResult
@@ -117,6 +117,7 @@ def _configure_otel(app: FastAPI) -> None:
         except ImportError:
             logger.warning("opentelemetry-exporter-otlp-proto-http not installed; OTLP metric exporter skipped.")
 
+    init_mcp_metrics()
     logger.info("OpenTelemetry configured service=%s", settings.otel_service_name)
 
 

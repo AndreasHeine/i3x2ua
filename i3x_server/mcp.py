@@ -27,17 +27,16 @@ try:
     from opentelemetry.trace import StatusCode as _OtelStatusCode
     from opentelemetry.trace import get_current_span
 
+    # Tracer is a proxy — it forwards to whatever global TracerProvider is set
+    # later by _configure_otel(), so module-level initialisation is safe.
     _mcp_tracer = _otel_trace.get_tracer("i3x_server.mcp")
-    _mcp_meter = _otel_metrics.get_meter("i3x_server.mcp")
-    _mcp_tool_calls: Any = _mcp_meter.create_counter(
-        "mcp.tool_calls",
-        description="Total number of MCP tool invocations",
-    )
-    _mcp_tool_duration: Any = _mcp_meter.create_histogram(
-        "mcp.tool_duration_seconds",
-        description="Duration of MCP tool invocations in seconds",
-        unit="s",
-    )
+
+    # Meter instruments bind to the provider at creation time, so they must
+    # NOT be created here at import time (the real MeterProvider is installed
+    # later by _configure_otel()).  They are populated by init_mcp_metrics()
+    # which is called from app_factory after the provider is configured.
+    _mcp_tool_calls: Any = None
+    _mcp_tool_duration: Any = None
 except ImportError:  # pragma: no cover - optional dependency
     from contextlib import nullcontext as _nullcontext
 
@@ -57,6 +56,32 @@ _TRACEPARENT_PATTERN = re.compile(
 logger = logging.getLogger(__name__)
 DEFAULT_MCP_OVERRIDES_PATH = Path("overrides/mcp_overrides.json")
 DEFAULT_MCP_OVERRIDES_SCHEMA_PATH = Path("overrides/schema.json")
+
+
+def init_mcp_metrics() -> None:
+    """Create OTel metric instruments against the currently configured MeterProvider.
+
+    Must be called *after* opentelemetry.metrics.set_meter_provider() has been
+    invoked (i.e. from _configure_otel in app_factory).  Calling it before the
+    provider is set would bind the instruments to the no-op provider and they
+    would never record data.
+    """
+    global _mcp_tool_calls, _mcp_tool_duration
+    try:
+        from opentelemetry import metrics as _otel_metrics
+
+        _meter = _otel_metrics.get_meter("i3x_server.mcp")
+        _mcp_tool_calls = _meter.create_counter(
+            "mcp.tool_calls",
+            description="Total number of MCP tool invocations",
+        )
+        _mcp_tool_duration = _meter.create_histogram(
+            "mcp.tool_duration_seconds",
+            description="Duration of MCP tool invocations in seconds",
+            unit="s",
+        )
+    except ImportError:  # pragma: no cover - optional dependency
+        pass
 
 
 def _trace_log_fields(request: Request) -> tuple[str, str]:

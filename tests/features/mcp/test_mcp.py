@@ -454,28 +454,31 @@ def test_mcp_prompts_list_rest(client: TestClient) -> None:
     assert response.status_code == 200
     payload = response.json()
     prompts = payload["prompts"]
-    assert any(item["name"] == "analyze_machine_state" for item in prompts)
-    assert any(item["name"] == "opcua_diagnostics" for item in prompts)
+    assert any(item["name"] == "machine_health_snapshot" for item in prompts)
+    assert any(item["name"] == "alarm_triage" for item in prompts)
 
 
 def test_mcp_prompts_get_rest(client: TestClient) -> None:
-    response = client.get("/mcp/prompts/analyze_machine_state")
+    response = client.get("/mcp/prompts/machine_health_snapshot")
     assert response.status_code == 200
     payload = response.json()
-    assert payload["name"] == "analyze_machine_state"
-    assert payload["inputs"] == ["telemetry"]
-    assert "{{telemetry}}" in payload["template"]
+    assert payload["name"] == "machine_health_snapshot"
+    assert payload["inputs"] == ["asset_id", "lookback_minutes"]
+    assert "{{asset_id}}" in payload["template"]
 
 
 def test_mcp_prompts_execute_rest(client: TestClient) -> None:
     response = client.post(
         "/mcp/prompts/execute",
-        json={"name": "opcua_diagnostics", "parameters": {"telemetry": "temperature=80"}},
+        json={
+            "name": "machine_health_snapshot",
+            "parameters": {"asset_id": "Press-01", "lookback_minutes": "60"},
+        },
     )
     assert response.status_code == 200
     payload = response.json()
-    assert payload["name"] == "opcua_diagnostics"
-    assert "temperature=80" in payload["rendered"]
+    assert payload["name"] == "machine_health_snapshot"
+    assert "Press-01" in payload["rendered"]
 
 
 def test_mcp_prompts_list_request(client: TestClient) -> None:
@@ -486,7 +489,7 @@ def test_mcp_prompts_list_request(client: TestClient) -> None:
     assert response.status_code == 200
     payload = response.json()
     prompts = payload["result"]["prompts"]
-    assert any(prompt["name"] == "analyze_machine_state" for prompt in prompts)
+    assert any(prompt["name"] == "machine_health_snapshot" for prompt in prompts)
 
 
 def test_mcp_resources_list_rest(client: TestClient) -> None:
@@ -596,14 +599,14 @@ def test_mcp_prompts_get_request(client: TestClient) -> None:
             "jsonrpc": "2.0",
             "id": 22,
             "method": "prompts/get",
-            "params": {"name": "opcua_diagnostics"},
+            "params": {"name": "machine_health_snapshot"},
         },
     )
     assert response.status_code == 200
     payload = response.json()
     prompt = payload["result"]
-    assert prompt["name"] == "opcua_diagnostics"
-    assert prompt["inputs"] == ["telemetry"]
+    assert prompt["name"] == "machine_health_snapshot"
+    assert prompt["inputs"] == ["asset_id", "lookback_minutes"]
 
 
 def test_mcp_prompts_execute_request(client: TestClient) -> None:
@@ -613,14 +616,17 @@ def test_mcp_prompts_execute_request(client: TestClient) -> None:
             "jsonrpc": "2.0",
             "id": 23,
             "method": "prompts/execute",
-            "params": {"name": "analyze_machine_state", "parameters": {"telemetry": "temperature=80"}},
+            "params": {
+                "name": "machine_health_snapshot",
+                "parameters": {"asset_id": "Press-01", "lookback_minutes": "60"},
+            },
         },
     )
     assert response.status_code == 200
     payload = response.json()
     result = payload["result"]
-    assert result["name"] == "analyze_machine_state"
-    assert "temperature=80" in result["rendered"]
+    assert result["name"] == "machine_health_snapshot"
+    assert "Press-01" in result["rendered"]
 
 
 def test_mcp_tools_call_request(client: TestClient) -> None:

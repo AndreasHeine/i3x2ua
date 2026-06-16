@@ -42,7 +42,7 @@ flowchart LR
 	end
 
 	subgraph Deployment[API Gateway]
-		Nginx[nginx Reverse Proxy]
+		Nginx[nginx]
 		Auth[(External AuthN/AuthZ)]
 	end
 

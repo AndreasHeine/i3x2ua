@@ -3,6 +3,7 @@ services:
     build:
       context: .
     image: i3x2ua-local
+    # image: ghcr.io/andreasheine/i3x2ua:master
     container_name: i3x2ua
     restart: unless-stopped
     command:
@@ -18,32 +19,44 @@ services:
       - --forwarded-allow-ips
       - "*"
     environment:
-      I3X_OPCUA_ENDPOINT: ${I3X_OPCUA_ENDPOINT:-opc.tcp://opcua.umati.app:4843}
-      I3X_OPCUA_USERNAME: ${I3X_OPCUA_USERNAME:-}
-      I3X_OPCUA_PASSWORD: ${I3X_OPCUA_PASSWORD:-}
-      I3X_OPCUA_SECURITY_MODE: ${I3X_OPCUA_SECURITY_MODE:-None}
-      I3X_OPCUA_SECURITY_POLICY: ${I3X_OPCUA_SECURITY_POLICY:-}
-      I3X_OPCUA_CLIENT_CERT_PATH: ${I3X_OPCUA_CLIENT_CERT_PATH:-}
-      I3X_OPCUA_CLIENT_KEY_PATH: ${I3X_OPCUA_CLIENT_KEY_PATH:-}
-      I3X_OPCUA_CLIENT_KEY_PASSWORD: ${I3X_OPCUA_CLIENT_KEY_PASSWORD:-}
-      I3X_OPCUA_SERVER_CERT_PATH: ${I3X_OPCUA_SERVER_CERT_PATH:-}
-      I3X_OPCUA_BROWSE_CONCURRENCY: ${I3X_OPCUA_BROWSE_CONCURRENCY:-128}
-      I3X_OPCUA_METADATA_CACHE_TTL_SECONDS: ${I3X_OPCUA_METADATA_CACHE_TTL_SECONDS:-300}
-      I3X_OPCUA_CONNECTION_MONITOR_INTERVAL_SECONDS: ${I3X_OPCUA_CONNECTION_MONITOR_INTERVAL_SECONDS:-5}
-      I3X_MODEL_REFRESH_INTERVAL_SECONDS: ${I3X_MODEL_REFRESH_INTERVAL_SECONDS:-60}
-      I3X_MODEL_PRELOAD_ON_STARTUP: ${I3X_MODEL_PRELOAD_ON_STARTUP:-1}
-      I3X_MODEL_PRELOAD_BLOCKING: ${I3X_MODEL_PRELOAD_BLOCKING:-0}
-      I3X_FAIL_STARTUP_ON_MODEL_PRELOAD_ERROR: ${I3X_FAIL_STARTUP_ON_MODEL_PRELOAD_ERROR:-0}
-      I3X_SUBSCRIPTION_INTERVAL_SECONDS: ${I3X_SUBSCRIPTION_INTERVAL_SECONDS:-5}
-      I3X_SUBSCRIPTION_MAX_UPDATES: ${I3X_SUBSCRIPTION_MAX_UPDATES:-10000}
-      I3X_SUBSCRIPTION_TTL_SECONDS: ${I3X_SUBSCRIPTION_TTL_SECONDS:-300}
-      I3X_ENABLE_TYPE_BROWSENAME_LOOKUP: ${I3X_ENABLE_TYPE_BROWSENAME_LOOKUP:-0}
-      I3X_TYPE_BROWSENAME_LOOKUP_TIMEOUT_S: ${I3X_TYPE_BROWSENAME_LOOKUP_TIMEOUT_S:-0.05}
-      I3X_TYPE_BROWSENAME_LOOKUP_MAX: ${I3X_TYPE_BROWSENAME_LOOKUP_MAX:-20}
-      I3X_LOG_LEVEL: ${I3X_LOG_LEVEL:-INFO}
-      I3X_ENABLE_MCP: ${I3X_ENABLE_MCP:-0}
+      # I3X_HOST: 0.0.0.0  # Optional host bind for run.py (not used by this compose command).
+      # I3X_PORT: 8000  # Optional app port for run.py (not used by this compose command).
+      I3X_OPCUA_ENDPOINT: opc.tcp://opcua.umati.app:4843  # OPC UA server endpoint URL.
+      # I3X_OPCUA_USERNAME: ""  # Optional OPC UA username.
+      # I3X_OPCUA_PASSWORD: ""  # Optional OPC UA password.
+      # I3X_OPCUA_SECURITY_MODE: SignAndEncrypt  # OPC UA message security mode.
+      # I3X_OPCUA_SECURITY_POLICY: Basic256Sha256  # OPC UA security policy URI short name.
+      # I3X_OPCUA_CLIENT_CERT_PATH: ./certs/opcua-client-sample/client-cert.pem  # Client certificate path.
+      # I3X_OPCUA_CLIENT_KEY_PATH: ./certs/opcua-client-sample/client-key.pem  # Client private key path.
+      # I3X_OPCUA_CLIENT_KEY_PASSWORD: ""  # Optional password for client key.
+      # I3X_OPCUA_SERVER_CERT_PATH: ""  # Optional pinned server certificate path.
+      I3X_OPCUA_BROWSE_CONCURRENCY: 128  # Max concurrent browse operations.
+      I3X_OPCUA_METADATA_CACHE_TTL_SECONDS: 300  # Metadata cache lifetime in seconds.
+      I3X_OPCUA_CONNECTION_MONITOR_INTERVAL_SECONDS: 5  # Reconnect monitor interval in seconds.
+      I3X_MODEL_REFRESH_INTERVAL_SECONDS: 60  # Model refresh cadence in seconds.
+      I3X_MODEL_PRELOAD_ON_STARTUP: 1  # Preload model during startup.
+      I3X_MODEL_PRELOAD_BLOCKING: 0  # Block startup until preload finishes.
+      I3X_FAIL_STARTUP_ON_MODEL_PRELOAD_ERROR: 0  # Fail startup if preload fails.
+      I3X_SUBSCRIPTION_INTERVAL_SECONDS: 2  # Poll interval for subscription updates.
+      I3X_SUBSCRIPTION_MAX_UPDATES: 10000  # Max queued updates per subscription.
+      I3X_SUBSCRIPTION_TTL_SECONDS: 300  # Subscription expiry timeout in seconds.
+      I3X_SUBSCRIPTIONS_INITIAL_VALUES: true  # Seed subscriptions with initial values.
+      I3X_ENABLE_TYPE_BROWSENAME_LOOKUP: 0  # Enable live type browse-name enrichment.
+      I3X_TYPE_BROWSENAME_LOOKUP_TIMEOUT_S: 0.05  # Timeout per type lookup request.
+      I3X_TYPE_BROWSENAME_LOOKUP_MAX: 20  # Max enriched type names per request.
+      I3X_LOG_LEVEL: INFO  # Application log level.
+      # I3X_CORS_ALLOWED_ORIGINS: "[]"  # JSON array of allowed CORS origins.
+      # I3X_OTEL_ENABLED: false  # Enable OpenTelemetry instrumentation.
+      # I3X_OTEL_SERVICE_NAME: i3x2ua  # OpenTelemetry service name.
+      # I3X_OTEL_OTLP_ENDPOINT: ""  # OTLP collector base endpoint.
+      I3X_ENABLE_MCP: 1  # Enable MCP endpoints and tool catalog.
+      # I3X_SKIP_OPCUA_CONNECT: 0  # Skip OPC UA connect for dev/testing.
+      # I3X_DEBUG_SUBSCRIPTION_STREAM: 0  # Enable verbose SSE stream diagnostics.
+      # I3X_RELOAD: 0  # Auto-reload toggle for run.py.
+      # I3X_UVICORN_LOOP: ""  # Optional uvicorn loop policy override.
+      I3X_OPCUA_CERTS_DIR: ./certs  # Host cert directory reference for documentation parity.
     volumes:
-      - ${I3X_OPCUA_CERTS_DIR:-./certs}:/app/certs:ro
+      - ./certs:/app/certs:ro
     expose:
       - "8000"
     read_only: true
@@ -73,22 +86,40 @@ services:
       i3x2ua:
         condition: service_healthy
     ports:
-      - "${NGINX_HTTP_PORT:-8080}:80"
-      - "${NGINX_HTTPS_PORT:-8443}:443"
+      - "8080:80"
+      - "8443:443"
     environment:
-      NGINX_UPSTREAM_HOST: ${NGINX_UPSTREAM_HOST:-i3x2ua}
-      NGINX_UPSTREAM_PORT: ${NGINX_UPSTREAM_PORT:-8000}
-      NGINX_SERVER_NAME: ${NGINX_SERVER_NAME:-_}
-      NGINX_HTTPS_ENABLED: ${NGINX_HTTPS_ENABLED:-1}
-      NGINX_HTTPS_REDIRECT_PORT: ${NGINX_HTTPS_REDIRECT_PORT:-8443}
-      NGINX_SSL_CERTIFICATE: ${NGINX_SSL_CERTIFICATE:-/etc/nginx/certs/https-sample/fullchain.pem}
-      NGINX_SSL_CERTIFICATE_KEY: ${NGINX_SSL_CERTIFICATE_KEY:-/etc/nginx/certs/https-sample/privkey.pem}
-      NGINX_BASIC_AUTH_ENABLED: ${NGINX_BASIC_AUTH_ENABLED:-0}
-      NGINX_BASIC_AUTH_USER: ${NGINX_BASIC_AUTH_USER:-}
-      NGINX_BASIC_AUTH_PASSWORD: ${NGINX_BASIC_AUTH_PASSWORD:-}
-      NGINX_BASIC_AUTH_REALM: ${NGINX_BASIC_AUTH_REALM:-i3x2ua}
+      NGINX_UPSTREAM_HOST: i3x2ua  # Upstream service hostname for proxy_pass.
+      NGINX_UPSTREAM_PORT: 8000  # Upstream service port for proxy_pass.
+      NGINX_SERVER_NAME: _  # Server name used in nginx virtual host.
+      NGINX_HTTPS_ENABLED: 1  # Enable HTTPS listener and HTTP->HTTPS redirect.
+      NGINX_HTTPS_REDIRECT_PORT: 8443  # External HTTPS port used in redirect URL.
+      NGINX_SSL_CERTS_DIR: ./certs  # Host cert directory reference for docs parity.
+      NGINX_SSL_CERTIFICATE: /etc/nginx/certs/https-sample/fullchain.pem  # TLS certificate file in container.
+      NGINX_SSL_CERTIFICATE_KEY: /etc/nginx/certs/https-sample/privkey.pem  # TLS private key file in container.
+      NGINX_HTTP_PORT: 80  # Internal container HTTP listen port.
+      NGINX_HTTPS_PORT: 443  # Internal container HTTPS listen port.
+      # NGINX_BASIC_AUTH_ENABLED: 0  # Enable Basic Auth at reverse proxy.
+      # NGINX_BASIC_AUTH_USER: ""  # Basic Auth username.
+      # NGINX_BASIC_AUTH_PASSWORD: ""  # Basic Auth password.
+      # NGINX_BASIC_AUTH_REALM: i3x2ua  # Basic Auth realm text.
     volumes:
-      - ${NGINX_SSL_CERTS_DIR:-./certs}:/etc/nginx/certs:ro
+      - ./certs:/etc/nginx/certs:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,noexec,nosuid
+      - /var/cache/nginx:size=32m,noexec,nosuid
+      - /var/run:size=8m,noexec,nosuid
+      - /etc/nginx/conf.d:size=1m,noexec,nosuid
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
     networks:
       - backend
 

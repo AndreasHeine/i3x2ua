@@ -43,7 +43,13 @@ flowchart LR
 
 	subgraph Deployment[API Gateway]
 		Nginx[nginx]
+	end
+
+	subgraph Security[Security Control Plane]
 		Auth[(External AuthN/AuthZ)]
+		Certbot[Certbot / ACME Client]
+		CertStore[(Certificate Store)]
+		AcmeCA[(ACME CA)]
 	end
 
 	API[FastAPI App]
@@ -52,6 +58,10 @@ flowchart LR
 	Agent <--> Nginx
 	Nginx --> API
 	Nginx -. enforces auth .-> Auth
+	Certbot -. ACME .-> AcmeCA
+	Certbot --> CertStore
+	Nginx --> CertStore
+	Certbot -. renews certs .-> Nginx
 
 	subgraph Core[i3x2ua-core]
 		Routers[Router-Layer /v1 /ua optional /mcp]

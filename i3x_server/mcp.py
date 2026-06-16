@@ -57,7 +57,7 @@ def _resolve_override_path(path: str | Path) -> Path:
 
 def _load_json_mapping(path: Path, *, label: str) -> dict[str, Any] | None:
     try:
-        with path.open("r", encoding="utf-8") as file:
+        with path.open("r", encoding="utf-8-sig") as file:
             payload = json.load(file)
     except json.JSONDecodeError as exc:
         logger.warning(

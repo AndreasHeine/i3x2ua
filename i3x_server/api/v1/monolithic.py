@@ -2574,6 +2574,7 @@ async def stream_subscription_v1(
                 )
                 initial_payload = [
                     {
+                        "sequenceNumber": item["sequenceNumber"],
                         "elementId": item["elementId"],
                         "value": item["value"],
                         "quality": item["quality"],
@@ -2621,7 +2622,8 @@ async def stream_subscription_v1(
                 if updates is None:
                     if _STREAM_DEBUG_ENABLED:
                         logger.info(
-                            "Subscription stream closing because subscription no longer exists subscription_id=%s generation=%s",
+                            "Subscription stream closing because subscription no longer exists "
+                            "subscription_id=%s generation=%s",
                             body.subscriptionId,
                             stream_generation,
                         )
@@ -2647,6 +2649,7 @@ async def stream_subscription_v1(
                 )
                 payload = [
                     {
+                        "sequenceNumber": item["sequenceNumber"],
                         "elementId": item["elementId"],
                         "value": item["value"],
                         "quality": item["quality"],

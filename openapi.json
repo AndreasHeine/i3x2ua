@@ -1439,6 +1439,285 @@
           }
         }
       }
+    },
+    "/mcp/prompts": {
+      "servers": [
+        {
+          "url": "/"
+        }
+      ],
+      "get": {
+        "tags": [
+          "MCP"
+        ],
+        "summary": "List MCP Prompts",
+        "description": "Returns available MCP prompt metadata.",
+        "operationId": "listMcpPrompts",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error — see error.code for the HTTP status code (400, 401, 403, 404, 500, etc.)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/mcp/prompts/{name}": {
+      "servers": [
+        {
+          "url": "/"
+        }
+      ],
+      "get": {
+        "tags": [
+          "MCP"
+        ],
+        "summary": "Get MCP Prompt",
+        "description": "Returns one MCP prompt definition by name.",
+        "operationId": "getMcpPrompt",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error — see error.code for the HTTP status code (400, 401, 403, 404, 500, etc.)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/mcp/prompts/execute": {
+      "servers": [
+        {
+          "url": "/"
+        }
+      ],
+      "post": {
+        "tags": [
+          "MCP"
+        ],
+        "summary": "Execute MCP Prompt",
+        "description": "Executes one MCP prompt by name with parameters.",
+        "operationId": "executeMcpPrompt",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "parameters": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "default": {}
+                  }
+                },
+                "required": [
+                  "name"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error — see error.code for the HTTP status code (400, 401, 403, 404, 500, etc.)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/mcp/resources": {
+      "servers": [
+        {
+          "url": "/"
+        }
+      ],
+      "get": {
+        "tags": [
+          "MCP"
+        ],
+        "summary": "List MCP Resources",
+        "description": "Returns available MCP resources.",
+        "operationId": "listMcpResources",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error — see error.code for the HTTP status code (400, 401, 403, 404, 500, etc.)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/mcp/resources/read": {
+      "servers": [
+        {
+          "url": "/"
+        }
+      ],
+      "post": {
+        "tags": [
+          "MCP"
+        ],
+        "summary": "Read MCP Resource",
+        "description": "Reads one MCP resource by URI.",
+        "operationId": "readMcpResource",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "uri": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "uri"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error — see error.code for the HTTP status code (400, 401, 403, 404, 500, etc.)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/mcp/roots": {
+      "servers": [
+        {
+          "url": "/"
+        }
+      ],
+      "get": {
+        "tags": [
+          "MCP"
+        ],
+        "summary": "List MCP Roots",
+        "description": "Returns available MCP roots.",
+        "operationId": "listMcpRoots",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error — see error.code for the HTTP status code (400, 401, 403, 404, 500, etc.)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {

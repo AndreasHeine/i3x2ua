@@ -43,7 +43,7 @@ class FakeOpcUaClient:
         del publishing_interval_ms, handler
         return SimpleNamespace(id="ua-sub")
 
-    async def subscribe_data_changes(self, subscription: Any, node_ids: list[str]) -> list[int]:
+    async def subscribe_data_changes(self, subscription: Any, node_ids: list[str]) -> int | list[int]:
         del subscription, node_ids
         return [1, 2, 3]
 
@@ -301,6 +301,7 @@ async def test_datachange_handler_schedules_from_non_eventloop_thread() -> None:
             break
         await asyncio.sleep(0.01)
 
+    assert synced is not None
     assert synced.updates
     assert synced.updates[0].element_id == "prop-a"
     await service.close()
@@ -336,6 +337,7 @@ async def test_datachange_handler_schedules_from_other_running_loop() -> None:
             break
         await asyncio.sleep(0.01)
 
+    assert synced is not None
     assert synced.updates
     assert synced.updates[0].element_id == "prop-a"
     await service.close()
@@ -378,6 +380,7 @@ async def test_datachange_handler_accepts_int_like_client_handle() -> None:
             break
         await asyncio.sleep(0.01)
 
+    assert synced is not None
     assert synced.updates
     assert synced.updates[0].element_id == "prop-a"
     await service.close()

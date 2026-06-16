@@ -235,6 +235,7 @@ class McpToolDefinition:
     body_required: bool
     priority: str = "normal"
     keywords: tuple[str, ...] = ()
+    server_url_override: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -268,6 +269,13 @@ def build_mcp_tools(
             continue
         if path.startswith("/mcp"):
             continue
+        # Extract per-path server override if present
+        path_server_override: str | None = None
+        if isinstance(methods.get("servers"), list):
+            for server in methods.get("servers", []):
+                if isinstance(server, Mapping) and isinstance(server.get("url"), str):
+                    path_server_override = server.get("url")
+                    break
         for method, details in methods.items():
             if not isinstance(method, str) or not isinstance(details, Mapping):
                 continue
@@ -332,6 +340,7 @@ def build_mcp_tools(
                 body_required=body_required,
                 priority=str(override.get("priority") or "normal"),
                 keywords=tuple(str(keyword) for keyword in keywords if isinstance(keyword, str)),
+                server_url_override=path_server_override,
             )
 
     return tools
@@ -525,7 +534,13 @@ async def invoke_mcp_tool(request: Request, tool: McpToolDefinition, arguments: 
             if not isinstance(api_prefix, str):
                 api_prefix = ""
 
-            resolved_path = _safe_request_path(api_prefix, tool.path)
+            # Use per-path server override if present, otherwise use global api_prefix
+            if tool.server_url_override is not None:
+                effective_prefix = _safe_api_prefix(tool.server_url_override)
+            else:
+                effective_prefix = api_prefix
+
+            resolved_path = _safe_request_path(effective_prefix, tool.path)
             for parameter_name in tool.path_parameters:
                 placeholder = "{" + parameter_name + "}"
                 if placeholder not in resolved_path:

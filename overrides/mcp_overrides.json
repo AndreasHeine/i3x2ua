@@ -208,19 +208,81 @@
         }
     },
     "prompts": {
-        "analyze_machine_state": {
-            "description": "Analyze machine telemetry and identify likely causes",
+        "machine_health_snapshot": {
+            "description": "Summarize current machine condition and risk",
             "inputs": [
-                "telemetry"
+                "asset_id",
+                "lookback_minutes"
             ],
-            "template": "You are an industrial diagnostics expert.\n\nAnalyze the following machine telemetry:\n{{telemetry}}\n\nTasks:\n1. Detect anomalies\n2. Identify likely root causes\n3. Suggest immediate and preventive actions\n\nIf anomaly detected:\n-> call tool: queryHistoricalValues"
+            "template": "You are an industrial reliability analyst.\n\nAsset: {{asset_id}}\nLookback: {{lookback_minutes}} minutes\n\nTasks:\n1. Build a health snapshot (availability, stability, critical signals).\n2. Flag anomalies and classify severity (low/medium/high).\n3. State likely failure modes and confidence.\n4. Recommend immediate checks and next monitoring actions.\n\nUse tools as needed:\n- queryRelatedObjects to find related sensors/components\n- queryLastKnownValues for current state\n- queryHistoricalValues if behavior changed"
         },
-        "opcua_diagnostics": {
-            "description": "Analyze OPC UA telemetry",
+        "alarm_triage": {
+            "description": "Prioritize alarms and propose safe first actions",
             "inputs": [
-                "telemetry"
+                "asset_id",
+                "alarm_text",
+                "time_window"
             ],
-            "template": "You are an industrial expert.\n\nTelemetry:\n{{telemetry}}\n\nTasks:\n1. Detect anomalies\n2. Identify root causes\n3. Suggest actions\n\nIf anomaly detected:\n-> call tool: queryHistoricalValues"
+            "template": "You are a controls and maintenance triage assistant.\n\nAsset: {{asset_id}}\nAlarm: {{alarm_text}}\nWindow: {{time_window}}\n\nTasks:\n1. Interpret alarm likely meaning in plant context.\n2. Prioritize urgency and safety impact.\n3. Provide first 5 operator actions in safe order.\n4. List probable root causes and checks to confirm each.\n\nUse tools as needed:\n- queryLastKnownValues for current process values\n- queryHistoricalValues to inspect pre-alarm trend\n- queryRelatedObjects to include upstream/downstream context"
+        },
+        "predictive_maintenance_check": {
+            "description": "Estimate degradation risk and maintenance priority",
+            "inputs": [
+                "asset_id",
+                "lookback_days"
+            ],
+            "template": "You are a predictive maintenance specialist.\n\nAsset: {{asset_id}}\nLookback: {{lookback_days}} days\n\nTasks:\n1. Detect degradation patterns (vibration, temperature, current, cycle time, quality).\n2. Estimate short-term failure risk (next shift/day/week) with confidence.\n3. Recommend condition-based maintenance actions and inspection points.\n4. Suggest which signals should be added to subscription monitoring.\n\nUse tools as needed:\n- queryHistoricalValues for trend/seasonality checks\n- queryLastKnownValues for current condition\n- createSubscription/registerMonitoredItems for ongoing watch"
+        },
+        "process_drift_analysis": {
+            "description": "Find process drift and likely causes affecting quality",
+            "inputs": [
+                "line_or_cell",
+                "kpi_name",
+                "lookback_hours"
+            ],
+            "template": "You are a manufacturing process engineer.\n\nScope: {{line_or_cell}}\nKPI: {{kpi_name}}\nLookback: {{lookback_hours}} hours\n\nTasks:\n1. Identify drift from expected operating envelope.\n2. Correlate drift with machine states, setpoints, or environmental signals.\n3. Rank likely causes and confidence.\n4. Recommend corrective tuning and control limits.\n\nUse tools as needed:\n- queryHistoricalValues for trend and step-change analysis\n- queryRelatedObjects to include related equipment\n- getObjectTypes to interpret semantic meaning of signals"
+        },
+        "downtime_root_cause": {
+            "description": "Analyze a downtime event and produce RCA summary",
+            "inputs": [
+                "asset_id",
+                "downtime_start",
+                "downtime_end"
+            ],
+            "template": "You are an industrial RCA facilitator.\n\nAsset: {{asset_id}}\nDowntime start: {{downtime_start}}\nDowntime end: {{downtime_end}}\n\nTasks:\n1. Reconstruct event timeline (before, during, restart).\n2. Identify technical trigger and contributing conditions.\n3. Separate probable cause vs confirmed evidence.\n4. Propose containment, corrective action, and prevention.\n\nUse tools as needed:\n- queryHistoricalValues across the event window\n- queryLastKnownValues for current post-event status\n- queryRelatedObjects for dependency context"
+        },
+        "energy_intensity_review": {
+            "description": "Assess energy usage versus output and operating state",
+            "inputs": [
+                "asset_or_line",
+                "lookback_days",
+                "production_context"
+            ],
+            "template": "You are an energy optimization analyst for industrial equipment.\n\nScope: {{asset_or_line}}\nLookback: {{lookback_days}} days\nProduction context: {{production_context}}\n\nTasks:\n1. Estimate energy intensity patterns by operating state.\n2. Highlight avoidable consumption and probable causes.\n3. Suggest no-capex and low-capex actions.\n4. Define 3 monitoring KPIs for weekly follow-up.\n\nUse tools as needed:\n- queryHistoricalValues for load/state patterns\n- queryRelatedObjects to include auxiliaries\n- queryLastKnownValues for current operating mode"
+        },
+        "opcua_data_quality_audit": {
+            "description": "Audit OPC UA telemetry quality for decision readiness",
+            "inputs": [
+                "asset_id",
+                "lookback_hours"
+            ],
+            "template": "You are an OPC UA data quality auditor.\n\nAsset: {{asset_id}}\nLookback: {{lookback_hours}} hours\n\nTasks:\n1. Check staleness, missingness, timestamp consistency, and value plausibility.\n2. Flag suspicious flat-lines, spikes, or out-of-order updates.\n3. Classify impact on diagnostics (low/medium/high).\n4. Recommend fixes (sampling, publishing, deadband, mapping).\n\nUse tools as needed:\n- queryHistoricalValues for continuity and anomaly checks\n- queryLastKnownValues for freshness\n- getNamespaces/getObjects if source mapping is unclear"
+        },
+        "shift_handover_summary": {
+            "description": "Create concise shift handover for operations and maintenance",
+            "inputs": [
+                "area",
+                "shift_window"
+            ],
+            "template": "You are a production shift handover assistant.\n\nArea: {{area}}\nShift window: {{shift_window}}\n\nTasks:\n1. Summarize major events, alarms, interventions, and unresolved issues.\n2. List top 5 risks for next shift.\n3. Provide clear watchlist signals and thresholds.\n4. Provide next-shift action checklist.\n\nUse tools as needed:\n- queryLastKnownValues for current state\n- queryHistoricalValues for shift timeline\n- listSubscriptions/syncSubscription for monitored updates"
+        },
+        "i3x_context_mapping_assistant": {
+            "description": "Map OPC UA signals into i3X object and relationship context",
+            "inputs": [
+                "asset_id_or_namespace",
+                "mapping_goal"
+            ],
+            "template": "You are an i3X semantic modeling assistant for industrial systems.\n\nScope: {{asset_id_or_namespace}}\nGoal: {{mapping_goal}}\n\nTasks:\n1. Propose i3X object types and relationships for available signals.\n2. Identify missing links needed for diagnostics and lineage.\n3. Recommend a minimal high-value model extension.\n4. Output a practical mapping checklist for implementation.\n\nUse tools as needed:\n- getObjectTypes/getRelationshipTypes for model vocabulary\n- getObjects/listObjectsById/queryRelatedObjects for current graph\n- getNamespaces to align OPC UA source context"
         }
     },
     "features": {}

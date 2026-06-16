@@ -36,47 +36,43 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for sign-off requirements and contributio
 
 ```mermaid
 flowchart LR
-	subgraph Consumer[Consumer]
+	subgraph Consumer[consumer]
 		Client[i3X Client]
-		McpConsumer[AI Agent]
-	end
-	Client <--> |i3X 1.0| Nginx[nginx Reverse Proxy]
-	McpConsumer <--> |optional /mcp JSON-RPC| Nginx
-	Nginx <--> |all app routes| API[FastAPI App i3x_server.main]
-
-	subgraph App[Application Core]
-		API --> Router[V1 Router /v1]
-		API --> UaRouter[UA Router /ua]
-		API -. optional /mcp .-> McpRouter[MCP Router /mcp]
-		McpRouter -->|generated tools| McpTools[(MCP Tool Catalog)]
-		McpRouter -->|tool calls| Router
-		Router --> Deps[Dependency Layer]
-		Deps --> ModelCache[(Model Cache)]
-		Deps --> SubSvc[i3X Subscription Service]
-		Deps --> OpcClient[OPC UA Client]
-		API --> Ui[Landing + viewers / / /docs /view /mcp-tools-viewer]
-
-		subgraph Model[Model Layer]
-			Builder[Model Builder] --> Mapper[Node Mapper]
-			Mapper --> BuildResult[BuildResult Indexes]
-			BuildResult --> ModelCache
-		end
+		Agent[AI Agent]
 	end
 
-	OpcClient -->|browse tree + metadata| Builder
-	OpcClient -->|read values/history| Router
-	OpcClient -->|connection/state/limits/metrics| UaRouter
-	OpcClient <-->|OPC UA binary protocol| UaServer[(External OPC UA Server)]
-	UaServer -->|address space browse + read + history + events| OpcClient
-	Router -.->|write endpoints currently not implemented| OpcClient
-	Router -->|object/value/history responses| Nginx
-	UaRouter -->|operational state and limits| Nginx
-	Ui -->|HTML pages and docs links| Nginx
-	Router -->|create/register/sync/list/delete/stream| SubSvc
-	SubSvc -->|native subscription when limits allow| OpcClient
-	SubSvc -->|polling fallback| OpcClient
-	SubSvc -->|SSE updates| Router
-	Router -->|text/event-stream| Nginx
+	subgraph Deployment[API Gateway]
+		Nginx[nginx Reverse Proxy]
+		Auth[(External AuthN/AuthZ)]
+	end
+
+	API[FastAPI App]
+
+	Client <--> Nginx
+	Agent <--> Nginx
+	Nginx --> API
+	Nginx -. enforces auth .-> Auth
+
+	subgraph Core[i3x2ua-core]
+		Routers[Router-Layer /v1 /ua optional /mcp]
+		Deps[Dependency Layer]
+		Services[Application Services]
+		Model[Model Layer]
+		SubSvc[Subscription Service]
+		McpRuntime[MCP Runtime]
+		OpcClient[OPC UA Client]
+
+		API --> Routers
+		Routers --> Deps
+		Deps --> Services
+		Deps --> Model
+		Services --> SubSvc
+		Services --> McpRuntime
+		Model --> OpcClient
+		SubSvc --> OpcClient
+	end
+
+	OpcClient <-->|OPC UA Binary| UaServer[(External OPC UA Server)]
 ```
 
 ```mermaid

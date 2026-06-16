@@ -3,8 +3,8 @@ from __future__ import annotations
 import logging
 from time import perf_counter
 
+from i3x_server.domain.ports.opcua import OpcUaClientProtocol, OpcUaNodeInfo
 from i3x_server.model.mapper import classify_opcua_reference, map_node, stable_i3x_id
-from i3x_server.opcua.client import OpcUaClientProtocol, OpcUaNodeInfo
 from i3x_server.schemas.i3x import ModelNode, NodeKind
 from i3x_server.schemas.state import BuildResult
 

@@ -49,7 +49,7 @@ flowchart TD
         E[i3x2ua MCP server /mcp]
         F[i3x2ua FastAPI handlers]
         G[i3x2ua OPC UA client + i3x mapping]
-        R[i3x2ua tool_overrides.json\npriority / keywords / descriptions]
+        R[i3x2ua overrides/mcp_overrides.json\ntool/prompt/feature metadata]
     end
     H[Plant assets return data]
     I[Structured tool result to model]

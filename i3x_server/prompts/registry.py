@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
-from pathlib import Path
 from typing import Any
 
 
@@ -26,29 +24,20 @@ class PromptRegistry:
         self._prompts = dict(prompts or {})
 
     @classmethod
-    def load_from_directory(
+    def load_from_overrides(
         cls,
-        prompt_directory: str | Path,
-        overrides: Mapping[str, Any] | None = None,
-    ) -> "PromptRegistry":
-        directory = Path(prompt_directory)
-        if not directory.exists() or not directory.is_dir():
+        overrides: Mapping[str, Any] | None,
+    ) -> PromptRegistry:
+        prompt_overrides = _as_mapping(overrides)
+        if not prompt_overrides:
             return cls({})
 
         prompt_map: dict[str, PromptDefinition] = {}
-        prompt_overrides = _as_mapping(overrides)
-
-        for prompt_file in sorted(directory.glob("*.json")):
-            prompt_data = json.loads(prompt_file.read_text(encoding="utf-8"))
-            if not isinstance(prompt_data, Mapping):
-                raise ValueError(f"Prompt file must contain a JSON object: {prompt_file}")
-
-            prompt = _prompt_from_mapping(prompt_data)
-            override = _as_mapping(prompt_overrides.get(prompt.name, {}))
-            prompt = _apply_prompt_override(prompt, override)
-
-            if prompt.name in prompt_map:
-                raise ValueError(f"Duplicate prompt name: {prompt.name}")
+        for prompt_name, prompt_data in sorted(prompt_overrides.items()):
+            if not isinstance(prompt_name, str) or not prompt_name.strip():
+                raise ValueError("Prompt key must be a non-empty string")
+            prompt_mapping = _as_mapping(prompt_data)
+            prompt = _prompt_from_mapping(prompt_name, prompt_mapping)
             prompt_map[prompt.name] = prompt
 
         return cls(prompt_map)
@@ -60,14 +49,11 @@ class PromptRegistry:
         return self._prompts.get(name)
 
 
-def _prompt_from_mapping(data: Mapping[str, Any]) -> PromptDefinition:
-    name = data.get("name")
+def _prompt_from_mapping(name: str, data: Mapping[str, Any]) -> PromptDefinition:
     description = data.get("description")
     inputs = data.get("inputs")
     template = data.get("template")
 
-    if not isinstance(name, str) or not name.strip():
-        raise ValueError("Prompt field 'name' must be a non-empty string")
     if not isinstance(description, str):
         raise ValueError(f"Prompt {name}: field 'description' must be a string")
     if not isinstance(inputs, list) or not all(isinstance(item, str) and item for item in inputs):
@@ -79,31 +65,6 @@ def _prompt_from_mapping(data: Mapping[str, Any]) -> PromptDefinition:
         name=name,
         description=description,
         inputs=tuple(inputs),
-        template=template,
-    )
-
-
-def _apply_prompt_override(prompt: PromptDefinition, override: Mapping[str, Any]) -> PromptDefinition:
-    if not override:
-        return prompt
-
-    description = override.get("description", prompt.description)
-    template = override.get("template", prompt.template)
-    inputs_override = override.get("inputs", list(prompt.inputs))
-
-    if not isinstance(description, str):
-        raise ValueError(f"Prompt override for {prompt.name}: field 'description' must be a string")
-    if not isinstance(template, str):
-        raise ValueError(f"Prompt override for {prompt.name}: field 'template' must be a string")
-    if not isinstance(inputs_override, list) or not all(
-        isinstance(item, str) and item for item in inputs_override
-    ):
-        raise ValueError(f"Prompt override for {prompt.name}: field 'inputs' must be an array of non-empty strings")
-
-    return PromptDefinition(
-        name=prompt.name,
-        description=description,
-        inputs=tuple(inputs_override),
         template=template,
     )
 

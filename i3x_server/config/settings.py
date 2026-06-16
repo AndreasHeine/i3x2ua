@@ -1,4 +1,6 @@
-from pydantic import Field
+from typing import Any
+
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -26,6 +28,13 @@ class Settings(BaseSettings):
     subscription_max_updates: int = Field(default=10000, ge=1)
     subscription_ttl_seconds: int = Field(default=300, ge=1)
     log_level: str = Field(default="INFO")
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def _strip_env_whitespace(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return value.strip()
+        return value
 
 
 settings = Settings()

@@ -4,9 +4,9 @@ from typing import cast
 
 import pytest
 
+from i3x_server.infrastructure.opcua.client import OpcUaClientProtocol, OpcUaNodeInfo, OpcUaReferenceInfo
 from i3x_server.model.builder import ModelBuilder, _kind_for_node
 from i3x_server.model.mapper import infer_kind, map_type, stable_i3x_id
-from i3x_server.opcua.client import OpcUaClientProtocol, OpcUaNodeInfo, OpcUaReferenceInfo
 
 
 class FakeOpcuaForBuilder:

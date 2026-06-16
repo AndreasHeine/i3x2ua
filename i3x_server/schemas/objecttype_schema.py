@@ -14,7 +14,7 @@ from typing import Any, get_args, get_origin
 
 from asyncua import ua
 
-from i3x_server.opcua.client import OpcUaNamespaceInfo, OpcUaObjectTypeInfo, OpcUaObjectTypeMemberInfo
+from i3x_server.domain.ports.opcua import OpcUaNamespaceInfo, OpcUaObjectTypeInfo, OpcUaObjectTypeMemberInfo
 
 _MANDATORY_RULES = {"mandatory", "mandatoryplaceholder"}
 

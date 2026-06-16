@@ -7,7 +7,7 @@ from typing import Any, cast
 
 import pytest
 
-from i3x_server.opcua.client import (
+from i3x_server.infrastructure.opcua.client import (
     OpcUaClient,
     OpcUaOperationalLimits,
     _assert_file_exists,

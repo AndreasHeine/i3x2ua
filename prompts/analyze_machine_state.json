@@ -1,6 +1,0 @@
-{
-  "name": "analyze_machine_state",
-  "description": "Analyze machine telemetry and identify likely causes",
-  "inputs": ["telemetry"],
-  "template": "You are an industrial diagnostics expert.\n\nAnalyze the following machine telemetry:\n{{telemetry}}\n\nTasks:\n1. Detect anomalies\n2. Identify likely root causes\n3. Suggest immediate and preventive actions\n\nIf anomaly detected:\n-> call tool: queryHistoricalValues"
-}

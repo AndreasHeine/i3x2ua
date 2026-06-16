@@ -4,7 +4,7 @@
 
 [![Container Build](https://github.com/AndreasHeine/i3x2ua/actions/workflows/docker.yml/badge.svg)](https://github.com/AndreasHeine/i3x2ua/actions/workflows/docker.yml) [![Quality Checks](https://github.com/AndreasHeine/i3x2ua/actions/workflows/quality.yml/badge.svg)](https://github.com/AndreasHeine/i3x2ua/actions/workflows/quality.yml) [![Coverage](https://codecov.io/gh/AndreasHeine/i3x2ua/branch/master/graph/badge.svg)](https://codecov.io/gh/AndreasHeine/i3x2ua) [![Dependabot Updates](https://github.com/AndreasHeine/i3x2ua/actions/workflows/dependabot/dependabot-updates/badge.svg)](https://github.com/AndreasHeine/i3x2ua/actions/workflows/dependabot/dependabot-updates) [![Dependency Graph](https://github.com/AndreasHeine/i3x2ua/actions/workflows/dependabot/update-graph/badge.svg)](https://github.com/AndreasHeine/i3x2ua/actions/workflows/dependabot/update-graph)
 
-![i3X Logo](img/i3X_logo.png)
+![i3X Logo](static/i3X_logo.png)
 
 ## **Industrial Information Interoperability eXchange (i3X)**
 
@@ -144,14 +144,14 @@ Start without OPC UA server (PowerShell):
 
 ```powershell
 $env:I3X_SKIP_OPCUA_CONNECT="1"
-uv run uvicorn i3x_server.main:app --reload --host 127.0.0.1 --port 8000
+uv run uvicorn i3x_server.main:app --reload --host 127.0.0.1 --port 8000 --loop none
 ```
 
 Enable MCP support explicitly when you want the `/mcp` endpoints and MCP tool catalog to be available:
 
 ```powershell
 $env:I3X_ENABLE_MCP="1"
-uv run uvicorn i3x_server.main:app --reload --host 127.0.0.1 --port 8000
+uv run uvicorn i3x_server.main:app --reload --host 127.0.0.1 --port 8000 --loop none
 ```
 
 If you do not set `I3X_ENABLE_MCP`, the app starts without MCP support and `/mcp` returns `404`.
@@ -167,7 +167,7 @@ $env:I3X_OPCUA_SECURITY_MODE="SignAndEncrypt"
 $env:I3X_OPCUA_SECURITY_POLICY="Basic256Sha256"
 $env:I3X_OPCUA_CLIENT_CERT_PATH="./certs/opcua-client-sample/client-cert.pem"
 $env:I3X_OPCUA_CLIENT_KEY_PATH="./certs/opcua-client-sample/client-key.pem"
-uv run uvicorn i3x_server.main:app --reload --host 127.0.0.1 --port 8000
+uv run uvicorn i3x_server.main:app --reload --host 127.0.0.1 --port 8000 --loop none
 ```
 
 The OPC UA server may require manually trusting the sample client certificate before the secure session can be established.
@@ -212,7 +212,7 @@ MCP scope emphasis: the MCP bridge is currently focused on tool calling (`initia
 - LM Studio / MCP bridge guide (including capability matrix): `docs/LM_STUDIO_MCP_GUIDE.md`
 - deployment guide index: `docs/PRODUCTION_DEPLOYMENT_INDEX.md`
 - quick ops reference: `docs/QUICK_REFERENCE.md`
-- Python coding requirements: `python-coding-reguirements.md`
+- Python coding requirements: `python-coding-requirements.md`
 - API definition: `openapi.json`
 - contribution guide: `CONTRIBUTING.md`
 - release notes: `CHANGELOG.md`

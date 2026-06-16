@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 from typing import Literal
 
-from i3x_server.opcua.client import OpcUaNodeInfo
+from i3x_server.domain.ports.opcua import OpcUaNodeInfo
 from i3x_server.schemas.i3x import ModelNode, NodeKind
 
 CLASS_TO_KIND: dict[str, NodeKind] = {

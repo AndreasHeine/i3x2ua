@@ -16,19 +16,19 @@ from asyncua import ua
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
-from i3x_server.api.v1 import _expanded_node_id
-from i3x_server.main import create_app
-from i3x_server.mcp import _safe_internal_request_url, get_api_prefix
-from i3x_server.opcua.client import (
+from i3x_server.api.v1.monolithic import _expanded_node_id
+from i3x_server.bootstrap.app_factory import create_app
+from i3x_server.infrastructure.opcua.client import (
     OpcUaConnectionSnapshot,
     OpcUaNamespaceInfo,
     OpcUaOperationalLimits,
     OpcUaRequestMetrics,
     OpcUaSubscriptionCapabilities,
 )
+from i3x_server.infrastructure.subscriptions.service import SubscriptionService
+from i3x_server.mcp import _safe_internal_request_url, get_api_prefix
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
-from i3x_server.subscriptions.service import SubscriptionService
 
 
 @dataclass(slots=True)
@@ -982,8 +982,8 @@ def test_v1_objecttypes_generic_standard_id_uses_browse_name_lookup(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("i3x_server.api.v1._ENABLE_LIVE_TYPE_NAME_LOOKUP", True)
-    monkeypatch.setattr("i3x_server.api.v1._LIVE_TYPE_NAME_LOOKUP_MAX_PER_REQUEST", 100)
+    monkeypatch.setattr("i3x_server.api.v1.monolithic._ENABLE_LIVE_TYPE_NAME_LOOKUP", True)
+    monkeypatch.setattr("i3x_server.api.v1.monolithic._LIVE_TYPE_NAME_LOOKUP_MAX_PER_REQUEST", 100)
 
     app = _fastapi_app(client)
     app.state.model_cache.nodes_by_id["property-ua-17364"] = ModelNode(
@@ -2384,7 +2384,7 @@ def test_mcp_resources_list_rest(client: TestClient) -> None:
     payload = response.json()
     resources = payload["resources"]
     assert any(item["uri"] == "i3x://openapi" for item in resources)
-    assert any(item["uri"] == "i3x://tool-overrides" for item in resources)
+    assert any(item["uri"] == "i3x://mcp-overrides" for item in resources)
 
 
 def test_mcp_resource_read_rest(client: TestClient) -> None:
@@ -2423,14 +2423,14 @@ def test_mcp_resources_read_request(client: TestClient) -> None:
             "jsonrpc": "2.0",
             "id": 25,
             "method": "resources/read",
-            "params": {"uri": "i3x://tool-overrides"},
+            "params": {"uri": "i3x://mcp-overrides"},
         },
     )
     assert response.status_code == 200
     payload = response.json()
     contents = payload["result"]["contents"]
     assert len(contents) == 1
-    assert contents[0]["uri"] == "i3x://tool-overrides"
+    assert contents[0]["uri"] == "i3x://mcp-overrides"
 
 
 def test_mcp_roots_list_request(client: TestClient) -> None:

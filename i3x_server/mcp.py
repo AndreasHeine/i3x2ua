@@ -30,6 +30,8 @@ _TRACEPARENT_PATTERN = re.compile(
     flags=re.IGNORECASE,
 )
 logger = logging.getLogger(__name__)
+DEFAULT_MCP_OVERRIDES_PATH = Path("overrides/mcp_overrides.json")
+DEFAULT_MCP_OVERRIDES_SCHEMA_PATH = Path("overrides/schema.json")
 
 
 def _trace_log_fields(request: Request) -> tuple[str, str]:
@@ -46,32 +48,129 @@ def _trace_log_fields(request: Request) -> tuple[str, str]:
     return ("-", "-")
 
 
-def load_overrides(path: str | Path = "tool_overrides.json") -> dict[str, Any]:
-    override_path = Path(path)
-    if not override_path.is_absolute():
-        override_path = Path(__file__).resolve().parents[1] / override_path
-    if not override_path.exists():
+def _resolve_override_path(path: str | Path) -> Path:
+    candidate = Path(path)
+    if candidate.is_absolute():
+        return candidate
+    return Path(__file__).resolve().parents[1] / candidate
+
+
+def _load_json_mapping(path: Path, *, label: str) -> dict[str, Any] | None:
+    try:
+        with path.open("r", encoding="utf-8") as file:
+            payload = json.load(file)
+    except json.JSONDecodeError as exc:
+        logger.warning(
+            "Invalid JSON in %s at %s:%d:%d (%s). Skipping MCP overrides.",
+            label,
+            path,
+            exc.lineno,
+            exc.colno,
+            exc.msg,
+        )
+        return None
+
+    if not isinstance(payload, dict):
+        logger.warning("%s must contain a JSON object at %s. Skipping MCP overrides.", label, path)
+        return None
+
+    return payload
+
+
+def _validate_overrides_schema(overrides: Mapping[str, Any], schema_path: Path, override_path: Path) -> bool:
+    try:
+        from jsonschema import SchemaError, ValidationError, validate
+    except ImportError:
+        logger.warning(
+            "jsonschema dependency is missing; cannot validate MCP overrides at %s. Skipping overrides.",
+            override_path,
+        )
+        return False
+
+    if not schema_path.exists():
+        logger.warning(
+            "MCP overrides schema file not found at %s. Skipping overrides from %s.",
+            schema_path,
+            override_path,
+        )
+        return False
+
+    schema = _load_json_mapping(schema_path, label="MCP overrides schema")
+    if schema is None:
+        return False
+
+    try:
+        validate(instance=overrides, schema=schema)
+    except ValidationError as exc:
+        location = ".".join(str(part) for part in exc.absolute_path) or "<root>"
+        logger.warning(
+            "MCP overrides validation failed for %s at %s: %s. Overrides were not applied.",
+            override_path,
+            location,
+            exc.message,
+        )
+        return False
+    except SchemaError as exc:
+        logger.warning(
+            "MCP overrides schema at %s is invalid (%s). Skipping overrides from %s.",
+            schema_path,
+            exc.message,
+            override_path,
+        )
+        return False
+
+    return True
+
+
+def load_overrides(
+    path: str | Path = DEFAULT_MCP_OVERRIDES_PATH,
+    schema_path: str | Path = DEFAULT_MCP_OVERRIDES_SCHEMA_PATH,
+) -> dict[str, Any]:
+    override_file = _resolve_override_path(path)
+    if not override_file.exists():
         return {}
 
-    with override_path.open("r", encoding="utf-8") as file:
-        overrides = json.load(file)
+    overrides = _load_json_mapping(override_file, label="MCP overrides")
+    if overrides is None:
+        return {}
 
-    return overrides if isinstance(overrides, dict) else {}
+    schema_file = _resolve_override_path(schema_path)
+    if not _validate_overrides_schema(overrides, schema_file, override_file):
+        return {}
+
+    return dict(overrides)
 
 
-def load_tool_overrides(path: str | Path = "tool_overrides.json") -> dict[str, Any]:
-    overrides = load_overrides(path)
+def load_tool_overrides(
+    path: str | Path = DEFAULT_MCP_OVERRIDES_PATH,
+    schema_path: str | Path = DEFAULT_MCP_OVERRIDES_SCHEMA_PATH,
+) -> dict[str, Any]:
+    overrides = load_overrides(path, schema_path)
     tools = overrides.get("tools")
     if isinstance(tools, Mapping):
         return dict(tools)
     return overrides
 
 
-def load_prompt_overrides(path: str | Path = "tool_overrides.json") -> dict[str, Any]:
-    overrides = load_overrides(path)
+def load_prompt_overrides(
+    path: str | Path = DEFAULT_MCP_OVERRIDES_PATH,
+    schema_path: str | Path = DEFAULT_MCP_OVERRIDES_SCHEMA_PATH,
+) -> dict[str, Any]:
+    overrides = load_overrides(path, schema_path)
     prompts = overrides.get("prompts")
     if isinstance(prompts, Mapping):
         return dict(prompts)
+    return {}
+
+
+def load_feature_overrides(
+    path: str | Path = DEFAULT_MCP_OVERRIDES_PATH,
+    schema_path: str | Path = DEFAULT_MCP_OVERRIDES_SCHEMA_PATH,
+) -> dict[str, Any]:
+    overrides = load_overrides(path, schema_path)
+    features = overrides.get("features")
+    if isinstance(features, Mapping):
+        return dict(features)
     return {}
 
 

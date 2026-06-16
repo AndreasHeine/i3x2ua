@@ -8,8 +8,8 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
 from i3x_server.dependencies import get_opcua_client
+from i3x_server.domain.ports.opcua import OpcUaClientProtocol
 from i3x_server.errors import i3x_http_error
-from i3x_server.opcua.client import OpcUaClientProtocol
 
 router = APIRouter(prefix="/ua", tags=["ua"])
 

@@ -36,6 +36,26 @@ Signed-off-by: Your Name <your.email@example.com>
 - Ensure CI passes before requesting review.
 - If your pull request contains multiple logical changes, split them into separate commits where practical.
 
+## Architecture Guardrails
+
+Use the layered architecture guidance in docs/architecture.md when placing new code.
+
+- Endpoint and protocol handlers belong in presentation modules under i3x_server/api.
+- Multi-step orchestration belongs in i3x_server/application/services.
+- Protocol-agnostic reusable rules belong in i3x_server/domain.
+- External I/O adapters belong in infrastructure-oriented modules (currently i3x_server/infrastructure and related adapter modules).
+- Startup and wiring concerns belong in i3x_server/bootstrap.
+
+Avoid adding new logic to compatibility wrappers when a source module exists.
+
+### File Size Guidance
+
+- Preferred module size: <= 400 lines.
+- Warning zone: > 600 lines.
+- Refactor threshold: > 900 lines unless strongly justified.
+
+If a module enters warning/threshold range, include an extraction note in the pull request description or a follow-up issue.
+
 ## Reporting Issues
 
 Please include:

@@ -1,6 +1,0 @@
-{
-  "name": "opcua_diagnostics",
-  "description": "Analyze OPC UA telemetry",
-  "inputs": ["telemetry"],
-  "template": "You are an industrial expert.\n\nTelemetry:\n{{telemetry}}\n\nTasks:\n1. Detect anomalies\n2. Identify root causes\n3. Suggest actions\n\nIf anomaly detected:\n-> call tool: queryHistoricalValues"
-}

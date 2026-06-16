@@ -8,8 +8,8 @@ from typing import Any, cast
 import pytest
 from fastapi import HTTPException
 
-from i3x_server.api import v1
-from i3x_server.opcua.client import OpcUaNamespaceInfo
+import i3x_server.api.v1.monolithic as v1
+from i3x_server.infrastructure.opcua.client import OpcUaNamespaceInfo
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
 

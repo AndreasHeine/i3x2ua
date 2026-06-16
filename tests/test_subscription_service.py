@@ -7,17 +7,17 @@ from typing import Any, cast
 
 import pytest
 
-from i3x_server.opcua.client import (
+from i3x_server.infrastructure.opcua.client import (
     OpcUaClientProtocol,
     OpcUaSubscriptionCapabilities,
 )
-from i3x_server.schemas.i3x import ModelNode
-from i3x_server.schemas.state import BuildResult
-from i3x_server.subscriptions.service import (
+from i3x_server.infrastructure.subscriptions.service import (
     SubscriptionService,
     _min_positive,
     _SubscriptionState,
 )
+from i3x_server.schemas.i3x import ModelNode
+from i3x_server.schemas.state import BuildResult
 
 
 class FakeOpcUaClient:

@@ -9,7 +9,7 @@ from typing import Any, cast
 import pytest
 from asyncua import ua
 
-from i3x_server.opcua.client import OpcUaNamespaceInfo, OpcUaObjectTypeInfo, OpcUaObjectTypeMemberInfo
+from i3x_server.infrastructure.opcua.client import OpcUaNamespaceInfo, OpcUaObjectTypeInfo, OpcUaObjectTypeMemberInfo
 from i3x_server.schemas import objecttype_schema
 from i3x_server.schemas.objecttype_schema import build_object_type_schema
 

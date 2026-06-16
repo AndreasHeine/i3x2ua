@@ -1,5 +1,5 @@
+from i3x_server.infrastructure.opcua.client import OpcUaNodeInfo
 from i3x_server.model.mapper import classify_opcua_reference, map_node
-from i3x_server.opcua.client import OpcUaNodeInfo
 
 
 def test_map_variable_to_property() -> None:

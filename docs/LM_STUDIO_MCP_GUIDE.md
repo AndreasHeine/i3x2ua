@@ -89,7 +89,7 @@ This server currently focuses on read/query/subscribe behavior. Update/write ope
 
 ## Tool Overrides
 
-You can tune tool descriptions, priorities, and keywords by editing [tool_overrides.json](../tool_overrides.json) at the repository root. The server loads that file at startup and merges any matching overrides into the generated MCP tool catalog.
+You can tune MCP tool, prompt, and feature metadata by editing [overrides/mcp_overrides.json](../overrides/mcp_overrides.json). The server schema-validates that file against [overrides/schema.json](../overrides/schema.json) at startup and applies overrides only when validation succeeds.
 
 If you want LM Studio to use that metadata more intentionally, add these rules to your system prompt:
 

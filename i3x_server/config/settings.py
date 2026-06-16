@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     subscription_max_updates: int = Field(default=10000, ge=1)
     subscription_ttl_seconds: int = Field(default=300, ge=1)
     log_level: str = Field(default="INFO")
+    otel_enabled: bool = Field(default=False)
+    otel_service_name: str = Field(default="i3x2ua")
+    otel_otlp_endpoint: str | None = Field(default=None)
 
     @field_validator("*", mode="before")
     @classmethod

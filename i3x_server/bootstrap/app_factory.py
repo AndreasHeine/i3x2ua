@@ -54,6 +54,72 @@ def _configure_logging() -> None:
     logging.getLogger("asyncua").setLevel(logging.WARNING)
 
 
+def _configure_otel(app: FastAPI) -> None:
+    if not settings.otel_enabled:
+        return
+
+    try:
+        from opentelemetry import metrics as otel_metrics
+        from opentelemetry import trace as otel_trace
+        from opentelemetry.sdk.resources import SERVICE_NAME, Resource
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor
+    except ImportError:
+        logger.warning(
+            "opentelemetry-sdk not installed; tracing disabled. Install the 'otel' extras: pip install 'i3x2ua[otel]'."
+        )
+        return
+
+    resource = Resource.create({SERVICE_NAME: settings.otel_service_name})
+    tracer_provider = TracerProvider(resource=resource)
+    otlp_endpoint = settings.otel_otlp_endpoint
+
+    if otlp_endpoint:
+        try:
+            from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+
+            tracer_provider.add_span_processor(
+                BatchSpanProcessor(OTLPSpanExporter(endpoint=f"{otlp_endpoint.rstrip('/')}/v1/traces"))
+            )
+            logger.info("OpenTelemetry OTLP trace exporter configured endpoint=%s", otlp_endpoint)
+        except ImportError:
+            logger.warning("opentelemetry-exporter-otlp-proto-http not installed; OTLP trace exporter skipped.")
+    else:
+        logger.info("OpenTelemetry enabled but I3X_OTEL_OTLP_ENDPOINT not set; spans will not be exported.")
+
+    otel_trace.set_tracer_provider(tracer_provider)
+
+    try:
+        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+
+        FastAPIInstrumentor.instrument_app(app)
+        logger.info("FastAPI OpenTelemetry instrumentation enabled")
+    except ImportError:
+        logger.warning("opentelemetry-instrumentation-fastapi not installed; FastAPI auto-instrumentation skipped.")
+
+    try:
+        from opentelemetry.sdk.metrics import MeterProvider
+        from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+    except ImportError:
+        logger.info("OpenTelemetry configured (traces only) service=%s", settings.otel_service_name)
+        return
+
+    if otlp_endpoint:
+        try:
+            from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
+
+            reader = PeriodicExportingMetricReader(
+                OTLPMetricExporter(endpoint=f"{otlp_endpoint.rstrip('/')}/v1/metrics")
+            )
+            meter_provider = MeterProvider(resource=resource, metric_readers=[reader])
+            otel_metrics.set_meter_provider(meter_provider)
+            logger.info("OpenTelemetry OTLP metric exporter configured endpoint=%s", otlp_endpoint)
+        except ImportError:
+            logger.warning("opentelemetry-exporter-otlp-proto-http not installed; OTLP metric exporter skipped.")
+
+    logger.info("OpenTelemetry configured service=%s", settings.otel_service_name)
+
+
 async def _run_model_preload(app: FastAPI) -> None:
     try:
         started = asyncio.get_running_loop().time()
@@ -788,4 +854,5 @@ def create_app() -> FastAPI:
     app.include_router(ua_router)
     if mcp_enabled:
         app.include_router(mcp_router)
+    _configure_otel(app)
     return app

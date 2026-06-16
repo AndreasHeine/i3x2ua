@@ -11,8 +11,12 @@ from i3x_server.prompts.renderer import MissingTemplateVariableError, render_tem
 
 try:
     from opentelemetry import trace
+    from opentelemetry.trace import Status as _OtelStatus
+    from opentelemetry.trace import StatusCode as _OtelStatusCode
 except ImportError:  # pragma: no cover - optional dependency
     trace = None
+    _OtelStatus = None
+    _OtelStatusCode = None
 
 
 def list_prompt_metadata(registry: PromptRegistry | None) -> list[dict[str, str]]:
@@ -56,6 +60,8 @@ def execute_prompt(
             if span is not None:
                 span.set_attribute("render.success", False)
                 span.set_attribute("execution.time", perf_counter() - started)
+                if _OtelStatus is not None and _OtelStatusCode is not None:
+                    span.set_status(_OtelStatus(_OtelStatusCode.ERROR, description="Missing prompt inputs"))
             raise i3x_http_error(400, "Bad Request", f"Missing prompt inputs: {', '.join(missing_inputs)}")
 
         try:
@@ -65,6 +71,8 @@ def execute_prompt(
                 span.set_attribute("render.success", False)
                 span.set_attribute("execution.time", perf_counter() - started)
                 span.record_exception(exc)
+                if _OtelStatus is not None and _OtelStatusCode is not None:
+                    span.set_status(_OtelStatus(_OtelStatusCode.ERROR, description=str(exc)))
             raise i3x_http_error(400, "Bad Request", str(exc)) from exc
 
         if span is not None:

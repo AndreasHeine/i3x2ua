@@ -19,9 +19,34 @@ from fastapi.responses import JSONResponse, Response
 from i3x_server.errors import i3x_http_error
 
 try:
+    from contextlib import nullcontext as _nullcontext
+
+    from opentelemetry import metrics as _otel_metrics
+    from opentelemetry import trace as _otel_trace
+    from opentelemetry.trace import Status as _OtelStatus
+    from opentelemetry.trace import StatusCode as _OtelStatusCode
     from opentelemetry.trace import get_current_span
+
+    _mcp_tracer = _otel_trace.get_tracer("i3x_server.mcp")
+    _mcp_meter = _otel_metrics.get_meter("i3x_server.mcp")
+    _mcp_tool_calls: Any = _mcp_meter.create_counter(
+        "mcp.tool_calls",
+        description="Total number of MCP tool invocations",
+    )
+    _mcp_tool_duration: Any = _mcp_meter.create_histogram(
+        "mcp.tool_duration_seconds",
+        description="Duration of MCP tool invocations in seconds",
+        unit="s",
+    )
 except ImportError:  # pragma: no cover - optional dependency
+    from contextlib import nullcontext as _nullcontext
+
     get_current_span = None
+    _mcp_tracer = None
+    _OtelStatus = None
+    _OtelStatusCode = None
+    _mcp_tool_calls = None
+    _mcp_tool_duration = None
 
 MCP_EXCLUDED_OPERATION_IDS = {"streamSubscription"}
 _MCP_INTERNAL_BASE_URL = httpx.URL("http://mcp.local")
@@ -439,89 +464,121 @@ async def invoke_mcp_tool(request: Request, tool: McpToolDefinition, arguments: 
         trace_id,
         span_id,
     )
-    try:
-        allowed_arguments = set(tool.path_parameters) | set(tool.query_parameters)
-        if tool.body_required or "body" in tool.input_schema.get("properties", {}):
-            allowed_arguments.add("body")
-
-        required_fields = set(tool.input_schema.get("required", []))
-
-        unexpected_arguments = sorted(set(arguments) - allowed_arguments)
-        if unexpected_arguments:
-            raise i3x_http_error(400, "Bad Request", f"Unexpected arguments: {', '.join(unexpected_arguments)}")
-
-        missing_path_parameters = [name for name in tool.path_parameters if name not in arguments]
-        missing_required_query_parameters = [
-            name for name in tool.query_parameters if name in required_fields and name not in arguments
-        ]
-        missing_arguments = missing_path_parameters + missing_required_query_parameters
-        if missing_arguments:
-            raise i3x_http_error(400, "Bad Request", f"Missing required arguments: {', '.join(missing_arguments)}")
-
-        api_prefix = getattr(request.app.state, "mcp_api_prefix", "")
-        if not isinstance(api_prefix, str):
-            api_prefix = ""
-
-        resolved_path = _safe_request_path(api_prefix, tool.path)
-        for parameter_name in tool.path_parameters:
-            placeholder = "{" + parameter_name + "}"
-            if placeholder not in resolved_path:
-                raise i3x_http_error(500, "Internal Error", f"Path placeholder not found for {parameter_name}")
-            safe_value = _safe_path_parameter_value(parameter_name, arguments[parameter_name])
-            resolved_path = resolved_path.replace(placeholder, quote(safe_value, safe=""))
-
-        request_target = _safe_request_path("", resolved_path)
-
-        query_params = {
-            parameter_name: arguments[parameter_name]
-            for parameter_name in tool.query_parameters
-            if arguments.get(parameter_name) is not None
-        }
-
-        request_body = arguments.get("body") if "body" in arguments else None
-        if tool.body_required and request_body is None:
-            raise i3x_http_error(400, "Bad Request", "Missing required body")
-
-        response = await _invoke_internal_asgi(
-            app=request.app,
-            method=tool.method,
-            path=request_target,
-            query_params=query_params,
-            request_body=request_body,
+    span_ctx = (
+        _mcp_tracer.start_as_current_span(
+            "mcp.tool_call",
+            attributes={
+                "mcp.tool.name": tool.name,
+                "mcp.tool.method": tool.method,
+                "mcp.tool.path": tool.path,
+                "mcp.tool.arg_count": len(arguments),
+            },
         )
+        if _mcp_tracer is not None
+        else _nullcontext()
+    )
+    with span_ctx as _span:
+        try:
+            allowed_arguments = set(tool.path_parameters) | set(tool.query_parameters)
+            if tool.body_required or "body" in tool.input_schema.get("properties", {}):
+                allowed_arguments.add("body")
 
-        if response.headers.get("content-type", "").startswith("application/json"):
-            try:
-                body = json.loads(response.body.decode("utf-8"))
-            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-                raise i3x_http_error(502, "Bad Gateway", "Upstream response was not valid JSON") from exc
-        else:
-            body = {
-                "text": response.body.decode("utf-8", errors="replace"),
-                "content_type": response.headers.get("content-type"),
+            required_fields = set(tool.input_schema.get("required", []))
+
+            unexpected_arguments = sorted(set(arguments) - allowed_arguments)
+            if unexpected_arguments:
+                raise i3x_http_error(400, "Bad Request", f"Unexpected arguments: {', '.join(unexpected_arguments)}")
+
+            missing_path_parameters = [name for name in tool.path_parameters if name not in arguments]
+            missing_required_query_parameters = [
+                name for name in tool.query_parameters if name in required_fields and name not in arguments
+            ]
+            missing_arguments = missing_path_parameters + missing_required_query_parameters
+            if missing_arguments:
+                raise i3x_http_error(400, "Bad Request", f"Missing required arguments: {', '.join(missing_arguments)}")
+
+            api_prefix = getattr(request.app.state, "mcp_api_prefix", "")
+            if not isinstance(api_prefix, str):
+                api_prefix = ""
+
+            resolved_path = _safe_request_path(api_prefix, tool.path)
+            for parameter_name in tool.path_parameters:
+                placeholder = "{" + parameter_name + "}"
+                if placeholder not in resolved_path:
+                    raise i3x_http_error(500, "Internal Error", f"Path placeholder not found for {parameter_name}")
+                safe_value = _safe_path_parameter_value(parameter_name, arguments[parameter_name])
+                resolved_path = resolved_path.replace(placeholder, quote(safe_value, safe=""))
+
+            request_target = _safe_request_path("", resolved_path)
+
+            query_params = {
+                parameter_name: arguments[parameter_name]
+                for parameter_name in tool.query_parameters
+                if arguments.get(parameter_name) is not None
             }
 
-        logger.info(
-            "MCP tool call finished tool=%s method=%s path=%s status=%d duration_s=%.3f trace_id=%s span_id=%s",
-            tool.name,
-            tool.method,
-            request_target,
-            response.status_code,
-            perf_counter() - started,
-            trace_id,
-            span_id,
-        )
-        return {"status_code": response.status_code, "body": body}
-    except Exception:
-        logger.exception(
-            "MCP tool call failed tool=%s method=%s path=%s duration_s=%.3f trace_id=%s span_id=%s",
-            tool.name,
-            tool.method,
-            tool.path,
-            perf_counter() - started,
-            trace_id,
-            span_id,
-        )
+            request_body = arguments.get("body") if "body" in arguments else None
+            if tool.body_required and request_body is None:
+                raise i3x_http_error(400, "Bad Request", "Missing required body")
+
+            response = await _invoke_internal_asgi(
+                app=request.app,
+                method=tool.method,
+                path=request_target,
+                query_params=query_params,
+                request_body=request_body,
+            )
+
+            if response.headers.get("content-type", "").startswith("application/json"):
+                try:
+                    body = json.loads(response.body.decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                    raise i3x_http_error(502, "Bad Gateway", "Upstream response was not valid JSON") from exc
+            else:
+                body = {
+                    "text": response.body.decode("utf-8", errors="replace"),
+                    "content_type": response.headers.get("content-type"),
+                }
+
+            duration_s = perf_counter() - started
+            if _span is not None:
+                _span.set_attribute("http.response.status_code", response.status_code)
+                _span.set_attribute("mcp.tool.duration_s", duration_s)
+            if _mcp_tool_calls is not None:
+                _mcp_tool_calls.add(
+                    1,
+                    {"mcp.tool.name": tool.name, "http.response.status_code": str(response.status_code)},
+                )
+            if _mcp_tool_duration is not None:
+                _mcp_tool_duration.record(duration_s, {"mcp.tool.name": tool.name})
+            logger.info(
+                "MCP tool call finished tool=%s method=%s path=%s status=%d duration_s=%.3f trace_id=%s span_id=%s",
+                tool.name,
+                tool.method,
+                request_target,
+                response.status_code,
+                duration_s,
+                trace_id,
+                span_id,
+            )
+            return {"status_code": response.status_code, "body": body}
+        except Exception as _exc:
+            if _span is not None:
+                _span.record_exception(_exc)
+                if _OtelStatus is not None and _OtelStatusCode is not None:
+                    _span.set_status(_OtelStatus(_OtelStatusCode.ERROR))
+            if _mcp_tool_calls is not None:
+                _mcp_tool_calls.add(1, {"mcp.tool.name": tool.name, "error": "true"})
+            logger.exception(
+                "MCP tool call failed tool=%s method=%s path=%s duration_s=%.3f trace_id=%s span_id=%s",
+                tool.name,
+                tool.method,
+                tool.path,
+                perf_counter() - started,
+                trace_id,
+                span_id,
+            )
+            raise
         raise
 
 

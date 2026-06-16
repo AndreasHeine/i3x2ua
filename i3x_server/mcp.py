@@ -21,7 +21,6 @@ from i3x_server.errors import i3x_http_error
 try:
     from contextlib import nullcontext as _nullcontext
 
-    from opentelemetry import metrics as _otel_metrics
     from opentelemetry import trace as _otel_trace
     from opentelemetry.trace import Status as _OtelStatus
     from opentelemetry.trace import StatusCode as _OtelStatusCode

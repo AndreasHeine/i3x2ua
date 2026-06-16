@@ -1,9 +1,10 @@
 """Run project checks in sequence.
 
 Commands:
-1) uv run ruff format .
-2) uv run mypy .
-3) uv run pytest -q --cov=i3x_server --cov-report=term-missing
+1) uv run --extra dev ruff check .
+2) uv run --extra dev ruff format .
+3) uv run --extra dev mypy .
+4) uv run --extra dev pytest -q --cov=i3x_server --cov-report=term-missing
 """
 
 from __future__ import annotations
@@ -11,11 +12,13 @@ from __future__ import annotations
 import subprocess
 import sys
 
+BASE_COMMAND = ["uv", "run", "--extra", "dev"]
+
 COMMANDS: list[list[str]] = [
-    ["uv", "run", "ruff", "check", "."],
-    ["uv", "run", "ruff", "format", "."],
-    ["uv", "run", "mypy", "."],
-    ["uv", "run", "pytest", "-q", "--cov=i3x_server", "--cov-report=term-missing"],
+    [*BASE_COMMAND, "ruff", "check", "."],
+    [*BASE_COMMAND, "ruff", "format", "."],
+    [*BASE_COMMAND, "mypy", "."],
+    [*BASE_COMMAND, "pytest", "-q", "--cov=i3x_server", "--cov-report=term-missing"],
 ]
 
 

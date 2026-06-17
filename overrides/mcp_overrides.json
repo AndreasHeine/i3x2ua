@@ -1,7 +1,7 @@
 ﻿{
     "$schema": "./schema.json",
     "tools": {
-        "getInfo": {
+        "getInfoV1": {
             "description": "Return server version and capabilities. Use when the user asks about server info, version, or health status.",
             "priority": "normal",
             "keywords": [
@@ -12,7 +12,7 @@
                 "capabilities"
             ]
         },
-        "getNamespaces": {
+        "getNamespacesV1": {
             "description": "List all namespaces available on the server. Use when the user asks about namespaces or wants to explore the data model.",
             "priority": "high",
             "keywords": [
@@ -21,7 +21,7 @@
                 "available namespaces"
             ]
         },
-        "getObjectTypes": {
+        "getObjectTypesV1": {
             "description": "Return all object types. Use when the user asks about types, schemas, or structure of objects.",
             "priority": "high",
             "keywords": [
@@ -31,7 +31,7 @@
                 "structure"
             ]
         },
-        "queryObjectTypesById": {
+        "queryObjectTypesByIdV1": {
             "description": "Return object type schemas for specific element IDs. Use when the user asks for type details of specific objects.",
             "priority": "normal",
             "keywords": [
@@ -41,7 +41,7 @@
                 "type info"
             ]
         },
-        "getRelationshipTypes": {
+        "getRelationshipTypesV1": {
             "description": "Return all relationship types. Use when the user asks about relationships or how objects are connected.",
             "priority": "normal",
             "keywords": [
@@ -50,7 +50,7 @@
                 "connections"
             ]
         },
-        "queryRelationshipTypesById": {
+        "queryRelationshipTypesByIdV1": {
             "description": "Return relationship types for specific element IDs. Use when the user asks about relationships of specific objects.",
             "priority": "normal",
             "keywords": [
@@ -59,7 +59,7 @@
                 "relationships"
             ]
         },
-        "getObjects": {
+        "getObjectsV1": {
             "description": "Return objects, optionally filtered by type or root. Use when the user asks to browse or list objects.",
             "priority": "high",
             "keywords": [
@@ -69,7 +69,7 @@
                 "instances"
             ]
         },
-        "listObjectsById": {
+        "listObjectsByIdV1": {
             "description": "Return objects by element ID. Use when the user asks for specific objects by ID.",
             "priority": "high",
             "keywords": [
@@ -79,7 +79,7 @@
                 "details"
             ]
         },
-        "queryRelatedObjects": {
+        "queryRelatedObjectsV1": {
             "description": "Return related objects for one or more element IDs. Use when the user asks about connections or related items.",
             "priority": "normal",
             "keywords": [
@@ -88,7 +88,7 @@
                 "connections"
             ]
         },
-        "queryLastKnownValues": {
+        "queryLastKnownValuesV1": {
             "description": "Return last known values for objects. Use when the user asks for current or latest values.",
             "priority": "high",
             "keywords": [
@@ -98,7 +98,7 @@
                 "value"
             ]
         },
-        "queryHistoricalValues": {
+        "queryHistoricalValuesV1": {
             "description": "Return historical values for objects. Use when the user asks for trends, history, or past values.",
             "priority": "high",
             "keywords": [
@@ -108,7 +108,7 @@
                 "past values"
             ]
         },
-        "getHistoricalValues": {
+        "getHistoricalValuesV1": {
             "description": "Return historical values for a single object, optionally filtered by time range. Use when the user asks for history of one object.",
             "priority": "high",
             "keywords": [
@@ -118,7 +118,7 @@
                 "time range"
             ]
         },
-        "updateObjectHistory": {
+        "updateObjectHistoryV1": {
             "description": "Update historical values for an object. Use when the user explicitly asks to modify historical data.",
             "priority": "low",
             "keywords": [
@@ -128,7 +128,7 @@
                 "modify"
             ]
         },
-        "updateObjectValue": {
+        "updateObjectValueV1": {
             "description": "Update the current value of an object. Use when the user asks to write or update a value.",
             "priority": "low",
             "keywords": [
@@ -138,7 +138,7 @@
                 "modify"
             ]
         },
-        "createSubscription": {
+        "createSubscriptionV1": {
             "description": "Create a new subscription for monitoring values. Use when the user asks to subscribe to updates.",
             "priority": "normal",
             "keywords": [
@@ -147,7 +147,7 @@
                 "create subscription"
             ]
         },
-        "registerMonitoredItems": {
+        "registerMonitoredItemsV1": {
             "description": "Add monitored items to a subscription. Use when the user wants to monitor additional objects.",
             "priority": "normal",
             "keywords": [
@@ -157,7 +157,7 @@
                 "add items"
             ]
         },
-        "removeMonitoredItems": {
+        "removeMonitoredItemsV1": {
             "description": "Remove monitored items from a subscription. Use when the user wants to stop monitoring objects.",
             "priority": "normal",
             "keywords": [
@@ -167,7 +167,7 @@
                 "unregister"
             ]
         },
-        "streamSubscription": {
+        "streamSubscriptionV1": {
             "description": "Open a streaming SSE connection for subscription updates. Use when the user asks for live or streaming updates.",
             "priority": "normal",
             "keywords": [
@@ -177,7 +177,7 @@
                 "subscription"
             ]
         },
-        "syncSubscription": {
+        "syncSubscriptionV1": {
             "description": "Synchronize subscription updates and acknowledge received data. Use when the user asks to sync or fetch pending updates.",
             "priority": "normal",
             "keywords": [
@@ -187,7 +187,7 @@
                 "pending"
             ]
         },
-        "deleteSubscriptions": {
+        "deleteSubscriptionsV1": {
             "description": "Delete one or more subscriptions. Use when the user asks to remove or delete subscriptions.",
             "priority": "normal",
             "keywords": [
@@ -196,7 +196,7 @@
                 "remove"
             ]
         },
-        "listSubscriptions": {
+        "listSubscriptionsV1": {
             "description": "Return details for one or more subscriptions. Use when the user asks about subscription status or configuration.",
             "priority": "normal",
             "keywords": [

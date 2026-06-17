@@ -86,8 +86,8 @@ services:
       i3x2ua:
         condition: service_healthy
     ports:
-      - "8080:80"
-      - "8443:443"
+      - "8080:80"  # HTTP entrypoint; use for redirects or plain HTTP access.
+      - "8443:443"  # HTTPS entrypoint; access as https://localhost:8443/.
     environment:
       NGINX_UPSTREAM_HOST: i3x2ua  # Upstream service hostname for proxy_pass.
       NGINX_UPSTREAM_PORT: 8000  # Upstream service port for proxy_pass.

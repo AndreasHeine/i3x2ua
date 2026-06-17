@@ -25,6 +25,25 @@ jobs:
         run: |
           set -euo pipefail
 
+          is_allowed_bot_commit() {
+            local sha="$1"
+            local author_name author_email committer_name committer_email
+            author_name="$(git log -1 --pretty=%an "${sha}")"
+            author_email="$(git log -1 --pretty=%ae "${sha}")"
+            committer_name="$(git log -1 --pretty=%cn "${sha}")"
+            committer_email="$(git log -1 --pretty=%ce "${sha}")"
+
+            # Dependabot/Renovate bot commits are machine-authored and cannot always include DCO trailers.
+            if [[ "${author_name}" =~ ^(dependabot\[bot\]|renovate\[bot\]|Renovate Bot)$ ]] || \
+               [[ "${committer_name}" =~ ^(dependabot\[bot\]|renovate\[bot\]|Renovate Bot)$ ]] || \
+               [[ "${author_email}" =~ (dependabot\[bot\]|renovate\[bot\])@users\.noreply\.github\.com$ ]] || \
+               [[ "${committer_email}" =~ (dependabot\[bot\]|renovate\[bot\])@users\.noreply\.github\.com$ ]]; then
+              return 0
+            fi
+
+            return 1
+          }
+
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
             range="${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
           else
@@ -48,6 +67,10 @@ jobs:
           failed=0
           for sha in "${commits[@]}"; do
             if ! git log -1 --pretty=%B "${sha}" | grep -Eiq '^Signed-off-by:\s+.+<.+>$'; then
+              if is_allowed_bot_commit "${sha}"; then
+                echo "Skipping DCO trailer check for allowed bot commit ${sha}"
+                continue
+              fi
               echo "Missing Signed-off-by trailer in commit ${sha}"
               failed=1
             fi

@@ -394,15 +394,15 @@ def test_mcp_subscription_tools_runtime_lifecycle(client: TestClient) -> None:
     assert delete_payload["results"][0]["success"] is True
 
 
-def test_mcp_tools_are_generated_from_openapi(client: TestClient) -> None:
-    response = client.get("/mcp/tools")
+def test_mcp_tools_are_generated_from_openapi(client_without_tool_overrides: TestClient) -> None:
+    response = client_without_tool_overrides.get("/mcp/tools")
     assert response.status_code == 200
 
     payload = response.json()
     tools = payload["tools"]
-    namespaces_id = _operation_id_for(client, "GET", "/v1/namespaces")
-    query_values_id = _operation_id_for(client, "POST", "/v1/objects/value")
-    stream_id = _operation_id_for(client, "POST", "/v1/subscriptions/stream")
+    namespaces_id = _operation_id_for(client_without_tool_overrides, "GET", "/v1/namespaces")
+    query_values_id = _operation_id_for(client_without_tool_overrides, "POST", "/v1/objects/value")
+    stream_id = _operation_id_for(client_without_tool_overrides, "POST", "/v1/subscriptions/stream")
     assert namespaces_id in tools
     assert query_values_id in tools
     assert stream_id not in tools

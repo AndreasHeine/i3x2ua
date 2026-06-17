@@ -384,3 +384,27 @@ def client_without_mcp() -> Generator[TestClient, None, None]:
             os.environ.pop("I3X_SKIP_OPCUA_CONNECT", None)
         else:
             os.environ["I3X_SKIP_OPCUA_CONNECT"] = previous_skip_connect
+
+
+@pytest.fixture
+def client_without_tool_overrides(monkeypatch: pytest.MonkeyPatch) -> Generator[TestClient, None, None]:
+    """Test client fixture with MCP tool overrides disabled."""
+    previous_enable_mcp = os.environ.get("I3X_ENABLE_MCP")
+    previous_skip_connect = os.environ.get("I3X_SKIP_OPCUA_CONNECT")
+    os.environ["I3X_ENABLE_MCP"] = "1"
+    os.environ["I3X_SKIP_OPCUA_CONNECT"] = "1"
+    monkeypatch.setattr("i3x_server.mcp.load_tool_overrides", lambda *args, **kwargs: {})
+    app = create_app()
+    try:
+        with TestClient(app) as test_client:
+            configure_test_app(app)
+            yield test_client
+    finally:
+        if previous_enable_mcp is None:
+            os.environ.pop("I3X_ENABLE_MCP", None)
+        else:
+            os.environ["I3X_ENABLE_MCP"] = previous_enable_mcp
+        if previous_skip_connect is None:
+            os.environ.pop("I3X_SKIP_OPCUA_CONNECT", None)
+        else:
+            os.environ["I3X_SKIP_OPCUA_CONNECT"] = previous_skip_connect

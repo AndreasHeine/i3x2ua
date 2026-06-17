@@ -965,17 +965,30 @@ class OpcUaClient:
             )
 
             component_display_names = await asyncio.gather(
-                *[component.read_display_name() for component in namespace_components]
+                *[component.read_display_name() for component in namespace_components],
+                return_exceptions=True,
             )
-            component_display_by_id = {
-                component.nodeid.to_string(): display_name.Text
-                for component, display_name in zip(namespace_components, component_display_names, strict=True)
-            }
+            component_display_by_id: dict[str, str] = {}
+            for component, display_name in zip(namespace_components, component_display_names, strict=True):
+                if isinstance(display_name, BaseException):
+                    logger.debug(
+                        "OPC UA namespace metadata display name read failed endpoint=%s node_id=%s",
+                        self._endpoint,
+                        component.nodeid.to_string(),
+                        exc_info=display_name,
+                    )
+                    continue
+                display_text = getattr(display_name, "Text", None)
+                component_display_by_id[component.nodeid.to_string()] = (
+                    display_text if isinstance(display_text, str) else ""
+                )
 
             component_children_browse = await self._browse_children_descriptions(
                 namespace_components,
                 max_nodes_per_browse,
             )
+
+            metadata_failures = 0
 
             for component, refs in component_children_browse:
                 component_display = component_display_by_id.get(component.nodeid.to_string(), "")
@@ -990,16 +1003,32 @@ class OpcUaClient:
                     if ref.BrowseName.Name != "NamespaceUri":
                         continue
                     child = self._client.get_node(ref.NodeId)
-                    uri_value = await child.read_value()
-                    uri = str(uri_value)
-                    if uri:
-                        display_by_uri[uri] = component_display or uri
+                    try:
+                        uri_value = await child.read_value()
+                        uri = str(uri_value)
+                        if uri:
+                            display_by_uri[uri] = component_display or uri
+                    except Exception as exc:
+                        metadata_failures += 1
+                        logger.debug(
+                            "OPC UA namespace metadata NamespaceUri read failed endpoint=%s node_id=%s",
+                            self._endpoint,
+                            child.nodeid.to_string(),
+                            exc_info=exc,
+                        )
                     break
+
+            if metadata_failures:
+                logger.warning(
+                    "OPC UA namespace metadata partially read endpoint=%s failures=%d; "
+                    "using fallback names for missing entries",
+                    self._endpoint,
+                    metadata_failures,
+                )
         except Exception:
             logger.warning(
                 "OPC UA namespace metadata read from i=11715 failed endpoint=%s; using fallback names",
                 self._endpoint,
-                exc_info=True,
             )
 
         infos = [OpcUaNamespaceInfo(uri=uri, display_name=display_by_uri.get(uri, "")) for uri in uris]

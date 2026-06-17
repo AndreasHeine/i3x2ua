@@ -9,6 +9,7 @@ import pytest
 
 from i3x_server.infrastructure.opcua.client import (
     OpcUaClient,
+    OpcUaNamespaceInfo,
     OpcUaOperationalLimits,
     _assert_file_exists,
     _chunked,
@@ -401,3 +402,91 @@ async def test_read_values_returns_none_for_failing_single_node(monkeypatch: pyt
 
     values = await client.read_values(["only-node"])
     assert values == [None]
+
+
+@pytest.mark.asyncio
+async def test_get_namespace_infos_tolerates_partial_metadata_failures(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _NodeId:
+        def __init__(self, value: str) -> None:
+            self._value = value
+
+        def to_string(self) -> str:
+            return self._value
+
+    class _Node:
+        def __init__(
+            self,
+            node_id: str,
+            display_name: str | None = None,
+            value: Any = None,
+            value_error: Exception | None = None,
+        ) -> None:
+            self.nodeid = _NodeId(node_id)
+            self._display_name = display_name
+            self._value = value
+            self._value_error = value_error
+
+        async def read_display_name(self) -> SimpleNamespace:
+            return SimpleNamespace(Text=self._display_name or "")
+
+        async def read_value(self) -> Any:
+            if self._value_error is not None:
+                raise self._value_error
+            return self._value
+
+    class _NamespaceMetaClient:
+        def __init__(self) -> None:
+            self._nodes: dict[str, _Node] = {
+                "i=11715": _Node("i=11715"),
+                "component-ok": _Node("component-ok", display_name="Component Ok"),
+                "component-fail": _Node("component-fail", display_name="Component Fail"),
+                "uri-ok": _Node("uri-ok", value="urn:ok"),
+                "uri-fail": _Node("uri-fail", value_error=TimeoutError("metadata timeout")),
+            }
+
+        def get_node(self, node_id: Any) -> _Node:
+            key = node_id.to_string() if hasattr(node_id, "to_string") else str(node_id)
+            return self._nodes[key]
+
+    client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
+    cast(Any, client)._client = _NamespaceMetaClient()
+
+    async def _namespaces() -> list[str]:
+        return ["urn:ok", "urn:fail"]
+
+    async def _limits() -> OpcUaOperationalLimits:
+        return OpcUaOperationalLimits(max_nodes_per_browse=16, max_nodes_per_read=16)
+
+    async def _browse_children_descriptions(nodes: list[Any], max_nodes_per_browse: int) -> list[tuple[Any, list[Any]]]:
+        del max_nodes_per_browse
+        if len(nodes) == 1 and nodes[0].nodeid.to_string() == "i=11715":
+            return [
+                (
+                    nodes[0],
+                    [
+                        SimpleNamespace(BrowseName=SimpleNamespace(Name="Namespace"), NodeId="component-ok"),
+                        SimpleNamespace(BrowseName=SimpleNamespace(Name="Namespace"), NodeId="component-fail"),
+                    ],
+                )
+            ]
+        return [
+            (
+                nodes[0],
+                [SimpleNamespace(BrowseName=SimpleNamespace(Name="NamespaceUri"), NodeId="uri-ok")],
+            ),
+            (
+                nodes[1],
+                [SimpleNamespace(BrowseName=SimpleNamespace(Name="NamespaceUri"), NodeId="uri-fail")],
+            ),
+        ]
+
+    monkeypatch.setattr(client, "get_namespaces", _namespaces)
+    monkeypatch.setattr(client, "get_operational_limits", _limits)
+    monkeypatch.setattr(client, "_browse_children_descriptions", _browse_children_descriptions)
+
+    infos = await client.get_namespace_infos()
+
+    assert infos == [
+        OpcUaNamespaceInfo(uri="urn:ok", display_name="Component Ok"),
+        OpcUaNamespaceInfo(uri="urn:fail", display_name=""),
+    ]

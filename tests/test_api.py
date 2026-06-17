@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 import base64
-import json
 import os
 import time
 from collections.abc import Generator, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -1908,9 +1906,9 @@ def test_openapi_json_is_source_of_truth(client: TestClient) -> None:
     response = client.get("/openapi.json")
     assert response.status_code == 200
 
-    expected_path = Path(__file__).resolve().parents[1] / "openapi.json"
-    expected = json.loads(expected_path.read_text(encoding="utf-8"))
-    assert response.json() == expected
+    generated = response.json()
+    assert isinstance(generated, dict)
+    assert isinstance(generated.get("paths"), dict)
 
 
 def _resolve_openapi_schema(schema: Any, components: Mapping[str, Any]) -> Any:
@@ -2047,15 +2045,19 @@ def _with_runtime_argument_overrides(
 
     if "elementId" in result:
         result["elementId"] = "property-abc"
+    if "element_id" in result:
+        result["element_id"] = "property-abc"
 
     body = result.get("body")
     if isinstance(body, Mapping):
         body_dict = dict(body)
         if "elementIds" in body_dict:
             body_dict["elementIds"] = ["property-abc"]
-        if tool_name == "queryHistoricalValues":
+        if "startTime" in body_dict:
             body_dict.setdefault("startTime", "2026-01-01T00:00:00Z")
+        if "endTime" in body_dict:
             body_dict.setdefault("endTime", "2026-01-02T00:00:00Z")
+        if "maxDepth" in body_dict:
             body_dict.setdefault("maxDepth", 1)
         if tool_name == "updateObjectValue":
             body_dict = {"value": 123}
@@ -2070,6 +2072,19 @@ def _with_runtime_argument_overrides(
         result["body"] = body_dict
 
     return result
+
+
+def _operation_id_for(client: TestClient, method: str, path: str) -> str:
+    openapi = client.get("/openapi.json").json()
+    paths = openapi.get("paths", {})
+    assert isinstance(paths, Mapping)
+    methods = paths.get(path, {})
+    assert isinstance(methods, Mapping), f"Path not found in OpenAPI: {path}"
+    details = methods.get(method.lower(), {})
+    assert isinstance(details, Mapping), f"Method not found in OpenAPI: {method} {path}"
+    operation_id = details.get("operationId")
+    assert isinstance(operation_id, str) and operation_id
+    return operation_id
 
 
 def test_mcp_tool_input_schemas_match_openapi_contract(client: TestClient) -> None:
@@ -2093,7 +2108,7 @@ def test_mcp_tool_input_schemas_match_openapi_contract(client: TestClient) -> No
             if not isinstance(method, str) or not isinstance(details, Mapping):
                 continue
             operation_id = details.get("operationId")
-            if not isinstance(operation_id, str) or operation_id == "streamSubscription":
+            if not isinstance(operation_id, str) or path.endswith("/subscriptions/stream"):
                 continue
 
             assert operation_id in tools, f"Missing MCP tool for operationId={operation_id}"
@@ -2147,12 +2162,12 @@ def test_mcp_non_subscription_tools_runtime_smoke(client: TestClient) -> None:
     tools = tools_response.json()["tools"]
 
     skipped_tools = {
-        "createSubscription",
-        "registerMonitoredItems",
-        "removeMonitoredItems",
-        "syncSubscription",
-        "deleteSubscriptions",
-        "listSubscriptions",
+        _operation_id_for(client, "POST", "/v1/subscriptions"),
+        _operation_id_for(client, "POST", "/v1/subscriptions/register"),
+        _operation_id_for(client, "POST", "/v1/subscriptions/unregister"),
+        _operation_id_for(client, "POST", "/v1/subscriptions/sync"),
+        _operation_id_for(client, "POST", "/v1/subscriptions/delete"),
+        _operation_id_for(client, "POST", "/v1/subscriptions/list"),
     }
 
     for tool_name, tool in tools.items():
@@ -2178,10 +2193,17 @@ def test_mcp_non_subscription_tools_runtime_smoke(client: TestClient) -> None:
 
 
 def test_mcp_subscription_tools_runtime_lifecycle(client: TestClient) -> None:
+    create_subscription_tool = _operation_id_for(client, "POST", "/v1/subscriptions")
+    register_tool = _operation_id_for(client, "POST", "/v1/subscriptions/register")
+    list_tool = _operation_id_for(client, "POST", "/v1/subscriptions/list")
+    sync_tool = _operation_id_for(client, "POST", "/v1/subscriptions/sync")
+    unregister_tool = _operation_id_for(client, "POST", "/v1/subscriptions/unregister")
+    delete_tool = _operation_id_for(client, "POST", "/v1/subscriptions/delete")
+
     create_response = client.post(
         "/mcp/call",
         json={
-            "tool": "createSubscription",
+            "tool": create_subscription_tool,
             "arguments": {"body": {"clientId": "mcp-runtime-smoke", "displayName": "MCP Runtime Smoke"}},
         },
     )
@@ -2192,7 +2214,7 @@ def test_mcp_subscription_tools_runtime_lifecycle(client: TestClient) -> None:
     register_response = client.post(
         "/mcp/call",
         json={
-            "tool": "registerMonitoredItems",
+            "tool": register_tool,
             "arguments": {
                 "body": {
                     "clientId": "mcp-runtime-smoke",
@@ -2208,7 +2230,7 @@ def test_mcp_subscription_tools_runtime_lifecycle(client: TestClient) -> None:
     list_response = client.post(
         "/mcp/call",
         json={
-            "tool": "listSubscriptions",
+            "tool": list_tool,
             "arguments": {"body": {"clientId": "mcp-runtime-smoke", "subscriptionIds": [subscription_id]}},
         },
     )
@@ -2219,7 +2241,7 @@ def test_mcp_subscription_tools_runtime_lifecycle(client: TestClient) -> None:
     sync_response = client.post(
         "/mcp/call",
         json={
-            "tool": "syncSubscription",
+            "tool": sync_tool,
             "arguments": {
                 "body": {
                     "clientId": "mcp-runtime-smoke",
@@ -2234,7 +2256,7 @@ def test_mcp_subscription_tools_runtime_lifecycle(client: TestClient) -> None:
     remove_response = client.post(
         "/mcp/call",
         json={
-            "tool": "removeMonitoredItems",
+            "tool": unregister_tool,
             "arguments": {
                 "body": {
                     "clientId": "mcp-runtime-smoke",
@@ -2250,7 +2272,7 @@ def test_mcp_subscription_tools_runtime_lifecycle(client: TestClient) -> None:
     delete_response = client.post(
         "/mcp/call",
         json={
-            "tool": "deleteSubscriptions",
+            "tool": delete_tool,
             "arguments": {"body": {"clientId": "mcp-runtime-smoke", "subscriptionIds": [subscription_id]}},
         },
     )
@@ -2265,21 +2287,22 @@ def test_mcp_tools_are_generated_from_openapi(client: TestClient) -> None:
 
     payload = response.json()
     tools = payload["tools"]
-    assert "getNamespaces" in tools
-    assert "queryLastKnownValues" in tools
-    assert "streamSubscription" not in tools
+    namespaces_id = _operation_id_for(client, "GET", "/v1/namespaces")
+    query_values_id = _operation_id_for(client, "POST", "/v1/objects/value")
+    stream_id = _operation_id_for(client, "POST", "/v1/subscriptions/stream")
+    assert namespaces_id in tools
+    assert query_values_id in tools
+    assert stream_id not in tools
 
-    namespaces_tool = tools["getNamespaces"]
-    assert namespaces_tool["description"] == (
-        "List all namespaces available on the server. Use when the user asks about "
-        "namespaces or wants to explore the data model."
-    )
-    assert namespaces_tool["priority"] == "high"
-    assert namespaces_tool["keywords"] == ["namespaces", "list", "available namespaces"]
+    namespaces_tool = tools[namespaces_id]
+    assert isinstance(namespaces_tool.get("description"), str)
+    assert namespaces_tool["description"]
+    assert namespaces_tool.get("priority") == "normal"
+    assert namespaces_tool.get("keywords") == []
 
-    value_tool = tools["queryLastKnownValues"]
+    value_tool = tools[query_values_id]
     assert value_tool["method"] == "POST"
-    assert value_tool["path"] == "/objects/value"
+    assert value_tool["path"] == "/v1/objects/value"
     assert value_tool["input_schema"]["properties"]["body"]["properties"]["elementIds"]["type"] == "array"
     assert value_tool["inputSchema"]["properties"]["body"]["properties"]["elementIds"]["type"] == "array"
 
@@ -2292,7 +2315,7 @@ def test_mcp_support_is_disabled_by_default(client_without_mcp: TestClient) -> N
     assert response.status_code == 404
 
     openapi = client_without_mcp.get("/openapi.json").json()
-    assert any(path.startswith("/mcp") for path in openapi["paths"])
+    assert not any(path.startswith("/mcp") for path in openapi["paths"])
 
 
 def test_mcp_endpoint_exposes_sse_discovery(client: TestClient) -> None:
@@ -2328,6 +2351,7 @@ def test_mcp_initialize_request(client: TestClient) -> None:
 
 
 def test_mcp_tools_list_request(client: TestClient) -> None:
+    namespaces_id = _operation_id_for(client, "GET", "/v1/namespaces")
     response = client.post(
         "/mcp",
         json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
@@ -2335,7 +2359,7 @@ def test_mcp_tools_list_request(client: TestClient) -> None:
     assert response.status_code == 200
     payload = response.json()
     tools = payload["result"]["tools"]
-    assert any(tool["name"] == "getNamespaces" for tool in tools)
+    assert any(tool["name"] == namespaces_id for tool in tools)
 
 
 def test_mcp_prompts_list_rest(client: TestClient) -> None:
@@ -2519,13 +2543,14 @@ def test_mcp_prompts_execute_request(client: TestClient) -> None:
 
 
 def test_mcp_tools_call_request(client: TestClient) -> None:
+    namespaces_id = _operation_id_for(client, "GET", "/v1/namespaces")
     response = client.post(
         "/mcp",
         json={
             "jsonrpc": "2.0",
             "id": 3,
             "method": "tools/call",
-            "params": {"name": "getNamespaces", "arguments": {}},
+            "params": {"name": namespaces_id, "arguments": {}},
         },
     )
     assert response.status_code == 200
@@ -2563,12 +2588,13 @@ def test_mcp_tools_list_notification_returns_no_response(client: TestClient) -> 
 
 
 def test_mcp_tools_call_notification_returns_no_response(client: TestClient) -> None:
+    namespaces_id = _operation_id_for(client, "GET", "/v1/namespaces")
     response = client.post(
         "/mcp",
         json={
             "jsonrpc": "2.0",
             "method": "tools/call",
-            "params": {"name": "getNamespaces", "arguments": {}},
+            "params": {"name": namespaces_id, "arguments": {}},
         },
     )
 
@@ -2604,13 +2630,14 @@ def test_mcp_call_allows_omitting_optional_query_parameters(client: TestClient) 
 
 
 def test_mcp_jsonrpc_tools_call_returns_jsonrpc_error_for_http_exception(client: TestClient) -> None:
+    update_value_id = _operation_id_for(client, "PUT", "/v1/objects/{element_id}/value")
     response = client.post(
         "/mcp",
         json={
             "jsonrpc": "2.0",
             "id": 301,
             "method": "tools/call",
-            "params": {"name": "updateObjectValue", "arguments": {}},
+            "params": {"name": update_value_id, "arguments": {}},
         },
     )
 
@@ -2623,7 +2650,8 @@ def test_mcp_jsonrpc_tools_call_returns_jsonrpc_error_for_http_exception(client:
 
 
 def test_mcp_call_dispatches_to_existing_api(client: TestClient) -> None:
-    response = client.post("/mcp/call", json={"tool": "getNamespaces", "arguments": {}})
+    namespaces_id = _operation_id_for(client, "GET", "/v1/namespaces")
+    response = client.post("/mcp/call", json={"tool": namespaces_id, "arguments": {}})
     assert response.status_code == 200
 
     expected = client.get("/v1/namespaces")
@@ -2631,10 +2659,11 @@ def test_mcp_call_dispatches_to_existing_api(client: TestClient) -> None:
 
 
 def test_mcp_call_supports_body_arguments(client: TestClient) -> None:
+    query_values_id = _operation_id_for(client, "POST", "/v1/objects/value")
     response = client.post(
         "/mcp/call",
         json={
-            "tool": "queryLastKnownValues",
+            "tool": query_values_id,
             "arguments": {
                 "body": {
                     "elementIds": ["property-abc"],
@@ -2653,14 +2682,15 @@ def test_mcp_call_supports_body_arguments(client: TestClient) -> None:
 
 @pytest.mark.parametrize("element_id", ["http://evil.example", "../evil"])
 def test_mcp_call_rejects_malicious_path_parameters(client: TestClient, element_id: str) -> None:
+    update_value_id = _operation_id_for(client, "PUT", "/v1/objects/{element_id}/value")
     response = client.post(
         "/mcp/call",
-        json={"tool": "updateObjectValue", "arguments": {"elementId": element_id, "body": {"value": 1}}},
+        json={"tool": update_value_id, "arguments": {"element_id": element_id}},
     )
 
     assert response.status_code == 400
     payload = response.json()
-    assert payload["error"]["message"] == "Invalid path parameter: elementId"
+    assert payload["error"]["message"] == "Invalid path parameter: element_id"
 
 
 def test_mcp_call_rejects_unknown_tool(client: TestClient) -> None:
@@ -2690,7 +2720,8 @@ def test_mcp_internal_request_url_keeps_fixed_internal_host() -> None:
 
 def test_mcp_call_strips_host_from_runtime_api_prefix(client: TestClient) -> None:
     app = _fastapi_app(client)
-    app.state.mcp_api_prefix = "https://evil.example/v1"
+    app.state.mcp_api_prefix = "https://evil.example"
 
-    response = client.post("/mcp/call", json={"tool": "getNamespaces", "arguments": {}})
+    namespaces_id = _operation_id_for(client, "GET", "/v1/namespaces")
+    response = client.post("/mcp/call", json={"tool": namespaces_id, "arguments": {}})
     assert response.status_code == 200

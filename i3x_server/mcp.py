@@ -282,6 +282,8 @@ def build_mcp_tools(
             operation_id = details.get("operationId")
             if not isinstance(operation_id, str) or operation_id in MCP_EXCLUDED_OPERATION_IDS:
                 continue
+            if path.endswith("/subscriptions/stream"):
+                continue
 
             input_properties: dict[str, Any] = {}
             required: list[str] = []

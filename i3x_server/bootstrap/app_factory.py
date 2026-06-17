@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import http
-import json
 import logging
 import os
+import re
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 from html import escape
@@ -14,6 +14,7 @@ from time import perf_counter
 from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.routing import APIRoute
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.cors import CORSMiddleware
@@ -44,6 +45,25 @@ def _status_title(status_code: int) -> str:
 
 def _env_flag(name: str, default: str = "0") -> bool:
     return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _to_lower_camel_case(value: str) -> str:
+    parts = [part for part in re.split(r"[^A-Za-z0-9]+", value) if part]
+    if not parts:
+        return "operation"
+    return parts[0].lower() + "".join(part[:1].upper() + part[1:] for part in parts[1:])
+
+
+def _readable_operation_id(route: APIRoute) -> str:
+    route_name = str(getattr(route, "name", "") or "")
+    candidate = _to_lower_camel_case(route_name)
+    if candidate != "operation":
+        return candidate
+
+    methods = sorted(method for method in (route.methods or set()) if method not in {"HEAD", "OPTIONS"})
+    method = methods[0].lower() if methods else "call"
+    path_hint = route.path_format.strip("/").replace("/", "_").replace("{", "").replace("}", "")
+    return _to_lower_camel_case(f"{method}_{path_hint}")
 
 
 def _configure_logging() -> None:
@@ -230,6 +250,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.model_preload_task = None
     if mcp_enabled:
         openapi_spec = app.openapi()
+        if not isinstance(openapi_spec, dict):
+            raise ValueError(f"OpenAPI spec must be dict, got {type(openapi_spec)}")
+
         app.state.mcp_tools = build_mcp_tools(openapi_spec)
         app.state.mcp_api_prefix = get_api_prefix(openapi_spec)
         prompt_overrides = load_prompt_overrides()
@@ -276,12 +299,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 def create_app() -> FastAPI:
     mcp_enabled = _env_flag("I3X_ENABLE_MCP")
     description = (
-        "Industrial Information Interface eXchange API - 1.0. "
-        "Scope: read/query/subscribe are implemented; update/write operations are optional "
-        "and may return 501 Not Implemented. "
-        "MCP endpoints are optional and available only when I3X_ENABLE_MCP=1."
+        "Turn any OPC UA server into an i3X-compliant REST and MCP Enabled API with OpenAPI docs, "
+        "JSON, and live SSE streams. No OPC UA expertise required."
     )
-    app = FastAPI(title="i3X API 1.0", version="1.0", description=description, lifespan=lifespan)
+    app = FastAPI(
+        title="The i3X API Gateway for OPC UA",
+        version="1.4",
+        description=description,
+        lifespan=lifespan,
+        generate_unique_id_function=_readable_operation_id,
+    )
     app.add_middleware(GZipMiddleware, minimum_size=1)
     cors_origins = settings.cors_allowed_origins
     if cors_origins:
@@ -293,16 +320,7 @@ def create_app() -> FastAPI:
             allow_credentials=False,
         )
 
-    openapi_doc_path = PROJECT_ROOT / "openapi.json"
-    openapi_override: dict[str, object] | None = None
-
-    def custom_openapi() -> dict[str, object]:
-        nonlocal openapi_override
-        if openapi_override is None:
-            openapi_override = json.loads(openapi_doc_path.read_text(encoding="utf-8"))
-        return openapi_override
-
-    app.openapi = custom_openapi  # type: ignore[method-assign]
+    # Keep FastAPI's native OpenAPI generator as the single source of truth.
 
     project_root = PROJECT_ROOT
     static_dir = project_root / "static"
@@ -314,14 +332,8 @@ def create_app() -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse, include_in_schema=False)
     async def landing() -> HTMLResponse:
-        openapi_spec = custom_openapi()
-        title = "i3X API Gateway"
-        description = ""
-        if isinstance(openapi_spec, dict):
-            info = openapi_spec.get("info")
-            if isinstance(info, dict):
-                title = str(info.get("title", title))
-                description = str(info.get("description", ""))
+        title = "i3X API Gateway for OPC UA"
+        description = "Turn any OPC UA server into a standards-compatible i3X API and MCP endpoint."
 
         links: list[tuple[str, str]] = [
             ("API Documentation", "/docs"),
@@ -422,12 +434,7 @@ def create_app() -> FastAPI:
 
     @app.get("/view", response_class=HTMLResponse, include_in_schema=False)
     async def api_viewer() -> HTMLResponse:
-        openapi_spec = custom_openapi()
         title = "i3X API Gateway for OPC UA"
-        if isinstance(openapi_spec, dict):
-            info = openapi_spec.get("info")
-            if isinstance(info, dict):
-                title = str(info.get("title", title))
 
         safe_title = escape(title)
 
@@ -556,12 +563,7 @@ def create_app() -> FastAPI:
 
     @app.get("/mcp-tools-viewer", response_class=HTMLResponse, include_in_schema=False)
     async def mcp_tools_viewer() -> HTMLResponse:
-        openapi_spec = custom_openapi()
         title = "i3X API Gateway for OPC UA"
-        if isinstance(openapi_spec, dict):
-            info = openapi_spec.get("info")
-            if isinstance(info, dict):
-                title = str(info.get("title", title))
         safe_title = escape(title)
 
         html = f"""

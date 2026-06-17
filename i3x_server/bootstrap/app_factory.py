@@ -22,6 +22,7 @@ from starlette.middleware.gzip import GZipMiddleware
 from i3x_server.api.mcp import router as mcp_router
 from i3x_server.api.ua import router as ua_router
 from i3x_server.api.v1 import router as v1_router
+from i3x_server.application.errors import ApplicationServiceError
 from i3x_server.config.settings import settings
 from i3x_server.infrastructure.opcua.client import OpcUaClient
 from i3x_server.infrastructure.subscriptions.service import SubscriptionService
@@ -788,6 +789,25 @@ def create_app() -> FastAPI:
                 "success": False,
                 "error": {"code": int(exc.status_code), "message": message},
                 "responseDetail": response_detail,
+            },
+        )
+
+    @app.exception_handler(ApplicationServiceError)
+    async def handle_application_service_error(
+        request: Request,
+        exc: ApplicationServiceError,
+    ) -> JSONResponse:
+        del request
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "success": False,
+                "error": {"code": int(exc.status_code), "message": exc.message},
+                "responseDetail": {
+                    "title": _status_title(int(exc.status_code)),
+                    "status": int(exc.status_code),
+                    "detail": exc.message,
+                },
             },
         )
 

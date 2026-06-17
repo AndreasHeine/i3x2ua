@@ -10,30 +10,11 @@ from fastapi import Depends, Request
 
 from i3x_server.application.ports.subscription import SubscriptionServicePort
 from i3x_server.application.services.mcp import McpService
-from i3x_server.application.services.model_query import ModelQueryService
 from i3x_server.application.services.object_value import ObjectValueService
 from i3x_server.application.services.subscription import SubscriptionAppService
 from i3x_server.dependencies import get_opcua_client, get_or_build_model, get_subscription_service
 from i3x_server.domain.ports.opcua import OpcUaClientProtocol
 from i3x_server.schemas.state import BuildResult
-
-
-async def get_model_query_service(
-    request: Request,
-    model: BuildResult = Depends(get_or_build_model),
-    opcua_client: OpcUaClientProtocol = Depends(get_opcua_client),
-) -> ModelQueryService:
-    """Dependency function for ModelQueryService.
-
-    Args:
-        request: FastAPI request
-        model: Built model structure
-        opcua_client: OPC UA client
-
-    Returns:
-        ModelQueryService instance
-    """
-    return ModelQueryService(opcua_client=opcua_client, model=model, request=request)
 
 
 async def get_object_value_service(

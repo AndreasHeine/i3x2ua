@@ -10,11 +10,9 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import Request
-
+from i3x_server.application.errors import ApplicationServiceError
 from i3x_server.domain.ports.opcua import OpcUaClientProtocol, OpcUaNamespaceInfo
 from i3x_server.domain.utils import display_name_for_uri
-from i3x_server.errors import i3x_http_error
 from i3x_server.schemas.state import BuildResult
 from i3x_server.version import get_server_version
 
@@ -99,18 +97,15 @@ class ModelQueryService:
         self,
         opcua_client: OpcUaClientProtocol,
         model: BuildResult,
-        request: Request | None = None,
     ):
         """Initialize service with dependencies.
 
         Args:
             opcua_client: OPC UA protocol client
             model: Pre-built model structure
-            request: Optional FastAPI request for caching context
         """
         self.opcua_client = opcua_client
         self.model = model
-        self.request = request
         self._namespace_cache: list[OpcUaNamespaceInfo] | None = None
 
     async def get_server_info(self) -> ServerInfo:
@@ -135,7 +130,7 @@ class ModelQueryService:
                 self._namespace_cache = await self.opcua_client.get_namespace_infos()
             return [_to_namespace(item) for item in self._namespace_cache]
         except Exception as exc:
-            raise i3x_http_error(
+            raise ApplicationServiceError(
                 502,
                 "OpcUaNamespaceError",
                 "Failed to read OPC UA namespaces",

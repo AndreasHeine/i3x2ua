@@ -1,0 +1,43 @@
+[importlinter]
+root_package = i3x_server
+include_external_packages = True
+
+[importlinter:contract:layered_core]
+name = Core layering direction
+type = layers
+layers =
+    i3x_server.api
+    i3x_server.application
+    i3x_server.domain
+
+[importlinter:contract:domain_no_infrastructure]
+name = Domain must not depend on infrastructure
+type = forbidden
+source_modules =
+    i3x_server.domain
+forbidden_modules =
+    i3x_server.infrastructure
+
+[importlinter:contract:application_no_presentation]
+name = Application must not depend on presentation
+type = forbidden
+source_modules =
+    i3x_server.application
+forbidden_modules =
+    i3x_server.api
+
+[importlinter:contract:application_no_bootstrap]
+name = Application must not depend on bootstrap
+type = forbidden
+source_modules =
+    i3x_server.application
+forbidden_modules =
+    i3x_server.bootstrap
+
+[importlinter:contract:model_query_no_fastapi]
+name = ModelQuery service must be framework-agnostic
+type = forbidden
+source_modules =
+    i3x_server.application.services.model_query
+forbidden_modules =
+    fastapi

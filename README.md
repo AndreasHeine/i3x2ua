@@ -10,28 +10,6 @@
 
 > The Industrial Information Interoperability Exchange (i3X™) is an open, common API initiative proposed to address a growing interoperability challenge in modern manufacturing architectures: **manufacturing data silo proliferation and API chaos**. As manufacturers adopt heterogeneous software stacks from multiple vendors, the industry risks repeating past fragmentation seen with protocols, platforms, and namespaces - this time at the API layer.
 
-## License
-
-### Open Source License (AGPL-3.0-or-later)
-This project is licensed under the GNU Affero General Public License v3.0 or later.
-See the [LICENSE](LICENSE) file for the full legal text.
-
-### Commercial Licensing
-**Sponsors at USD 1/month or higher are granted a commercial license while sponsorship remains active, as defined in the sponsor terms.**
-**This enables commercial use without AGPL copyleft obligations during active sponsorship.**
-
-[Sponsor @AndreasHeine via GitHub Sponsors](https://github.com/sponsors/AndreasHeine)
-
-See [COMMERCIAL_LICENSE.md](COMMERCIAL_LICENSE.md) for full grant scope, limits, grace period, and verification details.
-
-### Third-Party and Upstream Components
-This repository includes third-party and upstream materials with their own licenses, including the bundled `i3X/` subtree.
-See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for details.
-
-### Contributions
-By contributing to this repository, you agree that your contributions are provided under AGPL-3.0-or-later for the open-source distribution and may be included in commercially licensed distributions of this project.
-See [CONTRIBUTING.md](CONTRIBUTING.md) for sign-off requirements and contribution workflow.
-
 ## Architecture Overview
 
 ```mermaid
@@ -118,10 +96,18 @@ sequenceDiagram
 	O->>U: MonitoredItems or periodic reads
 	U-->>O: data changes
 	O-->>S: normalized updates
-	C->>R: POST /v1/subscriptions/stream
-	R->>S: wait_for_updates(afterSequence)
-	S-->>R: sequence updates
-	R-->>C: SSE data events + keepalive
+
+	alt SSE stream (push)
+		C->>R: POST /v1/subscriptions/stream
+		R->>S: wait_for_updates(afterSequence)
+		S-->>R: sequence updates
+		R-->>C: SSE data events + keepalive
+	else Polling sync (pull)
+		C->>R: POST /v1/subscriptions/sync
+		R->>S: sync(acknowledgeSequence)
+		S-->>R: pending updates
+		R-->>C: batch of updates
+	end
 
 	Note over C,R: Write API paths exist in spec but can return 501 when optional update operations are not implemented
 ```
@@ -211,20 +197,6 @@ MCP scope emphasis: the MCP bridge is currently focused on tool calling (`initia
 - `GET /v1/objects/{element_id}/history` currently returns `501 Not Implemented`
 - server capabilities report updates as not supported while read/history/streaming are supported
 
-## Documentation
-
-- i3X upstream specification materials: `i3X/spec/README.md`
-- i3X conformance tests: `i3X/conformance-tests/README.md`
-- OPC UA to i3X mapping profile: `docs/OPCUA_I3X_MAPPING_PROFILE.md`
-- OPC UA client behavior and optimization guide: `docs/OPCUA_CLIENT_DOCUMENTATION.md`
-- LM Studio / MCP bridge guide (including capability matrix): `docs/LM_STUDIO_MCP_GUIDE.md`
-- deployment guide index: `docs/PRODUCTION_DEPLOYMENT_INDEX.md`
-- quick ops reference: `docs/QUICK_REFERENCE.md`
-- Python coding requirements: `python-coding-requirements.md`
-- API definition: `openapi.json`
-- contribution guide: `CONTRIBUTING.md`
-- release notes: `CHANGELOG.md`
-
 ## Docker
 
 Quickstart (Docker image):
@@ -300,7 +272,7 @@ uv run pytest -q --cov=i3x_server --cov-report=term-missing
 
 ## Production Deployment and i3X Strict Compliance
 
-This application implements the i3X API specification and is designed to run **behind a reverse proxy** that is responsible for:
+This application implements the i3X API specification and is designed to run **behind a reverse proxy / api gateway** that is responsible for:
 
 - **TLS termination** — the app itself serves plain HTTP; all HTTPS is handled by nginx.
 - **Authentication and authorization** — the app has no built-in auth layer; token validation, basic auth, or mTLS are enforced at the proxy level.
@@ -316,9 +288,25 @@ This application implements the i3X API specification and is designed to run **b
 
 See the [NGINX configuration reference](docs/NGINX_CONFIGURATION_REFERENCE.md) and [HTTPS guide](docs/PRODUCTION_HTTPS_GUIDE.md) for details.
 
-### OPC UA → i3X Relationship Mapping
 
-Relationship mapping rules and depth semantics are documented centrally in:
+## License
 
-- `docs/OPCUA_I3X_MAPPING_PROFILE.md`
+### Open Source License (AGPL-3.0-or-later)
+This project is licensed under the GNU Affero General Public License v3.0 or later.
+See the [LICENSE](LICENSE) file for the full legal text.
 
+### Commercial Licensing
+**Sponsors at USD 1/month or higher are granted a commercial license while sponsorship remains active, as defined in the sponsor terms.**
+**This enables commercial use without AGPL copyleft obligations during active sponsorship.**
+
+[Sponsor @AndreasHeine via GitHub Sponsors](https://github.com/sponsors/AndreasHeine)
+
+See [COMMERCIAL_LICENSE.md](COMMERCIAL_LICENSE.md) for full grant scope, limits, grace period, and verification details.
+
+### Third-Party and Upstream Components
+This repository includes third-party and upstream materials with their own licenses, including the bundled `i3X/` subtree.
+See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for details.
+
+### Contributions
+By contributing to this repository, you agree that your contributions are provided under AGPL-3.0-or-later for the open-source distribution and may be included in commercially licensed distributions of this project.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for sign-off requirements and contribution workflow.

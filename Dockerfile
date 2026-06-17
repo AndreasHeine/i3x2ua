@@ -42,7 +42,6 @@ RUN apt-get update \
 
 COPY --from=builder /app/.venv /app/.venv
 COPY i3x_server /app/i3x_server
-COPY openapi.json /app/openapi.json
 COPY static /app/static
 RUN printf "%s\n" "${BUILD_VERSION}" > /app/server-version.txt \
     && chown app:app /app/server-version.txt

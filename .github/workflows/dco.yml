@@ -47,6 +47,14 @@ jobs:
 
           failed=0
           for sha in "${commits[@]}"; do
+            author_name="$(git log -1 --pretty=%an "${sha}")"
+            author_email="$(git log -1 --pretty=%ae "${sha}")"
+
+            if [[ "${author_name}" =~ \[bot\]$ || "${author_email}" =~ \[bot\]@users\.noreply\.github\.com$ ]]; then
+              echo "Skipping bot commit ${sha} (${author_name} <${author_email}>)"
+              continue
+            fi
+
             if ! git log -1 --pretty=%B "${sha}" | grep -Eiq '^Signed-off-by:\s+.+<.+>$'; then
               echo "Missing Signed-off-by trailer in commit ${sha}"
               failed=1

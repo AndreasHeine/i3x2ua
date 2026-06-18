@@ -89,14 +89,14 @@ async def test_get_current_value_for_missing_node_raises_not_found() -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_current_value_wraps_unexpected_error() -> None:
+async def test_get_current_value_wraps_unexpected_error(monkeypatch: pytest.MonkeyPatch) -> None:
     service = _Service(cast(OpcUaClientProtocol, object()), _model())
 
     async def _boom(node: ModelNode) -> VQT:
         del node
         raise RuntimeError("read failed")
 
-    service._read_current_value = _boom
+    monkeypatch.setattr(service, "_read_current_value", _boom)
 
     with pytest.raises(HTTPException) as exc_info:
         await service.get_current_value("asset-root")
@@ -141,14 +141,14 @@ async def test_get_history_collects_components_for_composition_nodes() -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_history_wraps_unexpected_error() -> None:
+async def test_get_history_wraps_unexpected_error(monkeypatch: pytest.MonkeyPatch) -> None:
     service = _Service(cast(OpcUaClientProtocol, object()), _model())
 
     async def _boom(node: ModelNode, start_time: datetime, end_time: datetime) -> list[VQT]:
         del node, start_time, end_time
         raise RuntimeError("history failed")
 
-    service._read_history_values = _boom
+    monkeypatch.setattr(service, "_read_history_values", _boom)
 
     with pytest.raises(HTTPException) as exc_info:
         await service.get_history("asset-root", "2026-01-01T00:00:00Z", "2026-01-01T01:00:00Z")

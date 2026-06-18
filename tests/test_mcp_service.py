@@ -150,9 +150,9 @@ def test_get_resources_includes_builtin_and_prompt_resources(monkeypatch: pytest
 
 
 @pytest.mark.asyncio
-async def test_read_resource_openapi_returns_json_text() -> None:
+async def test_read_resource_openapi_returns_json_text(monkeypatch: pytest.MonkeyPatch) -> None:
     app = FastAPI()
-    app.openapi = lambda: {"openapi": "3.1.0"}
+    monkeypatch.setattr(app, "openapi", lambda: {"openapi": "3.1.0"})
     request = Request({"type": "http", "app": app})
     service = McpService(request)
     payload = await service.read_resource("i3x://openapi")

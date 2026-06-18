@@ -24,8 +24,11 @@ from i3x_server.prompts.registry import PromptDefinition, PromptRegistry
 
 
 def _request(state: dict[str, Any] | None = None) -> Request:
-    app = FastAPI()
-    app.openapi = lambda: {"openapi": "3.1.0"}
+    class _App(FastAPI):
+        def openapi(self) -> dict[str, str]:
+            return {"openapi": "3.1.0"}
+
+    app = _App()
     for key, value in (state or {}).items():
         setattr(app.state, key, value)
     return Request({"type": "http", "app": app, "headers": []})

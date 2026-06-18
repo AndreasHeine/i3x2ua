@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 from fastapi import FastAPI, HTTPException
 from starlette.requests import Request
 
+from i3x_server.application.ports.subscription import SubscriptionServicePort
 from i3x_server.application.services.subscription import SubscriptionAppService
+from i3x_server.domain.ports.opcua import OpcUaClientProtocol
 from i3x_server.infrastructure.subscriptions.service import (
     SubscriptionDeleteResult,
     SubscriptionDetail,
@@ -114,9 +117,9 @@ class _FakeSubscriptionPort:
 async def test_create_subscription_success() -> None:
     port = _FakeSubscriptionPort()
     service = SubscriptionAppService(
-        opcua_client=SimpleNamespace(),
+        opcua_client=cast(OpcUaClientProtocol, SimpleNamespace()),
         model=_model(),
-        subscription_service=port,
+        subscription_service=cast(SubscriptionServicePort, port),
     )
     dto = await service.create_subscription("client-1", "Demo")
     assert dto == {"subscriptionId": "sub-1", "clientId": "client-1", "displayName": "Demo"}
@@ -126,7 +129,11 @@ async def test_create_subscription_success() -> None:
 async def test_create_subscription_wraps_errors() -> None:
     port = _FakeSubscriptionPort()
     port.create_error = RuntimeError("boom")
-    service = SubscriptionAppService(SimpleNamespace(), _model(), port)
+    service = SubscriptionAppService(
+        cast(OpcUaClientProtocol, SimpleNamespace()),
+        _model(),
+        cast(SubscriptionServicePort, port),
+    )
     with pytest.raises(HTTPException) as exc_info:
         await service.create_subscription("client-1")
     assert exc_info.value.status_code == 502
@@ -135,7 +142,12 @@ async def test_create_subscription_wraps_errors() -> None:
 @pytest.mark.asyncio
 async def test_register_monitored_items_success() -> None:
     port = _FakeSubscriptionPort()
-    service = SubscriptionAppService(SimpleNamespace(), _model(), port, request=_request())
+    service = SubscriptionAppService(
+        cast(OpcUaClientProtocol, SimpleNamespace()),
+        _model(),
+        cast(SubscriptionServicePort, port),
+        request=_request(),
+    )
     dto = await service.register_monitored_items("sub-1", "client-1", ["asset-root"], max_depth=2)
     assert dto == {"subscriptionId": "sub-1", "monitoredItems": ["asset-root"], "registered": 1}
 
@@ -143,7 +155,12 @@ async def test_register_monitored_items_success() -> None:
 @pytest.mark.asyncio
 async def test_register_monitored_items_wraps_client_id_validation_error() -> None:
     port = _FakeSubscriptionPort()
-    service = SubscriptionAppService(SimpleNamespace(), _model(), port, request=_request())
+    service = SubscriptionAppService(
+        cast(OpcUaClientProtocol, SimpleNamespace()),
+        _model(),
+        cast(SubscriptionServicePort, port),
+        request=_request(),
+    )
     with pytest.raises(HTTPException) as exc_info:
         await service.register_monitored_items("sub-1", "", ["asset-root"])
     assert exc_info.value.status_code == 502
@@ -153,7 +170,11 @@ async def test_register_monitored_items_wraps_client_id_validation_error() -> No
 async def test_register_monitored_items_not_found_path_is_wrapped() -> None:
     port = _FakeSubscriptionPort()
     port.register_result = False
-    service = SubscriptionAppService(SimpleNamespace(), _model(), port)
+    service = SubscriptionAppService(
+        cast(OpcUaClientProtocol, SimpleNamespace()),
+        _model(),
+        cast(SubscriptionServicePort, port),
+    )
     with pytest.raises(HTTPException) as exc_info:
         await service.register_monitored_items("sub-missing", "client-1", ["asset-root"])
     assert exc_info.value.status_code == 502
@@ -178,7 +199,11 @@ async def test_get_pending_updates_success() -> None:
         dropped_to_sequence=None,
         stream_active=False,
     )
-    service = SubscriptionAppService(SimpleNamespace(), _model(), port)
+    service = SubscriptionAppService(
+        cast(OpcUaClientProtocol, SimpleNamespace()),
+        _model(),
+        cast(SubscriptionServicePort, port),
+    )
     dto = await service.get_pending_updates("sub-1", "client-1", acknowledge_sequence=0)
     assert dto["queueOverflow"] is False
     assert dto["updates"][0]["sequenceNumber"] == 1
@@ -187,7 +212,11 @@ async def test_get_pending_updates_success() -> None:
 @pytest.mark.asyncio
 async def test_get_pending_updates_wraps_missing_client_error() -> None:
     port = _FakeSubscriptionPort()
-    service = SubscriptionAppService(SimpleNamespace(), _model(), port)
+    service = SubscriptionAppService(
+        cast(OpcUaClientProtocol, SimpleNamespace()),
+        _model(),
+        cast(SubscriptionServicePort, port),
+    )
     with pytest.raises(HTTPException) as exc_info:
         await service.get_pending_updates("sub-1", "")
     assert exc_info.value.status_code == 502
@@ -197,7 +226,11 @@ async def test_get_pending_updates_wraps_missing_client_error() -> None:
 async def test_get_pending_updates_wraps_not_found_and_stream_active_errors() -> None:
     port_none = _FakeSubscriptionPort()
     port_none.sync_result = None
-    service_none = SubscriptionAppService(SimpleNamespace(), _model(), port_none)
+    service_none = SubscriptionAppService(
+        cast(OpcUaClientProtocol, SimpleNamespace()),
+        _model(),
+        cast(SubscriptionServicePort, port_none),
+    )
     with pytest.raises(HTTPException) as exc_none:
         await service_none.get_pending_updates("sub-missing", "client-1")
     assert exc_none.value.status_code == 502
@@ -210,7 +243,11 @@ async def test_get_pending_updates_wraps_not_found_and_stream_active_errors() ->
         dropped_to_sequence=None,
         stream_active=True,
     )
-    service_stream = SubscriptionAppService(SimpleNamespace(), _model(), port_stream)
+    service_stream = SubscriptionAppService(
+        cast(OpcUaClientProtocol, SimpleNamespace()),
+        _model(),
+        cast(SubscriptionServicePort, port_stream),
+    )
     with pytest.raises(HTTPException) as exc_stream:
         await service_stream.get_pending_updates("sub-1", "client-1")
     assert exc_stream.value.status_code == 502
@@ -223,7 +260,11 @@ async def test_delete_subscriptions_success_and_wrap_error() -> None:
         SubscriptionDeleteResult(success=True, subscription_id="sub-1"),
         SubscriptionDeleteResult(success=False, subscription_id="sub-2", error={"code": 404, "message": "missing"}),
     ]
-    service = SubscriptionAppService(SimpleNamespace(), _model(), port)
+    service = SubscriptionAppService(
+        cast(OpcUaClientProtocol, SimpleNamespace()),
+        _model(),
+        cast(SubscriptionServicePort, port),
+    )
     dto = await service.delete_subscriptions(["sub-1", "sub-2"], client_id="client-1")
     assert dto == {"deleted": 1, "requested": 2}
 
@@ -245,7 +286,11 @@ async def test_list_subscriptions_success_and_wrap_error() -> None:
             mode="poll",
         )
     ]
-    service = SubscriptionAppService(SimpleNamespace(), _model(), port)
+    service = SubscriptionAppService(
+        cast(OpcUaClientProtocol, SimpleNamespace()),
+        _model(),
+        cast(SubscriptionServicePort, port),
+    )
     dto = await service.list_subscriptions(client_id="client-1", subscription_ids=["sub-1"])
     assert dto["subscriptions"][0]["subscriptionId"] == "sub-1"
 

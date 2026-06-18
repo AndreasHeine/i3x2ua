@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import sys
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from fastapi import FastAPI
+from fastapi.routing import APIRoute
 
 from i3x_server.bootstrap.app_factory import (
     _configure_otel,
@@ -33,10 +34,10 @@ def test_status_title_and_text_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_readable_operation_id_prefers_route_name_and_fallback() -> None:
     named_route = SimpleNamespace(name="Get Objects", methods={"GET"}, path_format="/v1/objects")
-    assert _readable_operation_id(named_route) == "getObjects"
+    assert _readable_operation_id(cast(APIRoute, named_route)) == "getObjects"
 
     unnamed_route = SimpleNamespace(name="", methods={"POST"}, path_format="/v1/subscriptions/{id}")
-    assert _readable_operation_id(unnamed_route) == "postV1SubscriptionsId"
+    assert _readable_operation_id(cast(APIRoute, unnamed_route)) == "postV1SubscriptionsId"
 
 
 @pytest.mark.asyncio
@@ -80,13 +81,10 @@ async def test_run_model_preload_success_sets_cache() -> None:
                 object_type_count_last=0,
             )
 
-    app = SimpleNamespace(
-        state=SimpleNamespace(
-            opcua_client=_OpcUaClient(),
-            model_builder=_ModelBuilder(),
-            model_cache=None,
-        )
-    )
+    app = FastAPI()
+    app.state.opcua_client = _OpcUaClient()
+    app.state.model_builder = _ModelBuilder()
+    app.state.model_cache = None
     await _run_model_preload(app)
     assert app.state.model_cache is model
 
@@ -104,13 +102,10 @@ async def test_run_model_preload_failure_without_raise(monkeypatch: pytest.Monke
         def snapshot_runtime_metrics(self) -> Any:
             return SimpleNamespace()
 
-    app = SimpleNamespace(
-        state=SimpleNamespace(
-            opcua_client=_OpcUaClient(),
-            model_builder=_ModelBuilder(),
-            model_cache=None,
-        )
-    )
+    app = FastAPI()
+    app.state.opcua_client = _OpcUaClient()
+    app.state.model_builder = _ModelBuilder()
+    app.state.model_cache = None
     monkeypatch.setattr("i3x_server.bootstrap.app_factory.settings.fail_startup_on_model_preload_error", False)
     monkeypatch.setattr("i3x_server.bootstrap.app_factory.settings.model_preload_blocking", False)
     await _run_model_preload(app)

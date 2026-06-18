@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
@@ -13,6 +14,7 @@ from i3x_server.application.services.model_query import (
     _build_server_info,
     _to_namespace,
 )
+from i3x_server.domain.ports.opcua import OpcUaClientProtocol
 from i3x_server.opcua.contracts import OpcUaNamespaceInfo
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
@@ -115,7 +117,7 @@ async def test_get_namespaces_uses_cache() -> None:
         OpcUaNamespaceInfo(uri="http://example.com/custom", display_name="Custom"),
     ]
     client = _FakeOpcUaClient(infos)
-    service = ModelQueryService(client, _model())
+    service = ModelQueryService(cast(OpcUaClientProtocol, client), _model())
 
     first = await service.get_namespaces()
     second = await service.get_namespaces()
@@ -131,7 +133,7 @@ async def test_get_namespaces_uses_cache() -> None:
 @pytest.mark.asyncio
 async def test_get_namespaces_wraps_client_errors() -> None:
     client = _FakeOpcUaClient([], error=RuntimeError("namespace read failed"))
-    service = ModelQueryService(client, _model())
+    service = ModelQueryService(cast(OpcUaClientProtocol, client), _model())
     with pytest.raises(ApplicationServiceError) as exc_info:
         await service.get_namespaces()
     assert exc_info.value.status_code == 502
@@ -141,7 +143,7 @@ async def test_get_namespaces_wraps_client_errors() -> None:
 @pytest.mark.asyncio
 async def test_get_namespace_infos_uses_cache_and_empty_default() -> None:
     client = _FakeOpcUaClient([])
-    service = ModelQueryService(client, _model())
+    service = ModelQueryService(cast(OpcUaClientProtocol, client), _model())
     first = await service.get_namespace_infos()
     second = await service.get_namespace_infos()
     assert first == []
@@ -151,7 +153,7 @@ async def test_get_namespace_infos_uses_cache_and_empty_default() -> None:
 
 @pytest.mark.asyncio
 async def test_unimplemented_methods_raise_not_implemented() -> None:
-    service = ModelQueryService(_FakeOpcUaClient([]), _model())
+    service = ModelQueryService(cast(OpcUaClientProtocol, _FakeOpcUaClient([])), _model())
     with pytest.raises(NotImplementedError):
         await service.get_object_types()
     with pytest.raises(NotImplementedError):

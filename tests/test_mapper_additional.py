@@ -15,12 +15,15 @@ def test_normalize_token_empty_and_separator_cases() -> None:
 def test_classify_opcua_reference_additional_fallbacks() -> None:
     assert classify_opcua_reference("ns=0;i=31", "References") == "graph"
     assert classify_opcua_reference("ns=0;i=33", "HierarchicalReferences", target_node_class="Variable") == "hierarchy"
-    assert classify_opcua_reference(
-        "ns=1;i=123",
-        "VendorReference",
-        supertype_browse_names=["HasProperty"],
-        target_node_class="Variable",
-    ) == "composition"
+    assert (
+        classify_opcua_reference(
+            "ns=1;i=123",
+            "VendorReference",
+            supertype_browse_names=["HasProperty"],
+            target_node_class="Variable",
+        )
+        == "composition"
+    )
 
 
 def test_map_node_uses_browse_name_when_display_name_empty() -> None:

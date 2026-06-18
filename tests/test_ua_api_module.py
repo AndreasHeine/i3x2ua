@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 from fastapi import HTTPException
@@ -15,6 +16,7 @@ from i3x_server.api import (
     get_ua_metrics,
     get_ua_state,
 )
+from i3x_server.domain.ports.opcua import OpcUaClientProtocol
 from i3x_server.opcua.contracts import (
     OpcUaOperationalLimits,
     OpcUaRequestMetrics,
@@ -66,7 +68,7 @@ async def test_get_ua_state_success_and_error() -> None:
         async def read_server_status_data_value(self) -> SimpleNamespace:
             return value
 
-    success = await get_ua_state(opcua_client=GoodClient())
+    success = await get_ua_state(opcua_client=cast(OpcUaClientProtocol, GoodClient()))
     assert success.result == {"state": "RUNNING"}
 
     class FailingClient:
@@ -74,7 +76,7 @@ async def test_get_ua_state_success_and_error() -> None:
             raise RuntimeError("failed")
 
     with pytest.raises(HTTPException) as exc_info:
-        await get_ua_state(opcua_client=FailingClient())
+        await get_ua_state(opcua_client=cast(OpcUaClientProtocol, FailingClient()))
     assert exc_info.value.status_code == 502
 
 
@@ -90,7 +92,7 @@ async def test_get_ua_connection_success_and_error() -> None:
         def get_connection_snapshot(self) -> SimpleNamespace:
             return snapshot
 
-    success = await get_ua_connection(opcua_client=GoodClient())
+    success = await get_ua_connection(opcua_client=cast(OpcUaClientProtocol, GoodClient()))
     assert success.result.state == "connected"
     assert success.result.since.endswith("Z")
 
@@ -99,7 +101,7 @@ async def test_get_ua_connection_success_and_error() -> None:
             raise RuntimeError("failed")
 
     with pytest.raises(HTTPException) as exc_info:
-        await get_ua_connection(opcua_client=FailingClient())
+        await get_ua_connection(opcua_client=cast(OpcUaClientProtocol, FailingClient()))
     assert exc_info.value.status_code == 500
 
 
@@ -118,7 +120,7 @@ async def test_get_ua_limits_success_and_error() -> None:
                 max_monitored_items_per_subscription=50,
             )
 
-    success = await get_ua_limits(opcua_client=GoodClient())
+    success = await get_ua_limits(opcua_client=cast(OpcUaClientProtocol, GoodClient()))
     assert success.result.operationalLimits.maxNodesPerBrowse == 100
     assert success.result.serverCapabilities.maxSubscriptionsPerSession == 40
 
@@ -130,7 +132,7 @@ async def test_get_ua_limits_success_and_error() -> None:
             raise RuntimeError("failed")
 
     with pytest.raises(HTTPException) as exc_info:
-        await get_ua_limits(opcua_client=FailingClient())
+        await get_ua_limits(opcua_client=cast(OpcUaClientProtocol, FailingClient()))
     assert exc_info.value.status_code == 502
 
 
@@ -149,7 +151,7 @@ async def test_get_ua_metrics_maps_fields() -> None:
                 goodish_qualities=["Good", "Uncertain"],
             )
 
-    result = await get_ua_metrics(opcua_client=Client())
+    result = await get_ua_metrics(opcua_client=cast(OpcUaClientProtocol, Client()))
     assert result.result.readCount == 1
     assert result.result.failedRequestCount == 7
     assert result.result.goodishQualities == ["Good", "Uncertain"]

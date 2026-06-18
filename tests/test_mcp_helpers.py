@@ -225,9 +225,7 @@ def test_payload_to_response_variants() -> None:
 
 def test_trace_log_fields_from_header_and_default(monkeypatch: pytest.MonkeyPatch) -> None:
     request_with_trace = _request()
-    request_with_trace.scope["headers"] = [
-        (b"traceparent", b"00-0123456789abcdef0123456789abcdef-0123456789abcdef-01")
-    ]
+    request_with_trace.scope["headers"] = [(b"traceparent", b"00-0123456789abcdef0123456789abcdef-0123456789abcdef-01")]
     assert _trace_log_fields(request_with_trace) == ("0123456789abcdef0123456789abcdef", "0123456789abcdef")
 
     monkeypatch.setattr("i3x_server.mcp.get_current_span", None)

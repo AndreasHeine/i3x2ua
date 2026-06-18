@@ -1,16 +1,15 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "gitSignOff": true,
   "extends": ["config:recommended"],
   "labels": ["dependencies"],
-  "enabledManagers": ["pep621", "uv", "dockerfile", "custom.regex"],
+  "enabledManagers": ["pep621", "dockerfile", "custom.regex"],
   "rangeStrategy": "update-lockfile",
   "lockFileMaintenance": {
     "enabled": true
   },
   "packageRules": [
     {
-      "matchManagers": ["pep621", "uv"],
+      "matchManagers": ["pep621"],
       "groupName": "python dependencies"
     },
     {

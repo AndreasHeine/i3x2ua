@@ -2061,7 +2061,7 @@ def _to_vqt_from_history_value(data_value: Any) -> VQT:
 
 
 @router.get("/info", response_model=SuccessResponse[ServerInfo])
-async def get_info() -> SuccessResponse[ServerInfo]:
+async def get_info_v1() -> SuccessResponse[ServerInfo]:
     return SuccessResponse(result=_build_server_info())
 
 
@@ -2120,7 +2120,7 @@ async def query_object_types_v1(
 
 
 @router.get("/relationshiptypes", response_model=SuccessResponse[list[RelationshipType]])
-async def get_relationship_types(
+async def get_relationship_types_v1(
     namespace_uri: str | None = Query(default=None, alias="namespaceUri"),
     model: BuildResult = Depends(get_or_build_model),
 ) -> SuccessResponse[list[RelationshipType]]:
@@ -2131,7 +2131,7 @@ async def get_relationship_types(
 
 
 @router.post("/relationshiptypes/query", response_model=BulkResponse[RelationshipType])
-async def query_relationship_types(
+async def query_relationship_types_v1(
     body: GetRelationshipTypesRequest,
     model: BuildResult = Depends(get_or_build_model),
 ) -> BulkResponse[RelationshipType]:

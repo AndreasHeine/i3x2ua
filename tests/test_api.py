@@ -24,7 +24,7 @@ from i3x_server.infrastructure.opcua.client import (
     OpcUaSubscriptionCapabilities,
 )
 from i3x_server.infrastructure.subscriptions.service import SubscriptionService
-from i3x_server.mcp import _safe_internal_request_url, get_api_prefix
+from i3x_server.mcp import _safe_internal_request_url, get_api_prefix, load_tool_overrides
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
 
@@ -2305,6 +2305,20 @@ def test_mcp_tools_are_generated_from_openapi(client_without_tool_overrides: Tes
     assert value_tool["path"] == "/v1/objects/value"
     assert value_tool["input_schema"]["properties"]["body"]["properties"]["elementIds"]["type"] == "array"
     assert value_tool["inputSchema"]["properties"]["body"]["properties"]["elementIds"]["type"] == "array"
+
+
+def test_mcp_tool_overrides_match_live_tools(client: TestClient) -> None:
+    overrides = load_tool_overrides()
+    tools = client.get("/mcp/tools").json()["tools"]
+
+    unknown_overrides = sorted(set(overrides) - set(tools))
+    assert unknown_overrides == []
+
+    for tool_name, override in overrides.items():
+        tool = tools[tool_name]
+        assert tool["description"] == override["description"]
+        assert tool["priority"] == override.get("priority", "normal")
+        assert tool["keywords"] == override.get("keywords", [])
 
 
 def test_mcp_support_is_disabled_by_default(client_without_mcp: TestClient) -> None:

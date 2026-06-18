@@ -31,7 +31,7 @@
                 "structure"
             ]
         },
-        "queryObjectTypesByIdV1": {
+        "queryObjectTypesV1": {
             "description": "Return object type schemas for specific element IDs. Use when the user asks for type details of specific objects.",
             "priority": "normal",
             "keywords": [
@@ -50,7 +50,7 @@
                 "connections"
             ]
         },
-        "queryRelationshipTypesByIdV1": {
+        "queryRelationshipTypesV1": {
             "description": "Return relationship types for specific element IDs. Use when the user asks about relationships of specific objects.",
             "priority": "normal",
             "keywords": [
@@ -167,14 +167,44 @@
                 "unregister"
             ]
         },
-        "streamSubscriptionV1": {
-            "description": "Open a streaming SSE connection for subscription updates. Use when the user asks for live or streaming updates.",
+        "getUaState": {
+            "description": "Return the current OPC UA gateway state. Use when the user asks whether the UA side is running or healthy.",
             "priority": "normal",
             "keywords": [
-                "stream",
-                "SSE",
-                "live updates",
-                "subscription"
+                "ua",
+                "state",
+                "health",
+                "gateway"
+            ]
+        },
+        "getUaConnection": {
+            "description": "Return OPC UA connection details such as endpoint, state, and connection age. Use when the user asks about connectivity.",
+            "priority": "normal",
+            "keywords": [
+                "ua",
+                "connection",
+                "endpoint",
+                "connectivity"
+            ]
+        },
+        "getUaLimits": {
+            "description": "Return OPC UA operational and subscription limits. Use when the user asks about capacity or protocol limits.",
+            "priority": "normal",
+            "keywords": [
+                "ua",
+                "limits",
+                "capacity",
+                "subscription limits"
+            ]
+        },
+        "getUaMetrics": {
+            "description": "Return OPC UA request and performance metrics. Use when the user asks about load, latency, or runtime behavior.",
+            "priority": "normal",
+            "keywords": [
+                "ua",
+                "metrics",
+                "performance",
+                "latency"
             ]
         },
         "syncSubscriptionV1": {

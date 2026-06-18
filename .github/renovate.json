@@ -1,4 +1,6 @@
 {
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "gitSignOff": true,
   "extends": ["config:recommended"],
   "labels": ["dependencies"],
   "enabledManagers": ["pep621", "uv", "dockerfile", "custom.regex"],

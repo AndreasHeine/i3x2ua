@@ -94,7 +94,8 @@ class OpcUaClient:
         self._metadata_cache_ttl_seconds = max(0, metadata_cache_ttl_seconds)
         self._client = Client(url=endpoint)
         self._client.application_uri = "urn:i3x2ua:opcua_client"
-        self._client.description = "i3x2ua - The i3X API Gateway for OPC UA"
+        self._client.name = "i3x2ua-opcua-client"
+        self._client.description = "The i3X API Gateway for OPC UA"
         self._client.product_uri = "urn:github.com/AndreasHeine/i3x2ua.git"
         self._using_user_auth = False
         self._using_security = False

@@ -54,7 +54,7 @@ addopts = [
     "--cov=i3x_server",
     "--cov-report=term-missing",
     "--cov-report=xml",
-    "--cov-fail-under=50",
+    "--cov-fail-under=70",
 ]
 
 [tool.ruff]

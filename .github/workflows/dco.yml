@@ -66,6 +66,14 @@ jobs:
 
           failed=0
           for sha in "${commits[@]}"; do
+            author_name="$(git log -1 --pretty=%an "${sha}")"
+            author_email="$(git log -1 --pretty=%ae "${sha}")"
+
+            if [[ "${author_name}" =~ \[bot\]$ || "${author_email}" =~ \[bot\]@users\.noreply\.github\.com$ ]]; then
+              echo "Skipping bot commit ${sha} (${author_name} <${author_email}>)"
+              continue
+            fi
+
             if ! git log -1 --pretty=%B "${sha}" | grep -Eiq '^Signed-off-by:\s+.+<.+>$'; then
               if is_allowed_bot_commit "${sha}"; then
                 echo "Skipping DCO trailer check for allowed bot commit ${sha}"

@@ -5,6 +5,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from math import ceil
 from typing import Any
 from uuid import uuid4
 
@@ -82,6 +83,8 @@ class _SubscriptionState:
     dropped_from_sequence: int | None = None
     dropped_to_sequence: int | None = None
     last_activity_monotonic: float = 0.0
+    native_refresh_interval_seconds: float | None = None
+    native_timeout_count: int = 0
 
 
 class _DataChangeHandler:
@@ -114,12 +117,25 @@ class SubscriptionService:
         max_updates_per_subscription: int = 10000,
         ttl_seconds: int = 300,
         seed_initial_values: bool = True,
+        native_timeout_refresh_mode: str = "adaptive",
+        native_timeout_refresh_keepalives: int = 3,
+        native_timeout_refresh_max_seconds: float = 30.0,
     ) -> None:
         self._opcua_client = opcua_client
         self._interval_seconds = max(0.1, float(interval_seconds))
         self._max_updates_per_subscription = max(1, max_updates_per_subscription)
         self._ttl_seconds = max(1, ttl_seconds)
         self._seed_initial_values = seed_initial_values
+        normalized_mode = native_timeout_refresh_mode.strip().lower()
+        if normalized_mode not in {"hybrid", "strict", "adaptive"}:
+            logger.warning(
+                "Unknown native timeout refresh mode '%s'; falling back to hybrid",
+                native_timeout_refresh_mode,
+            )
+            normalized_mode = "hybrid"
+        self._native_timeout_refresh_mode = normalized_mode
+        self._native_timeout_refresh_keepalives = max(1, int(native_timeout_refresh_keepalives))
+        self._native_timeout_refresh_max_seconds = max(0.1, float(native_timeout_refresh_max_seconds))
         self._lock = asyncio.Lock()
         self._subscriptions: dict[str, _SubscriptionState] = {}
         self._cleanup_task: asyncio.Task[None] | None = None
@@ -274,6 +290,12 @@ class SubscriptionService:
         )
         async with self._lock:
             self._subscriptions[subscription_id] = state
+        logger.info(
+            "Subscription created subscription_id=%s client_id=%s display_name=%s",
+            subscription_id,
+            client_id,
+            display_name,
+        )
         return self._to_detail(state)
 
     async def list_subscriptions(
@@ -335,6 +357,12 @@ class SubscriptionService:
 
         for state in removed:
             await self._stop_runtime(state)
+            logger.info(
+                "Subscription deleted subscription_id=%s client_id=%s monitored_nodes=%d",
+                state.subscription_id,
+                state.client_id,
+                len(state.monitored_node_ids),
+            )
 
         return results
 
@@ -347,10 +375,15 @@ class SubscriptionService:
         model: BuildResult,
     ) -> bool:
         self._ensure_cleanup_task()
+        requested_count = len(element_ids)
+        previous_monitored_nodes = 0
+        monitored_nodes_count = 0
+        monitored_objects_count = 0
         async with self._lock:
             state = self._subscriptions.get(subscription_id)
             if state is None or (client_id is not None and state.client_id != client_id):
                 return False
+            previous_monitored_nodes = len(state.monitored_node_ids)
             for element_id in element_ids:
                 state.monitored_objects[element_id] = max_depth
             monitored_node_ids, node_to_element_id = self._resolve_monitored_node_ids(
@@ -359,6 +392,8 @@ class SubscriptionService:
             )
             state.monitored_node_ids = monitored_node_ids
             state.node_to_element_id = node_to_element_id
+            monitored_nodes_count = len(monitored_node_ids)
+            monitored_objects_count = len(state.monitored_objects)
             state.last_values_by_node_id = {
                 node_id: value
                 for node_id, value in state.last_values_by_node_id.items()
@@ -367,6 +402,16 @@ class SubscriptionService:
             self._touch(state)
 
         await self._reconfigure_runtime(subscription_id)
+        logger.info(
+            "Subscription monitored items updated subscription_id=%s requested=%d total_objects=%d "
+            "monitored_nodes=%d previous_monitored_nodes=%d max_depth=%d",
+            subscription_id,
+            requested_count,
+            monitored_objects_count,
+            monitored_nodes_count,
+            previous_monitored_nodes,
+            max_depth,
+        )
         return True
 
     async def unregister_items(
@@ -377,10 +422,15 @@ class SubscriptionService:
         model: BuildResult,
     ) -> bool:
         self._ensure_cleanup_task()
+        requested_count = len(element_ids)
+        previous_monitored_nodes = 0
+        monitored_nodes_count = 0
+        monitored_objects_count = 0
         async with self._lock:
             state = self._subscriptions.get(subscription_id)
             if state is None or (client_id is not None and state.client_id != client_id):
                 return False
+            previous_monitored_nodes = len(state.monitored_node_ids)
             for element_id in element_ids:
                 state.monitored_objects.pop(element_id, None)
             monitored_node_ids, node_to_element_id = self._resolve_monitored_node_ids(
@@ -389,6 +439,8 @@ class SubscriptionService:
             )
             state.monitored_node_ids = monitored_node_ids
             state.node_to_element_id = node_to_element_id
+            monitored_nodes_count = len(monitored_node_ids)
+            monitored_objects_count = len(state.monitored_objects)
             state.last_values_by_node_id = {
                 node_id: value
                 for node_id, value in state.last_values_by_node_id.items()
@@ -397,6 +449,15 @@ class SubscriptionService:
             self._touch(state)
 
         await self._reconfigure_runtime(subscription_id)
+        logger.info(
+            "Subscription monitored items removed subscription_id=%s requested=%d total_objects=%d "
+            "monitored_nodes=%d previous_monitored_nodes=%d",
+            subscription_id,
+            requested_count,
+            monitored_objects_count,
+            monitored_nodes_count,
+            previous_monitored_nodes,
+        )
         return True
 
     async def sync(
@@ -510,6 +571,8 @@ class SubscriptionService:
     ) -> list[SubscriptionUpdate] | None:
         self._ensure_cleanup_task()
         should_refresh_after_timeout = False
+        refresh_interval_seconds: float | None = None
+        refresh_timeout_threshold = 1
         async with self._lock:
             state = self._subscriptions.get(subscription_id)
             if state is None or (client_id is not None and state.client_id != client_id):
@@ -519,23 +582,63 @@ class SubscriptionService:
 
             current = [item for item in state.updates if item.sequence_number > after_sequence]
             if current:
+                state.native_timeout_count = 0
                 return current
 
             state.update_event.clear()
             wait_event = state.update_event
-            should_refresh_after_timeout = state.mode == "native" and bool(state.monitored_node_ids)
+            should_refresh_after_timeout = (
+                state.mode == "native"
+                and bool(state.monitored_node_ids)
+                and self._native_timeout_refresh_mode != "strict"
+            )
+            refresh_interval_seconds = state.native_refresh_interval_seconds
+            if should_refresh_after_timeout and self._native_timeout_refresh_mode == "adaptive":
+                interval_seconds = refresh_interval_seconds or self._interval_seconds
+                refresh_timeout_threshold = max(1, ceil(interval_seconds / max(0.001, timeout_seconds)))
 
         try:
             await asyncio.wait_for(wait_event.wait(), timeout=timeout_seconds)
         except TimeoutError:
+            should_execute_refresh = False
+            timeout_count = 0
+            async with self._lock:
+                state = self._subscriptions.get(subscription_id)
+                if state is None or (client_id is not None and state.client_id != client_id):
+                    return None
+                if should_refresh_after_timeout:
+                    state.native_timeout_count += 1
+                    timeout_count = state.native_timeout_count
+                    if self._native_timeout_refresh_mode == "adaptive":
+                        should_execute_refresh = timeout_count >= refresh_timeout_threshold
+                    else:
+                        should_execute_refresh = True
+
             if should_refresh_after_timeout:
-                if _STREAM_DEBUG_ENABLED:
+                if _STREAM_DEBUG_ENABLED and self._native_timeout_refresh_mode == "adaptive":
+                    logger.info(
+                        "Subscription service wait timeout native subscription_id=%s after_sequence=%s "
+                        "timeout_count=%d threshold=%d refresh_interval_s=%.3f",
+                        subscription_id,
+                        after_sequence,
+                        timeout_count,
+                        refresh_timeout_threshold,
+                        refresh_interval_seconds or self._interval_seconds,
+                    )
+                if should_execute_refresh:
+                    async with self._lock:
+                        state = self._subscriptions.get(subscription_id)
+                        if state is None or (client_id is not None and state.client_id != client_id):
+                            return None
+                        state.native_timeout_count = 0
+                if _STREAM_DEBUG_ENABLED and should_execute_refresh:
                     logger.info(
                         "Subscription service wait timeout refresh subscription_id=%s after_sequence=%s",
                         subscription_id,
                         after_sequence,
                     )
-                await self._refresh_changed_values(subscription_id)
+                if should_execute_refresh:
+                    await self._refresh_changed_values(subscription_id)
             async with self._lock:
                 state = self._subscriptions.get(subscription_id)
                 if state is None or (client_id is not None and state.client_id != client_id):
@@ -555,6 +658,7 @@ class SubscriptionService:
             state = self._subscriptions.get(subscription_id)
             if state is None or (client_id is not None and state.client_id != client_id):
                 return None
+            state.native_timeout_count = 0
             self._touch(state)
             return [item for item in state.updates if item.sequence_number > after_sequence]
 
@@ -577,6 +681,14 @@ class SubscriptionService:
                     resolved_node_id = mapped
 
             self._append_update(state, resolved_node_id, value)
+            logger.info(
+                "Subscription datachange callback subscription_id=%s mode=%s node_id=%s client_handle=%s",
+                subscription_id,
+                state.mode,
+                resolved_node_id,
+                client_handle,
+            )
+            state.native_timeout_count = 0
             self._touch(state)
 
     async def _reconfigure_runtime(self, subscription_id: str) -> None:
@@ -634,6 +746,36 @@ class SubscriptionService:
             return True
         return False
 
+    def _extract_revised_subscription_parameters(self, ua_subscription: Any) -> tuple[float | None, int | None]:
+        publishing_interval_ms = _positive_float_or_none(
+            _read_attr_chain(ua_subscription, "RevisedPublishingInterval")
+            or _read_attr_chain(ua_subscription, "revised_publishing_interval")
+            or _read_attr_chain(ua_subscription, "data", "RevisedPublishingInterval")
+            or _read_attr_chain(ua_subscription, "result", "RevisedPublishingInterval")
+            or _read_attr_chain(ua_subscription, "parameters", "RevisedPublishingInterval")
+        )
+        max_keepalive_count = _positive_int_or_none(
+            _read_attr_chain(ua_subscription, "RevisedMaxKeepAliveCount")
+            or _read_attr_chain(ua_subscription, "revised_max_keepalive_count")
+            or _read_attr_chain(ua_subscription, "data", "RevisedMaxKeepAliveCount")
+            or _read_attr_chain(ua_subscription, "result", "RevisedMaxKeepAliveCount")
+            or _read_attr_chain(ua_subscription, "parameters", "RevisedMaxKeepAliveCount")
+        )
+        return publishing_interval_ms, max_keepalive_count
+
+    def _compute_native_refresh_interval_seconds(self, ua_subscription: Any) -> float:
+        publishing_interval_ms, max_keepalive_count = self._extract_revised_subscription_parameters(ua_subscription)
+        if publishing_interval_ms is None or max_keepalive_count is None:
+            fallback = min(
+                self._native_timeout_refresh_max_seconds,
+                self._interval_seconds * self._native_timeout_refresh_keepalives,
+            )
+            return max(0.1, fallback)
+
+        keepalive_period_seconds = (publishing_interval_ms / 1000.0) * max_keepalive_count
+        target_interval_seconds = keepalive_period_seconds * self._native_timeout_refresh_keepalives
+        return max(0.1, min(self._native_timeout_refresh_max_seconds, target_interval_seconds))
+
     async def _start_native_subscription(self, state: _SubscriptionState) -> None:
         handler = _DataChangeHandler(self, state.subscription_id)
         sorted_node_ids = sorted(state.monitored_node_ids)
@@ -661,6 +803,21 @@ class SubscriptionService:
             live.runtime.ua_subscription = ua_subscription
             live.handle_to_node_id = handle_to_node_id
             live.mode = "native"
+            live.native_timeout_count = 0
+            live.native_refresh_interval_seconds = self._compute_native_refresh_interval_seconds(ua_subscription)
+        logger.info(
+            "Subscription runtime started subscription_id=%s mode=native monitored_nodes=%d handles=%d",
+            state.subscription_id,
+            len(sorted_node_ids),
+            len(handle_to_node_id),
+        )
+        if self._native_timeout_refresh_mode == "adaptive":
+            logger.info(
+                "Subscription native timeout refresh configured subscription_id=%s interval_s=%.3f mode=%s",
+                state.subscription_id,
+                live.native_refresh_interval_seconds or self._interval_seconds,
+                self._native_timeout_refresh_mode,
+            )
 
     async def _start_polling(self, state: _SubscriptionState) -> None:
         task = asyncio.create_task(self._polling_loop(state.subscription_id))
@@ -671,6 +828,14 @@ class SubscriptionService:
                 return
             live.runtime.polling_task = task
             live.mode = "polling"
+            live.native_timeout_count = 0
+            live.native_refresh_interval_seconds = None
+        logger.info(
+            "Subscription runtime started subscription_id=%s mode=polling monitored_nodes=%d interval_s=%.3f",
+            state.subscription_id,
+            len(state.monitored_node_ids),
+            self._interval_seconds,
+        )
 
     async def _stop_runtime(self, state: _SubscriptionState) -> None:
         polling_task = state.runtime.polling_task
@@ -679,6 +844,8 @@ class SubscriptionService:
         state.runtime.ua_subscription = None
         state.handle_to_node_id = {}
         state.mode = "idle"
+        state.native_timeout_count = 0
+        state.native_refresh_interval_seconds = None
 
         if polling_task is not None:
             polling_task.cancel()
@@ -867,6 +1034,39 @@ def _min_positive(*values: int | None) -> int | None:
     if not positive:
         return None
     return min(positive)
+
+
+def _positive_int_or_none(value: Any) -> int | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed <= 0:
+        return None
+    return parsed
+
+
+def _positive_float_or_none(value: Any) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed <= 0:
+        return None
+    return parsed
+
+
+def _read_attr_chain(root: Any, *names: str) -> Any:
+    current = root
+    for name in names:
+        if current is None:
+            return None
+        current = getattr(current, name, None)
+    return current
 
 
 def _to_client_handle(value: Any) -> int | None:

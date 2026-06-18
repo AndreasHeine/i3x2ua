@@ -245,6 +245,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         max_updates_per_subscription=settings.subscription_max_updates,
         ttl_seconds=settings.subscription_ttl_seconds,
         seed_initial_values=settings.subscriptions_initial_values,
+        native_timeout_refresh_mode=settings.subscription_native_timeout_refresh_mode,
+        native_timeout_refresh_keepalives=settings.subscription_native_timeout_refresh_keepalives,
+        native_timeout_refresh_max_seconds=settings.subscription_native_timeout_refresh_max_seconds,
     )
     app.state.model_lock = asyncio.Lock()
     app.state.model_preload_task = None

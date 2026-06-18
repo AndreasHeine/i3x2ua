@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     subscription_interval_seconds: float = Field(default=5.0, gt=0)
     subscription_max_updates: int = Field(default=10000, ge=1)
     subscription_ttl_seconds: int = Field(default=300, ge=1)
+    subscription_native_timeout_refresh_mode: str = Field(default="adaptive")
+    subscription_native_timeout_refresh_keepalives: int = Field(default=3, ge=1)
+    subscription_native_timeout_refresh_max_seconds: float = Field(default=30.0, gt=0)
     log_level: str = Field(default="INFO")
     cors_allowed_origins: list[str] = Field(default_factory=list)
     otel_enabled: bool = Field(default=False)
@@ -39,6 +42,14 @@ class Settings(BaseSettings):
         if isinstance(value, str):
             return value.strip()
         return value
+
+    @field_validator("subscription_native_timeout_refresh_mode")
+    @classmethod
+    def _validate_subscription_native_timeout_refresh_mode(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in {"hybrid", "strict", "adaptive"}:
+            raise ValueError("subscription_native_timeout_refresh_mode must be one of: hybrid, strict, adaptive")
+        return normalized
 
 
 settings = Settings()

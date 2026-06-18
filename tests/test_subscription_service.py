@@ -452,7 +452,11 @@ async def test_polling_path_collects_updates() -> None:
 @pytest.mark.asyncio
 async def test_wait_for_updates_refreshes_native_timeout_without_callbacks() -> None:
     client = FakeOpcUaClient()
-    service = SubscriptionService(cast(OpcUaClientProtocol, client), interval_seconds=1)
+    service = SubscriptionService(
+        cast(OpcUaClientProtocol, client),
+        interval_seconds=1,
+        native_timeout_refresh_mode="hybrid",
+    )
     created = await service.create_subscription(client_id="c1", display_name="native")
     subscription_id = created.subscription_id
 

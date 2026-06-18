@@ -2377,6 +2377,7 @@ async def query_historical_values_v1(
     model: BuildResult = Depends(get_or_build_model),
     opcua_client: OpcUaClientProtocol = Depends(get_opcua_client),
 ) -> BulkResponse[HistoricalValueResult]:
+    started = perf_counter()
     resolved_nodes = _resolve_model_nodes(model, body.elementIds)
     start_time, end_time = _parse_history_time_range(body)
     max_depth = body.maxDepth if body.maxDepth is not None else 1
@@ -2384,6 +2385,7 @@ async def query_historical_values_v1(
     lookup, node_ids = _collect_history_lookup_and_node_ids(model, resolved_nodes, max_depth)
 
     values_by_node_id: dict[str, list[Any]] = {}
+    unique_node_ids: list[str] = []
     if node_ids:
         unique_node_ids = list(dict.fromkeys(node_ids))
         try:
@@ -2411,6 +2413,17 @@ async def query_historical_values_v1(
 
         result = _build_historical_value_result(model, node, source_nodes, values_by_node_id)
         results.append(_bulk_result_success(element_id, result))
+
+    logger.info(
+        "OPC UA history query finished requested_elements=%d resolved_nodes=%d values=%d success_items=%d "
+        "error_items=%d duration_s=%.3f",
+        len(body.elementIds),
+        len(unique_node_ids),
+        sum(len(item) for item in values_by_node_id.values()),
+        sum(1 for item in results if item.success),
+        sum(1 for item in results if not item.success),
+        perf_counter() - started,
+    )
 
     return _bulk_response(results)
 

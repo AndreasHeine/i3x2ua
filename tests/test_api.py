@@ -2318,6 +2318,24 @@ def test_mcp_tools_are_generated_from_openapi(client_without_tool_overrides: Tes
     assert value_tool["inputSchema"]["properties"]["body"]["properties"]["elementIds"]["type"] == "array"
 
 
+def test_mcp_update_value_tool_includes_max_depth_from_openapi(client: TestClient) -> None:
+    tools = client.get("/mcp/tools").json()["tools"]
+    update_value_id = _operation_id_for(client, "PUT", "/v1/objects/{element_id}/value")
+
+    update_tool = tools[update_value_id]
+    body_schema = update_tool["inputSchema"]["properties"]["body"]
+    if "properties" in body_schema:
+        body_properties = body_schema["properties"]
+    else:
+        any_of = body_schema.get("anyOf", [])
+        object_schema = next((item for item in any_of if isinstance(item, Mapping) and "properties" in item), {})
+        body_properties = object_schema.get("properties", {})
+
+    assert "maxDepth" in body_properties
+    assert body_properties["maxDepth"]["default"] == 1
+    assert body_properties["maxDepth"]["anyOf"][0]["type"] == "integer"
+
+
 def test_mcp_tool_overrides_match_live_tools(client: TestClient) -> None:
     overrides = load_tool_overrides()
     tools = client.get("/mcp/tools").json()["tools"]

@@ -460,6 +460,18 @@ class GetObjectHistoryRequest(BaseModel):
     maxDepth: int | None = Field(default=1, ge=0)
 
 
+class UpdateObjectValueRequest(BaseModel):
+    value: Any | None = None
+    maxDepth: int | None = Field(
+        default=1,
+        ge=0,
+        description=(
+            "Maximum composition depth to apply when updating descendant properties. "
+            "Use 0 for unlimited composition depth."
+        ),
+    )
+
+
 class RegisterMonitoredItemsRequest(BaseModel):
     clientId: str | None = None
     subscriptionId: str
@@ -2461,7 +2473,8 @@ async def update_object_history_v1(element_id: str) -> None:
 
 
 @router.put("/objects/{element_id}/value")
-async def update_object_value_v1(element_id: str) -> None:
+async def update_object_value_v1(element_id: str, body: UpdateObjectValueRequest | None = None) -> None:
+    del body
     _not_implemented(f"Value update for '{element_id}'")
 
 

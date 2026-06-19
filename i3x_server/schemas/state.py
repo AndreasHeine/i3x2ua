@@ -21,6 +21,11 @@ class BuildResult:
     hierarchy_parent_by_id: dict[str, str] = field(default_factory=dict)
     composition_parent_by_id: dict[str, str] = field(default_factory=dict)
     graph_relationship_names: set[str] = field(default_factory=set)
+    semantic_role_by_id: dict[str, str] = field(default_factory=dict)
+    mapping_confidence_by_id: dict[str, str] = field(default_factory=dict)
+    parent_id_by_id: dict[str, str | None] = field(default_factory=dict)
+    applied_profile_ids_by_id: dict[str, list[str]] = field(default_factory=dict)
+    namespace_uri_by_id: dict[str, str | None] = field(default_factory=dict)
 
 
 @dataclass(slots=True)

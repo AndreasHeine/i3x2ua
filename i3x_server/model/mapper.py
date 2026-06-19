@@ -4,6 +4,11 @@ import hashlib
 from typing import Literal
 
 from i3x_server.domain.ports.opcua import OpcUaNodeInfo
+from i3x_server.model.semantic_profiles import (
+    MappingConfidence,
+    SemanticProfile,
+    SemanticRole,
+)
 from i3x_server.schemas.i3x import ModelNode, NodeKind
 
 CLASS_TO_KIND: dict[str, NodeKind] = {
@@ -93,6 +98,25 @@ def _normalize_token(value: str | None) -> str:
     return "".join(ch for ch in lowered if ch.isalnum())
 
 
+def _reference_class_from_profile_rules(
+    tokens: set[str],
+    profiles: tuple[SemanticProfile, ...] | None,
+) -> ReferenceClass | None:
+    if not profiles:
+        return None
+    for profile in profiles:
+        hierarchy_tokens = {_normalize_token(name) for name in profile.hierarchy_references}
+        composition_tokens = {_normalize_token(name) for name in profile.composition_references}
+        graph_tokens = {_normalize_token(name) for name in profile.graph_references}
+        if tokens & hierarchy_tokens:
+            return "hierarchy"
+        if tokens & composition_tokens:
+            return "composition"
+        if tokens & graph_tokens:
+            return "graph"
+    return None
+
+
 def classify_opcua_reference(
     reference_type_node_id: str | None,
     reference_browse_name: str | None,
@@ -141,6 +165,49 @@ def classify_opcua_reference(
     return "graph"
 
 
+def classify_opcua_reference_with_confidence(
+    reference_type_node_id: str | None,
+    reference_browse_name: str | None,
+    supertype_browse_names: list[str] | None = None,
+    target_node_class: str | None = None,
+    profiles: tuple[SemanticProfile, ...] | None = None,
+) -> tuple[ReferenceClass, MappingConfidence]:
+    tokens = {
+        _normalize_token(reference_type_node_id),
+        _normalize_token(reference_browse_name),
+    }
+    if supertype_browse_names:
+        tokens.update(_normalize_token(item) for item in supertype_browse_names)
+    tokens.discard("")
+
+    has_nonhierarchical_root = bool(tokens & (_GRAPH_REFERENCE_NAMES | {"i32"}))
+    has_hierarchical_root = bool(tokens & (_HIERARCHY_REFERENCE_NAMES | {"i33"}))
+    if has_nonhierarchical_root and has_hierarchical_root:
+        classification = classify_opcua_reference(
+            reference_type_node_id=reference_type_node_id,
+            reference_browse_name=reference_browse_name,
+            supertype_browse_names=supertype_browse_names,
+            target_node_class=target_node_class,
+        )
+        if classification == "composition":
+            return classification, "medium"
+        return classification, "high"
+
+    profile_class = _reference_class_from_profile_rules(tokens, profiles)
+    if profile_class is not None:
+        return profile_class, "high"
+
+    classification = classify_opcua_reference(
+        reference_type_node_id=reference_type_node_id,
+        reference_browse_name=reference_browse_name,
+        supertype_browse_names=supertype_browse_names,
+        target_node_class=target_node_class,
+    )
+    if classification == "composition":
+        return classification, "medium"
+    return classification, "high"
+
+
 def stable_i3x_id(node_id: str, kind: NodeKind) -> str:
     digest = hashlib.sha1(node_id.encode("utf-8")).hexdigest()[:16]
     return f"{kind}-{digest}"
@@ -158,7 +225,17 @@ def map_type(node: OpcUaNodeInfo, kind: NodeKind) -> str | None:
     return None
 
 
-def map_node(node: OpcUaNodeInfo, children: list[str]) -> ModelNode:
+def map_node(
+    node: OpcUaNodeInfo,
+    children: list[str],
+    *,
+    parent_id: str | None = None,
+    is_composition: bool = False,
+    semantic_role: SemanticRole = "unknown",
+    mapping_confidence: MappingConfidence = "medium",
+    relationships: dict[str, list[str]] | None = None,
+    metadata: dict[str, object] | None = None,
+) -> ModelNode:
     kind = infer_kind(node)
     return ModelNode(
         id=stable_i3x_id(node.node_id, kind),
@@ -168,4 +245,10 @@ def map_node(node: OpcUaNodeInfo, children: list[str]) -> ModelNode:
         children=children,
         source_node_id=node.node_id,
         source_type_id=node.type_definition_id,
+        parent_id=parent_id,
+        is_composition=is_composition,
+        semantic_role=semantic_role,
+        mapping_confidence=mapping_confidence,
+        relationships=relationships or {},
+        metadata=metadata or {},
     )

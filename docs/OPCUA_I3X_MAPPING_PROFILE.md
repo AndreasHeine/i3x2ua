@@ -1,13 +1,30 @@
 # OPC UA to i3X Mapping Profile
 
-This profile defines how OPC UA references are translated into i3X references.
-It is intended to keep implementations interoperable while still allowing implementation-specific i3X element IDs.
+This document describes the current mapping contract used by the i3X2UA model
+builder. It defines how OPC UA nodes and references are translated into i3X
+objects while keeping implementations interoperable and provenance explicit.
 
 ## Goals
 
 - Keep i3X identifiers stable and queryable.
 - Keep OPC UA provenance explicit and lossless.
 - Ensure i3X conformance checks can validate namespace and type relationships.
+- Keep the model valid even when no semantic profile matches a namespace.
+- Prefer generic fallback mapping first, then apply semantic profile overrides.
+
+## Implementation Status
+
+The current implementation already applies the following behavior:
+
+- deterministic `elementId` generation from OPC UA source node ids
+- `parent_id`, `is_composition`, `semantic_role`, and `mapping_confidence` on
+  mapped i3X nodes
+- bidirectional relationships in the `relationships` map
+- namespace-aware profile matching with built-in generic and machinery profiles
+- hierarchy-first parent selection with graph fallback for non-structural edges
+
+The code currently ships with built-in profiles. External profile loading can be
+added later without changing the mapping contract described here.
 
 ## Canonical Rules
 
@@ -17,7 +34,8 @@ It is intended to keep implementations interoperable while still allowing implem
 
 2. Object instance `typeElementId`
 - The i3X type reference used by clients.
-- Must resolve to an entry in `GET /objecttypes`.
+- Should resolve to an entry in `GET /objecttypes` when the type catalog is
+  available.
 - For OPC UA Variables in this implementation, this is derived from the Variable `DataType` and normalized to expanded NodeId form (`nsu=...;i=...`, `nsu=...;s=...`, ...).
 
 3. Object instance metadata `sourceTypeId`
@@ -25,23 +43,40 @@ It is intended to keep implementations interoperable while still allowing implem
 - For OPC UA, this is derived from `TypeDefinition` when available, otherwise from source node identity.
 - Always normalized to expanded NodeId form when possible.
 
-4. Object instance metadata `typeNamespaceUri`
+4. Object instance metadata `namespaceUri`
+- Namespace URI of the source node.
+- Canonicalized from the namespace table returned by `GET /namespaces` when
+  available.
+
+5. Object instance metadata `typeNamespaceUri`
 - Namespace URI of the type definition that `typeElementId` points to.
 - Canonicalized to the URI spelling returned by `GET /namespaces` (for example trailing slash normalization).
 
-5. ObjectType `namespaceUri`
+6. ObjectType `namespaceUri`
 - Must match a declared namespace from `GET /namespaces`.
 - Namespace URI comparisons are normalized by case-insensitive compare and trailing slash insensitivity, then rewritten to declared canonical spelling.
 
-6. ObjectType `sourceTypeId`
+7. ObjectType `sourceTypeId`
 - Source namespace member identifier for the type (OPC UA provenance).
 - Kept distinct from ObjectType `elementId`.
 
-7. Unknown or unresolved types
+8. Unknown or unresolved types
 - If a referenced `typeElementId` cannot be resolved from discovered object types:
   - Attempt to synthesize a datatype ObjectType from source metadata.
   - If still unresolved, create an `UnknownType` placeholder ObjectType whose `elementId` equals the unresolved `typeElementId`.
 - Placeholder `namespaceUri` is assigned to a declared namespace to preserve conformance expectations.
+
+9. Object instance `semantic_role`
+- Current values: `asset | group | component | datapoint | property | unknown`.
+- Resolved from profile overrides first, then generic fallback rules.
+
+10. Object instance `mapping_confidence`
+- Current values: `high | medium | low`.
+- Used as an explainability hint for profile-driven and generic mappings.
+
+11. Object instance `appliedProfileIds`
+- Ordered list of profile ids that matched the source node.
+- The built-in `generic` profile is always available as a fallback.
 
 ## Why this profile exists
 
@@ -58,7 +93,9 @@ This profile ensures clients can always:
 
 The model builder maps OPC UA reference types to i3X relationship planes.
 Classification is ancestry-root-first and uses recursively resolved supertypes
-(following `HasSubtype` inverse for `ReferenceType` nodes).
+(following `HasSubtype` inverse for `ReferenceType` nodes). If a lineage is
+ambiguous and contains both hierarchical and non-hierarchical roots, the
+non-hierarchical root wins and the edge is mapped to Graph.
 
 Classification order:
 
@@ -73,6 +110,14 @@ Classification order:
 4. `HasTypeDefinition` and `HasSubtype` map to type metadata only.
 5. If roots are unavailable, apply id/name compatibility fallback.
 6. If still unresolved, map deterministically to Graph.
+
+Current implementation detail:
+
+- profile rules can override the generic hierarchy/composition/graph mapping for
+  known namespace patterns
+- graph relationships do not participate in parent selection
+- hierarchy selection remains deterministic and uses priority order
+  `Organizes > HasComponent > HasOrderedComponent`
 
 Precedence rule for ambiguous or malformed lineages:
 
@@ -93,6 +138,31 @@ id/name checks, it is mapped deterministically to the Graph plane.
 `POST /objects/value` and `POST /objects/history` recurse through **composition**
 children only when `maxDepth > 1`. Hierarchy-only children are never included in
 value recursion.
+
+## Current Output Shape
+
+The mapped i3X object currently carries the following fields in code:
+
+- `id`
+- `name`
+- `kind`
+- `type`
+- `children`
+- `source_node_id`
+- `source_type_id`
+- `parent_id`
+- `is_composition`
+- `semantic_role`
+- `mapping_confidence`
+- `relationships`
+- `metadata`
+
+The `metadata` map is currently used to preserve:
+
+- `uaNodeId`
+- `uaTypeNodeId`
+- `namespaceUri`
+- `appliedProfileIds`
 
 ## maxDepth Semantics (Hierarchy vs Composition)
 
@@ -119,3 +189,13 @@ values via hierarchy.
 
 `POST /objects/related` returns relationships across all three planes (hierarchy,
 composition, and graph) for each requested element.
+
+## Practical Notes for Implementers
+
+- Keep the generic fallback path active at all times.
+- Treat profile matches as enrichments, not as hard requirements.
+- Preserve deterministic ordering when multiple parents or multiple profiles are
+  available.
+- Do not drop graph edges just because a structural parent was already selected.
+- If a new profile is added later, it should only extend the contract, not change
+  the meaning of the current fields.

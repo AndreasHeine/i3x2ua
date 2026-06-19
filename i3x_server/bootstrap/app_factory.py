@@ -281,7 +281,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         try:
             # On Unix, prefer asyncio's loop handler so we stay on the event loop thread.
             _loop.add_signal_handler(_sig, _early_shutdown)
-        except (NotImplementedError, OSError):
+        except (NotImplementedError, OSError, RuntimeError):
             # Windows: asyncio does not support add_signal_handler; chain with signal.signal.
             try:
                 _make_chained(_sig)

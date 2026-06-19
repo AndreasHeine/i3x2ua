@@ -233,6 +233,9 @@ async def _handle_jsonrpc(request: Request, message: dict[str, Any]) -> dict[str
             },
         )
 
+    if method == "resources/templates/list":
+        return _jsonrpc_response(message_id, {"templates": []})
+
     if method == "notifications/initialized":
         return None
 

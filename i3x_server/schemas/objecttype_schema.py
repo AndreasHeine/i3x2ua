@@ -19,6 +19,10 @@ from i3x_server.domain.ports.opcua import OpcUaNamespaceInfo, OpcUaObjectTypeInf
 _MANDATORY_RULES = {"mandatory", "mandatoryplaceholder"}
 
 
+def _is_filtered_structure_field(name: str) -> bool:
+    return name.strip().lower() == "encoding"
+
+
 def _ua_object_id_name(identifier: int) -> str | None:
     object_id_names = getattr(ua, "ObjectIdNames", None)
     if isinstance(object_id_names, Mapping):
@@ -405,11 +409,19 @@ def _structure_object_schema(value: Any, registry: _SchemaRegistry) -> dict[str,
 
 def _structure_fields(value: Any) -> dict[str, Any]:
     if isinstance(value, Mapping):
-        return {str(key): item for key, item in value.items()}
+        return {str(key): item for key, item in value.items() if not _is_filtered_structure_field(str(key))}
     if is_dataclass(value):
-        return {item.name: getattr(value, item.name) for item in fields(value)}
+        return {
+            item.name: getattr(value, item.name)
+            for item in fields(value)
+            if not _is_filtered_structure_field(item.name)
+        }
     if hasattr(value, "__dict__"):
-        return {str(key): item for key, item in vars(value).items() if not key.startswith("_") and not callable(item)}
+        return {
+            str(key): item
+            for key, item in vars(value).items()
+            if not key.startswith("_") and not callable(item) and not _is_filtered_structure_field(str(key))
+        }
     return {}
 
 
@@ -652,6 +664,8 @@ def _structure_schema_for_type(structure_type: type[Any], registry: _SchemaRegis
         vartype_overrides = _vartype_overrides_for_structure(structure_type)
         ua_type_overrides = _ua_type_overrides_for_structure(structure_type)
         for item in fields(structure_type):
+            if _is_filtered_structure_field(item.name):
+                continue
             evaluated_annotation = _evaluate_generated_annotation(item.type, structure_type, item.name)
             field_schema = _schema_for_annotation(
                 evaluated_annotation if evaluated_annotation is not None else item.type, registry
@@ -671,6 +685,8 @@ def _structure_schema_for_type(structure_type: type[Any], registry: _SchemaRegis
         annotations = getattr(structure_type, "__annotations__", {})
         if isinstance(annotations, Mapping):
             for name, annotation in annotations.items():
+                if _is_filtered_structure_field(str(name)):
+                    continue
                 properties[str(name)] = _schema_for_annotation(annotation, registry)
 
     return {

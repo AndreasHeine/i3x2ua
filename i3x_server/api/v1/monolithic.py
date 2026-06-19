@@ -1243,6 +1243,9 @@ def _format_utc_timestamp(value: datetime) -> str:
 
 
 def _to_json_safe_value(value: Any) -> Any:
+    def _is_filtered_structure_field(name: str) -> bool:
+        return name.strip().lower() == "encoding"
+
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     if isinstance(value, datetime):
@@ -1253,7 +1256,11 @@ def _to_json_safe_value(value: Any) -> Any:
     if isinstance(value, BaseModel):
         return _to_json_safe_value(value.model_dump(mode="json", by_alias=True))
     if is_dataclass(value):
-        return {item.name: _to_json_safe_value(getattr(value, item.name)) for item in fields(value)}
+        return {
+            item.name: _to_json_safe_value(getattr(value, item.name))
+            for item in fields(value)
+            if not _is_filtered_structure_field(item.name)
+        }
     if isinstance(value, (list, tuple, set)):
         return [_to_json_safe_value(item) for item in value]
     if isinstance(value, dict):
@@ -1262,7 +1269,7 @@ def _to_json_safe_value(value: Any) -> Any:
         return {
             str(key): _to_json_safe_value(item)
             for key, item in vars(value).items()
-            if not key.startswith("_") and not callable(item)
+            if not key.startswith("_") and not callable(item) and not _is_filtered_structure_field(str(key))
         }
     return str(value)
 

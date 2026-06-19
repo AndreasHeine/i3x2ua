@@ -14,7 +14,7 @@ from asyncua import ua
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
-from i3x_server.api.v1.monolithic import _expanded_node_id
+from i3x_server.api.v1.monolithic import _expanded_node_id, _to_json_safe_value
 from i3x_server.bootstrap.app_factory import create_app
 from i3x_server.infrastructure.opcua.client import (
     OpcUaConnectionSnapshot,
@@ -45,6 +45,17 @@ class FakeExtensionObject:
     def __init__(self, type_id: str, body: Any) -> None:
         self.TypeId = type_id
         self.Body = body
+
+
+def test_to_json_safe_value_filters_structure_encoding_field() -> None:
+    @dataclass(slots=True)
+    class _LocalizedText:
+        Encoding: int = 0
+        Locale: str | None = None
+        Text: str | None = None
+
+    serialized = _to_json_safe_value(_LocalizedText(Locale=None, Text="Executing"))
+    assert serialized == {"Locale": None, "Text": "Executing"}
 
 
 def _fastapi_app(client: TestClient) -> FastAPI:

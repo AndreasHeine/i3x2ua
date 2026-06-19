@@ -414,6 +414,9 @@ def test_localizedtext_deduplicates_between_value_and_annotation_paths() -> None
     assert value_ref == {"$ref": "#/$defs/LocalizedText"}
     assert annotation_ref == {"$ref": "#/$defs/LocalizedText"}
     assert list(registry.defs.keys()) == ["LocalizedText"]
+    localized_text_def = registry.defs["LocalizedText"]
+    assert "Encoding" not in localized_text_def["properties"]
+    assert set(localized_text_def["properties"].keys()) == {"Locale", "Text"}
 
 
 def test_isa95_workmaster_deduplicates_between_annotation_and_datatype_paths() -> None:

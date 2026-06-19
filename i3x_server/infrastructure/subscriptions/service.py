@@ -245,7 +245,7 @@ class SubscriptionService:
                         removed.append(state)
 
                 for state in removed:
-                    logger.info("Subscription expired by TTL subscription_id=%s", state.subscription_id)
+                    logger.warning("Subscription expired by TTL subscription_id=%s", state.subscription_id)
                     await self._stop_runtime(state)
         except asyncio.CancelledError:
             return
@@ -720,7 +720,7 @@ class SubscriptionService:
                     resolved_node_id = mapped
 
             self._append_update(state, resolved_node_id, value)
-            logger.info(
+            logger.debug(
                 "Subscription datachange callback subscription_id=%s mode=%s node_id=%s client_handle=%s",
                 subscription_id,
                 state.mode,

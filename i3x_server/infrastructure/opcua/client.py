@@ -121,7 +121,7 @@ class OpcUaClient:
         self._goodish_quality_labels = {"good", "uncertain"}
         self._connection_state = "Disconnected"
         self._connection_state_since = datetime.now(tz=timezone.utc)
-        self._connection_monitor_interval_seconds = max(0, connection_monitor_interval_seconds)
+        self._connection_monitor_interval_seconds = max(1, connection_monitor_interval_seconds)
         self._connection_monitor_task: asyncio.Task[None] | None = None
 
     def reset_runtime_metrics(self) -> None:
@@ -430,7 +430,7 @@ class OpcUaClient:
                 type_definition_obj = await node.read_type_definition()
                 type_definition_id = _normalize_type_definition_id(type_definition_obj.to_string())
             except Exception:
-                logger.debug(
+                logger.warning(
                     "OPC UA type definition read failed endpoint=%s node_id=%s",
                     self._endpoint,
                     node_id,
@@ -793,7 +793,7 @@ class OpcUaClient:
             raw = await self._client.nodes.namespace_array.read_value()
             namespaces = [str(item) for item in raw] if isinstance(raw, list) else []
             self._runtime_metrics.namespace_count_last = len(namespaces)
-            logger.info(
+            logger.debug(
                 "OPC UA namespaces read ok endpoint=%s count=%d duration_s=%.3f",
                 self._endpoint,
                 len(namespaces),
@@ -836,7 +836,7 @@ class OpcUaClient:
             namespace_components = [
                 self._client.get_node(ref.NodeId) for _, refs in namespace_components_browse for ref in refs
             ]
-            logger.info(
+            logger.debug(
                 "OPC UA namespace metadata components endpoint=%s count=%d",
                 self._endpoint,
                 len(namespace_components),
@@ -870,7 +870,7 @@ class OpcUaClient:
 
             for component, refs in component_children_browse:
                 component_display = component_display_by_id.get(component.nodeid.to_string(), "")
-                logger.info(
+                logger.debug(
                     "OPC UA namespace metadata component endpoint=%s node_id=%s children=%d",
                     self._endpoint,
                     component.nodeid.to_string(),
@@ -1011,7 +1011,7 @@ class OpcUaClient:
                 for node_id, (parent_node_id, browse_name, display_name, _) in discovered.items()
             ]
 
-            logger.info(
+            logger.debug(
                 "OPC UA object types read ok endpoint=%s count=%d duration_s=%.3f",
                 self._endpoint,
                 len(output),
@@ -1491,7 +1491,7 @@ class OpcUaClient:
         for batch in _chunked(node_ids, batch_size):
             values.extend(await self._read_values_batch_with_fallback(batch))
 
-        logger.info(
+        logger.debug(
             "OPC UA batch read ok endpoint=%s requested=%d batch_size=%d duration_s=%.3f",
             self._endpoint,
             len(node_ids),
@@ -1548,7 +1548,7 @@ class OpcUaClient:
 
         self._runtime_metrics.read_calls += 1
         self._runtime_metrics.read_nodes += len(node_ids)
-        logger.info(
+        logger.debug(
             "OPC UA batch data-value read ok endpoint=%s requested=%d duration_s=%.3f",
             self._endpoint,
             len(node_ids),
@@ -1654,7 +1654,7 @@ class OpcUaClient:
         pairs = await asyncio.gather(*[worker(node_id) for node_id in node_ids])
         values_by_node_id = {node_id: values for node_id, values in pairs}
 
-        logger.info(
+        logger.debug(
             "OPC UA history read ok endpoint=%s nodes=%d values=%d duration_s=%.3f",
             self._endpoint,
             len(node_ids),

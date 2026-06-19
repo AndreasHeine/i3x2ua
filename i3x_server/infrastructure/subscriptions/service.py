@@ -231,8 +231,6 @@ class SubscriptionService:
                 now = self._now_monotonic()
                 async with self._lock:
                     for state in self._subscriptions.values():
-                        if state.stream_connected:
-                            continue
                         if now - state.last_activity_monotonic >= self._ttl_seconds:
                             stale_ids.append(state.subscription_id)
 
@@ -689,7 +687,8 @@ class SubscriptionService:
                 client_handle,
             )
             state.native_timeout_count = 0
-            self._touch(state)
+            # Removed self._touch(state) to ensure server notifications don't keep stale subscriptions alive.
+            # Only client activity (sync, wait_for_updates) should refresh the TTL.
 
     async def _reconfigure_runtime(self, subscription_id: str) -> None:
         async with self._lock:

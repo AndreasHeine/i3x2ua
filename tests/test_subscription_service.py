@@ -590,6 +590,28 @@ async def test_subscription_ttl_expires_inactive_subscription() -> None:
     await service.close()
 
 
+@pytest.mark.asyncio
+async def test_subscription_ttl_ignores_server_callbacks() -> None:
+    # Set TTL to 1 second
+    service = SubscriptionService(cast(OpcUaClientProtocol, FakeOpcUaClient()), interval_seconds=0.1, ttl_seconds=1)
+    created = await service.create_subscription(client_id="c1", display_name="s1")
+    subscription_id = created.subscription_id
+
+    # Simulate frequent server-side callbacks (every 0.2s for 1.5s total)
+    # Total time > TTL, but each gap < TTL.
+    for i in range(7):
+        service.schedule_datachange(subscription_id, "node1", i, client_handle=None)
+        await asyncio.sleep(0.2)
+
+    # If the fix works, the subscription should now be considered stale
+    # because the client hasn't called sync/wait_for_updates for > 1s,
+    # even though server updates were arriving.
+    await asyncio.sleep(0.5)  # Ensure cleanup loop has run at least once since last sleep
+    synced = await service.sync("c1", subscription_id, acknowledge_sequence=0)
+    assert synced is None, "Subscription should have expired despite server callbacks"
+    await service.close()
+
+
 def test_collect_property_source_mappings_depth_limit() -> None:
     service = SubscriptionService(cast(OpcUaClientProtocol, FakeOpcUaClient()), interval_seconds=1)
     model = _model()

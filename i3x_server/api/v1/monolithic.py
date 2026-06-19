@@ -8,6 +8,7 @@ import logging
 import os
 import re
 from collections.abc import Callable, Mapping
+from contextlib import nullcontext as _nullcontext
 from copy import deepcopy
 from dataclasses import dataclass, fields, is_dataclass
 from datetime import datetime, timezone
@@ -1527,10 +1528,21 @@ async def _build_object_type_context(
     started = perf_counter()
     object_types_by_node_id = {item.node_id: item for item in object_types}
     element_ids_by_node_id = _object_type_element_ids_by_node_id(object_types, namespace_infos)
-    items = [
-        _to_object_type(item, model, namespace_infos, object_types_by_node_id, element_ids_by_node_id, {})
-        for item in object_types
-    ]
+
+    items: list[ObjectTypeResponse] = []
+    # Process in chunks to avoid blocking the event loop for too long
+    # (essential for OPC UA keep-alives during heavy processing)
+    chunk_size = 50
+    for i in range(0, len(object_types), chunk_size):
+        chunk = object_types[i : i + chunk_size]
+        items.extend(
+            [
+                _to_object_type(item, model, namespace_infos, object_types_by_node_id, element_ids_by_node_id, {})
+                for item in chunk
+            ]
+        )
+        await asyncio.sleep(0)
+
     items.extend(_synthetic_object_types_from_structure_defs(items, namespace_infos))
 
     referenced_type_element_ids = _collect_referenced_type_element_ids(
@@ -1613,46 +1625,49 @@ async def _get_object_type_context(
     )
     object_types = await opcua_client.get_object_types()
 
-    cache = getattr(request.app.state, "object_type_context_cache", None)
-    model_token = id(model)
-    namespace_token = id(resolved_namespace_infos)
-    object_types_token = id(object_types)
-    if isinstance(cache, dict):
-        if (
-            cache.get("model_token") == model_token
-            and cache.get("namespace_token") == namespace_token
-            and cache.get("object_types_token") == object_types_token
-        ):
-            cached_context = cache.get("context")
-            if isinstance(cached_context, _ObjectTypeContext):
-                logger.debug(
-                    "Object type context cache hit model_nodes=%d object_types=%d duration_s=%.3f",
-                    len(model.nodes_by_id),
-                    len(object_types),
-                    perf_counter() - started,
-                )
-                return cached_context
+    # Shared lock to prevent concurrent heavy rebuilds from multiple clients
+    lock = getattr(request.app.state, "object_type_lock", None)
+    async with lock if lock else _nullcontext():
+        cache = getattr(request.app.state, "object_type_context_cache", None)
+        model_token = id(model)
+        namespace_token = id(resolved_namespace_infos)
+        object_types_token = id(object_types)
+        if isinstance(cache, dict):
+            if (
+                cache.get("model_token") == model_token
+                and cache.get("namespace_token") == namespace_token
+                and cache.get("object_types_token") == object_types_token
+            ):
+                cached_context = cache.get("context")
+                if isinstance(cached_context, _ObjectTypeContext):
+                    logger.debug(
+                        "Object type context cache hit model_nodes=%d object_types=%d duration_s=%.3f",
+                        len(model.nodes_by_id),
+                        len(object_types),
+                        perf_counter() - started,
+                    )
+                    return cached_context
 
-    context = await _build_object_type_context(
-        model=model,
-        namespace_infos=resolved_namespace_infos,
-        opcua_client=opcua_client,
-        object_types=object_types,
-    )
-    request.app.state.object_type_context_cache = {
-        "model_token": model_token,
-        "namespace_token": namespace_token,
-        "object_types_token": object_types_token,
-        "context": context,
-    }
-    logger.info(
-        "Object type context cache miss rebuilt model_nodes=%d object_types=%d items=%d duration_s=%.3f",
-        len(model.nodes_by_id),
-        len(object_types),
-        len(context.items),
-        perf_counter() - started,
-    )
-    return context
+        context = await _build_object_type_context(
+            model=model,
+            namespace_infos=resolved_namespace_infos,
+            opcua_client=opcua_client,
+            object_types=object_types,
+        )
+        request.app.state.object_type_context_cache = {
+            "model_token": model_token,
+            "namespace_token": namespace_token,
+            "object_types_token": object_types_token,
+            "context": context,
+        }
+        logger.info(
+            "Object type context cache miss rebuilt model_nodes=%d object_types=%d items=%d duration_s=%.3f",
+            len(model.nodes_by_id),
+            len(object_types),
+            len(context.items),
+            perf_counter() - started,
+        )
+        return context
 
 
 async def _get_object_endpoint_context(

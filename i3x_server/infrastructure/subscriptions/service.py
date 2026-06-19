@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from math import ceil
@@ -140,6 +141,7 @@ class SubscriptionService:
         self._subscriptions: dict[str, _SubscriptionState] = {}
         self._cleanup_task: asyncio.Task[None] | None = None
         self._event_loop: asyncio.AbstractEventLoop | None = None
+        self._shutdown_event: asyncio.Event = asyncio.Event()
         self._opcua_client.add_reconnect_listener(self._handle_client_reconnect)
 
     def _remember_event_loop(self) -> None:
@@ -260,11 +262,33 @@ class SubscriptionService:
             logger.info("Reconfiguring native subscription after reconnect subscription_id=%s", subscription_id)
             await self._reconfigure_runtime(subscription_id)
 
+    def initiate_shutdown(self) -> None:
+        """Signal all active SSE streams to close immediately.
+
+        Call this as early as possible (e.g. from a SIGINT/SIGTERM handler)
+        so that streaming HTTP connections are released *before* Uvicorn
+        enters its "Waiting for connections to close" phase.  The full
+        ``close()`` coroutine still needs to be awaited afterwards to stop
+        OPC UA subscriptions and disconnect the client.
+        """
+        self._shutdown_event.set()
+        # Also pulse every per-subscription event so that tasks blocked in
+        # wait_for_updates() wake up immediately without waiting for their
+        # next timeout cycle.
+        for state in self._subscriptions.values():
+            state.update_event.set()
+
     async def close(self) -> None:
+        # Signal all waiting SSE stream tasks to wake up and terminate *before*
+        # any cleanup so that HTTP connections can be closed while Uvicorn is
+        # still in its "Waiting for connections to close" phase.
+        self._shutdown_event.set()
         async with self._lock:
             subscriptions = list(self._subscriptions.values())
 
         for subscription in subscriptions:
+            # Signal any waiting stream tasks (wait_for_updates) to wake up and terminate
+            subscription.update_event.set()
             await self._stop_runtime(subscription)
 
         cleanup_task = self._cleanup_task
@@ -595,9 +619,26 @@ class SubscriptionService:
                 interval_seconds = refresh_interval_seconds or self._interval_seconds
                 refresh_timeout_threshold = max(1, ceil(interval_seconds / max(0.001, timeout_seconds)))
 
-        try:
-            await asyncio.wait_for(wait_event.wait(), timeout=timeout_seconds)
-        except TimeoutError:
+        # Race: per-subscription update, service-wide shutdown, or wall-clock timeout.
+        # Using asyncio.wait so we can also abort early on server shutdown without
+        # replacing Uvicorn's own SIGINT/SIGTERM handling.
+        _wakeup = asyncio.ensure_future(wait_event.wait())
+        _abort = asyncio.ensure_future(self._shutdown_event.wait())
+        done, _pending = await asyncio.wait(
+            {_wakeup, _abort},
+            timeout=timeout_seconds,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for _task in (_wakeup, _abort):
+            _task.cancel()
+            with suppress(asyncio.CancelledError):
+                await _task
+
+        if self._shutdown_event.is_set():
+            # Server is shutting down; tell the SSE generator to close gracefully.
+            return None
+
+        if not done:  # wall-clock timeout – same logic as the former except TimeoutError block
             should_execute_refresh = False
             timeout_count = 0
             async with self._lock:

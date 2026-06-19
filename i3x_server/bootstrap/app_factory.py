@@ -5,6 +5,8 @@ import http
 import logging
 import os
 import re
+import signal
+import types
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 from html import escape
@@ -239,6 +241,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.opcua_client = opcua_client
     app.state.model_builder = ModelBuilder(opcua_client)
     app.state.object_type_context_cache = None
+    app.state.object_type_lock = asyncio.Lock()
     app.state.subscription_service = SubscriptionService(
         opcua_client=opcua_client,
         interval_seconds=settings.subscription_interval_seconds,
@@ -249,6 +252,45 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         native_timeout_refresh_keepalives=settings.subscription_native_timeout_refresh_keepalives,
         native_timeout_refresh_max_seconds=settings.subscription_native_timeout_refresh_max_seconds,
     )
+    # Install a chained signal handler so that active SSE streaming connections
+    # are closed *before* Uvicorn's "Waiting for connections to close" phase.
+    # On Windows (and as a fallback on Unix), Uvicorn uses signal.signal(), so we
+    # save the existing handler and wrap it.  On Unix, asyncio's add_signal_handler
+    # is tried first so that the event-loop callback is already on the right thread.
+    _sub_svc = app.state.subscription_service
+    _loop = asyncio.get_event_loop()
+
+    def _early_shutdown() -> None:
+        """Called from the asyncio event loop when a termination signal fires."""
+        _sub_svc.initiate_shutdown()
+
+    def _make_chained(sig: int) -> None:
+        _old = signal.getsignal(sig)
+
+        def _handler(signum: int, frame: types.FrameType | None) -> None:
+            _loop.call_soon_threadsafe(_early_shutdown)
+            if callable(_old):
+                _old(signum, frame)
+
+        signal.signal(sig, _handler)
+
+    _handled_signals = [signal.SIGINT]
+    if hasattr(signal, "SIGTERM"):
+        _handled_signals.append(signal.SIGTERM)
+    for _sig in _handled_signals:
+        try:
+            # On Unix, prefer asyncio's loop handler so we stay on the event loop thread.
+            _loop.add_signal_handler(_sig, _early_shutdown)
+        except (NotImplementedError, OSError):
+            # Windows: asyncio does not support add_signal_handler; chain with signal.signal.
+            try:
+                _make_chained(_sig)
+            except (ValueError, OSError):
+                # signal.signal() only works from the main thread.
+                # In test environments the lifespan runs in a worker thread, so skip
+                # signal registration silently rather than crashing.
+                pass
+
     app.state.model_lock = asyncio.Lock()
     app.state.model_preload_task = None
     if mcp_enabled:

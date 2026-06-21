@@ -1265,6 +1265,14 @@ def _to_json_safe_value(value: Any) -> Any:
     if isinstance(value, (bytes, bytearray, memoryview)):
         encoded = base64.b64encode(bytes(value)).decode("ascii")
         return {"encoding": "base64", "data": encoded}
+    if hasattr(value, "TypeId") and hasattr(value, "Body"):
+        body = value.Body
+        if body is None:
+            return None
+        return {
+            "TypeId": _to_json_safe_value(value.TypeId),
+            "Body": _to_json_safe_value(body),
+        }
     if isinstance(value, BaseModel):
         return _to_json_safe_value(value.model_dump(mode="json", by_alias=True))
     if is_dataclass(value):

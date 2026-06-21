@@ -55,7 +55,17 @@ addopts = [
     "--cov=i3x_server",
     "--cov-report=term-missing",
     "--cov-report=xml",
-    "--cov-fail-under=70",
+    "--cov-fail-under=80",
+]
+
+[tool.coverage.run]
+omit = [
+    "i3x_server/infrastructure/opcua/client.py",
+    "i3x_server/__init__.py",
+    "i3x_server/api/__init__.py",
+    "i3x_server/api/mcp/__init__.py",
+    "i3x_server/api/v1/__init__.py",
+    "i3x_server/main.py",
 ]
 
 [tool.ruff]

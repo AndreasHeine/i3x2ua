@@ -58,6 +58,11 @@ def test_to_json_safe_value_filters_structure_encoding_field() -> None:
     assert serialized == {"Locale": None, "Text": "Executing"}
 
 
+def test_to_json_safe_value_extension_object_with_null_body_returns_null() -> None:
+    serialized = _to_json_safe_value(FakeExtensionObject("ns=1;i=3001", None))
+    assert serialized is None
+
+
 def _fastapi_app(client: TestClient) -> FastAPI:
     return cast(FastAPI, client.app)
 
@@ -1469,6 +1474,34 @@ def test_v1_value_query_serializes_structured_object_arrays(client: TestClient) 
             },
         },
     ]
+
+
+def test_v1_value_query_structured_null_body_normalized_to_goodnodata(client: TestClient) -> None:
+    async def read_data_values(node_ids: list[str]) -> list[Any]:
+        assert node_ids == ["ns=2;s=Temperature"]
+        return [
+            SimpleNamespace(
+                Value=SimpleNamespace(Value=FakeExtensionObject("ns=1;i=3001", None)),
+                StatusCode=SimpleNamespace(name="Good", is_good=lambda: True),
+                SourceTimestamp=datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc),
+                ServerTimestamp=None,
+            )
+        ]
+
+    _fastapi_app(client).state.opcua_client.read_data_values = read_data_values
+
+    response = client.post(
+        "/v1/objects/value",
+        json={
+            "elementIds": ["property-abc"],
+            "maxDepth": 1,
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    result = payload["results"][0]["result"]
+    assert result["value"] is None
+    assert result["quality"] == "GoodNoData"
 
 
 def test_v1_history_query_serializes_binary_values(client: TestClient) -> None:

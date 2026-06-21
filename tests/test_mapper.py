@@ -1,5 +1,6 @@
 from i3x_server.infrastructure.opcua.client import OpcUaNodeInfo
-from i3x_server.model.mapper import classify_opcua_reference, map_node
+from i3x_server.model.mapper import classify_opcua_reference, classify_opcua_reference_with_confidence, map_node
+from i3x_server.model.semantic_profiles import SemanticProfile
 
 
 def test_map_variable_to_property() -> None:
@@ -95,3 +96,47 @@ def test_classify_opcua_reference_hierarchical_root_defaults_to_hierarchy() -> N
 def test_classify_opcua_reference_unknown_defaults_to_graph() -> None:
     result = classify_opcua_reference("ns=2;i=2222", "UnknownVendorReference")
     assert result == "graph"
+
+
+def test_profile_classification_prefers_hascomponent_for_variable_targets() -> None:
+    generic_profile = SemanticProfile(
+        profile_id="generic",
+        priority=10,
+        namespace_uri_fragment="",
+        hierarchy_references=("HierarchicalReferences",),
+        composition_references=("HasComponent",),
+        graph_references=("NonHierarchicalReferences",),
+    )
+
+    classification, confidence = classify_opcua_reference_with_confidence(
+        reference_type_node_id="ns=2;i=5001",
+        reference_browse_name="VendorComposedBy",
+        supertype_browse_names=["HasComponent", "HierarchicalReferences"],
+        target_node_class="Variable",
+        profiles=(generic_profile,),
+    )
+
+    assert classification == "composition"
+    assert confidence == "medium"
+
+
+def test_profile_classification_keeps_hascomponent_hierarchy_for_object_targets() -> None:
+    generic_profile = SemanticProfile(
+        profile_id="generic",
+        priority=10,
+        namespace_uri_fragment="",
+        hierarchy_references=("HierarchicalReferences",),
+        composition_references=("HasComponent",),
+        graph_references=("NonHierarchicalReferences",),
+    )
+
+    classification, confidence = classify_opcua_reference_with_confidence(
+        reference_type_node_id="ns=2;i=5001",
+        reference_browse_name="VendorComposedBy",
+        supertype_browse_names=["HasComponent", "HierarchicalReferences"],
+        target_node_class="Object",
+        profiles=(generic_profile,),
+    )
+
+    assert classification == "hierarchy"
+    assert confidence == "high"

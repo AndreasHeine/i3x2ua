@@ -101,6 +101,7 @@ def _normalize_token(value: str | None) -> str:
 def _reference_class_from_profile_rules(
     tokens: set[str],
     profiles: tuple[SemanticProfile, ...] | None,
+    target_node_class: str | None,
 ) -> ReferenceClass | None:
     if not profiles:
         return None
@@ -108,12 +109,17 @@ def _reference_class_from_profile_rules(
         hierarchy_tokens = {_normalize_token(name) for name in profile.hierarchy_references}
         composition_tokens = {_normalize_token(name) for name in profile.composition_references}
         graph_tokens = {_normalize_token(name) for name in profile.graph_references}
-        if tokens & hierarchy_tokens:
-            return "hierarchy"
-        if tokens & composition_tokens:
-            return "composition"
-        if tokens & graph_tokens:
+        has_graph_match = bool(tokens & graph_tokens)
+        has_hierarchy_match = bool(tokens & hierarchy_tokens)
+        has_composition_match = bool(tokens & composition_tokens)
+
+        if has_graph_match:
             return "graph"
+
+        # If profile rules match the hierarchical family, delegate to shared
+        # family classification so HasComponent can map by target class.
+        if has_hierarchy_match or has_composition_match:
+            return _classify_hierarchical_family(tokens, target_node_class)
     return None
 
 
@@ -193,8 +199,10 @@ def classify_opcua_reference_with_confidence(
             return classification, "medium"
         return classification, "high"
 
-    profile_class = _reference_class_from_profile_rules(tokens, profiles)
+    profile_class = _reference_class_from_profile_rules(tokens, profiles, target_node_class)
     if profile_class is not None:
+        if profile_class == "composition":
+            return profile_class, "medium"
         return profile_class, "high"
 
     classification = classify_opcua_reference(

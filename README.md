@@ -184,12 +184,20 @@ Active endpoints are exposed under `/v1` for:
 
 Current scope emphasis: this implementation currently prioritizes read/query/subscribe operations.
 
+Optional OPC UA diagnostic endpoints are exposed under `/ua`:
+
+- client state and connectivity (`/ua/state`, `/ua/connection`)
+- session limits and metrics (`/ua/limits`, `/ua/metrics`)
+
 Optional MCP endpoints are exposed only when `I3X_ENABLE_MCP=1`:
 
-- discovery and tool catalog (`/mcp`, `/mcp/tools`)
-- JSON-RPC and tool call entry points (`/mcp`, `/mcp/call`)
+- SSE discovery and JSON-RPC 2.0 entry point (`GET /mcp`, `POST /mcp`)
+- tool catalog and REST tool call (`/mcp/tools`, `/mcp/call`)
+- prompt listing, definition, and execution (`/mcp/prompts`, `/mcp/prompts/{name}`, `/mcp/prompts/execute`)
+- resource listing and reading (`/mcp/resources`, `/mcp/resources/read`)
+- root listing (`/mcp/roots`)
 
-MCP scope emphasis: the MCP bridge is currently focused on tool calling (`initialize`, `tools/list`, `tools/call`) for the current implementation scope.
+MCP scope emphasis: the MCP bridge supports `initialize`, `tools/list`, `tools/call`, `prompts/list`, `prompts/get`, `resources/list`, `resources/read`, `roots/list`, and JSON-RPC 2.0 batch requests.
 
 ## Current Limitations
 

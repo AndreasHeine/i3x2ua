@@ -14,8 +14,7 @@ from i3x_server.application.services.model_query import (
     _build_server_info,
     _to_namespace,
 )
-from i3x_server.domain.ports.opcua import OpcUaClientProtocol
-from i3x_server.opcua.contracts import OpcUaNamespaceInfo
+from i3x_server.domain.ports.opcua import OpcUaClientProtocol, OpcUaNamespaceInfo
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
 

@@ -12,7 +12,7 @@ from i3x_server.application.ports.subscription import SubscriptionServicePort
 from i3x_server.application.services.mcp import McpService
 from i3x_server.application.services.object_value import ObjectValueService
 from i3x_server.application.services.subscription import SubscriptionAppService
-from i3x_server.dependencies import get_opcua_client, get_or_build_model, get_subscription_service
+from i3x_server.bootstrap.dependencies import get_opcua_client, get_or_build_model, get_subscription_service
 from i3x_server.domain.ports.opcua import OpcUaClientProtocol
 from i3x_server.schemas.state import BuildResult
 

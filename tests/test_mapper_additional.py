@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+from i3x_server.domain.ports.opcua import OpcUaNodeInfo
 from i3x_server.model.mapper import _normalize_token, classify_opcua_reference, map_node
-from i3x_server.opcua.contracts import OpcUaNodeInfo
 
 
 def test_normalize_token_empty_and_separator_cases() -> None:

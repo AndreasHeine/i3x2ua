@@ -7,7 +7,7 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from starlette.requests import Request
 
-from i3x_server.dependencies import (
+from i3x_server.bootstrap.dependencies import (
     get_model_builder,
     get_opcua_client,
     get_or_build_model,

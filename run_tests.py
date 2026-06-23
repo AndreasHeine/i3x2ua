@@ -4,7 +4,8 @@ Commands:
 1) uv run --extra dev ruff check .
 2) uv run --extra dev ruff format .
 3) uv run --extra dev mypy .
-4) uv run --extra dev pytest -q --cov=i3x_server --cov-report=term-missing
+4) uv run lint-imports
+5) uv run --extra dev pytest -q --cov=i3x_server --cov-report=term-missing
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ COMMANDS: list[list[str]] = [
     [*BASE_COMMAND, "ruff", "check", "."],
     [*BASE_COMMAND, "ruff", "format", "."],
     [*BASE_COMMAND, "mypy", "."],
+    ["uv", "run", "lint-imports"],
     [*BASE_COMMAND, "pytest", "-q", "--cov=i3x_server", "--cov-report=term-missing"],
 ]
 

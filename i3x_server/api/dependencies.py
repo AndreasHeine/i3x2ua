@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from fastapi import Depends
 
+from i3x_server.application.ports.opcua import OpcUaClientProtocol
 from i3x_server.application.services.model_query import ModelQueryService
-from i3x_server.dependencies import get_opcua_client, get_or_build_model
-from i3x_server.domain.ports.opcua import OpcUaClientProtocol
+from i3x_server.bootstrap.dependencies import get_opcua_client, get_or_build_model
 from i3x_server.schemas.state import BuildResult
 
 

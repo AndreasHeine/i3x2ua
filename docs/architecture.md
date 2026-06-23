@@ -4,6 +4,58 @@
 
 This document defines module ownership and dependency direction for the i3x2ua codebase. It is intended to keep refactor outcomes stable as new features are added.
 
+## Hexagonal Architecture Diagram (Current State)
+
+```mermaid
+graph LR
+	subgraph Inbound["Inbound Adapters (Driving)"]
+		REST["REST API\ni3x_server/api/*"]
+		MCP["MCP Entry\ni3x_server/mcp.py\napi/mcp/monolithic.py"]
+	end
+
+	subgraph Bootstrap["Composition Root"]
+		BOOT["bootstrap/app_factory.py\nbootstrap/dependencies.py"]
+	end
+
+	subgraph App["Application Layer"]
+		APP_SVC["application/services/*"]
+		APP_DEP["application/dependencies.py"]
+		APP_PORTS["application/ports/*\nsubscription.py\nopcua.py (facade)"]
+	end
+
+	subgraph Domain["Domain Core"]
+		DOM_PORTS["domain/ports/opcua.py\n(canonical OPC UA contracts)"]
+		DOM_UTIL["domain/utils.py"]
+		DOM_MODEL["model/*, schemas/*"]
+	end
+
+	subgraph Outbound["Outbound Adapters (Driven)"]
+		OPCUA_ADAPTER["infrastructure/opcua/client.py"]
+		SUB_ADAPTER["infrastructure/subscriptions/service.py"]
+	end
+
+	REST --> APP_SVC
+	REST --> APP_DEP
+	REST --> APP_PORTS
+	MCP --> APP_SVC
+
+	BOOT --> REST
+	BOOT --> MCP
+	BOOT --> APP_DEP
+	BOOT --> OPCUA_ADAPTER
+	BOOT --> SUB_ADAPTER
+
+	APP_SVC --> APP_PORTS
+	APP_SVC --> DOM_PORTS
+	APP_SVC --> DOM_UTIL
+	APP_SVC --> DOM_MODEL
+
+	APP_PORTS -."re-exports".-> DOM_PORTS
+
+	OPCUA_ADAPTER --> DOM_PORTS
+	SUB_ADAPTER --> DOM_PORTS
+```
+
 ## Layer Model
 
 The project follows a layered architecture inside i3x_server:

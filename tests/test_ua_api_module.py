@@ -16,8 +16,8 @@ from i3x_server.api import (
     get_ua_metrics,
     get_ua_state,
 )
-from i3x_server.domain.ports.opcua import OpcUaClientProtocol
-from i3x_server.opcua.contracts import (
+from i3x_server.domain.ports.opcua import (
+    OpcUaClientProtocol,
     OpcUaOperationalLimits,
     OpcUaRequestMetrics,
     OpcUaSubscriptionCapabilities,

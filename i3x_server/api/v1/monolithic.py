@@ -24,6 +24,11 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from typing_extensions import Never
 
+from i3x_server.application.ports.opcua import (
+    OpcUaClientProtocol,
+    OpcUaNamespaceInfo,
+    OpcUaObjectTypeInfo,
+)
 from i3x_server.application.ports.subscription import SubscriptionServicePort
 from i3x_server.application.services.subscription_mapper import (
     SubscriptionBulkItemDto,
@@ -32,12 +37,7 @@ from i3x_server.application.services.subscription_mapper import (
     map_public_sync_batches,
     map_subscription_detail_bulk_items,
 )
-from i3x_server.dependencies import get_opcua_client, get_or_build_model, get_subscription_service
-from i3x_server.domain.ports.opcua import (
-    OpcUaClientProtocol,
-    OpcUaNamespaceInfo,
-    OpcUaObjectTypeInfo,
-)
+from i3x_server.bootstrap.dependencies import get_opcua_client, get_or_build_model, get_subscription_service
 from i3x_server.errors import i3x_http_error
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.objecttype_schema import (

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from i3x_server.domain.ports.opcua import OpcUaNamespaceInfo
 from i3x_server.domain.utils import (
     canonical_namespace_uri,
     display_name_for_uri,
@@ -14,7 +15,6 @@ from i3x_server.domain.utils import (
     normalize_namespace_uri,
     server_name_from_openapi,
 )
-from i3x_server.opcua.contracts import OpcUaNamespaceInfo
 
 
 def _infos() -> list[OpcUaNamespaceInfo]:

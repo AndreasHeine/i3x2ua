@@ -16,7 +16,7 @@ from asyncua.ua import NodeClass
 from asyncua.ua.attribute_ids import AttributeIds
 from asyncua.ua.object_ids import ObjectIds
 
-from i3x_server.opcua.contracts import (
+from i3x_server.domain.ports.opcua import (
     OpcUaClientProtocol,
     OpcUaConnectionSnapshot,
     OpcUaNamespaceInfo,

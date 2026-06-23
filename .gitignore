@@ -41,3 +41,8 @@ coverage*.xml
 # OS files
 .DS_Store
 Thumbs.db
+
+# Frontend (SvelteKit/Vite)
+frontend/node_modules/
+frontend/.svelte-kit/
+frontend/.vite/

@@ -10,6 +10,8 @@ RUN apt-get update \
         build-essential \
         cargo \
         libssl-dev \
+        nodejs \
+        npm \
         pkg-config \
         rustc \
     && rm -rf /var/lib/apt/lists/*
@@ -18,8 +20,13 @@ RUN pip install --no-cache-dir uv
 
 COPY pyproject.toml uv.lock README.md /app/
 COPY i3x_server /app/i3x_server
+COPY frontend /app/frontend
 
 RUN uv sync --no-dev --frozen
+
+RUN cd /app/frontend \
+    && npm ci \
+    && npm run build
 
 
 FROM python:3.14-slim AS runtime
@@ -42,6 +49,7 @@ RUN apt-get update \
 
 COPY --from=builder /app/.venv /app/.venv
 COPY i3x_server /app/i3x_server
+COPY --from=builder /app/dist /app/dist
 COPY static /app/static
 RUN printf "%s\n" "${BUILD_VERSION}" > /app/server-version.txt \
     && chown app:app /app/server-version.txt

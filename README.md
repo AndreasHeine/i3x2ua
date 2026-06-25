@@ -2,7 +2,7 @@
 
 **FastAPI gateway implementing the i3X API over OPC UA — exposes OPC UA address spaces as standardized REST and MCP endpoints with JSON responses, OpenAPI docs, and Server-Sent Event subscriptions. Built for teams that do not have deep OPC UA expertise.**
 
-[![Container Build](https://github.com/AndreasHeine/i3x2ua/actions/workflows/docker.yml/badge.svg)](https://github.com/AndreasHeine/i3x2ua/actions/workflows/docker.yml) [![Quality Checks](https://github.com/AndreasHeine/i3x2ua/actions/workflows/quality.yml/badge.svg)](https://github.com/AndreasHeine/i3x2ua/actions/workflows/quality.yml) [![Coverage](https://codecov.io/gh/AndreasHeine/i3x2ua/branch/master/graph/badge.svg)](https://codecov.io/gh/AndreasHeine/i3x2ua) [![Dependabot Updates](https://github.com/AndreasHeine/i3x2ua/actions/workflows/dependabot/dependabot-updates/badge.svg)](https://github.com/AndreasHeine/i3x2ua/actions/workflows/dependabot/dependabot-updates) [![Dependency Graph](https://github.com/AndreasHeine/i3x2ua/actions/workflows/dependabot/update-graph/badge.svg)](https://github.com/AndreasHeine/i3x2ua/actions/workflows/dependabot/update-graph)
+[![Container Build](https://github.com/AndreasHeine/i3x2ua/actions/workflows/docker.yml/badge.svg?branch=master)](https://github.com/AndreasHeine/i3x2ua/actions/workflows/docker.yml) [![Quality Checks](https://github.com/AndreasHeine/i3x2ua/actions/workflows/quality.yml/badge.svg?branch=master)](https://github.com/AndreasHeine/i3x2ua/actions/workflows/quality.yml) [![Coverage](https://codecov.io/gh/AndreasHeine/i3x2ua/branch/master/graph/badge.svg)](https://codecov.io/gh/AndreasHeine/i3x2ua)
 
 ![i3X Logo](static/i3X_logo.png)
 

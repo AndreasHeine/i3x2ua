@@ -5,6 +5,15 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 
+def _csp_source_tokens(csp: str) -> set[str]:
+    tokens: set[str] = set()
+    for directive in csp.split(";"):
+        parts = directive.strip().split()
+        if len(parts) > 1:
+            tokens.update(parts[1:])
+    return tokens
+
+
 def test_get_model(client: TestClient) -> None:
     response = client.get("/model")
     assert response.status_code == 404
@@ -52,17 +61,17 @@ def test_landing_page_with_mcp_disabled(client_without_mcp: TestClient) -> None:
 def test_docs_csp_allows_swagger_cdn_assets(client: TestClient) -> None:
     response = client.get("/docs")
     assert response.status_code == 200
-    csp = response.headers.get("Content-Security-Policy", "")
-    assert "https://cdn.jsdelivr.net" in csp
-    assert "https://fastapi.tiangolo.com" in csp
+    csp_sources = _csp_source_tokens(response.headers.get("Content-Security-Policy", ""))
+    assert "https://cdn.jsdelivr.net" in csp_sources
+    assert "https://fastapi.tiangolo.com" in csp_sources
 
 
 def test_landing_page_csp_remains_strict(client: TestClient) -> None:
     response = client.get("/")
     assert response.status_code == 200
-    csp = response.headers.get("Content-Security-Policy", "")
-    assert "https://cdn.jsdelivr.net" not in csp
-    assert "https://fastapi.tiangolo.com" not in csp
+    csp_sources = _csp_source_tokens(response.headers.get("Content-Security-Policy", ""))
+    assert "https://cdn.jsdelivr.net" not in csp_sources
+    assert "https://fastapi.tiangolo.com" not in csp_sources
 
 
 def test_static_logo_is_served(client: TestClient) -> None:

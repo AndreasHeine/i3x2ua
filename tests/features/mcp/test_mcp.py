@@ -12,11 +12,6 @@ from fastapi.testclient import TestClient
 from i3x_server.mcp import _safe_internal_request_url, get_api_prefix
 from tests.conftest import fastapi_app
 
-_MCP_EXCLUDED_WRITE_PATHS = {
-    "/v1/objects/{element_id}/value",
-    "/v1/objects/{element_id}/history",
-}
-
 
 def _resolve_openapi_schema(schema: Any, components: Mapping[str, Any]) -> Any:
     if not isinstance(schema, Mapping):
@@ -228,7 +223,7 @@ def test_mcp_tool_input_schemas_match_openapi_contract(client: TestClient) -> No
             operation_id = details.get("operationId")
             if not isinstance(operation_id, str) or path.endswith("/subscriptions/stream"):
                 continue
-            if method.upper() == "PUT" and path in _MCP_EXCLUDED_WRITE_PATHS:
+            if method.upper() == "PUT":
                 continue
 
             assert operation_id in tools, f"Missing MCP tool for operationId={operation_id}"

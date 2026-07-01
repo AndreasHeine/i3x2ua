@@ -43,12 +43,14 @@ class ConformanceFixtureServer:
         update_interval_seconds: float,
         history_seed_minutes: int,
         history_sample_seconds: int,
+        deep_levels: int,
     ) -> None:
         self._endpoint = endpoint
         self._namespace_uri = namespace_uri
         self._update_interval_seconds = update_interval_seconds
         self._history_seed_minutes = history_seed_minutes
         self._history_sample_seconds = history_sample_seconds
+        self._deep_levels = deep_levels
         self._stop_event = asyncio.Event()
         self._signals: list[SignalNode] = []
         self._server: Server | None = None
@@ -106,6 +108,8 @@ class ConformanceFixtureServer:
             )
         )
 
+        await self._create_deep_nested_structure(idx=idx, parent=plant)
+
         await self._configure_history(server)
         if self._history_seed_minutes > 0:
             await self._seed_history()
@@ -144,6 +148,24 @@ class ConformanceFixtureServer:
             SignalNode("Speed", speed, speed_base, 55.0, 47.0, 2.2, ua.VariantType.Double),
             SignalNode("IsRunning", run_state, 1.0, 1.0, 18.0, 0.0, ua.VariantType.Boolean),
         ]
+
+    async def _create_deep_nested_structure(self, idx: int, parent: Any) -> None:
+        if self._deep_levels <= 0:
+            return
+
+        branch = await parent.add_object(idx, "DeepNested")
+        current = branch
+        for level in range(1, self._deep_levels + 1):
+            level_name = f"Level_{level:02d}"
+            current = await current.add_object(idx, level_name)
+            depth_number = await current.add_variable(idx, "DepthNumber", level)
+            depth_path = await current.add_variable(
+                idx,
+                "DepthPath",
+                "/".join(f"Level_{n:02d}" for n in range(1, level + 1)),
+            )
+            await depth_number.set_writable()
+            await depth_path.set_writable()
 
     async def _set_historizing_flags(self, node: Any) -> None:
         access_level = (
@@ -323,6 +345,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Sampling interval for seeded history",
     )
     parser.add_argument(
+        "--deep-levels",
+        type=int,
+        default=50,
+        help="How many nested object levels to create under ConformancePlant/DeepNested",
+    )
+    parser.add_argument(
         "--log-level",
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
@@ -345,6 +373,7 @@ async def _main_async() -> None:
         update_interval_seconds=max(args.update_interval_seconds, 0.2),
         history_seed_minutes=max(args.history_seed_minutes, 0),
         history_sample_seconds=max(args.history_sample_seconds, 1),
+        deep_levels=max(args.deep_levels, 0),
     )
     await server.run()
 

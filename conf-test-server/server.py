@@ -146,7 +146,11 @@ class ConformanceFixtureServer:
         ]
 
     async def _set_historizing_flags(self, node: Any) -> None:
-        access_level = int(ua.AccessLevel.CurrentRead) | int(ua.AccessLevel.HistoryRead)
+        access_level = (
+            int(ua.AccessLevel.CurrentRead)
+            | int(ua.AccessLevel.CurrentWrite)
+            | int(ua.AccessLevel.HistoryRead)
+        )
         data_value = ua.DataValue(ua.Variant(access_level, ua.VariantType.Byte))
         await node.write_attribute(ATTRIBUTE_IDS.AccessLevel, data_value)
         await node.write_attribute(ATTRIBUTE_IDS.UserAccessLevel, data_value)
@@ -208,7 +212,10 @@ class ConformanceFixtureServer:
             now = datetime.now(tz=timezone.utc)
             epoch = now.timestamp()
             for signal_node in self._signals:
-                await signal_node.node.write_value(self._data_value_for_signal(signal_node, epoch, now))
+                try:
+                    await signal_node.node.write_value(self._data_value_for_signal(signal_node, epoch, now))
+                except Exception:
+                    logger.exception("Live update failed for signal=%s", signal_node.name)
             await asyncio.sleep(self._update_interval_seconds)
 
     async def _verify_seeded_history(self) -> None:

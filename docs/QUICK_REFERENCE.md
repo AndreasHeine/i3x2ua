@@ -176,7 +176,7 @@ I3X_ENABLE_MCP=1 uv run uvicorn i3x_server.main:app --host 0.0.0.0 --port 8000
 | Resource listing and reading | ✅ Supported | `resources/list`, `resources/read` via JSON-RPC and REST. |
 | Root listing | ✅ Supported | `roots/list` via JSON-RPC and REST. |
 | JSON-RPC batch requests | ✅ Supported | Array request payloads are handled per JSON-RPC 2.0. |
-| Update/write operations | ⚠️ Optional | May return `501 Not Implemented` when not implemented in this deployment. |
+| Update/write operations | REST-only optional | `PUT` routes are intentionally excluded from MCP tools. Use REST writes with `I3X_ENABLE_WRITES=1`. |
 | Server-Sent Event streaming | ✅ Available | Via REST `/v1/subscriptions/stream` endpoint. |
 
 ### MCP Endpoints

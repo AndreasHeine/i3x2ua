@@ -109,7 +109,20 @@ sequenceDiagram
 		R-->>C: batch of updates
 	end
 
-	Note over C,R: Write API paths exist in spec but can return 501 when optional update operations are not implemented
+	alt Optional current-value write enabled (I3X_ENABLE_WRITES=1)
+		C->>R: PUT /v1/objects/value
+		R->>D: get_or_build_model()
+		D->>M: cache hit? else build()
+		M-->>D: BuildResult
+		R->>O: read/write checks + write_value()
+		O->>U: OPC UA write request
+		U-->>O: write status
+		O-->>R: per-item write outcomes
+		R-->>C: bulk success/error envelope
+	else Optional current-value write disabled
+		C->>R: PUT /v1/objects/value
+		R-->>C: 501 Not Implemented
+	end
 ```
 
 ## Quick Start
@@ -182,7 +195,7 @@ Active endpoints are exposed under `/v1` for:
 - object queries and values (`/objects`, `/objects/list`, `/objects/related`, `/objects/value`, `/objects/history`)
 - subscriptions (`/subscriptions`, `/subscriptions/register`, `/subscriptions/unregister`, `/subscriptions/sync`, `/subscriptions/list`, `/subscriptions/delete`, `/subscriptions/stream`)
 
-Current scope emphasis: this implementation currently prioritizes read/query/subscribe operations.
+Current scope emphasis: this implementation prioritizes read/query/subscribe operations and includes optional current-value write support.
 
 Optional OPC UA diagnostic endpoints are exposed under `/ua`:
 
@@ -199,11 +212,15 @@ Optional MCP endpoints are exposed only when `I3X_ENABLE_MCP=1`:
 
 MCP scope emphasis: the MCP bridge supports `initialize`, `tools/list`, `tools/call`, `prompts/list`, `prompts/get`, `resources/list`, `resources/read`, `roots/list`, and JSON-RPC 2.0 batch requests.
 
+MCP write policy: `PUT` routes are intentionally excluded from MCP tool generation. Object writes are available via REST only.
+
 ## Current Limitations
 
-- write APIs currently return `501 Not Implemented` (`PUT /v1/objects/{element_id}/value`, `PUT /v1/objects/{element_id}/history`)
+- historical update APIs are not implemented (`PUT /v1/objects/history`, `PUT /v1/objects/{element_id}/history` return `501 Not Implemented`)
 - `GET /v1/objects/{element_id}/history` currently returns `501 Not Implemented`
-- server capabilities report updates as not supported while read/history/streaming are supported
+- current-value write support is optional and controlled by `I3X_ENABLE_WRITES`:
+	- `I3X_ENABLE_WRITES=1`: `capabilities.update.current=true`, `PUT /v1/objects/value` enabled
+	- default (`I3X_ENABLE_WRITES` unset/0): write endpoints return `501 Not Implemented`
 
 ## Docker
 
@@ -245,6 +262,7 @@ The default compose setup also enables container hardening (`read_only`, `tmpfs`
 Optional environment variables:
 
 - `I3X_ENABLE_MCP=1` to enable MCP support; it is disabled by default
+- `I3X_ENABLE_WRITES=1` to enable current-value writes (`PUT /v1/objects/value` and `PUT /v1/objects/{element_id}/value`)
 - `I3X_OPCUA_CERTS_DIR=./certs` to mount OPC UA client/server certificate files into the app container (`/app/certs`)
 - `NGINX_HTTPS_ENABLED=1` to enable TLS termination
 - `NGINX_SSL_CERTS_DIR=./certs` with `fullchain.pem` and `privkey.pem`

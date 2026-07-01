@@ -81,8 +81,8 @@ def _to_json_safe(value: Any) -> Any:
     return str(value)
 
 
-@router.get("/state", response_model=UaSuccessResponse)
-async def get_ua_state(opcua_client: OpcUaClientProtocol = Depends(get_opcua_client)) -> UaSuccessResponse:
+@router.get("/status", response_model=UaSuccessResponse)
+async def get_ua_status(opcua_client: OpcUaClientProtocol = Depends(get_opcua_client)) -> UaSuccessResponse:
     try:
         data_value = await opcua_client.read_server_status_data_value()
     except Exception as exc:

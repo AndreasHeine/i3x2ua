@@ -3,9 +3,9 @@
 
   const knownViewTargets = {
     '/v1/info': 'i3X Server Info',
-    '/ua/state': 'OPC UA State',
+    '/ua/status': 'OPC UA Server Status',
     '/ua/connection': 'OPC UA Connection',
-    '/ua/limits': 'OPC UA Limits',
+    '/ua/limits': 'OPC UA Server Limits',
     '/ua/metrics': 'OPC UA Metrics'
   };
 
@@ -17,7 +17,7 @@
     try {
       const response = await fetch(endpoint, { cache: 'no-store' });
       const payload = await response.json();
-      output = JSON.stringify(payload, null, 2);
+      output = JSON.stringify(payload.result, null, 2);
       isError = false;
     } catch (error) {
       output = `Error: ${error instanceof Error ? error.message : String(error)}`;

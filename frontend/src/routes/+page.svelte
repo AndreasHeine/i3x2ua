@@ -7,7 +7,7 @@
   const baseLinks = [
     { label: 'API Documentation', href: '/docs' },
     { label: 'i3X Server Info', href: '/view?endpoint=/v1/info&label=i3X%20Server%20Info' },
-    { label: 'OPC UA State', href: '/view?endpoint=/ua/state&label=OPC%20UA%20State' },
+    { label: 'OPC UA Server Status', href: '/view?endpoint=/ua/status&label=OPC%20UA%20Server%20Status' },
     { label: 'OPC UA Connection', href: '/view?endpoint=/ua/connection&label=OPC%20UA%20Connection' },
     { label: 'OPC UA Limits', href: '/view?endpoint=/ua/limits&label=OPC%20UA%20Limits' },
     { label: 'OPC UA Metrics', href: '/view?endpoint=/ua/metrics&label=OPC%20UA%20Metrics' }

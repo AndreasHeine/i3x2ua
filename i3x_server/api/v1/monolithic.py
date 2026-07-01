@@ -480,6 +480,21 @@ class UpdateObjectValueRequest(BaseModel):
     )
 
 
+class WriteVQTRequest(BaseModel):
+    value: Any
+    quality: str | None = None
+    timestamp: str | None = None
+
+
+class ValueUpdateItemRequest(BaseModel):
+    elementId: str
+    value: Any
+
+
+class UpdateObjectValuesRequest(BaseModel):
+    updates: list[ValueUpdateItemRequest]
+
+
 class RegisterMonitoredItemsRequest(BaseModel):
     clientId: str | None = None
     subscriptionId: str
@@ -636,6 +651,85 @@ def _classify_write_error(exc: Exception) -> tuple[int, str]:
 
 def _raise_write_error(status_code: int, error_class: str) -> Never:
     raise i3x_http_error(status_code, "WriteError", error_class)
+
+
+def _normalize_write_payload(payload: Any) -> Any:
+    if isinstance(payload, Mapping):
+        keys = set(payload.keys())
+        if "value" in keys and keys <= {"value", "quality", "timestamp"}:
+            return payload["value"]
+    return payload
+
+
+def _json_equivalent(left: Any, right: Any) -> bool:
+    safe_left = _to_json_safe_value(left)
+    safe_right = _to_json_safe_value(right)
+    return json.dumps(safe_left, sort_keys=True) == json.dumps(safe_right, sort_keys=True)
+
+
+async def _is_noop_write(
+    *,
+    opcua_client: OpcUaClientProtocol,
+    target_node_id: str,
+    requested_value: Any,
+) -> bool:
+    try:
+        current_data_values = await opcua_client.read_data_values([target_node_id])
+    except Exception:
+        return False
+    if not current_data_values:
+        return False
+    current_vqt = _vqt_from_data_value(current_data_values[0])
+    return _json_equivalent(current_vqt.value, requested_value)
+
+
+async def _write_object_value_by_element_id(
+    *,
+    model: BuildResult,
+    opcua_client: OpcUaClientProtocol,
+    element_id: str,
+    payload_value: Any,
+) -> tuple[bool, int, str]:
+    node = _find_model_node(model, element_id)
+    if node is None:
+        return False, 404, f"Element not found: {element_id}"
+    if node.kind != "property":
+        return False, 400, "bad_type_or_range"
+
+    target_node_id = node.source_node_id
+
+    try:
+        writable, user_writable = await opcua_client.read_write_access(target_node_id)
+    except Exception as exc:
+        status_code, error_class = _classify_write_error(exc)
+        return False, status_code, error_class
+
+    write_value = _normalize_write_payload(payload_value)
+    if not writable or not user_writable:
+        if await _is_noop_write(
+            opcua_client=opcua_client,
+            target_node_id=target_node_id,
+            requested_value=write_value,
+        ):
+            return True, 200, "ok"
+        return False, 403, "target_not_writable"
+
+    try:
+        variant_type = await opcua_client.read_variant_type(target_node_id)
+    except Exception as exc:
+        status_code, error_class = _classify_write_error(exc)
+        return False, status_code, error_class
+
+    if not _is_valid_write_type(write_value, variant_type):
+        return False, 400, "bad_type_or_range"
+
+    try:
+        await opcua_client.write_value(target_node_id, write_value)
+    except Exception as exc:
+        status_code, error_class = _classify_write_error(exc)
+        return False, status_code, error_class
+
+    return True, 200, "ok"
 
 
 @lru_cache(maxsize=1)
@@ -2529,6 +2623,39 @@ async def query_historical_values_v1(
     return _bulk_response(results)
 
 
+@router.put(
+    "/objects/value",
+    response_model=BulkResponse[None],
+    summary="Update current values",
+    description=(
+        "Write current values for one or more objects using a bulk request. "
+        "Each item returns success or an item-level error, preserving request order."
+    ),
+)
+async def update_object_values_v1(
+    body: UpdateObjectValuesRequest,
+    model: BuildResult = Depends(get_or_build_model),
+    opcua_client: OpcUaClientProtocol = Depends(get_opcua_client),
+) -> BulkResponse[None]:
+    if not _writes_enabled():
+        _not_implemented("Current value updates")
+
+    results: list[BulkResultItem[None]] = []
+    for update in body.updates:
+        ok, status_code, message = await _write_object_value_by_element_id(
+            model=model,
+            opcua_client=opcua_client,
+            element_id=update.elementId,
+            payload_value=update.value,
+        )
+        if ok:
+            results.append(_bulk_result_success(update.elementId, None))
+        else:
+            results.append(_bulk_result_error(update.elementId, message, code=status_code))
+
+    return _bulk_response(results)
+
+
 @router.get("/objects/{element_id}/history")
 async def get_historical_values_v1(element_id: str) -> None:
     _not_implemented(f"Historical values for '{element_id}'")
@@ -2563,47 +2690,13 @@ async def update_object_value_v1(
     principal = request.headers.get("x-principal") or "anonymous"
     started = perf_counter()
 
-    try:
-        writable, user_writable = await opcua_client.read_write_access(target_node_id)
-    except Exception as exc:
-        status_code, error_class = _classify_write_error(exc)
-        logger.warning(
-            "Write audit principal=%s element_id=%s node_id=%s decision=deny class=%s duration_s=%.3f",
-            principal,
-            element_id,
-            target_node_id,
-            error_class,
-            perf_counter() - started,
-        )
-        _raise_write_error(status_code, error_class)
-
-    if not writable or not user_writable:
-        logger.info(
-            "Write audit principal=%s element_id=%s node_id=%s decision=deny class=%s duration_s=%.3f",
-            principal,
-            element_id,
-            target_node_id,
-            "target_not_writable",
-            perf_counter() - started,
-        )
-        _raise_write_error(403, "target_not_writable")
-
-    variant_type = await opcua_client.read_variant_type(target_node_id)
-    if not _is_valid_write_type(body.value, variant_type):
-        logger.info(
-            "Write audit principal=%s element_id=%s node_id=%s decision=deny class=%s duration_s=%.3f",
-            principal,
-            element_id,
-            target_node_id,
-            "bad_type_or_range",
-            perf_counter() - started,
-        )
-        _raise_write_error(400, "bad_type_or_range")
-
-    try:
-        await opcua_client.write_value(target_node_id, body.value)
-    except Exception as exc:
-        status_code, error_class = _classify_write_error(exc)
+    ok, status_code, error_class = await _write_object_value_by_element_id(
+        model=model,
+        opcua_client=opcua_client,
+        element_id=element_id,
+        payload_value=body.value,
+    )
+    if not ok:
         logger.warning(
             "Write audit principal=%s element_id=%s node_id=%s decision=deny class=%s duration_s=%.3f",
             principal,

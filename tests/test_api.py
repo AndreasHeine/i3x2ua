@@ -28,11 +28,6 @@ from i3x_server.mcp import _safe_internal_request_url, get_api_prefix, load_tool
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
 
-_MCP_EXCLUDED_WRITE_PATHS = {
-    "/v1/objects/{element_id}/value",
-    "/v1/objects/{element_id}/history",
-}
-
 
 @dataclass(slots=True)
 class FakeMachineThresholds:
@@ -1773,6 +1768,118 @@ def test_v1_update_value_maps_opcua_denied_error(client: TestClient, monkeypatch
     assert payload["error"]["message"] == "unauthorized_by_opcua_server"
 
 
+def test_v1_bulk_update_values_success_when_enabled(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("I3X_ENABLE_WRITES", "1")
+
+    response = client.put(
+        "/v1/objects/value",
+        json={
+            "updates": [
+                {
+                    "elementId": "property-abc",
+                    "value": {
+                        "value": 55.25,
+                        "quality": "Good",
+                        "timestamp": "2026-01-01T00:00:00Z",
+                    },
+                }
+            ]
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    assert payload["results"][0]["success"] is True
+    assert payload["results"][0]["result"] is None
+    assert _fastapi_app(client).state.opcua_client.values["ns=2;s=Temperature"] == 55.25
+
+
+def test_v1_bulk_update_values_supports_partial_failure(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("I3X_ENABLE_WRITES", "1")
+
+    response = client.put(
+        "/v1/objects/value",
+        json={
+            "updates": [
+                {
+                    "elementId": "property-abc",
+                    "value": {
+                        "value": 77.0,
+                        "quality": "Good",
+                        "timestamp": "2026-01-01T00:00:00Z",
+                    },
+                },
+                {
+                    "elementId": "does-not-exist",
+                    "value": {
+                        "value": 1,
+                        "quality": "Good",
+                        "timestamp": "2026-01-01T00:00:00Z",
+                    },
+                },
+            ]
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is False
+    assert payload["results"][0]["success"] is True
+    assert payload["results"][0]["elementId"] == "property-abc"
+
+    failing = payload["results"][1]
+    assert failing["success"] is False
+    assert failing["elementId"] == "does-not-exist"
+    assert failing["error"]["code"] == 404
+    assert failing["responseDetail"]["status"] == 404
+
+    assert _fastapi_app(client).state.opcua_client.values["ns=2;s=Temperature"] == 77.0
+
+
+def test_v1_bulk_update_values_allows_noop_when_target_not_writable(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("I3X_ENABLE_WRITES", "1")
+    app = _fastapi_app(client)
+    app.state.opcua_client.writable_by_node_id["ns=2;s=Temperature"] = False
+
+    async def read_data_values_same_value(node_ids: list[str]) -> list[Any]:
+        assert node_ids == ["ns=2;s=Temperature"]
+        return [
+            SimpleNamespace(
+                Value=SimpleNamespace(Value=42.5),
+                StatusCode=SimpleNamespace(name="Good", is_good=lambda: True),
+                SourceTimestamp=datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc),
+                ServerTimestamp=None,
+            )
+        ]
+
+    app.state.opcua_client.read_data_values = read_data_values_same_value
+
+    response = client.put(
+        "/v1/objects/value",
+        json={
+            "updates": [
+                {
+                    "elementId": "property-abc",
+                    "value": {
+                        "value": 42.5,
+                        "quality": "Good",
+                        "timestamp": "2026-01-01T00:00:00Z",
+                    },
+                }
+            ]
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    assert payload["results"][0]["success"] is True
+
+
 def test_v1_subscription_lifecycle(client: TestClient) -> None:
     client_id = "my-app-instance-001"
     created = client.post(
@@ -2238,7 +2345,7 @@ def test_mcp_tool_input_schemas_match_openapi_contract(client: TestClient) -> No
             operation_id = details.get("operationId")
             if not isinstance(operation_id, str) or path.endswith("/subscriptions/stream"):
                 continue
-            if method.upper() == "PUT" and path in _MCP_EXCLUDED_WRITE_PATHS:
+            if method.upper() == "PUT":
                 continue
 
             assert operation_id in tools, f"Missing MCP tool for operationId={operation_id}"

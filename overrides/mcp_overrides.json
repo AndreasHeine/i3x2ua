@@ -147,7 +147,7 @@
                 "unregister"
             ]
         },
-        "getUaState": {
+        "getUaStatus": {
             "description": "Return the current OPC UA gateway state. Use when the user asks whether the UA side is running or healthy.",
             "priority": "normal",
             "keywords": [

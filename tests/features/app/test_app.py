@@ -39,7 +39,7 @@ def test_landing_page_with_mcp_enabled(client: TestClient) -> None:
     assert "Turn any OPC UA server into" in text
     assert 'href="/docs"' in text
     assert 'href="/view?endpoint=/v1/info' in text
-    assert 'href="/view?endpoint=/ua/state' in text
+    assert 'href="/view?endpoint=/ua/status' in text
     assert 'href="/view?endpoint=/ua/connection' in text
     assert 'href="/view?endpoint=/ua/limits' in text
     assert 'href="/view?endpoint=/ua/metrics' in text
@@ -51,7 +51,7 @@ def test_landing_page_with_mcp_disabled(client_without_mcp: TestClient) -> None:
     text = response.text
     assert 'href="/docs"' in text
     assert 'href="/view?endpoint=/v1/info' in text
-    assert 'href="/view?endpoint=/ua/state' in text
+    assert 'href="/view?endpoint=/ua/status' in text
     assert 'href="/view?endpoint=/ua/connection' in text
     assert 'href="/view?endpoint=/ua/limits' in text
     assert 'href="/view?endpoint=/ua/metrics' in text

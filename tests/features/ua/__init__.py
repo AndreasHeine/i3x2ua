@@ -10,7 +10,7 @@ from tests.conftest import fastapi_app
 
 
 def test_ua_state(client: TestClient) -> None:
-    response = client.get("/ua/state")
+    response = client.get("/ua/status")
     assert response.status_code == 200
     payload = response.json()
     assert payload["success"] is True
@@ -69,7 +69,7 @@ def test_ua_state_error_shape(client: TestClient) -> None:
         raise RuntimeError("boom")
 
     app.state.opcua_client.read_server_status_data_value = _raise_status_error
-    response = client.get("/ua/state")
+    response = client.get("/ua/status")
     assert response.status_code == 502
     payload = response.json()
     assert payload["success"] is False

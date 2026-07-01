@@ -220,7 +220,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         metadata_cache_ttl_seconds=settings.opcua_metadata_cache_ttl_seconds,
         connection_monitor_interval_seconds=settings.opcua_connection_monitor_interval_seconds,
     )
-    skip_connect = os.getenv("I3X_SKIP_OPCUA_CONNECT", "0") == "1"
+    skip_connect = _env_flag("I3X_SKIP_OPCUA_CONNECT")
     logger.info(
         "App startup opcua_endpoint=%s skip_connect=%s log_level=%s "
         "browse_concurrency=%d metadata_cache_ttl_seconds=%d connection_monitor_interval_seconds=%d "

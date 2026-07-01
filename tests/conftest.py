@@ -363,8 +363,10 @@ def client() -> Generator[TestClient, None, None]:
     """Test client fixture with MCP enabled."""
     previous_enable_mcp = os.environ.get("I3X_ENABLE_MCP")
     previous_skip_connect = os.environ.get("I3X_SKIP_OPCUA_CONNECT")
+    previous_enable_writes = os.environ.get("I3X_ENABLE_WRITES")
     os.environ["I3X_ENABLE_MCP"] = "1"
     os.environ["I3X_SKIP_OPCUA_CONNECT"] = "1"
+    os.environ["I3X_ENABLE_WRITES"] = "0"
     app = create_app()
     try:
         with TestClient(app) as test_client:
@@ -379,6 +381,10 @@ def client() -> Generator[TestClient, None, None]:
             os.environ.pop("I3X_SKIP_OPCUA_CONNECT", None)
         else:
             os.environ["I3X_SKIP_OPCUA_CONNECT"] = previous_skip_connect
+        if previous_enable_writes is None:
+            os.environ.pop("I3X_ENABLE_WRITES", None)
+        else:
+            os.environ["I3X_ENABLE_WRITES"] = previous_enable_writes
 
 
 @pytest.fixture
@@ -386,8 +392,10 @@ def client_without_mcp() -> Generator[TestClient, None, None]:
     """Test client fixture with MCP disabled."""
     previous_enable_mcp = os.environ.get("I3X_ENABLE_MCP")
     previous_skip_connect = os.environ.get("I3X_SKIP_OPCUA_CONNECT")
+    previous_enable_writes = os.environ.get("I3X_ENABLE_WRITES")
     os.environ.pop("I3X_ENABLE_MCP", None)
     os.environ["I3X_SKIP_OPCUA_CONNECT"] = "1"
+    os.environ["I3X_ENABLE_WRITES"] = "0"
     app = create_app()
     try:
         with TestClient(app) as test_client:
@@ -402,6 +410,10 @@ def client_without_mcp() -> Generator[TestClient, None, None]:
             os.environ.pop("I3X_SKIP_OPCUA_CONNECT", None)
         else:
             os.environ["I3X_SKIP_OPCUA_CONNECT"] = previous_skip_connect
+        if previous_enable_writes is None:
+            os.environ.pop("I3X_ENABLE_WRITES", None)
+        else:
+            os.environ["I3X_ENABLE_WRITES"] = previous_enable_writes
 
 
 @pytest.fixture
@@ -409,8 +421,10 @@ def client_without_tool_overrides(monkeypatch: pytest.MonkeyPatch) -> Generator[
     """Test client fixture with MCP tool overrides disabled."""
     previous_enable_mcp = os.environ.get("I3X_ENABLE_MCP")
     previous_skip_connect = os.environ.get("I3X_SKIP_OPCUA_CONNECT")
+    previous_enable_writes = os.environ.get("I3X_ENABLE_WRITES")
     os.environ["I3X_ENABLE_MCP"] = "1"
     os.environ["I3X_SKIP_OPCUA_CONNECT"] = "1"
+    os.environ["I3X_ENABLE_WRITES"] = "0"
     monkeypatch.setattr("i3x_server.mcp.load_tool_overrides", lambda *args, **kwargs: {})
     app = create_app()
     try:
@@ -426,3 +440,7 @@ def client_without_tool_overrides(monkeypatch: pytest.MonkeyPatch) -> Generator[
             os.environ.pop("I3X_SKIP_OPCUA_CONNECT", None)
         else:
             os.environ["I3X_SKIP_OPCUA_CONNECT"] = previous_skip_connect
+        if previous_enable_writes is None:
+            os.environ.pop("I3X_ENABLE_WRITES", None)
+        else:
+            os.environ["I3X_ENABLE_WRITES"] = previous_enable_writes

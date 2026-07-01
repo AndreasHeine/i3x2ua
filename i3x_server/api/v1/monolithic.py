@@ -5,7 +5,6 @@ import base64
 import http
 import json
 import logging
-import os
 import re
 from collections.abc import Callable, Mapping
 from contextlib import nullcontext as _nullcontext
@@ -38,6 +37,7 @@ from i3x_server.application.services.subscription_mapper import (
     map_subscription_detail_bulk_items,
 )
 from i3x_server.bootstrap.dependencies import get_opcua_client, get_or_build_model, get_subscription_service
+from i3x_server.config.settings import Settings, get_settings
 from i3x_server.errors import i3x_http_error
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.objecttype_schema import (
@@ -107,28 +107,34 @@ _UA_STANDARD_OBJECT_FALLBACK_TYPE_NAMES: set[str] = {
     "RolePermissionType",
 }
 
-_ENABLE_LIVE_TYPE_NAME_LOOKUP = os.getenv("I3X_ENABLE_TYPE_BROWSENAME_LOOKUP", "0").strip().lower() in {
-    "1",
-    "true",
-    "yes",
-    "on",
-}
-_LIVE_TYPE_NAME_LOOKUP_TIMEOUT_S = float(os.getenv("I3X_TYPE_BROWSENAME_LOOKUP_TIMEOUT_S", "0.05"))
-_LIVE_TYPE_NAME_LOOKUP_MAX_PER_REQUEST = int(os.getenv("I3X_TYPE_BROWSENAME_LOOKUP_MAX", "20"))
-_STREAM_DEBUG_ENABLED = os.getenv("I3X_DEBUG_SUBSCRIPTION_STREAM", "0").strip().lower() in {
-    "1",
-    "true",
-    "yes",
-    "on",
-}
+
+def _runtime_settings() -> Settings:
+    return get_settings()
 
 
-def _env_flag(name: str, default: str = "0") -> bool:
-    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
+_ENABLE_LIVE_TYPE_NAME_LOOKUP: bool = _runtime_settings().enable_type_browsename_lookup
+_LIVE_TYPE_NAME_LOOKUP_TIMEOUT_S: float = _runtime_settings().type_browsename_lookup_timeout_s
+_LIVE_TYPE_NAME_LOOKUP_MAX_PER_REQUEST: int = _runtime_settings().type_browsename_lookup_max
+
+
+def _live_type_name_lookup_enabled() -> bool:
+    return _ENABLE_LIVE_TYPE_NAME_LOOKUP
+
+
+def _live_type_name_lookup_timeout_seconds() -> float:
+    return _LIVE_TYPE_NAME_LOOKUP_TIMEOUT_S
+
+
+def _live_type_name_lookup_max_per_request() -> int:
+    return _LIVE_TYPE_NAME_LOOKUP_MAX_PER_REQUEST
+
+
+def _stream_debug_enabled() -> bool:
+    return _runtime_settings().debug_subscription_stream
 
 
 def _writes_enabled() -> bool:
-    return _env_flag("I3X_ENABLE_WRITES")
+    return _runtime_settings().enable_writes
 
 
 class SuccessResponse(BaseModel, Generic[T]):
@@ -1734,7 +1740,7 @@ async def _build_object_type_context(
     known_ids = {item.elementId for item in items}
     by_source_type_id: dict[str, ObjectTypeResponse] = {item.sourceTypeId.lower(): item for item in items}
     browse_name_cache: dict[str, str | None] = {}
-    lookup_budget = {"remaining": _LIVE_TYPE_NAME_LOOKUP_MAX_PER_REQUEST}
+    lookup_budget = {"remaining": _live_type_name_lookup_max_per_request()}
 
     for unresolved_id in sorted(referenced_type_element_ids - known_ids):
         unresolved_key = unresolved_id.lower()
@@ -2191,7 +2197,7 @@ async def _generic_object_type_from_source_type_id(
         display_name = f"InferredType_{identifier_kind}_{identifier_value}"
 
     if (
-        _ENABLE_LIVE_TYPE_NAME_LOOKUP
+        _live_type_name_lookup_enabled()
         and display_name.startswith("InferredType_")
         and identifier_kind == "i"
         and lookup_budget.get("remaining", 0) > 0
@@ -2207,7 +2213,7 @@ async def _generic_object_type_from_source_type_id(
                 try:
                     resolved_name = await asyncio.wait_for(
                         browse_name_reader(lookup_node_id),
-                        timeout=_LIVE_TYPE_NAME_LOOKUP_TIMEOUT_S,
+                        timeout=_live_type_name_lookup_timeout_seconds(),
                     )
                 except Exception:
                     resolved_name = None
@@ -2799,7 +2805,7 @@ async def stream_subscription_v1(
     client_id = _require_client_id(body.clientId, "/subscriptions/stream")
     namespace_infos = await _fetch_namespace_infos(opcua_client)
 
-    if _STREAM_DEBUG_ENABLED:
+    if _stream_debug_enabled():
         logger.info(
             "Subscription stream open request client_id=%s subscription_id=%s acknowledge_sequence=%s",
             client_id,
@@ -2837,7 +2843,7 @@ async def stream_subscription_v1(
         _raise_subscription_not_found(body.subscriptionId)
     assert acknowledged is not None
 
-    if _STREAM_DEBUG_ENABLED:
+    if _stream_debug_enabled():
         logger.info(
             "Subscription stream activated client_id=%s subscription_id=%s generation=%s initial_updates=%s",
             client_id,
@@ -2870,7 +2876,7 @@ async def stream_subscription_v1(
                     for item in initial_payload
                 ]
                 encoded_initial_payload = jsonable_encoder(initial_payload)
-                if _STREAM_DEBUG_ENABLED:
+                if _stream_debug_enabled():
                     first_item = encoded_initial_payload[0] if encoded_initial_payload else {}
                     logger.info(
                         (
@@ -2889,7 +2895,7 @@ async def stream_subscription_v1(
             while True:
                 is_active = await subscription_service.is_stream_active(body.subscriptionId, stream_generation)
                 if not is_active:
-                    if _STREAM_DEBUG_ENABLED:
+                    if _stream_debug_enabled():
                         logger.info(
                             "Subscription stream closing due to inactive generation subscription_id=%s generation=%s",
                             body.subscriptionId,
@@ -2907,7 +2913,7 @@ async def stream_subscription_v1(
                 )
 
                 if updates is None:
-                    if _STREAM_DEBUG_ENABLED:
+                    if _stream_debug_enabled():
                         logger.info(
                             "Subscription stream closing because subscription no longer exists "
                             "subscription_id=%s generation=%s",
@@ -2918,7 +2924,7 @@ async def stream_subscription_v1(
                     return
 
                 if not updates:
-                    if _STREAM_DEBUG_ENABLED:
+                    if _stream_debug_enabled():
                         logger.info(
                             "Subscription stream keepalive subscription_id=%s generation=%s after_sequence=%s",
                             body.subscriptionId,
@@ -2945,7 +2951,7 @@ async def stream_subscription_v1(
                     for item in payload
                 ]
                 encoded_payload = jsonable_encoder(payload)
-                if _STREAM_DEBUG_ENABLED:
+                if _stream_debug_enabled():
                     first_item = encoded_payload[0] if encoded_payload else {}
                     logger.info(
                         (
@@ -2961,7 +2967,7 @@ async def stream_subscription_v1(
                     )
                 yield f"data: {json.dumps(encoded_payload)}\n\n"
         finally:
-            if _STREAM_DEBUG_ENABLED:
+            if _stream_debug_enabled():
                 logger.info(
                     "Subscription stream finalize subscription_id=%s generation=%s",
                     body.subscriptionId,

@@ -36,6 +36,12 @@ class Settings(BaseSettings):
     otel_service_name: str = Field(default="i3x2ua")
     otel_otlp_endpoint: str | None = Field(default=None)
     enable_writes: bool = Field(default=False)
+    enable_mcp: bool = Field(default=False)
+    skip_opcua_connect: bool = Field(default=False)
+    enable_type_browsename_lookup: bool = Field(default=False)
+    type_browsename_lookup_timeout_s: float = Field(default=0.05, ge=0)
+    type_browsename_lookup_max: int = Field(default=20, ge=0)
+    debug_subscription_stream: bool = Field(default=False)
 
     @field_validator("*", mode="before")
     @classmethod
@@ -54,3 +60,8 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def get_settings() -> Settings:
+    """Return a fresh settings snapshot parsed from current environment."""
+    return Settings()

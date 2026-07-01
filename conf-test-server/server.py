@@ -169,9 +169,7 @@ class ConformanceFixtureServer:
 
     async def _set_historizing_flags(self, node: Any) -> None:
         access_level = (
-            int(ua.AccessLevel.CurrentRead)
-            | int(ua.AccessLevel.CurrentWrite)
-            | int(ua.AccessLevel.HistoryRead)
+            int(ua.AccessLevel.CurrentRead) | int(ua.AccessLevel.CurrentWrite) | int(ua.AccessLevel.HistoryRead)
         )
         data_value = ua.DataValue(ua.Variant(access_level, ua.VariantType.Byte))
         await node.write_attribute(ATTRIBUTE_IDS.AccessLevel, data_value)

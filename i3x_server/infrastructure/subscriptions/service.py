@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -10,17 +9,16 @@ from math import ceil
 from typing import Any
 from uuid import uuid4
 
+from i3x_server.config.settings import get_settings
 from i3x_server.domain.ports.opcua import OpcUaClientProtocol, OpcUaSubscriptionCapabilities
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
 
 logger = logging.getLogger(__name__)
-_STREAM_DEBUG_ENABLED = os.getenv("I3X_DEBUG_SUBSCRIPTION_STREAM", "0").strip().lower() in {
-    "1",
-    "true",
-    "yes",
-    "on",
-}
+
+
+def _stream_debug_enabled() -> bool:
+    return get_settings().debug_subscription_stream
 
 
 @dataclass(slots=True)
@@ -538,7 +536,7 @@ class SubscriptionService:
             state.stream_connected = True
             self._touch(state)
             state.update_event.set()
-            if _STREAM_DEBUG_ENABLED:
+            if _stream_debug_enabled():
                 logger.info(
                     "Subscription service activate stream subscription_id=%s generation=%s monitored_nodes=%s mode=%s",
                     subscription_id,
@@ -556,7 +554,7 @@ class SubscriptionService:
             if state.active_stream_generation == generation:
                 state.stream_connected = False
                 self._touch(state)
-                if _STREAM_DEBUG_ENABLED:
+                if _stream_debug_enabled():
                     logger.info(
                         "Subscription service deactivate stream subscription_id=%s generation=%s",
                         subscription_id,
@@ -654,7 +652,7 @@ class SubscriptionService:
                         should_execute_refresh = True
 
             if should_refresh_after_timeout:
-                if _STREAM_DEBUG_ENABLED and self._native_timeout_refresh_mode == "adaptive":
+                if _stream_debug_enabled() and self._native_timeout_refresh_mode == "adaptive":
                     logger.info(
                         "Subscription service wait timeout native subscription_id=%s after_sequence=%s "
                         "timeout_count=%d threshold=%d refresh_interval_s=%.3f",
@@ -670,7 +668,7 @@ class SubscriptionService:
                         if state is None or (client_id is not None and state.client_id != client_id):
                             return None
                         state.native_timeout_count = 0
-                if _STREAM_DEBUG_ENABLED and should_execute_refresh:
+                if _stream_debug_enabled() and should_execute_refresh:
                     logger.info(
                         "Subscription service wait timeout refresh subscription_id=%s after_sequence=%s",
                         subscription_id,
@@ -684,7 +682,7 @@ class SubscriptionService:
                     return None
                 self._touch(state)
                 updates = [item for item in state.updates if item.sequence_number > after_sequence]
-                if _STREAM_DEBUG_ENABLED:
+                if _stream_debug_enabled():
                     logger.info(
                         "Subscription service wait timeout result subscription_id=%s updates=%s after_sequence=%s",
                         subscription_id,

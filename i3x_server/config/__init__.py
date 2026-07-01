@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     subscription_max_updates: int = Field(default=10000, ge=1)
     subscription_ttl_seconds: int = Field(default=300, ge=1)
     log_level: str = Field(default="INFO")
+    enable_writes: bool = Field(default=False)
 
     @field_validator("*", mode="before")
     @classmethod

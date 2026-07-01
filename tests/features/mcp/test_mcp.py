@@ -12,6 +12,11 @@ from fastapi.testclient import TestClient
 from i3x_server.mcp import _safe_internal_request_url, get_api_prefix
 from tests.conftest import fastapi_app
 
+_MCP_EXCLUDED_WRITE_PATHS = {
+    "/v1/objects/{element_id}/value",
+    "/v1/objects/{element_id}/history",
+}
+
 
 def _resolve_openapi_schema(schema: Any, components: Mapping[str, Any]) -> Any:
     if not isinstance(schema, Mapping):
@@ -222,6 +227,8 @@ def test_mcp_tool_input_schemas_match_openapi_contract(client: TestClient) -> No
                 continue
             operation_id = details.get("operationId")
             if not isinstance(operation_id, str) or path.endswith("/subscriptions/stream"):
+                continue
+            if method.upper() == "PUT" and path in _MCP_EXCLUDED_WRITE_PATHS:
                 continue
 
             assert operation_id in tools, f"Missing MCP tool for operationId={operation_id}"
@@ -743,14 +750,14 @@ def test_mcp_call_allows_omitting_optional_query_parameters(client: TestClient) 
 
 
 def test_mcp_jsonrpc_tools_call_returns_jsonrpc_error_for_http_exception(client: TestClient) -> None:
-    update_value_id = _operation_id_for(client, "PUT", "/v1/objects/{element_id}/value")
+    list_by_id = _operation_id_for(client, "POST", "/v1/objects/list")
     response = client.post(
         "/mcp",
         json={
             "jsonrpc": "2.0",
             "id": 301,
             "method": "tools/call",
-            "params": {"name": update_value_id, "arguments": {}},
+            "params": {"name": list_by_id, "arguments": {}},
         },
     )
 
@@ -759,7 +766,7 @@ def test_mcp_jsonrpc_tools_call_returns_jsonrpc_error_for_http_exception(client:
     assert payload["jsonrpc"] == "2.0"
     assert payload["id"] == 301
     assert payload["error"]["code"] == 400
-    assert "Missing required arguments" in payload["error"]["message"]
+    assert "Missing required" in payload["error"]["message"]
 
 
 def test_mcp_call_dispatches_to_existing_api(client: TestClient) -> None:
@@ -795,10 +802,10 @@ def test_mcp_call_supports_body_arguments(client: TestClient) -> None:
 
 @pytest.mark.parametrize("element_id", ["http://evil.example", "../evil"])
 def test_mcp_call_rejects_malicious_path_parameters(client: TestClient, element_id: str) -> None:
-    update_value_id = _operation_id_for(client, "PUT", "/v1/objects/{element_id}/value")
+    history_tool = _operation_id_for(client, "GET", "/v1/objects/{element_id}/history")
     response = client.post(
         "/mcp/call",
-        json={"tool": update_value_id, "arguments": {"element_id": element_id}},
+        json={"tool": history_tool, "arguments": {"element_id": element_id}},
     )
 
     assert response.status_code == 400

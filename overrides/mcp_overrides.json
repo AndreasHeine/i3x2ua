@@ -118,26 +118,6 @@
                 "time range"
             ]
         },
-        "updateObjectHistoryV1": {
-            "description": "Update historical values for an object. Use when the user explicitly asks to modify historical data.",
-            "priority": "low",
-            "keywords": [
-                "update",
-                "history",
-                "write",
-                "modify"
-            ]
-        },
-        "updateObjectValueV1": {
-            "description": "Update the current value of an object. Use when the user asks to write or update a value.",
-            "priority": "low",
-            "keywords": [
-                "update",
-                "write",
-                "value",
-                "modify"
-            ]
-        },
         "createSubscriptionV1": {
             "description": "Create a new subscription for monitoring values. Use when the user asks to subscribe to updates.",
             "priority": "normal",

@@ -114,6 +114,10 @@ class FakeOpcUaClient:
 
     def __init__(self) -> None:
         self.values: dict[str, Any] = {"ns=2;s=Temperature": 42.5}
+        self.writable_by_node_id: dict[str, bool] = {"ns=2;s=Temperature": True}
+        self.user_writable_by_node_id: dict[str, bool] = {"ns=2;s=Temperature": True}
+        self.variant_type_by_node_id: dict[str, str] = {"ns=2;s=Temperature": "Double"}
+        self.write_failures: dict[str, Exception] = {}
         self.history_values: dict[str, list[SimpleNamespace]] = {
             "ns=2;s=Temperature": [
                 SimpleNamespace(
@@ -278,6 +282,20 @@ class FakeOpcUaClient:
     ) -> dict[str, list[Any]]:
         del start_time, end_time
         return {node_id: self.history_values.get(node_id, []) for node_id in node_ids}
+
+    async def read_write_access(self, node_id: str) -> tuple[bool, bool]:
+        return self.writable_by_node_id.get(node_id, False), self.user_writable_by_node_id.get(node_id, False)
+
+    async def read_variant_type(self, node_id: str) -> str | None:
+        return self.variant_type_by_node_id.get(node_id)
+
+    async def write_value(self, node_id: str, value: Any) -> None:
+        failure = self.write_failures.get(node_id)
+        if failure is not None:
+            self._request_metrics.failed_request_count += 1
+            raise failure
+        self.values[node_id] = value
+        self._request_metrics.write_count += 1
 
     async def read_server_status_data_value(self) -> Any:
         return SimpleNamespace(

@@ -279,6 +279,8 @@ def build_mcp_tools(
         for method, details in methods.items():
             if not isinstance(method, str) or not isinstance(details, Mapping):
                 continue
+            if method.upper() == "PUT":
+                continue
             operation_id = details.get("operationId")
             if not isinstance(operation_id, str) or operation_id in MCP_EXCLUDED_OPERATION_IDS:
                 continue

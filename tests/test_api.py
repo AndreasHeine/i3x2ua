@@ -28,6 +28,11 @@ from i3x_server.mcp import _safe_internal_request_url, get_api_prefix, load_tool
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
 
+_MCP_EXCLUDED_WRITE_PATHS = {
+    "/v1/objects/{element_id}/value",
+    "/v1/objects/{element_id}/history",
+}
+
 
 @dataclass(slots=True)
 class FakeMachineThresholds:
@@ -131,6 +136,10 @@ def _configure_test_app(app: FastAPI) -> None:
 class FakeOpcUaClient:
     def __init__(self) -> None:
         self.values: dict[str, Any] = {"ns=2;s=Temperature": 42.5}
+        self.writable_by_node_id: dict[str, bool] = {"ns=2;s=Temperature": True}
+        self.user_writable_by_node_id: dict[str, bool] = {"ns=2;s=Temperature": True}
+        self.variant_type_by_node_id: dict[str, str] = {"ns=2;s=Temperature": "Double"}
+        self.write_failures: dict[str, Exception] = {}
         self.history_values: dict[str, list[SimpleNamespace]] = {
             "ns=2;s=Temperature": [
                 SimpleNamespace(
@@ -296,6 +305,20 @@ class FakeOpcUaClient:
         del start_time, end_time
         return {node_id: self.history_values.get(node_id, []) for node_id in node_ids}
 
+    async def read_write_access(self, node_id: str) -> tuple[bool, bool]:
+        return self.writable_by_node_id.get(node_id, False), self.user_writable_by_node_id.get(node_id, False)
+
+    async def read_variant_type(self, node_id: str) -> str | None:
+        return self.variant_type_by_node_id.get(node_id)
+
+    async def write_value(self, node_id: str, value: Any) -> None:
+        failure = self.write_failures.get(node_id)
+        if failure is not None:
+            self._request_metrics.failed_request_count += 1
+            raise failure
+        self.values[node_id] = value
+        self._request_metrics.write_count += 1
+
     async def read_server_status_data_value(self) -> Any:
         return SimpleNamespace(
             Value=SimpleNamespace(
@@ -423,7 +446,18 @@ def test_v1_info(client: TestClient) -> None:
     assert payload["success"] is True
     assert payload["result"]["specVersion"] == "1.0"
     assert payload["result"]["capabilities"]["query"]["history"] is True
+    assert payload["result"]["capabilities"]["update"]["current"] is False
     assert payload["result"]["capabilities"]["subscribe"]["stream"] is True
+
+
+def test_v1_info_write_capability_enabled_with_flag(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("I3X_ENABLE_WRITES", "1")
+
+    response = client.get("/v1/info")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["result"]["capabilities"]["update"]["current"] is True
 
 
 def test_landing_page_with_mcp_enabled(client: TestClient) -> None:
@@ -1694,6 +1728,51 @@ def test_v1_501_error_includes_response_detail(client: TestClient) -> None:
     assert payload["responseDetail"]["title"] == "Not Implemented"
 
 
+def test_v1_update_value_success_when_enabled(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("I3X_ENABLE_WRITES", "1")
+
+    response = client.put("/v1/objects/property-abc/value", json={"value": 55.25})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    assert payload["result"] is None
+    assert _fastapi_app(client).state.opcua_client.values["ns=2;s=Temperature"] == 55.25
+
+
+def test_v1_update_value_target_not_writable(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("I3X_ENABLE_WRITES", "1")
+    _fastapi_app(client).state.opcua_client.writable_by_node_id["ns=2;s=Temperature"] = False
+
+    response = client.put("/v1/objects/property-abc/value", json={"value": 55.25})
+
+    assert response.status_code == 403
+    payload = response.json()
+    assert payload["error"]["message"] == "target_not_writable"
+
+
+def test_v1_update_value_rejects_type_mismatch(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("I3X_ENABLE_WRITES", "1")
+    _fastapi_app(client).state.opcua_client.variant_type_by_node_id["ns=2;s=Temperature"] = "Double"
+
+    response = client.put("/v1/objects/property-abc/value", json={"value": "bad"})
+
+    assert response.status_code == 400
+    payload = response.json()
+    assert payload["error"]["message"] == "bad_type_or_range"
+
+
+def test_v1_update_value_maps_opcua_denied_error(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("I3X_ENABLE_WRITES", "1")
+    _fastapi_app(client).state.opcua_client.write_failures["ns=2;s=Temperature"] = RuntimeError("BadUserAccessDenied")
+
+    response = client.put("/v1/objects/property-abc/value", json={"value": 55.25})
+
+    assert response.status_code == 403
+    payload = response.json()
+    assert payload["error"]["message"] == "unauthorized_by_opcua_server"
+
+
 def test_v1_subscription_lifecycle(client: TestClient) -> None:
     client_id = "my-app-instance-001"
     created = client.post(
@@ -2159,6 +2238,8 @@ def test_mcp_tool_input_schemas_match_openapi_contract(client: TestClient) -> No
             operation_id = details.get("operationId")
             if not isinstance(operation_id, str) or path.endswith("/subscriptions/stream"):
                 continue
+            if method.upper() == "PUT" and path in _MCP_EXCLUDED_WRITE_PATHS:
+                continue
 
             assert operation_id in tools, f"Missing MCP tool for operationId={operation_id}"
             tool = tools[operation_id]
@@ -2356,22 +2437,16 @@ def test_mcp_tools_are_generated_from_openapi(client_without_tool_overrides: Tes
     assert value_tool["inputSchema"]["properties"]["body"]["properties"]["elementIds"]["type"] == "array"
 
 
-def test_mcp_update_value_tool_includes_max_depth_from_openapi(client: TestClient) -> None:
+def test_mcp_write_tools_hidden(client: TestClient) -> None:
     tools = client.get("/mcp/tools").json()["tools"]
     update_value_id = _operation_id_for(client, "PUT", "/v1/objects/{element_id}/value")
+    assert update_value_id not in tools
 
-    update_tool = tools[update_value_id]
-    body_schema = update_tool["inputSchema"]["properties"]["body"]
-    if "properties" in body_schema:
-        body_properties = body_schema["properties"]
-    else:
-        any_of = body_schema.get("anyOf", [])
-        object_schema = next((item for item in any_of if isinstance(item, Mapping) and "properties" in item), {})
-        body_properties = object_schema.get("properties", {})
 
-    assert "maxDepth" in body_properties
-    assert body_properties["maxDepth"]["default"] == 1
-    assert body_properties["maxDepth"]["anyOf"][0]["type"] == "integer"
+def test_mcp_update_history_tool_hidden(client: TestClient) -> None:
+    tools = client.get("/mcp/tools").json()["tools"]
+    update_history_id = _operation_id_for(client, "PUT", "/v1/objects/{element_id}/history")
+    assert update_history_id not in tools
 
 
 def test_mcp_tool_overrides_match_live_tools(client: TestClient) -> None:
@@ -2711,14 +2786,14 @@ def test_mcp_call_allows_omitting_optional_query_parameters(client: TestClient) 
 
 
 def test_mcp_jsonrpc_tools_call_returns_jsonrpc_error_for_http_exception(client: TestClient) -> None:
-    update_value_id = _operation_id_for(client, "PUT", "/v1/objects/{element_id}/value")
+    list_by_id = _operation_id_for(client, "POST", "/v1/objects/list")
     response = client.post(
         "/mcp",
         json={
             "jsonrpc": "2.0",
             "id": 301,
             "method": "tools/call",
-            "params": {"name": update_value_id, "arguments": {}},
+            "params": {"name": list_by_id, "arguments": {}},
         },
     )
 
@@ -2727,7 +2802,8 @@ def test_mcp_jsonrpc_tools_call_returns_jsonrpc_error_for_http_exception(client:
     assert payload["jsonrpc"] == "2.0"
     assert payload["id"] == 301
     assert payload["error"]["code"] == 400
-    assert "Missing required arguments" in payload["error"]["message"]
+    assert payload["error"]["code"] in {400, -32602}
+    assert "Missing required" in payload["error"]["message"]
 
 
 def test_mcp_call_dispatches_to_existing_api(client: TestClient) -> None:
@@ -2763,10 +2839,10 @@ def test_mcp_call_supports_body_arguments(client: TestClient) -> None:
 
 @pytest.mark.parametrize("element_id", ["http://evil.example", "../evil"])
 def test_mcp_call_rejects_malicious_path_parameters(client: TestClient, element_id: str) -> None:
-    update_value_id = _operation_id_for(client, "PUT", "/v1/objects/{element_id}/value")
+    history_tool = _operation_id_for(client, "GET", "/v1/objects/{element_id}/history")
     response = client.post(
         "/mcp/call",
-        json={"tool": update_value_id, "arguments": {"element_id": element_id}},
+        json={"tool": history_tool, "arguments": {"element_id": element_id}},
     )
 
     assert response.status_code == 400

@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     otel_enabled: bool = Field(default=False)
     otel_service_name: str = Field(default="i3x2ua")
     otel_otlp_endpoint: str | None = Field(default=None)
+    enable_writes: bool = Field(default=False)
 
     @field_validator("*", mode="before")
     @classmethod

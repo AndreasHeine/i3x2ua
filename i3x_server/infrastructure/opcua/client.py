@@ -1556,6 +1556,73 @@ class OpcUaClient:
         )
         return results
 
+    async def read_write_access(self, node_id: str) -> tuple[bool, bool]:
+        node = self._client.get_node(node_id)
+        try:
+            values = await node.read_attributes([AttributeIds.AccessLevel, AttributeIds.UserAccessLevel])
+            access_level = _attribute_scalar_value(values[0]) if len(values) > 0 else None
+            user_access_level = _attribute_scalar_value(values[1]) if len(values) > 1 else None
+            return _is_write_access_allowed(access_level), _is_write_access_allowed(user_access_level)
+        except Exception as exc:
+            if self._should_retry_after_disconnect(exc):
+                logger.warning(
+                    "OPC UA write access read retry after reconnect node_id=%s endpoint=%s",
+                    node_id,
+                    self._endpoint,
+                )
+                await self._reconnect()
+                retry_node = self._client.get_node(node_id)
+                retry_values = await retry_node.read_attributes(
+                    [AttributeIds.AccessLevel, AttributeIds.UserAccessLevel]
+                )
+                access_level = _attribute_scalar_value(retry_values[0]) if len(retry_values) > 0 else None
+                user_access_level = _attribute_scalar_value(retry_values[1]) if len(retry_values) > 1 else None
+                return _is_write_access_allowed(access_level), _is_write_access_allowed(user_access_level)
+            self._record_failed_request()
+            raise
+
+    async def read_variant_type(self, node_id: str) -> str | None:
+        node = self._client.get_node(node_id)
+        try:
+            variant_type = await node.read_data_type_as_variant_type()
+            return str(getattr(variant_type, "name", variant_type)) if variant_type is not None else None
+        except Exception as exc:
+            if self._should_retry_after_disconnect(exc):
+                logger.warning(
+                    "OPC UA variant type read retry after reconnect node_id=%s endpoint=%s",
+                    node_id,
+                    self._endpoint,
+                )
+                await self._reconnect()
+                retry_node = self._client.get_node(node_id)
+                retry_variant_type = await retry_node.read_data_type_as_variant_type()
+                return (
+                    str(getattr(retry_variant_type, "name", retry_variant_type))
+                    if retry_variant_type is not None
+                    else None
+                )
+            return None
+
+    async def write_value(self, node_id: str, value: Any) -> None:
+        node = self._client.get_node(node_id)
+        try:
+            await node.write_value(value)
+            self._request_metrics.write_count += 1
+        except Exception as exc:
+            if self._should_retry_after_disconnect(exc):
+                logger.warning(
+                    "OPC UA write retry after reconnect node_id=%s endpoint=%s",
+                    node_id,
+                    self._endpoint,
+                )
+                await self._reconnect()
+                retry_node = self._client.get_node(node_id)
+                await retry_node.write_value(value)
+                self._request_metrics.write_count += 1
+                return
+            self._record_failed_request()
+            raise
+
     async def _read_values_batch_with_fallback(self, node_ids: list[str]) -> list[Any]:
         if not node_ids:
             return []
@@ -1971,3 +2038,30 @@ def _variant_metadata(data_value: Any) -> tuple[str | None, bool | None]:
             is_array = True
 
     return variant_type_name, is_array
+
+
+def _attribute_scalar_value(data_value: Any) -> Any:
+    if data_value is None:
+        return None
+    variant = getattr(data_value, "Value", None)
+    if variant is None:
+        return data_value
+    return getattr(variant, "Value", variant)
+
+
+def _is_write_access_allowed(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, set):
+        labels = {str(item).lower() for item in value}
+        return "currentwrite" in labels or "write" in labels
+    raw = getattr(value, "value", value)
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, int):
+        return bool(raw & 0x02)
+    try:
+        numeric = int(raw)
+    except (TypeError, ValueError):
+        return "write" in str(raw).lower()
+    return bool(numeric & 0x02)

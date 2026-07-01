@@ -123,6 +123,14 @@ _STREAM_DEBUG_ENABLED = os.getenv("I3X_DEBUG_SUBSCRIPTION_STREAM", "0").strip().
 }
 
 
+def _env_flag(name: str, default: str = "0") -> bool:
+    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _writes_enabled() -> bool:
+    return _env_flag("I3X_ENABLE_WRITES")
+
+
 class SuccessResponse(BaseModel, Generic[T]):
     success: bool = True
     result: T | None = None
@@ -574,9 +582,60 @@ def _not_implemented(feature: str) -> None:
 def _supported_capabilities() -> ServerCapabilities:
     return ServerCapabilities(
         query=QueryCapabilities(history=True),
-        update=UpdateCapabilities(current=False, history=False),
+        update=UpdateCapabilities(current=_writes_enabled(), history=False),
         subscribe=SubscribeCapabilities(stream=True),
     )
+
+
+def _is_valid_write_type(value: Any, variant_type: str | None) -> bool:
+    if variant_type is None:
+        return True
+    normalized = variant_type.strip().lower()
+    if normalized in {"boolean"}:
+        return isinstance(value, bool)
+    if normalized in {"sbyte", "byte", "int16", "uint16", "int32", "uint32", "int64", "uint64"}:
+        return isinstance(value, int) and not isinstance(value, bool)
+    if normalized in {"float", "double"}:
+        return (isinstance(value, int) and not isinstance(value, bool)) or isinstance(value, float)
+    if normalized in {"string", "localizedtext", "qualifiedname"}:
+        return isinstance(value, str)
+    if normalized in {"bytestring"}:
+        return isinstance(value, (bytes, bytearray, memoryview))
+    if normalized in {"datetime"}:
+        return isinstance(value, (str, datetime))
+    if normalized in {"guid"}:
+        return isinstance(value, str)
+    return True
+
+
+def _classify_write_error(exc: Exception) -> tuple[int, str]:
+    text = str(exc).lower()
+    if "baduseraccessdenied" in text or "access denied" in text or "permission" in text:
+        return 403, "unauthorized_by_opcua_server"
+    if "badnotwritable" in text or "not writable" in text:
+        return 403, "target_not_writable"
+    if "badtype" in text or "mismatch" in text or "outofrange" in text:
+        return 400, "bad_type_or_range"
+    reconnect_markers = (
+        "connection is closed",
+        "connection is not open",
+        "connection reset",
+        "broken pipe",
+        "socket",
+        "transport closed",
+        "timed out",
+        "timeout",
+        "badsessionclosed",
+        "badsessionidinvalid",
+        "badsecurechannelclosed",
+    )
+    if any(marker in text for marker in reconnect_markers):
+        return 502, "session_or_transport_failure"
+    return 502, "session_or_transport_failure"
+
+
+def _raise_write_error(status_code: int, error_class: str) -> Never:
+    raise i3x_http_error(status_code, "WriteError", error_class)
 
 
 @lru_cache(maxsize=1)
@@ -2480,10 +2539,89 @@ async def update_object_history_v1(element_id: str) -> None:
     _not_implemented(f"Historical value updates for '{element_id}'")
 
 
-@router.put("/objects/{element_id}/value")
-async def update_object_value_v1(element_id: str, body: UpdateObjectValueRequest | None = None) -> None:
-    del body
-    _not_implemented(f"Value update for '{element_id}'")
+@router.put("/objects/{element_id}/value", response_model=SuccessResponse[None])
+async def update_object_value_v1(
+    element_id: str,
+    request: Request,
+    body: UpdateObjectValueRequest | None = None,
+    model: BuildResult = Depends(get_or_build_model),
+    opcua_client: OpcUaClientProtocol = Depends(get_opcua_client),
+) -> SuccessResponse[None]:
+    if not _writes_enabled():
+        _not_implemented(f"Value update for '{element_id}'")
+
+    if body is None:
+        _raise_invalid_argument("body", None, "Missing request body")
+
+    node = _find_model_node(model, element_id)
+    if node is None:
+        _raise_not_found("Object", element_id)
+    if node.kind != "property":
+        _raise_write_error(400, "bad_type_or_range")
+
+    target_node_id = node.source_node_id
+    principal = request.headers.get("x-principal") or "anonymous"
+    started = perf_counter()
+
+    try:
+        writable, user_writable = await opcua_client.read_write_access(target_node_id)
+    except Exception as exc:
+        status_code, error_class = _classify_write_error(exc)
+        logger.warning(
+            "Write audit principal=%s element_id=%s node_id=%s decision=deny class=%s duration_s=%.3f",
+            principal,
+            element_id,
+            target_node_id,
+            error_class,
+            perf_counter() - started,
+        )
+        _raise_write_error(status_code, error_class)
+
+    if not writable or not user_writable:
+        logger.info(
+            "Write audit principal=%s element_id=%s node_id=%s decision=deny class=%s duration_s=%.3f",
+            principal,
+            element_id,
+            target_node_id,
+            "target_not_writable",
+            perf_counter() - started,
+        )
+        _raise_write_error(403, "target_not_writable")
+
+    variant_type = await opcua_client.read_variant_type(target_node_id)
+    if not _is_valid_write_type(body.value, variant_type):
+        logger.info(
+            "Write audit principal=%s element_id=%s node_id=%s decision=deny class=%s duration_s=%.3f",
+            principal,
+            element_id,
+            target_node_id,
+            "bad_type_or_range",
+            perf_counter() - started,
+        )
+        _raise_write_error(400, "bad_type_or_range")
+
+    try:
+        await opcua_client.write_value(target_node_id, body.value)
+    except Exception as exc:
+        status_code, error_class = _classify_write_error(exc)
+        logger.warning(
+            "Write audit principal=%s element_id=%s node_id=%s decision=deny class=%s duration_s=%.3f",
+            principal,
+            element_id,
+            target_node_id,
+            error_class,
+            perf_counter() - started,
+        )
+        _raise_write_error(status_code, error_class)
+
+    logger.info(
+        "Write audit principal=%s element_id=%s node_id=%s decision=allow class=ok duration_s=%.3f",
+        principal,
+        element_id,
+        target_node_id,
+        perf_counter() - started,
+    )
+    return SuccessResponse(result=None)
 
 
 @router.post("/subscriptions")

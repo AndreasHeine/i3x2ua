@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import sys
 from types import SimpleNamespace
 from typing import Any, cast
@@ -10,9 +11,9 @@ from fastapi.routing import APIRoute
 
 from i3x_server.bootstrap.app_factory import (
     _configure_otel,
-    _env_flag,
     _readable_operation_id,
     _run_model_preload,
+    _run_periodic_model_refresh,
     _status_title,
     _to_lower_camel_case,
 )
@@ -22,11 +23,6 @@ from i3x_server.schemas.state import BuildResult
 def test_status_title_and_text_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
     assert _status_title(404) == "Not Found"
     assert _status_title(999) == "Error"
-
-    monkeypatch.setenv("I3X_TEST_FLAG", "true")
-    assert _env_flag("I3X_TEST_FLAG") is True
-    monkeypatch.setenv("I3X_TEST_FLAG", "0")
-    assert _env_flag("I3X_TEST_FLAG") is False
 
     assert _to_lower_camel_case("Get Objects") == "getObjects"
     assert _to_lower_camel_case("___") == "operation"
@@ -109,6 +105,77 @@ async def test_run_model_preload_failure_without_raise(monkeypatch: pytest.Monke
     monkeypatch.setattr("i3x_server.bootstrap.app_factory.settings.fail_startup_on_model_preload_error", False)
     monkeypatch.setattr("i3x_server.bootstrap.app_factory.settings.model_preload_blocking", False)
     await _run_model_preload(app)
+
+
+@pytest.mark.asyncio
+async def test_run_periodic_model_refresh_rebuilds_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    build_calls = 0
+    model = BuildResult(
+        nodes_by_id={},
+        root_ids=[],
+        children_by_id={},
+        instances_by_type_id={},
+        property_to_node={},
+        action_to_method={},
+    )
+
+    class _ModelBuilder:
+        async def build(self) -> BuildResult:
+            nonlocal build_calls
+            build_calls += 1
+            return model
+
+    class _OpcUaClient:
+        def reset_runtime_metrics(self) -> None:
+            return None
+
+    sleep_calls = 0
+
+    async def _fake_sleep(_: float) -> None:
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls >= 2:
+            raise asyncio.CancelledError()
+
+    app = FastAPI()
+    app.state.model_builder = _ModelBuilder()
+    app.state.opcua_client = _OpcUaClient()
+    app.state.model_lock = asyncio.Lock()
+    app.state.model_preload_task = None
+    app.state.model_cache = None
+    app.state.object_type_context_cache = object()
+
+    monkeypatch.setattr("i3x_server.bootstrap.app_factory.settings.model_refresh_interval_seconds", 1)
+    monkeypatch.setattr("i3x_server.bootstrap.app_factory.asyncio.sleep", _fake_sleep)
+
+    with pytest.raises(asyncio.CancelledError):
+        await _run_periodic_model_refresh(app)
+
+    assert build_calls == 1
+    assert app.state.model_cache is model
+    assert app.state.object_type_context_cache is None
+
+
+@pytest.mark.asyncio
+async def test_run_periodic_model_refresh_disabled_when_interval_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _ModelBuilder:
+        async def build(self) -> BuildResult:
+            raise AssertionError("build should not run when refresh interval is zero")
+
+    class _OpcUaClient:
+        def reset_runtime_metrics(self) -> None:
+            return None
+
+    app = FastAPI()
+    app.state.model_builder = _ModelBuilder()
+    app.state.opcua_client = _OpcUaClient()
+    app.state.model_lock = asyncio.Lock()
+    app.state.model_preload_task = None
+    app.state.model_cache = None
+    app.state.object_type_context_cache = object()
+
+    monkeypatch.setattr("i3x_server.bootstrap.app_factory.settings.model_refresh_interval_seconds", 0)
+    await _run_periodic_model_refresh(app)
 
 
 def test_configure_otel_disabled_and_import_error(monkeypatch: pytest.MonkeyPatch) -> None:

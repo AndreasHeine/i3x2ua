@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import http
 import logging
-import os
 import re
 import signal
 import types
@@ -11,6 +10,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from time import perf_counter
+from typing import cast
 
 from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
@@ -25,7 +25,7 @@ from i3x_server.api.mcp import router as mcp_router
 from i3x_server.api.ua import router as ua_router
 from i3x_server.api.v1 import router as v1_router
 from i3x_server.application.errors import ApplicationServiceError
-from i3x_server.config.settings import settings
+from i3x_server.config.settings import Settings, settings
 from i3x_server.infrastructure.opcua.client import OpcUaClient
 from i3x_server.infrastructure.subscriptions.service import SubscriptionService
 from i3x_server.mcp import build_mcp_tools, get_api_prefix, init_mcp_metrics, load_prompt_overrides
@@ -44,8 +44,8 @@ def _status_title(status_code: int) -> str:
         return "Error"
 
 
-def _env_flag(name: str, default: str = "0") -> bool:
-    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
+def _runtime_settings() -> Settings:
+    return Settings(_env_file=None)  # type: ignore[call-arg]
 
 
 def _to_lower_camel_case(value: str) -> str:
@@ -202,10 +202,47 @@ async def _run_model_preload(app: FastAPI) -> None:
         logger.warning("Continuing without preloaded model; model will build lazily on demand")
 
 
+async def _run_periodic_model_refresh(app: FastAPI) -> None:
+    interval_seconds = settings.model_refresh_interval_seconds
+    if interval_seconds <= 0:
+        logger.info("Periodic model refresh disabled interval_s=%d", interval_seconds)
+        return
+
+    logger.info("Periodic model refresh enabled interval_s=%d", interval_seconds)
+    while True:
+        await asyncio.sleep(interval_seconds)
+        preload_task = cast(asyncio.Task[None] | None, getattr(app.state, "model_preload_task", None))
+        if preload_task is not None and not preload_task.done():
+            logger.info("Periodic model refresh waiting for preload completion")
+            try:
+                await preload_task
+            except Exception:
+                logger.exception("Periodic model refresh observed preload failure; continuing")
+
+        started = perf_counter()
+        lock: asyncio.Lock = app.state.model_lock
+        try:
+            async with lock:
+                built = await app.state.model_builder.build()
+                app.state.model_cache = built
+                app.state.object_type_context_cache = None
+            logger.info(
+                "Periodic model refresh finished nodes=%d roots=%d properties=%d actions=%d duration_s=%.3f",
+                len(built.nodes_by_id),
+                len(built.root_ids),
+                len(built.property_to_node),
+                len(built.action_to_method),
+                perf_counter() - started,
+            )
+        except Exception:
+            logger.exception("Periodic model refresh failed")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _configure_logging()
-    mcp_enabled = _env_flag("I3X_ENABLE_MCP")
+    runtime_toggle_settings = _runtime_settings()
+    mcp_enabled = runtime_toggle_settings.enable_mcp
     opcua_client = OpcUaClient(
         endpoint=settings.opcua_endpoint,
         username=settings.opcua_username,
@@ -220,7 +257,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         metadata_cache_ttl_seconds=settings.opcua_metadata_cache_ttl_seconds,
         connection_monitor_interval_seconds=settings.opcua_connection_monitor_interval_seconds,
     )
-    skip_connect = _env_flag("I3X_SKIP_OPCUA_CONNECT")
+    skip_connect = runtime_toggle_settings.skip_opcua_connect
     logger.info(
         "App startup opcua_endpoint=%s skip_connect=%s log_level=%s "
         "browse_concurrency=%d metadata_cache_ttl_seconds=%d connection_monitor_interval_seconds=%d "
@@ -292,6 +329,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     app.state.model_lock = asyncio.Lock()
     app.state.model_preload_task = None
+    app.state.model_refresh_task = None
     if mcp_enabled:
         openapi_spec = app.openapi()
         if not isinstance(openapi_spec, dict):
@@ -325,10 +363,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             else:
                 logger.info("Model preload at startup enabled (background)")
                 app.state.model_preload_task = asyncio.create_task(_run_model_preload(app))
+        app.state.model_refresh_task = asyncio.create_task(_run_periodic_model_refresh(app))
     try:
         yield
     finally:
         logger.info("App shutdown started")
+        refresh_task = getattr(app.state, "model_refresh_task", None)
+        if refresh_task is not None and not refresh_task.done():
+            refresh_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await refresh_task
         preload_task = getattr(app.state, "model_preload_task", None)
         if preload_task is not None and not preload_task.done():
             preload_task.cancel()
@@ -341,7 +385,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 def create_app() -> FastAPI:
-    mcp_enabled = _env_flag("I3X_ENABLE_MCP")
+    mcp_enabled = _runtime_settings().enable_mcp
     description = (
         "Turn any OPC UA server into an i3X-compliant REST and MCP Enabled API with OpenAPI docs, "
         "JSON, and live SSE streams. No OPC UA expertise required."

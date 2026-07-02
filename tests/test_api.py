@@ -134,6 +134,7 @@ class FakeOpcUaClient:
         self.writable_by_node_id: dict[str, bool] = {"ns=2;s=Temperature": True}
         self.user_writable_by_node_id: dict[str, bool] = {"ns=2;s=Temperature": True}
         self.variant_type_by_node_id: dict[str, str] = {"ns=2;s=Temperature": "Double"}
+        self.last_write_variant_type_by_node_id: dict[str, str | None] = {}
         self.write_failures: dict[str, Exception] = {}
         self.history_values: dict[str, list[SimpleNamespace]] = {
             "ns=2;s=Temperature": [
@@ -306,11 +307,12 @@ class FakeOpcUaClient:
     async def read_variant_type(self, node_id: str) -> str | None:
         return self.variant_type_by_node_id.get(node_id)
 
-    async def write_value(self, node_id: str, value: Any) -> None:
+    async def write_value(self, node_id: str, value: Any, variant_type: str | None = None) -> None:
         failure = self.write_failures.get(node_id)
         if failure is not None:
             self._request_metrics.failed_request_count += 1
             raise failure
+        self.last_write_variant_type_by_node_id[node_id] = variant_type
         self.values[node_id] = value
         self._request_metrics.write_count += 1
 
@@ -1744,7 +1746,9 @@ def test_v1_update_value_success_when_enabled(client: TestClient, monkeypatch: p
     payload = response.json()
     assert payload["success"] is True
     assert payload["result"] is None
-    assert _fastapi_app(client).state.opcua_client.values["ns=2;s=Temperature"] == 55.25
+    fake_client = _fastapi_app(client).state.opcua_client
+    assert fake_client.values["ns=2;s=Temperature"] == 55.25
+    assert fake_client.last_write_variant_type_by_node_id["ns=2;s=Temperature"] == "Double"
 
 
 def test_v1_update_value_target_not_writable(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -1603,10 +1603,12 @@ class OpcUaClient:
                 )
             return None
 
-    async def write_value(self, node_id: str, value: Any) -> None:
+    async def write_value(self, node_id: str, value: Any, variant_type: str | None = None) -> None:
         node = self._client.get_node(node_id)
+        explicit_variant = _to_explicit_ua_variant(value, variant_type)
+        payload = explicit_variant if explicit_variant is not None else value
         try:
-            await node.write_value(value)
+            await node.write_value(payload)
             self._request_metrics.write_count += 1
         except Exception as exc:
             if self._should_retry_after_disconnect(exc):
@@ -1617,7 +1619,7 @@ class OpcUaClient:
                 )
                 await self._reconnect()
                 retry_node = self._client.get_node(node_id)
-                await retry_node.write_value(value)
+                await retry_node.write_value(payload)
                 self._request_metrics.write_count += 1
                 return
             self._record_failed_request()
@@ -2038,6 +2040,18 @@ def _variant_metadata(data_value: Any) -> tuple[str | None, bool | None]:
             is_array = True
 
     return variant_type_name, is_array
+
+
+def _to_explicit_ua_variant(value: Any, variant_type: str | None) -> ua.Variant | None:
+    if variant_type is None:
+        return None
+    normalized = variant_type.strip()
+    if not normalized:
+        return None
+    ua_variant_type = getattr(ua.VariantType, normalized, None)
+    if ua_variant_type is None:
+        return None
+    return ua.Variant(value, ua_variant_type)
 
 
 def _attribute_scalar_value(data_value: Any) -> Any:

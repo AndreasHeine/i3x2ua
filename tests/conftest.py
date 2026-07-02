@@ -289,7 +289,8 @@ class FakeOpcUaClient:
     async def read_variant_type(self, node_id: str) -> str | None:
         return self.variant_type_by_node_id.get(node_id)
 
-    async def write_value(self, node_id: str, value: Any) -> None:
+    async def write_value(self, node_id: str, value: Any, variant_type: str | None = None) -> None:
+        del variant_type
         failure = self.write_failures.get(node_id)
         if failure is not None:
             self._request_metrics.failed_request_count += 1

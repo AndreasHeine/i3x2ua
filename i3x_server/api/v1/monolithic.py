@@ -733,6 +733,14 @@ def _normalize_write_payload(payload: Any) -> Any:
     return payload
 
 
+def _value_preview_for_log(value: Any, limit: int = 160) -> str:
+    try:
+        text = json.dumps(_to_json_safe_value(value), ensure_ascii=True, default=str)
+    except Exception:
+        text = str(value)
+    return text if len(text) <= limit else f"{text[:limit]}..."
+
+
 def _json_equivalent(left: Any, right: Any) -> bool:
     safe_left = _to_json_safe_value(left)
     safe_right = _to_json_safe_value(right)
@@ -761,12 +769,18 @@ async def _write_object_value_by_element_id(
     opcua_client: OpcUaClientProtocol,
     element_id: str,
     payload_value: Any,
-) -> tuple[bool, int, str]:
+) -> tuple[bool, int, str, dict[str, Any]]:
     node = _find_model_node(model, element_id)
+    write_value = _normalize_write_payload(payload_value)
+    diagnostics: dict[str, Any] = {
+        "requestedValueType": type(write_value).__name__,
+        "requestedValuePreview": _value_preview_for_log(write_value),
+        "resolvedVariantType": None,
+    }
     if node is None:
-        return False, 404, f"Element not found: {element_id}"
+        return False, 404, f"Element not found: {element_id}", diagnostics
     if node.kind != "property":
-        return False, 400, "bad_type_or_range"
+        return False, 400, "bad_type_or_range", diagnostics
 
     target_node_id = node.source_node_id
 
@@ -774,34 +788,37 @@ async def _write_object_value_by_element_id(
         writable, user_writable = await opcua_client.read_write_access(target_node_id)
     except Exception as exc:
         status_code, error_class = _classify_write_error(exc)
-        return False, status_code, error_class
+        diagnostics["exception"] = str(exc)
+        return False, status_code, error_class, diagnostics
 
-    write_value = _normalize_write_payload(payload_value)
     if not writable or not user_writable:
         if await _is_noop_write(
             opcua_client=opcua_client,
             target_node_id=target_node_id,
             requested_value=write_value,
         ):
-            return True, 200, "ok"
-        return False, 403, "target_not_writable"
+            return True, 200, "ok", diagnostics
+        return False, 403, "target_not_writable", diagnostics
 
     try:
         variant_type = await opcua_client.read_variant_type(target_node_id)
+        diagnostics["resolvedVariantType"] = variant_type
     except Exception as exc:
         status_code, error_class = _classify_write_error(exc)
-        return False, status_code, error_class
+        diagnostics["exception"] = str(exc)
+        return False, status_code, error_class, diagnostics
 
     if not _is_valid_write_type(write_value, variant_type):
-        return False, 400, "bad_type_or_range"
+        return False, 400, "bad_type_or_range", diagnostics
 
     try:
-        await opcua_client.write_value(target_node_id, write_value)
+        await opcua_client.write_value(target_node_id, write_value, variant_type=variant_type)
     except Exception as exc:
         status_code, error_class = _classify_write_error(exc)
-        return False, status_code, error_class
+        diagnostics["exception"] = str(exc)
+        return False, status_code, error_class, diagnostics
 
-    return True, 200, "ok"
+    return True, 200, "ok", diagnostics
 
 
 @lru_cache(maxsize=1)
@@ -2864,7 +2881,7 @@ async def update_object_values_v1(
 
     results: list[BulkResultItem[None]] = []
     for update in body.updates:
-        ok, status_code, message = await _write_object_value_by_element_id(
+        ok, status_code, message, _diagnostics = await _write_object_value_by_element_id(
             model=model,
             opcua_client=opcua_client,
             element_id=update.elementId,
@@ -2912,7 +2929,7 @@ async def update_object_value_v1(
     principal = request.headers.get("x-principal") or "anonymous"
     started = perf_counter()
 
-    ok, status_code, error_class = await _write_object_value_by_element_id(
+    ok, status_code, error_class, diagnostics = await _write_object_value_by_element_id(
         model=model,
         opcua_client=opcua_client,
         element_id=element_id,
@@ -2920,11 +2937,18 @@ async def update_object_value_v1(
     )
     if not ok:
         logger.warning(
-            "Write audit principal=%s element_id=%s node_id=%s decision=deny class=%s duration_s=%.3f",
+            (
+                "Write audit principal=%s element_id=%s node_id=%s decision=deny class=%s "
+                "variant_type=%s value_type=%s value_preview=%s error=%s duration_s=%.3f"
+            ),
             principal,
             element_id,
             target_node_id,
             error_class,
+            diagnostics.get("resolvedVariantType"),
+            diagnostics.get("requestedValueType"),
+            diagnostics.get("requestedValuePreview"),
+            diagnostics.get("exception"),
             perf_counter() - started,
         )
         _raise_write_error(status_code, error_class)

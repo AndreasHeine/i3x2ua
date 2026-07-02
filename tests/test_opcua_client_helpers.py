@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
+from asyncua import ua
 
 from i3x_server.infrastructure.opcua.client import (
     OpcUaClient,
@@ -14,6 +15,7 @@ from i3x_server.infrastructure.opcua.client import (
     _assert_file_exists,
     _chunked,
     _chunked_nodes,
+    _to_explicit_ua_variant,
     _to_json_compatible,
 )
 
@@ -130,6 +132,18 @@ def test_chunk_and_json_helpers() -> None:
     assert isinstance(out["now"], str)
     assert out["list"][1]["nested"] == [2, 3]
     assert isinstance(out["other"], str)
+
+
+def test_to_explicit_ua_variant_builds_typed_variant() -> None:
+    variant = _to_explicit_ua_variant(60, "Double")
+
+    assert variant is not None
+    assert variant.VariantType == ua.VariantType.Double
+    assert variant.Value == 60
+
+
+def test_to_explicit_ua_variant_returns_none_for_unknown_type() -> None:
+    assert _to_explicit_ua_variant(60, "UnknownType") is None
 
 
 def test_assert_file_exists(tmp_path: Path) -> None:

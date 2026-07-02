@@ -8,8 +8,10 @@ from starlette.responses import StreamingResponse
 
 from i3x_server.api.v1.monolithic import StreamRequest, stream_subscription_v1
 from i3x_server.application.ports.subscription import SubscriptionServicePort
+from i3x_server.application.services.subscription import SubscriptionAppService
 from i3x_server.domain.ports.opcua import OpcUaClientProtocol, OpcUaNamespaceInfo
 from i3x_server.infrastructure.subscriptions.service import SubscriptionSyncResult, SubscriptionUpdate
+from i3x_server.schemas.state import BuildResult
 
 
 class _FakeOpcUaClient:
@@ -60,6 +62,22 @@ class _FakeSubscriptionService:
         self.deactivated.append((subscription_id, stream_generation))
 
 
+def _stream_app_service(fake_service: _FakeSubscriptionService) -> SubscriptionAppService:
+    empty_model = BuildResult(
+        nodes_by_id={},
+        root_ids=[],
+        children_by_id={},
+        instances_by_type_id={},
+        property_to_node={},
+        action_to_method={},
+    )
+    return SubscriptionAppService(
+        opcua_client=cast(OpcUaClientProtocol, _FakeOpcUaClient()),
+        model=empty_model,
+        subscription_service=cast(SubscriptionServicePort, fake_service),
+    )
+
+
 @pytest.mark.asyncio
 async def test_stream_subscription_raises_not_found_when_activation_fails() -> None:
     service = _FakeSubscriptionService()
@@ -71,7 +89,7 @@ async def test_stream_subscription_raises_not_found_when_activation_fails() -> N
         await stream_subscription_v1(
             body,
             opcua_client=cast(OpcUaClientProtocol, _FakeOpcUaClient()),
-            subscription_service=cast(SubscriptionServicePort, service),
+            subscription_app_service=_stream_app_service(service),
         )
     assert exc_info.value.status_code == 404
 
@@ -98,7 +116,7 @@ async def test_stream_subscription_sends_initial_payload_then_close() -> None:
     response = await stream_subscription_v1(
         body,
         opcua_client=cast(OpcUaClientProtocol, _FakeOpcUaClient()),
-        subscription_service=cast(SubscriptionServicePort, service),
+        subscription_app_service=_stream_app_service(service),
     )
     assert isinstance(response, StreamingResponse)
 
@@ -136,7 +154,7 @@ async def test_stream_subscription_keepalive_and_update_flow() -> None:
     response = await stream_subscription_v1(
         body,
         opcua_client=cast(OpcUaClientProtocol, _FakeOpcUaClient()),
-        subscription_service=cast(SubscriptionServicePort, service),
+        subscription_app_service=_stream_app_service(service),
     )
     chunks: list[str] = []
     async for chunk in response.body_iterator:
@@ -159,6 +177,6 @@ async def test_stream_subscription_raises_not_found_when_ack_sync_missing() -> N
         await stream_subscription_v1(
             body,
             opcua_client=cast(OpcUaClientProtocol, _FakeOpcUaClient()),
-            subscription_service=cast(SubscriptionServicePort, service),
+            subscription_app_service=_stream_app_service(service),
         )
     assert exc_info.value.status_code == 404

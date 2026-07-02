@@ -15,6 +15,7 @@ from fastapi import Depends, Request
 
 from i3x_server.application.ports.subscription import SubscriptionServicePort
 from i3x_server.application.services.mcp import McpService
+from i3x_server.application.services.model_query import ModelQueryService
 from i3x_server.application.services.object_value import ObjectValueService
 from i3x_server.application.services.subscription import SubscriptionAppService
 from i3x_server.domain.ports.opcua import OpcUaClientProtocol
@@ -99,6 +100,14 @@ async def get_object_value_service(
         ObjectValueService instance
     """
     return ObjectValueService(opcua_client=opcua_client, model=model, request=request)
+
+
+async def get_model_query_service(
+    model: BuildResult = Depends(get_or_build_model),
+    opcua_client: OpcUaClientProtocol = Depends(get_opcua_client),
+) -> ModelQueryService:
+    """Dependency function for ModelQueryService."""
+    return ModelQueryService(opcua_client=opcua_client, model=model)
 
 
 async def get_subscription_app_service(

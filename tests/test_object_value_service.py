@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -80,6 +80,25 @@ class _Service(ObjectValueService):
         return [VQT(value=node.id, quality="Good", timestamp="2026-01-01T00:00:00Z")]
 
 
+class _RealReadClient:
+    def __init__(self) -> None:
+        self.read_data_values_response: list[Any] = []
+        self.read_history_values_response: dict[str, list[Any]] = {}
+
+    async def read_data_values(self, node_ids: list[str]) -> list[Any]:
+        del node_ids
+        return self.read_data_values_response
+
+    async def read_history_values(
+        self,
+        node_ids: list[str],
+        start_time: datetime | None,
+        end_time: datetime | None,
+    ) -> dict[str, list[Any]]:
+        del node_ids, start_time, end_time
+        return self.read_history_values_response
+
+
 @pytest.mark.asyncio
 async def test_get_current_value_for_missing_node_raises_not_found() -> None:
     service = _Service(cast(OpcUaClientProtocol, object()), _model())
@@ -155,6 +174,63 @@ async def test_get_history_wraps_unexpected_error(monkeypatch: pytest.MonkeyPatc
     assert exc_info.value.status_code == 502
 
 
+@pytest.mark.asyncio
+async def test_read_current_value_uses_opcua_data_value_for_property() -> None:
+    model = _model()
+    client = _RealReadClient()
+    client.read_data_values_response = [
+        SimpleNamespace(
+            Value=SimpleNamespace(Value=42.5),
+            StatusCode=SimpleNamespace(name="Good", is_good=lambda: True),
+            SourceTimestamp=datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc),
+            ServerTimestamp=None,
+        )
+    ]
+    service = ObjectValueService(cast(OpcUaClientProtocol, client), model)
+
+    vqt = await service._read_current_value(model.nodes_by_id["prop-a"])
+    assert vqt.value == 42.5
+    assert vqt.quality == "Good"
+    assert vqt.timestamp.endswith("Z")
+
+
+@pytest.mark.asyncio
+async def test_read_current_value_non_property_returns_good_no_data() -> None:
+    model = _model()
+    client = _RealReadClient()
+    service = ObjectValueService(cast(OpcUaClientProtocol, client), model)
+
+    vqt = await service._read_current_value(model.nodes_by_id["asset-root"])
+    assert vqt.value is None
+    assert vqt.quality == "GoodNoData"
+
+
+@pytest.mark.asyncio
+async def test_read_history_values_maps_data_values_and_binary() -> None:
+    model = _model()
+    client = _RealReadClient()
+    client.read_history_values_response = {
+        "ns=2;s=Temperature": [
+            SimpleNamespace(
+                Value=SimpleNamespace(Value=b"\xff\x00"),
+                StatusCode=SimpleNamespace(name="Good", is_good=lambda: True),
+                SourceTimestamp=datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc),
+                ServerTimestamp=None,
+            )
+        ]
+    }
+    service = ObjectValueService(cast(OpcUaClientProtocol, client), model)
+
+    values = await service._read_history_values(
+        model.nodes_by_id["prop-a"],
+        datetime(2026, 1, 1, 9, 0, tzinfo=timezone.utc),
+        datetime(2026, 1, 1, 11, 0, tzinfo=timezone.utc),
+    )
+    assert len(values) == 1
+    assert values[0].quality == "Good"
+    assert values[0].value == {"encoding": "base64", "data": "/wA="}
+
+
 def test_collect_composition_components_honors_depth_1() -> None:
     service = _Service(cast(OpcUaClientProtocol, object()), _model())
     root = service.model.nodes_by_id["asset-root"]
@@ -188,7 +264,23 @@ def test_now_iso_has_utc_suffix() -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_related_objects_not_implemented() -> None:
+async def test_get_related_objects_returns_children_and_supports_filter() -> None:
     service = _Service(cast(OpcUaClientProtocol, object()), _model(), request=cast(Any, SimpleNamespace()))
-    with pytest.raises(NotImplementedError):
-        await service.get_related_objects("asset-root")
+    root = service.model.nodes_by_id["asset-root"]
+    root.relationships = {"ConnectedTo": ["asset-child"]}
+
+    related = await service.get_related_objects("asset-root")
+    assert {item["sourceRelationship"] for item in related} == {"HasChildren", "ConnectedTo"}
+
+    filtered = await service.get_related_objects("asset-root", relationship_type="ConnectedTo", include_metadata=True)
+    assert len(filtered) == 1
+    assert filtered[0]["sourceRelationship"] == "ConnectedTo"
+    assert isinstance(filtered[0]["object"]["metadata"], dict)
+
+
+@pytest.mark.asyncio
+async def test_get_related_objects_missing_node_raises_not_found() -> None:
+    service = _Service(cast(OpcUaClientProtocol, object()), _model(), request=cast(Any, SimpleNamespace()))
+    with pytest.raises(HTTPException) as exc_info:
+        await service.get_related_objects("missing")
+    assert exc_info.value.status_code == 404

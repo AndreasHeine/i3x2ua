@@ -65,6 +65,7 @@ omit = [
     "i3x_server/api/__init__.py",
     "i3x_server/api/mcp/__init__.py",
     "i3x_server/api/v1/__init__.py",
+    "i3x_server/api/v1/monolithic.py",
     "i3x_server/main.py",
 ]
 

@@ -73,6 +73,7 @@ def test_landing_page_csp_remains_strict(client: TestClient) -> None:
     csp_sources = _csp_source_tokens(response.headers.get("Content-Security-Policy", ""))
     assert "https://cdn.jsdelivr.net" not in csp_sources
     assert "https://fastapi.tiangolo.com" not in csp_sources
+    assert "'unsafe-inline'" not in csp_sources
 
 
 def test_static_logo_is_served(client: TestClient) -> None:

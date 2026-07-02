@@ -8,15 +8,21 @@ relationship types, and objects).
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from i3x_server.application.errors import ApplicationServiceError
+from i3x_server.config.settings import get_settings
 from i3x_server.domain.ports.opcua import OpcUaClientProtocol, OpcUaNamespaceInfo
-from i3x_server.domain.utils import display_name_for_uri
+from i3x_server.domain.utils import canonical_namespace_uri, display_name_for_uri, namespace_uri_for_node_id
+from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
 from i3x_server.version import get_server_version
 
 logger = logging.getLogger(__name__)
+
+_I3X_NAMESPACE = "https://cesmii.org/i3x"
+_OPCUA_NAMESPACE = "https://opcfoundation.org/UA/"
 
 
 class Namespace:
@@ -78,16 +84,105 @@ def _to_namespace(item: OpcUaNamespaceInfo) -> Namespace:
 def _build_server_info(server_version: str | None = None, server_name: str | None = None) -> ServerInfo:
     from i3x_server.domain.utils import server_name_from_openapi
 
+    writes_enabled = bool(get_settings().enable_writes)
+
     return ServerInfo(
         specVersion="1.0",
         serverVersion=server_version or get_server_version(),
         serverName=server_name or server_name_from_openapi(),
         capabilities=ServerCapabilities(
             query={"history": True},
-            update={"current": False, "history": False},
+            update={"current": writes_enabled, "history": False},
             subscribe={"stream": True},
         ),
     )
+
+
+def _element_id_from_node_id(prefix: str, node_id: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9]+", "-", node_id).strip("-")
+    return f"{prefix}-{cleaned.lower()}" if cleaned else f"{prefix}-unknown"
+
+
+def _relationship_type_items(model: BuildResult | None = None) -> list[dict[str, str]]:
+    items = [
+        {
+            "elementId": "HasParent",
+            "displayName": "HasParent",
+            "namespaceUri": _I3X_NAMESPACE,
+            "relationshipId": "HasParent",
+            "reverseOf": "HasChildren",
+        },
+        {
+            "elementId": "HasChildren",
+            "displayName": "HasChildren",
+            "namespaceUri": _I3X_NAMESPACE,
+            "relationshipId": "HasChildren",
+            "reverseOf": "HasParent",
+        },
+        {
+            "elementId": "HasComponent",
+            "displayName": "HasComponent",
+            "namespaceUri": _I3X_NAMESPACE,
+            "relationshipId": "HasComponent",
+            "reverseOf": "ComponentOf",
+        },
+        {
+            "elementId": "ComponentOf",
+            "displayName": "ComponentOf",
+            "namespaceUri": _I3X_NAMESPACE,
+            "relationshipId": "ComponentOf",
+            "reverseOf": "HasComponent",
+        },
+    ]
+    if model is None:
+        return items
+
+    graph_names = getattr(model, "graph_relationship_names", None) or set()
+    existing = {item["elementId"] for item in items}
+    for name in sorted(graph_names):
+        if name in existing:
+            continue
+        reverse_name = f"inverseOf_{name}"
+        items.append(
+            {
+                "elementId": name,
+                "displayName": name,
+                "namespaceUri": _OPCUA_NAMESPACE,
+                "relationshipId": name,
+                "reverseOf": reverse_name,
+            }
+        )
+        items.append(
+            {
+                "elementId": reverse_name,
+                "displayName": reverse_name,
+                "namespaceUri": _OPCUA_NAMESPACE,
+                "relationshipId": reverse_name,
+                "reverseOf": name,
+            }
+        )
+    return items
+
+
+def _to_object_instance(node: ModelNode, include_metadata: bool) -> dict[str, object]:
+    metadata: dict[str, object] | None = None
+    if include_metadata:
+        metadata = {
+            "sourceTypeId": node.source_type_id,
+            "description": str(node.metadata.get("description")) if "description" in node.metadata else None,
+            "relationships": node.relationships,
+            "extendedAttributes": node.metadata,
+        }
+
+    return {
+        "elementId": node.id,
+        "displayName": node.name,
+        "typeElementId": node.type or node.source_type_id or node.kind,
+        "parentId": node.parent_id,
+        "isComposition": bool(node.is_composition),
+        "isExtended": bool(node.metadata),
+        "metadata": metadata,
+    }
 
 
 class ModelQueryService:
@@ -162,9 +257,38 @@ class ModelQueryService:
         Raises:
             HTTPException: If object type retrieval fails
         """
-        # This will be populated with actual implementation
-        # once we move the object type context building logic
-        raise NotImplementedError("ObjectType retrieval moved to v1_monolithic; Phase 4b will extract")
+        try:
+            object_types = await self.opcua_client.get_object_types()
+            namespace_infos = await self.get_namespace_infos()
+        except Exception as exc:
+            raise ApplicationServiceError(
+                502,
+                "OpcUaObjectTypeError",
+                "Failed to read OPC UA object types",
+                {"cause": str(exc)},
+            ) from exc
+
+        effective_namespace_uri: str | None = None
+        if namespace_uri is not None:
+            effective_namespace_uri = canonical_namespace_uri(namespace_uri, namespace_infos)
+
+        results: list[dict[str, object]] = []
+        for item in object_types:
+            item_namespace_uri = namespace_uri_for_node_id(item.node_id, namespace_infos)
+            if effective_namespace_uri is not None and item_namespace_uri != effective_namespace_uri:
+                continue
+            results.append(
+                {
+                    "elementId": _element_id_from_node_id("objecttype", item.node_id),
+                    "displayName": item.display_name,
+                    "namespaceUri": item_namespace_uri,
+                    "sourceTypeId": item.node_id,
+                    "version": None,
+                    "schema": {},
+                    "related": None,
+                }
+            )
+        return results
 
     async def get_relationship_types(
         self,
@@ -178,8 +302,10 @@ class ModelQueryService:
         Returns:
             List of relationship type responses
         """
-        # Phase 4b: Extract relationship type logic
-        raise NotImplementedError("RelationshipType retrieval in progress")
+        items = _relationship_type_items(self.model)
+        if namespace_uri is None:
+            return items
+        return [item for item in items if item["namespaceUri"] == namespace_uri]
 
     async def get_objects(
         self,
@@ -195,5 +321,8 @@ class ModelQueryService:
         Returns:
             List of object responses
         """
-        # Phase 4b: Extract object retrieval logic
-        raise NotImplementedError("Object retrieval in progress")
+        nodes = list(self.model.nodes_by_id.values())
+        if element_ids is not None:
+            wanted = set(element_ids)
+            nodes = [node for node in nodes if node.id in wanted]
+        return [_to_object_instance(node, include_metadata) for node in nodes]

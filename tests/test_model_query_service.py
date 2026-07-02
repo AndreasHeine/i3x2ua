@@ -14,7 +14,7 @@ from i3x_server.application.services.model_query import (
     _build_server_info,
     _to_namespace,
 )
-from i3x_server.domain.ports.opcua import OpcUaClientProtocol, OpcUaNamespaceInfo
+from i3x_server.domain.ports.opcua import OpcUaClientProtocol, OpcUaNamespaceInfo, OpcUaObjectTypeInfo
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
 
@@ -43,12 +43,18 @@ class _FakeOpcUaClient:
         self._infos = infos
         self._error = error
         self.calls = 0
+        self.object_types: list[OpcUaObjectTypeInfo] = []
 
     async def get_namespace_infos(self) -> list[OpcUaNamespaceInfo]:
         self.calls += 1
         if self._error:
             raise self._error
         return self._infos
+
+    async def get_object_types(self) -> list[OpcUaObjectTypeInfo]:
+        if self._error:
+            raise self._error
+        return self.object_types
 
 
 def test_namespace_model_dump() -> None:
@@ -151,11 +157,73 @@ async def test_get_namespace_infos_uses_cache_and_empty_default() -> None:
 
 
 @pytest.mark.asyncio
-async def test_unimplemented_methods_raise_not_implemented() -> None:
-    service = ModelQueryService(cast(OpcUaClientProtocol, _FakeOpcUaClient([])), _model())
-    with pytest.raises(NotImplementedError):
+async def test_get_object_types_returns_items_and_honors_namespace_filter() -> None:
+    infos = [
+        OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/", display_name="UA"),
+        OpcUaNamespaceInfo(uri="http://example.com/custom", display_name="Custom"),
+    ]
+    client = _FakeOpcUaClient(infos)
+    client.object_types = [
+        OpcUaObjectTypeInfo(
+            node_id="ns=1;i=1001",
+            parent_node_id=None,
+            browse_name="MachineType",
+            display_name="Machine Type",
+            properties={},
+        )
+    ]
+    service = ModelQueryService(cast(OpcUaClientProtocol, client), _model())
+
+    all_items = await service.get_object_types()
+    assert len(all_items) == 1
+    assert all_items[0]["displayName"] == "Machine Type"
+    assert all_items[0]["namespaceUri"] == "http://example.com/custom"
+    assert isinstance(all_items[0]["elementId"], str)
+
+    filtered = await service.get_object_types(namespace_uri="http://example.com/custom")
+    assert len(filtered) == 1
+    empty = await service.get_object_types(namespace_uri="http://example.com/other")
+    assert empty == []
+
+
+@pytest.mark.asyncio
+async def test_get_object_types_wraps_client_errors() -> None:
+    client = _FakeOpcUaClient([], error=RuntimeError("object type read failed"))
+    service = ModelQueryService(cast(OpcUaClientProtocol, client), _model())
+    with pytest.raises(ApplicationServiceError) as exc_info:
         await service.get_object_types()
-    with pytest.raises(NotImplementedError):
-        await service.get_relationship_types()
-    with pytest.raises(NotImplementedError):
-        await service.get_objects()
+    assert exc_info.value.status_code == 502
+    assert exc_info.value.error_code == "OpcUaObjectTypeError"
+
+
+@pytest.mark.asyncio
+async def test_get_relationship_types_contains_defaults_and_model_graph_items() -> None:
+    model = _model()
+    model.graph_relationship_names = {"ConnectedTo"}
+    service = ModelQueryService(cast(OpcUaClientProtocol, _FakeOpcUaClient([])), model)
+
+    items = await service.get_relationship_types()
+    element_ids = {item["elementId"] for item in items}
+    assert "HasParent" in element_ids
+    assert "ConnectedTo" in element_ids
+    assert "inverseOf_ConnectedTo" in element_ids
+
+    filtered = await service.get_relationship_types(namespace_uri="https://cesmii.org/i3x")
+    assert all(item["namespaceUri"] == "https://cesmii.org/i3x" for item in filtered)
+
+
+@pytest.mark.asyncio
+async def test_get_objects_returns_model_nodes_and_filtering() -> None:
+    service = ModelQueryService(cast(OpcUaClientProtocol, _FakeOpcUaClient([])), _model())
+
+    all_objects = await service.get_objects()
+    assert len(all_objects) == 1
+    assert all_objects[0]["elementId"] == "asset-root"
+    assert all_objects[0]["metadata"] is None
+
+    filtered = await service.get_objects(element_ids=["asset-root"], include_metadata=True)
+    assert len(filtered) == 1
+    assert isinstance(filtered[0]["metadata"], dict)
+
+    missing = await service.get_objects(element_ids=["missing"])
+    assert missing == []

@@ -511,6 +511,7 @@ def test_landing_page_csp_remains_strict(client: TestClient) -> None:
     csp_sources = _csp_source_tokens(response.headers.get("Content-Security-Policy", ""))
     assert "https://cdn.jsdelivr.net" not in csp_sources
     assert "https://fastapi.tiangolo.com" not in csp_sources
+    assert "'unsafe-inline'" not in csp_sources
 
 
 def test_static_logo_is_served(client: TestClient) -> None:
@@ -1942,6 +1943,82 @@ def test_v1_subscription_lifecycle(client: TestClient) -> None:
         assert sync_payload["result"][0]["sequenceNumber"] >= 1
         assert isinstance(sync_payload["result"][0]["updates"], list)
         assert sync_payload["result"][0]["updates"][0]["elementId"]
+
+
+def test_v1_subscription_register_missing_client_id_returns_400(client: TestClient) -> None:
+    response = client.post(
+        "/v1/subscriptions/register",
+        json={
+            "subscriptionId": "sub-1",
+            "elementIds": ["property-abc"],
+            "maxDepth": 1,
+        },
+    )
+    assert response.status_code == 400
+    payload = response.json()
+    assert payload["success"] is False
+    assert payload["error"]["code"] == 400
+
+
+def test_v1_subscription_sync_missing_client_id_returns_400(client: TestClient) -> None:
+    response = client.post(
+        "/v1/subscriptions/sync",
+        json={
+            "subscriptionId": "sub-1",
+            "acknowledgeSequence": 0,
+        },
+    )
+    assert response.status_code == 400
+    payload = response.json()
+    assert payload["success"] is False
+    assert payload["error"]["code"] == 400
+
+
+def test_v1_subscription_register_missing_subscription_returns_404(client: TestClient) -> None:
+    response = client.post(
+        "/v1/subscriptions/register",
+        json={
+            "clientId": "my-app-instance-001",
+            "subscriptionId": "missing",
+            "elementIds": ["property-abc"],
+            "maxDepth": 1,
+        },
+    )
+    assert response.status_code == 404
+    payload = response.json()
+    assert payload["success"] is False
+    assert payload["error"]["code"] == 404
+
+
+def test_v1_subscription_unregister_missing_client_id_returns_400(client: TestClient) -> None:
+    response = client.post(
+        "/v1/subscriptions/unregister",
+        json={
+            "subscriptionId": "sub-1",
+            "elementIds": ["property-abc"],
+            "maxDepth": 1,
+        },
+    )
+    assert response.status_code == 400
+    payload = response.json()
+    assert payload["success"] is False
+    assert payload["error"]["code"] == 400
+
+
+def test_v1_subscription_unregister_missing_subscription_returns_404(client: TestClient) -> None:
+    response = client.post(
+        "/v1/subscriptions/unregister",
+        json={
+            "clientId": "my-app-instance-001",
+            "subscriptionId": "missing",
+            "elementIds": ["property-abc"],
+            "maxDepth": 1,
+        },
+    )
+    assert response.status_code == 404
+    payload = response.json()
+    assert payload["success"] is False
+    assert payload["error"]["code"] == 404
 
 
 def test_v1_subscription_register_omitted_maxdepth_monitors_descendant_properties(client: TestClient) -> None:

@@ -528,8 +528,8 @@ def create_app() -> FastAPI:
                 "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
                 "connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
                 if is_docs_route
-                else "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
-                "script-src 'self' 'unsafe-inline'; connect-src 'self'; object-src 'none'; "
+                else "default-src 'self'; img-src 'self' data:; style-src 'self'; "
+                "script-src 'self'; connect-src 'self'; object-src 'none'; "
                 "base-uri 'none'; frame-ancestors 'none'"
             )
             response.headers.setdefault(

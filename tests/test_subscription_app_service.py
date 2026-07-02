@@ -47,14 +47,24 @@ def _request() -> Request:
 class _FakeSubscriptionPort:
     def __init__(self) -> None:
         self.register_result = True
+        self.unregister_result = True
+        self.activate_returns: list[int | None] = [1]
         self.sync_result: SubscriptionSyncResult | None = None
+        self.active_sequence: list[bool] = [False]
+        self.wait_returns: list[list[SubscriptionUpdate] | None] = []
+        self.deactivated: list[tuple[str, int]] = []
         self.delete_results: list[SubscriptionDeleteResult] = []
         self.list_results: list[SubscriptionDetail] = []
         self.create_error: Exception | None = None
         self.register_error: Exception | None = None
+        self.unregister_error: Exception | None = None
         self.sync_error: Exception | None = None
         self.delete_error: Exception | None = None
         self.list_error: Exception | None = None
+
+    async def activate_stream(self, client_id: str | None, subscription_id: str) -> int | None:
+        del client_id, subscription_id
+        return self.activate_returns.pop(0) if self.activate_returns else None
 
     async def create_subscription(self, client_id: str | None, display_name: str | None = None) -> SubscriptionDetail:
         if self.create_error:
@@ -92,6 +102,18 @@ class _FakeSubscriptionPort:
             raise self.sync_error
         return self.sync_result
 
+    async def unregister_items(
+        self,
+        client_id: str | None,
+        subscription_id: str,
+        element_ids: list[str],
+        model: BuildResult,
+    ) -> bool:
+        del client_id, subscription_id, element_ids, model
+        if self.unregister_error:
+            raise self.unregister_error
+        return self.unregister_result
+
     async def delete_subscriptions(
         self,
         client_id: str | None,
@@ -111,6 +133,23 @@ class _FakeSubscriptionPort:
         if self.list_error:
             raise self.list_error
         return self.list_results
+
+    async def is_stream_active(self, subscription_id: str, stream_generation: int) -> bool:
+        del subscription_id, stream_generation
+        return self.active_sequence.pop(0) if self.active_sequence else False
+
+    async def wait_for_updates(
+        self,
+        client_id: str | None,
+        subscription_id: str,
+        after_sequence: int,
+        timeout_seconds: float,
+    ) -> list[SubscriptionUpdate] | None:
+        del client_id, subscription_id, after_sequence, timeout_seconds
+        return self.wait_returns.pop(0) if self.wait_returns else []
+
+    async def deactivate_stream(self, subscription_id: str, stream_generation: int) -> None:
+        self.deactivated.append((subscription_id, stream_generation))
 
 
 @pytest.mark.asyncio
@@ -153,7 +192,7 @@ async def test_register_monitored_items_success() -> None:
 
 
 @pytest.mark.asyncio
-async def test_register_monitored_items_wraps_client_id_validation_error() -> None:
+async def test_register_monitored_items_preserves_client_id_validation_error() -> None:
     port = _FakeSubscriptionPort()
     service = SubscriptionAppService(
         cast(OpcUaClientProtocol, SimpleNamespace()),
@@ -163,11 +202,11 @@ async def test_register_monitored_items_wraps_client_id_validation_error() -> No
     )
     with pytest.raises(HTTPException) as exc_info:
         await service.register_monitored_items("sub-1", "", ["asset-root"])
-    assert exc_info.value.status_code == 502
+    assert exc_info.value.status_code == 400
 
 
 @pytest.mark.asyncio
-async def test_register_monitored_items_not_found_path_is_wrapped() -> None:
+async def test_register_monitored_items_not_found_path_is_preserved() -> None:
     port = _FakeSubscriptionPort()
     port.register_result = False
     service = SubscriptionAppService(
@@ -177,7 +216,36 @@ async def test_register_monitored_items_not_found_path_is_wrapped() -> None:
     )
     with pytest.raises(HTTPException) as exc_info:
         await service.register_monitored_items("sub-missing", "client-1", ["asset-root"])
-    assert exc_info.value.status_code == 502
+    assert exc_info.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_unregister_monitored_items_success_and_preserved_errors() -> None:
+    port = _FakeSubscriptionPort()
+    service = SubscriptionAppService(
+        cast(OpcUaClientProtocol, SimpleNamespace()),
+        _model(),
+        cast(SubscriptionServicePort, port),
+        request=_request(),
+    )
+
+    dto = await service.unregister_monitored_items("sub-1", "client-1", ["asset-root"])
+    assert dto == {"subscriptionId": "sub-1", "monitoredItems": ["asset-root"], "registered": 1}
+
+    with pytest.raises(HTTPException) as exc_client:
+        await service.unregister_monitored_items("sub-1", "", ["asset-root"])
+    assert exc_client.value.status_code == 400
+
+    port.unregister_result = False
+    with pytest.raises(HTTPException) as exc_not_found:
+        await service.unregister_monitored_items("sub-missing", "client-1", ["asset-root"])
+    assert exc_not_found.value.status_code == 404
+
+    port.unregister_result = True
+    port.unregister_error = RuntimeError("boom")
+    with pytest.raises(HTTPException) as exc_wrapped:
+        await service.unregister_monitored_items("sub-1", "client-1", ["asset-root"])
+    assert exc_wrapped.value.status_code == 502
 
 
 @pytest.mark.asyncio
@@ -210,7 +278,7 @@ async def test_get_pending_updates_success() -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_pending_updates_wraps_missing_client_error() -> None:
+async def test_get_pending_updates_preserves_missing_client_error() -> None:
     port = _FakeSubscriptionPort()
     service = SubscriptionAppService(
         cast(OpcUaClientProtocol, SimpleNamespace()),
@@ -219,11 +287,11 @@ async def test_get_pending_updates_wraps_missing_client_error() -> None:
     )
     with pytest.raises(HTTPException) as exc_info:
         await service.get_pending_updates("sub-1", "")
-    assert exc_info.value.status_code == 502
+    assert exc_info.value.status_code == 400
 
 
 @pytest.mark.asyncio
-async def test_get_pending_updates_wraps_not_found_and_stream_active_errors() -> None:
+async def test_get_pending_updates_preserves_not_found_and_stream_active_errors() -> None:
     port_none = _FakeSubscriptionPort()
     port_none.sync_result = None
     service_none = SubscriptionAppService(
@@ -233,7 +301,7 @@ async def test_get_pending_updates_wraps_not_found_and_stream_active_errors() ->
     )
     with pytest.raises(HTTPException) as exc_none:
         await service_none.get_pending_updates("sub-missing", "client-1")
-    assert exc_none.value.status_code == 502
+    assert exc_none.value.status_code == 404
 
     port_stream = _FakeSubscriptionPort()
     port_stream.sync_result = SubscriptionSyncResult(
@@ -250,7 +318,7 @@ async def test_get_pending_updates_wraps_not_found_and_stream_active_errors() ->
     )
     with pytest.raises(HTTPException) as exc_stream:
         await service_stream.get_pending_updates("sub-1", "client-1")
-    assert exc_stream.value.status_code == 502
+    assert exc_stream.value.status_code == 400
 
 
 @pytest.mark.asyncio
@@ -271,6 +339,29 @@ async def test_delete_subscriptions_success_and_wrap_error() -> None:
     port.delete_error = RuntimeError("fail-delete")
     with pytest.raises(HTTPException) as exc_info:
         await service.delete_subscriptions(["sub-1"])
+    assert exc_info.value.status_code == 502
+
+
+@pytest.mark.asyncio
+async def test_delete_subscription_items_success_and_wrap_error() -> None:
+    port = _FakeSubscriptionPort()
+    port.delete_results = [
+        SubscriptionDeleteResult(success=True, subscription_id="sub-1"),
+        SubscriptionDeleteResult(success=False, subscription_id="sub-2", error={"code": 404, "message": "missing"}),
+    ]
+    service = SubscriptionAppService(
+        cast(OpcUaClientProtocol, SimpleNamespace()),
+        _model(),
+        cast(SubscriptionServicePort, port),
+    )
+    items = await service.delete_subscription_items(["sub-1", "sub-2"], client_id="client-1")
+    assert items[0]["success"] is True
+    assert items[1]["success"] is False
+    assert items[1]["error"] == {"code": 404, "message": "missing"}
+
+    port.delete_error = RuntimeError("fail-delete")
+    with pytest.raises(HTTPException) as exc_info:
+        await service.delete_subscription_items(["sub-1"])
     assert exc_info.value.status_code == 502
 
 
@@ -298,3 +389,123 @@ async def test_list_subscriptions_success_and_wrap_error() -> None:
     with pytest.raises(HTTPException) as exc_info:
         await service.list_subscriptions()
     assert exc_info.value.status_code == 502
+
+
+@pytest.mark.asyncio
+async def test_list_subscription_items_with_missing_requested_id() -> None:
+    port = _FakeSubscriptionPort()
+    port.list_results = [
+        SubscriptionDetail(
+            subscription_id="sub-1",
+            client_id="client-1",
+            display_name="Demo",
+            monitored_objects=[{"elementId": "asset-root"}],
+            mode="poll",
+        )
+    ]
+    service = SubscriptionAppService(
+        cast(OpcUaClientProtocol, SimpleNamespace()),
+        _model(),
+        cast(SubscriptionServicePort, port),
+    )
+    items = await service.list_subscription_items(client_id="client-1", subscription_ids=["sub-1", "missing"])
+    assert items[0]["success"] is True
+    assert items[0]["result"] is not None
+    assert items[1]["success"] is False
+    assert items[1]["error"] == {"code": 404, "message": "Subscription not found: missing"}
+
+    port.list_error = RuntimeError("fail-list")
+    with pytest.raises(HTTPException) as exc_info:
+        await service.list_subscription_items()
+    assert exc_info.value.status_code == 502
+
+
+@pytest.mark.asyncio
+async def test_begin_stream_session_success_and_relaxed_scope() -> None:
+    port = _FakeSubscriptionPort()
+    port.activate_returns = [None, 7]
+    port.sync_result = SubscriptionSyncResult(updates=[])
+    service = SubscriptionAppService(
+        cast(OpcUaClientProtocol, SimpleNamespace()),
+        _model(),
+        cast(SubscriptionServicePort, port),
+        request=_request(),
+    )
+
+    session = await service.begin_stream_session(
+        subscription_id="sub-1",
+        client_id="client-1",
+        acknowledge_sequence=2,
+    )
+
+    assert session["clientId"] == "client-1"
+    assert session["subscriptionId"] == "sub-1"
+    assert session["streamGeneration"] == 7
+    assert session["scopeRelaxed"] is True
+    assert session["acknowledged"].updates == []
+
+
+@pytest.mark.asyncio
+async def test_begin_stream_session_preserves_not_found_and_validation_errors() -> None:
+    port = _FakeSubscriptionPort()
+    service = SubscriptionAppService(
+        cast(OpcUaClientProtocol, SimpleNamespace()),
+        _model(),
+        cast(SubscriptionServicePort, port),
+        request=_request(),
+    )
+
+    with pytest.raises(HTTPException) as exc_missing_client:
+        await service.begin_stream_session("sub-1", "")
+    assert exc_missing_client.value.status_code == 400
+
+    port.activate_returns = [None, None]
+    with pytest.raises(HTTPException) as exc_missing_subscription:
+        await service.begin_stream_session("sub-missing", "client-1")
+    assert exc_missing_subscription.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_begin_stream_session_wraps_unexpected_errors() -> None:
+    port = _FakeSubscriptionPort()
+    port.activate_returns = [1]
+    port.sync_error = RuntimeError("boom")
+    service = SubscriptionAppService(
+        cast(OpcUaClientProtocol, SimpleNamespace()),
+        _model(),
+        cast(SubscriptionServicePort, port),
+        request=_request(),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await service.begin_stream_session("sub-1", "client-1")
+    assert exc_info.value.status_code == 502
+
+
+@pytest.mark.asyncio
+async def test_iter_stream_events_emits_connected_keepalive_updates_close() -> None:
+    port = _FakeSubscriptionPort()
+    port.active_sequence = [True, True, False]
+    port.wait_returns = [[], [SubscriptionUpdate(2, "asset-root", "ns=2;s=Root", 42, "Good", "2026-01-01T00:00:00Z")]]
+    service = SubscriptionAppService(
+        cast(OpcUaClientProtocol, SimpleNamespace()),
+        _model(),
+        cast(SubscriptionServicePort, port),
+    )
+
+    events = [
+        event
+        async for event in service.iter_stream_events(
+            subscription_id="sub-1",
+            client_id="client-1",
+            stream_generation=3,
+            acknowledged_updates=[],
+            acknowledge_sequence=0,
+            timeout_seconds=0.1,
+        )
+    ]
+
+    kinds = [event["kind"] for event in events]
+    assert kinds == ["connected", "keepalive", "updates", "close"]
+    assert len(events[2]["updates"]) == 1
+    assert port.deactivated == [("sub-1", 3)]

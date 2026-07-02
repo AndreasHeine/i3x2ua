@@ -62,7 +62,7 @@ The project follows a layered architecture inside i3x_server:
 
 1. presentation
 - Responsibility: protocol-facing endpoints, request parsing, response shaping, protocol adapters (REST and MCP).
-- Current primary modules: i3x_server/api, i3x_server/mcp.py, i3x_server/api/v1/monolithic.py, i3x_server/api/mcp/monolithic.py.
+- Current primary modules: i3x_server/api, i3x_server/mcp.py, i3x_server/api/v1/*_routes.py, i3x_server/api/v1/contracts.py, i3x_server/api/v1/*helpers.py, i3x_server/api/mcp/monolithic.py.
 
 2. application
 - Responsibility: use-case orchestration, coordination between services, cross-cutting workflow logic.
@@ -102,16 +102,31 @@ Disallowed direction:
 When adding code, prefer the following placement:
 
 - New HTTP endpoint or MCP method handler: presentation (api/*)
+- Shared HTTP request/response contracts for v1: presentation-local contracts module (api/v1/contracts.py)
+- Shared HTTP-adjacent helper logic for v1: presentation-local helper modules (api/v1/*helpers.py)
 - Multi-step business workflow invoked by endpoint: application/services/*
 - Pure transformation or rule used by multiple services: domain/*
 - External client, filesystem, transport adapter: infrastructure-oriented module (currently opcua/* or dedicated infrastructure package)
 - Startup wiring, state initialization, middleware policy: bootstrap/*
 
+## V1 API Structure
+
+The v1 API now follows this split:
+
+- `api/v1/__init__.py`: router aggregation only
+- `api/v1/*_routes.py`: feature-specific HTTP handlers
+- `api/v1/contracts.py`: shared request/response DTOs and bulk-response helpers
+- `api/v1/object_helpers.py`, `api/v1/objecttype_helpers.py`, `api/v1/common_helpers.py`: presentation-local helper logic
+- `api/v1/monolithic.py`: compatibility and transitional shims only; no new route ownership
+
+This means orchestration should not move back into `monolithic.py`. New behavior should be added to a feature route module, a helper module, or an application service depending on responsibility.
+
 ## Transitional Rules
 
 During migration, compatibility wrappers are expected:
 
-- i3x_server/api/v1/__init__.py wraps i3x_server.api.v1.monolithic exports
+- i3x_server/api/v1/__init__.py is the v1 router aggregator
+- i3x_server/api/v1/monolithic.py is retained only as a compatibility surface for remaining direct imports/tests
 - i3x_server/api/mcp/__init__.py wraps i3x_server.api.mcp.monolithic exports
 
 For private internals, tests and monkeypatching must target source modules, not wrapper re-exports.

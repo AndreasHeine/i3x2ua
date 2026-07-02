@@ -124,6 +124,10 @@ async def test_stream_subscription_sends_initial_payload_then_close() -> None:
     async for chunk in response.body_iterator:
         chunks.append(str(chunk))
 
+    data_chunks = [chunk for chunk in chunks if chunk.startswith("data: ")]
+    assert data_chunks, "Expected at least one SSE data frame"
+    assert all(chunk.endswith("\n\n") for chunk in data_chunks)
+    assert all("\\n\\n" not in chunk for chunk in data_chunks)
     assert any(": connected" in chunk for chunk in chunks)
     assert any("data:" in chunk and "sequenceNumber" in chunk for chunk in chunks)
     assert any("event: close" in chunk for chunk in chunks)
@@ -160,6 +164,10 @@ async def test_stream_subscription_keepalive_and_update_flow() -> None:
     async for chunk in response.body_iterator:
         chunks.append(str(chunk))
 
+    data_chunks = [chunk for chunk in chunks if chunk.startswith("data: ")]
+    assert data_chunks, "Expected at least one SSE data frame"
+    assert all(chunk.endswith("\n\n") for chunk in data_chunks)
+    assert all("\\n\\n" not in chunk for chunk in data_chunks)
     assert any(": keepalive" in chunk for chunk in chunks)
     assert any("data:" in chunk and "nsu=http://example.com/custom;i=100" in chunk for chunk in chunks)
     assert any("event: close" in chunk for chunk in chunks)

@@ -209,7 +209,7 @@ async def stream_subscription_v1(
                     first_item.get("elementId"),
                     sorted(first_item.keys()) if isinstance(first_item, dict) else None,
                 )
-            yield f"data: {json.dumps(encoded_payload)}\\n\\n"
+            yield f"data: {json.dumps(encoded_payload)}\n\n"
 
     return StreamingResponse(
         event_stream(),

@@ -26,6 +26,10 @@ class BuildResult:
     parent_id_by_id: dict[str, str | None] = field(default_factory=dict)
     applied_profile_ids_by_id: dict[str, list[str]] = field(default_factory=dict)
     namespace_uri_by_id: dict[str, str | None] = field(default_factory=dict)
+    browse_duration_s: float = 0.0
+    map_duration_s: float = 0.0
+    total_duration_s: float = 0.0
+    build_completed_at_utc: str | None = None
 
 
 @dataclass(slots=True)

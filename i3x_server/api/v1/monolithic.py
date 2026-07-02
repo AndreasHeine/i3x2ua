@@ -374,6 +374,72 @@ class ServerInfo(BaseModel):
     capabilities: ServerCapabilities
 
 
+class ModelBuildMetrics(BaseModel):
+    browseDurationS: float
+    mapDurationS: float
+    totalDurationS: float
+    buildCompletedAtUtc: str | None = None
+
+
+class ModelVolumeMetrics(BaseModel):
+    totalNodes: int
+    rootNodes: int
+    byKind: dict[str, int] = Field(default_factory=dict)
+
+
+class ModelRelationshipMetrics(BaseModel):
+    hierarchyEdges: int
+    compositionEdges: int
+    graphEdges: int
+    uniqueGraphRelationshipNames: int
+    byRelationshipName: dict[str, int] = Field(default_factory=dict)
+
+
+class ModelQualityMetrics(BaseModel):
+    confidence: dict[str, int] = Field(default_factory=dict)
+    semanticRole: dict[str, int] = Field(default_factory=dict)
+    lowConfidenceNodes: int
+    unknownSemanticRoleNodes: int
+
+
+class ModelCoverageMetrics(BaseModel):
+    readableProperties: int
+    invokableActions: int
+    typedInstanceGroups: int
+    typedInstances: int
+
+
+class ModelContextMetrics(BaseModel):
+    namespaceCounts: dict[str, int] = Field(default_factory=dict)
+    nodesWithoutNamespace: int
+    appliedProfileCounts: dict[str, int] = Field(default_factory=dict)
+    nodesWithoutProfiles: int
+
+
+class ModelMetricsResponse(BaseModel):
+    build: ModelBuildMetrics
+    volume: ModelVolumeMetrics
+    relationships: ModelRelationshipMetrics
+    quality: ModelQualityMetrics
+    coverage: ModelCoverageMetrics
+    context: ModelContextMetrics
+
+
+class ModelNamespaceGapItem(BaseModel):
+    elementId: str
+    displayName: str
+    kind: str
+    sourceNodeId: str
+    sourceNamespaceIndex: int | None = None
+
+
+class ModelNamespaceGapResponse(BaseModel):
+    totalMissing: int
+    byKind: dict[str, int] = Field(default_factory=dict)
+    byNamespaceIndex: dict[str, int] = Field(default_factory=dict)
+    items: list[ModelNamespaceGapItem] = Field(default_factory=list)
+
+
 class Namespace(BaseModel):
     uri: str
     displayName: str
@@ -2261,9 +2327,159 @@ def _to_vqt_from_history_value(data_value: Any) -> VQT:
     return VQT(value=_to_json_safe_value(value), quality=quality, timestamp=_normalize_timestamp(timestamp))
 
 
+def _increment_counter(counter: dict[str, int], key: str) -> None:
+    counter[key] = counter.get(key, 0) + 1
+
+
+def _build_model_metrics(model: BuildResult) -> ModelMetricsResponse:
+    kind_counts: dict[str, int] = {}
+    for node in model.nodes_by_id.values():
+        _increment_counter(kind_counts, str(node.kind))
+
+    confidence_counts: dict[str, int] = {}
+    semantic_role_counts: dict[str, int] = {}
+    for node_id, node in model.nodes_by_id.items():
+        confidence = model.mapping_confidence_by_id.get(node_id, node.mapping_confidence)
+        semantic_role = model.semantic_role_by_id.get(node_id, node.semantic_role)
+        _increment_counter(confidence_counts, str(confidence))
+        _increment_counter(semantic_role_counts, str(semantic_role))
+
+    namespace_counts: dict[str, int] = {}
+    nodes_without_namespace = 0
+    for node_id in model.nodes_by_id:
+        namespace_uri = model.namespace_uri_by_id.get(node_id)
+        if isinstance(namespace_uri, str) and namespace_uri.strip():
+            _increment_counter(namespace_counts, namespace_uri)
+        else:
+            nodes_without_namespace += 1
+
+    applied_profile_counts: dict[str, int] = {}
+    nodes_without_profiles = 0
+    for node_id in model.nodes_by_id:
+        profile_ids = model.applied_profile_ids_by_id.get(node_id, [])
+        normalized = [profile_id for profile_id in profile_ids if isinstance(profile_id, str) and profile_id]
+        if not normalized:
+            nodes_without_profiles += 1
+            continue
+        for profile_id in set(normalized):
+            _increment_counter(applied_profile_counts, profile_id)
+
+    relationship_name_counts: dict[str, int] = {}
+    for per_source in model.relationships_by_id.values():
+        for relationship_name, targets in per_source.items():
+            if not isinstance(relationship_name, str) or not relationship_name:
+                continue
+            relationship_name_counts[relationship_name] = relationship_name_counts.get(relationship_name, 0) + len(
+                targets
+            )
+
+    hierarchy_edges = sum(len(child_ids) for child_ids in model.hierarchy_children_by_id.values())
+    composition_edges = sum(len(child_ids) for child_ids in model.composition_children_by_id.values())
+    graph_edges = sum(len(relations) for relations in model.graph_related_by_id.values())
+    typed_instances = sum(len(instance_ids) for instance_ids in model.instances_by_type_id.values())
+
+    return ModelMetricsResponse(
+        build=ModelBuildMetrics(
+            browseDurationS=model.browse_duration_s,
+            mapDurationS=model.map_duration_s,
+            totalDurationS=model.total_duration_s,
+            buildCompletedAtUtc=model.build_completed_at_utc,
+        ),
+        volume=ModelVolumeMetrics(
+            totalNodes=len(model.nodes_by_id),
+            rootNodes=len(model.root_ids),
+            byKind=kind_counts,
+        ),
+        relationships=ModelRelationshipMetrics(
+            hierarchyEdges=hierarchy_edges,
+            compositionEdges=composition_edges,
+            graphEdges=graph_edges,
+            uniqueGraphRelationshipNames=len(model.graph_relationship_names),
+            byRelationshipName=relationship_name_counts,
+        ),
+        quality=ModelQualityMetrics(
+            confidence=confidence_counts,
+            semanticRole=semantic_role_counts,
+            lowConfidenceNodes=confidence_counts.get("low", 0),
+            unknownSemanticRoleNodes=semantic_role_counts.get("unknown", 0),
+        ),
+        coverage=ModelCoverageMetrics(
+            readableProperties=len(model.property_to_node),
+            invokableActions=len(model.action_to_method),
+            typedInstanceGroups=len(model.instances_by_type_id),
+            typedInstances=typed_instances,
+        ),
+        context=ModelContextMetrics(
+            namespaceCounts=namespace_counts,
+            nodesWithoutNamespace=nodes_without_namespace,
+            appliedProfileCounts=applied_profile_counts,
+            nodesWithoutProfiles=nodes_without_profiles,
+        ),
+    )
+
+
+def _namespace_index_from_node_id(node_id: str) -> int | None:
+    match = re.match(r"^ns=(\d+);", node_id)
+    if match is None:
+        # OPC UA defaults to namespace index 0 when the ns prefix is omitted.
+        if re.match(r"^[isgb]=", node_id):
+            return 0
+        return None
+    try:
+        return int(match.group(1))
+    except (TypeError, ValueError):
+        return None
+
+
 @router.get("/info", response_model=SuccessResponse[ServerInfo])
 async def get_info_v1() -> SuccessResponse[ServerInfo]:
     return SuccessResponse(result=_build_server_info())
+
+
+@router.get("/model/metrics", response_model=SuccessResponse[ModelMetricsResponse])
+async def get_model_metrics_v1(
+    model: BuildResult = Depends(get_or_build_model),
+) -> SuccessResponse[ModelMetricsResponse]:
+    return SuccessResponse(result=_build_model_metrics(model))
+
+
+@router.get("/model/namespace-gaps", response_model=SuccessResponse[ModelNamespaceGapResponse])
+async def get_model_namespace_gaps_v1(
+    limit: int = Query(default=50, ge=1, le=500),
+    model: BuildResult = Depends(get_or_build_model),
+) -> SuccessResponse[ModelNamespaceGapResponse]:
+    missing: list[ModelNamespaceGapItem] = []
+    by_kind: dict[str, int] = {}
+    by_namespace_index: dict[str, int] = {}
+    for node_id, node in model.nodes_by_id.items():
+        namespace_uri = model.namespace_uri_by_id.get(node_id)
+        if isinstance(namespace_uri, str) and namespace_uri.strip():
+            continue
+        namespace_index = _namespace_index_from_node_id(node.source_node_id)
+        kind = str(node.kind)
+        by_kind[kind] = by_kind.get(kind, 0) + 1
+        namespace_key = str(namespace_index) if namespace_index is not None else "unknown"
+        by_namespace_index[namespace_key] = by_namespace_index.get(namespace_key, 0) + 1
+        source_node_id = node.source_node_id
+        missing.append(
+            ModelNamespaceGapItem(
+                elementId=node.id,
+                displayName=node.name,
+                kind=node.kind,
+                sourceNodeId=source_node_id,
+                sourceNamespaceIndex=namespace_index,
+            )
+        )
+
+    missing.sort(key=lambda item: (item.kind, item.displayName, item.elementId))
+    return SuccessResponse(
+        result=ModelNamespaceGapResponse(
+            totalMissing=len(missing),
+            byKind=by_kind,
+            byNamespaceIndex=by_namespace_index,
+            items=missing[:limit],
+        )
+    )
 
 
 @router.get("/namespaces", response_model=SuccessResponse[list[Namespace]])

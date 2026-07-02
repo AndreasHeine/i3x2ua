@@ -117,11 +117,15 @@ def resolve_namespace_uri(node_id: str, namespace_uri_by_index: dict[int, str] |
     if not namespace_uri_by_index:
         return None
     prefix, _, _rest = node_id.partition(";")
-    if not prefix.startswith("ns="):
-        return None
-    try:
-        namespace_index = int(prefix[3:])
-    except ValueError:
+    if prefix.startswith("ns="):
+        try:
+            namespace_index = int(prefix[3:])
+        except ValueError:
+            return None
+    elif prefix.startswith(("i=", "s=", "g=", "b=")):
+        # OPC UA NodeId defaults to namespace index 0 when omitted.
+        namespace_index = 0
+    else:
         return None
     return namespace_uri_by_index.get(namespace_index)
 

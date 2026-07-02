@@ -1,6 +1,6 @@
 from i3x_server.infrastructure.opcua.client import OpcUaNodeInfo
 from i3x_server.model.mapper import classify_opcua_reference, classify_opcua_reference_with_confidence, map_node
-from i3x_server.model.semantic_profiles import SemanticProfile
+from i3x_server.model.semantic_profiles import SemanticProfile, resolve_namespace_uri
 
 
 def test_map_variable_to_property() -> None:
@@ -140,3 +140,15 @@ def test_profile_classification_keeps_hascomponent_hierarchy_for_object_targets(
 
     assert classification == "hierarchy"
     assert confidence == "high"
+
+
+def test_resolve_namespace_uri_defaults_bare_node_id_to_ns_zero() -> None:
+    namespace_map = {0: "http://opcfoundation.org/UA/", 2: "urn:vendor:test"}
+
+    assert resolve_namespace_uri("i=14117", namespace_map) == "http://opcfoundation.org/UA/"
+
+
+def test_resolve_namespace_uri_prefers_explicit_namespace_index() -> None:
+    namespace_map = {0: "http://opcfoundation.org/UA/", 2: "urn:vendor:test"}
+
+    assert resolve_namespace_uri("ns=2;s=Temperature", namespace_map) == "urn:vendor:test"

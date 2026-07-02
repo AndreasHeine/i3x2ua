@@ -3,6 +3,7 @@
 
   const knownViewTargets = {
     '/v1/info': 'i3X Server Info',
+    '/v1/model/metrics': 'Model Builder Metrics',
     '/ua/status': 'OPC UA Server Status',
     '/ua/connection': 'OPC UA Connection',
     '/ua/limits': 'OPC UA Server Limits',

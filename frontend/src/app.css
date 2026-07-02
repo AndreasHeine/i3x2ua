@@ -74,6 +74,14 @@ h2 {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.header-actions {
+  display: flex;
+  gap: 12px;
+  align-items: center;
 }
 
 .back-link {
@@ -197,8 +205,124 @@ tbody tr:hover td {
   overflow: auto;
 }
 
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.metric-card {
+  border: 1px solid var(--line);
+  background: #fff;
+  border-radius: 12px;
+  padding: 12px;
+}
+
+.metric-label {
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.metric-value {
+  margin-top: 6px;
+  font-size: 1.35rem;
+  font-weight: 650;
+}
+
+.metric-sub {
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.metric-section {
+  padding: 16px;
+}
+
+.metric-section h3 {
+  margin: 0 0 10px;
+}
+
+.metric-section h4 {
+  margin: 0 0 8px;
+  font-size: 0.95rem;
+}
+
+.kv-list {
+  margin: 0;
+}
+
+.kv-list div {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  border-bottom: 1px dashed var(--line);
+  padding: 8px 0;
+}
+
+.kv-list dt {
+  color: var(--muted);
+}
+
+.kv-list dd {
+  margin: 0;
+  font-weight: 600;
+}
+
+.dist-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.dist-grid.two-up {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.metric-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+}
+
+.metric-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid #ecf1fa;
+}
+
+.metric-list li:last-child {
+  border-bottom: 0;
+}
+
+.truncate {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 @media (max-width: 700px) {
   .grid {
+    grid-template-columns: 1fr;
+  }
+
+  .detail-grid,
+  .dist-grid,
+  .dist-grid.two-up,
+  .metric-grid {
     grid-template-columns: 1fr;
   }
 }

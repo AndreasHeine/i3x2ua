@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from time import perf_counter
 
 from i3x_server.domain.ports.opcua import OpcUaClientProtocol, OpcUaNodeInfo
@@ -308,6 +309,10 @@ class ModelBuilder:
             if mapped.kind == "action" and opc_node.parent_node_id is not None:
                 action_to_method[mapped.id] = (opc_node.parent_node_id, opc_node.node_id)
 
+        map_duration_s = perf_counter() - map_started
+        total_duration_s = perf_counter() - started
+        build_completed_at_utc = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
         result = BuildResult(
             nodes_by_id=nodes_by_id,
             root_ids=root_ids,
@@ -340,12 +345,16 @@ class ModelBuilder:
             },
             applied_profile_ids_by_id=applied_profile_ids_by_id,
             namespace_uri_by_id=namespace_uri_by_id,
+            browse_duration_s=browse_duration_s,
+            map_duration_s=map_duration_s,
+            total_duration_s=total_duration_s,
+            build_completed_at_utc=build_completed_at_utc,
         )
         logger.info(
             "Model build phases browse_s=%.3f map_s=%.3f total_s=%.3f source_nodes=%d model_nodes=%d",
             browse_duration_s,
-            perf_counter() - map_started,
-            perf_counter() - started,
+            map_duration_s,
+            total_duration_s,
             len(opc_nodes),
             len(result.nodes_by_id),
         )

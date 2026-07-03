@@ -357,7 +357,13 @@ def _datatype_object_type_from_source_type_id(
             scalar_schema = _scalar_schema_for_standard_ua_datatype_node_id(source_type_id)
         if scalar_schema is None:
             return None
-        schema = {"oneOf": [dict(scalar_schema), {"type": "array", "items": dict(scalar_schema)}]}
+        schema = {
+            "oneOf": [
+                {"type": "null"},
+                dict(scalar_schema),
+                {"type": "array", "items": dict(scalar_schema)},
+            ]
+        }
 
     node_id_match = re.match(r"^nsu=[^;]+;i=(\d+)$", source_type_id, flags=re.IGNORECASE)
     numeric_id = int(node_id_match.group(1)) if node_id_match is not None else None

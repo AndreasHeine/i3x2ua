@@ -9,12 +9,9 @@ from contextlib import nullcontext as _nullcontext
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from functools import lru_cache
-from pathlib import Path
 from time import perf_counter
 from typing import Any
 
-from asyncua import ua
 from fastapi import APIRouter, Request
 from typing_extensions import Never
 
@@ -49,19 +46,22 @@ from i3x_server.api.v1.contracts import (
     SubscribeCapabilities,
     UpdateCapabilities,
 )
+from i3x_server.api.v1.objecttype_helpers import (
+    _datatype_object_type_from_source_type_id,
+    _opaque_datatype_object_type_from_source_type_id,
+    _scalar_schema_for_standard_ua_datatype_node_id,
+    _standard_ua_type_name,
+)
 from i3x_server.application.ports.opcua import (
     OpcUaClientProtocol,
     OpcUaNamespaceInfo,
     OpcUaObjectTypeInfo,
 )
 from i3x_server.config.settings import Settings, get_settings
+from i3x_server.domain.utils import server_name_from_openapi
 from i3x_server.errors import i3x_http_error
 from i3x_server.schemas.i3x import ModelNode
-from i3x_server.schemas.objecttype_schema import (
-    build_data_type_schema,
-    build_object_type_schema,
-    json_schema_for_opcua_type,
-)
+from i3x_server.schemas.objecttype_schema import build_object_type_schema
 from i3x_server.schemas.state import BuildResult
 from i3x_server.version import get_server_version
 
@@ -71,65 +71,12 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "GetObjectHistoryRequest",
     "StreamRequest",
+    "_scalar_schema_for_standard_ua_datatype_node_id",
     "stream_subscription_v1",
     "_expanded_node_id",
     "_raise_invalid_argument",
     "_to_json_safe_value",
 ]
-
-_UA_BUILTIN_DATATYPE_NAMES: dict[int, str] = {
-    1: "Boolean",
-    2: "SByte",
-    3: "Byte",
-    4: "Int16",
-    5: "UInt16",
-    6: "Int32",
-    7: "UInt32",
-    8: "Int64",
-    9: "UInt64",
-    10: "Float",
-    11: "Double",
-    12: "String",
-    13: "DateTime",
-    14: "Guid",
-    15: "ByteString",
-    16: "XmlElement",
-    17: "NodeId",
-    18: "ExpandedNodeId",
-    19: "StatusCode",
-    20: "QualifiedName",
-    21: "LocalizedText",
-    22: "ExtensionObject",
-    23: "DataValue",
-    24: "Variant",
-    25: "DiagnosticInfo",
-}
-
-_UA_STANDARD_NON_DATATYPE_TYPE_NAMES: set[str] = {
-    "BaseObjectType",
-    "FolderType",
-    "BaseVariableType",
-    "BaseDataVariableType",
-    "PropertyType",
-    "DataTypeDescriptionType",
-    "DataTypeDictionaryType",
-    "DataTypeSystemType",
-    "DataTypeEncodingType",
-    "ModellingRuleType",
-    "NamingRuleType",
-}
-
-_UA_STANDARD_INTEGER_OPTIONSET_TYPE_NAMES: set[str] = {
-    "PermissionType",
-    "AccessRestrictionType",
-}
-
-_UA_STANDARD_OBJECT_FALLBACK_TYPE_NAMES: set[str] = {
-    "Range",
-    "EUInformation",
-    "Annotation",
-    "RolePermissionType",
-}
 
 
 def _runtime_settings() -> Settings:
@@ -187,10 +134,14 @@ def _not_implemented(feature: str) -> None:
     )
 
 
+def _server_name_from_openapi(default_name: str = "The i3X API Gateway for OPC UA") -> str:
+    return server_name_from_openapi(default_name)
+
+
 def _supported_capabilities() -> ServerCapabilities:
     return ServerCapabilities(
         query=QueryCapabilities(history=True),
-        update=UpdateCapabilities(current=_writes_enabled(), history=False),
+        update=UpdateCapabilities(current=_writes_enabled(), history=_writes_enabled()),
         subscribe=SubscribeCapabilities(stream=True),
     )
 
@@ -340,21 +291,6 @@ async def _write_object_value_by_element_id(
         return False, status_code, error_class, diagnostics
 
     return True, 200, "ok", diagnostics
-
-
-@lru_cache(maxsize=1)
-def _server_name_from_openapi(default_name: str = "The i3X API Gateway for OPC UA") -> str:
-    openapi_path = Path(__file__).resolve().parents[2] / "openapi.json"
-    try:
-        openapi_doc = json.loads(openapi_path.read_text(encoding="utf-8"))
-        info = openapi_doc.get("info")
-        if isinstance(info, Mapping):
-            title = info.get("title")
-            if isinstance(title, str) and title.strip():
-                return title.strip()
-    except Exception:
-        logger.debug("Failed to read OpenAPI title for server info", exc_info=True)
-    return default_name
 
 
 def _build_server_info() -> ServerInfo:
@@ -1554,163 +1490,6 @@ def _synthetic_object_types_from_structure_defs(
             )
 
     return list(synthetic_by_source_type_id.values())
-
-
-def _datatype_object_type_from_source_type_id(
-    source_type_id: str,
-    namespace_infos: list[OpcUaNamespaceInfo],
-) -> ObjectTypeResponse | None:
-    # Try to resolve the datatype schema from asyncua definitions (covers structures, standard types, etc.)
-    schema = build_data_type_schema(source_type_id, namespace_infos)
-
-    # If no structured schema found, fall back to scalar type inference with array variant support
-    if not isinstance(schema, Mapping):
-        scalar_schema: dict[str, Any] | None = None
-        if _is_builtin_ua_datatype_node_id(source_type_id):
-            scalar_schema = json_schema_for_opcua_type(source_type_id)
-        else:
-            scalar_schema = _scalar_schema_for_standard_ua_datatype_node_id(source_type_id)
-        if scalar_schema is None:
-            return None
-        # Wrap scalar schema to allow both single values and arrays
-        schema = {
-            "oneOf": [
-                dict(scalar_schema),
-                {"type": "array", "items": dict(scalar_schema)},
-            ]
-        }
-
-    # Extract metadata for response
-    node_id_match = re.match(r"^nsu=[^;]+;i=(\d+)$", source_type_id, flags=re.IGNORECASE)
-    numeric_id = int(node_id_match.group(1)) if node_id_match is not None else None
-    builtin_id = numeric_id if _is_builtin_ua_datatype_node_id(source_type_id) else None
-
-    namespace_uri = _namespace_uri_from_expanded_node_id(source_type_id)
-    if namespace_uri is None:
-        namespace_uri = _namespace_uri_for_node_id(source_type_id, namespace_infos)
-    if not namespace_uri:
-        return None
-    namespace_uri = _canonical_namespace_uri(namespace_uri, namespace_infos)
-
-    # Determine display name from schema title or type name lookup
-    title = schema.get("title") if isinstance(schema, Mapping) else None
-    display_name = title if isinstance(title, str) and title else "StructureType"
-    if builtin_id is not None:
-        display_name = _UA_BUILTIN_DATATYPE_NAMES.get(builtin_id, display_name)
-    elif _is_standard_ua_namespace_node_id(source_type_id):
-        standard_name = _standard_ua_type_name(source_type_id)
-        if standard_name:
-            display_name = standard_name
-
-    # Finalize schema with metadata
-    schema_payload = dict(schema)
-    schema_payload.setdefault("title", display_name)
-    schema_payload.setdefault("x-opcua-nodeId", source_type_id)
-    schema_payload.setdefault("x-opcua-displayName", display_name)
-
-    return ObjectTypeResponse(
-        elementId=_virtual_object_type_element_id(namespace_uri, display_name, source_type_id),
-        displayName=display_name,
-        namespaceUri=namespace_uri,
-        sourceTypeId=source_type_id,
-        schema=schema_payload,
-    )
-
-
-def _opaque_datatype_object_type_from_source_type_id(
-    source_type_id: str,
-    namespace_infos: list[OpcUaNamespaceInfo],
-) -> ObjectTypeResponse | None:
-    namespace_uri = _namespace_uri_from_expanded_node_id(source_type_id)
-    if namespace_uri is None:
-        namespace_uri = _namespace_uri_for_node_id(source_type_id, namespace_infos)
-    if not namespace_uri:
-        return None
-    namespace_uri = _canonical_namespace_uri(namespace_uri, namespace_infos)
-
-    display_name = _standard_ua_type_name(source_type_id)
-    if not display_name:
-        node_id_match = re.match(r"^nsu=[^;]+;i=(\d+)$", source_type_id, flags=re.IGNORECASE)
-        if node_id_match is not None:
-            display_name = f"DataType_i_{node_id_match.group(1)}"
-        else:
-            display_name = "DataType"
-
-    schema_payload = {
-        "title": display_name,
-        "description": "Fallback schema for unresolved OPC UA DataType",
-        "oneOf": [
-            {"type": "object"},
-            {"type": "array", "items": {"type": "object"}},
-            {"type": "number"},
-            {"type": "string"},
-            {"type": "boolean"},
-        ],
-        "x-opcua-nodeId": source_type_id,
-        "x-opcua-displayName": display_name,
-    }
-
-    return ObjectTypeResponse(
-        elementId=_virtual_object_type_element_id(namespace_uri, display_name, source_type_id),
-        displayName=display_name,
-        namespaceUri=namespace_uri,
-        sourceTypeId=source_type_id,
-        schema=schema_payload,
-    )
-
-
-def _standard_ua_type_name(element_id: str) -> str | None:
-    match = re.match(r"^nsu=[^;]+;i=(\d+)$", element_id, flags=re.IGNORECASE)
-    if match is None:
-        return None
-    identifier = int(match.group(1))
-    object_id_names = getattr(ua, "ObjectIdNames", None)
-    if not isinstance(object_id_names, Mapping):
-        return None
-    candidate = object_id_names.get(identifier)
-    return candidate if isinstance(candidate, str) and candidate else None
-
-
-def _scalar_schema_for_standard_ua_datatype_node_id(element_id: str) -> dict[str, Any] | None:
-    if not _is_standard_ua_namespace_node_id(element_id):
-        return None
-
-    name = _standard_ua_type_name(element_id)
-    if not name:
-        return None
-
-    if name in _UA_STANDARD_NON_DATATYPE_TYPE_NAMES:
-        return None
-
-    if name in _UA_STANDARD_INTEGER_OPTIONSET_TYPE_NAMES:
-        return {"type": "integer"}
-
-    if name in _UA_STANDARD_OBJECT_FALLBACK_TYPE_NAMES:
-        return {"type": "object"}
-
-    if name.endswith("DataType"):
-        return {"type": "object"}
-
-    if name.endswith("Type"):
-        # Standard namespace "...Type" symbols are generally type-like definitions.
-        return {"type": "object"}
-
-    if name.endswith("State") or name.endswith("Enumeration") or name.endswith("Enum"):
-        return {"type": "integer"}
-
-    if "_" in name:
-        # Exclude standard method/browse aliases such as Server_GetMonitoredItems.
-        return None
-
-    if name.endswith("ObjectType") or name.endswith("VariableType") or name.endswith("ReferenceType"):
-        return None
-
-    inferred = json_schema_for_opcua_type(name)
-    if inferred == {"type": "string"}:
-        # Avoid treating arbitrary standard NodeIds as scalar datatypes when only
-        # the default string fallback can be inferred.
-        return None
-    return inferred
 
 
 async def _generic_object_type_from_source_type_id(

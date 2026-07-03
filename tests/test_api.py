@@ -767,6 +767,9 @@ def test_v1_objecttypes_includes_builtin_scalar_datatype_reference(client: TestC
     assert builtin is not None
     assert builtin["elementId"].startswith("urn:opcua:objecttype:")
     assert builtin["displayName"] != "UnknownType"
+    assert builtin["schema"]["oneOf"][0]["type"] == "null"
+    assert builtin["schema"]["oneOf"][1]["type"] == "string"
+    assert builtin["schema"]["oneOf"][2] == {"type": "array", "items": {"type": "string"}}
 
 
 def test_v1_objecttypes_includes_builtin_localizedtext_structured_schema(client: TestClient) -> None:
@@ -919,7 +922,8 @@ def test_v1_objecttypes_registers_standard_ua_optionset_datatype_as_known(client
     assert resolved["elementId"].startswith("urn:opcua:objecttype:")
     assert resolved["displayName"] == "AccessRestrictionType"
     assert resolved["schema"]["title"] == "AccessRestrictionType"
-    assert resolved["schema"]["oneOf"][0]["type"] == "integer"
+    assert resolved["schema"]["oneOf"][0]["type"] == "null"
+    assert resolved["schema"]["oneOf"][1]["type"] == "integer"
 
 
 def test_v1_objecttypes_registers_standard_ua_structured_datatype_as_known(client: TestClient) -> None:

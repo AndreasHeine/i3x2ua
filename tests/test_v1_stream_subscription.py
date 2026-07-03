@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import cast
 
 import pytest
@@ -60,6 +61,36 @@ class _FakeSubscriptionService:
 
     async def deactivate_stream(self, subscription_id: str, stream_generation: int) -> None:
         self.deactivated.append((subscription_id, stream_generation))
+
+
+class _ClosingSubscriptionService(_FakeSubscriptionService):
+    def __init__(self) -> None:
+        super().__init__()
+        self.active_generation = 0
+        self.release_event = asyncio.Event()
+
+    async def activate_stream(self, client_id: str | None, subscription_id: str) -> int | None:
+        del client_id, subscription_id
+        self.active_generation += 1
+        if self.active_generation > 1:
+            self.release_event.set()
+        return self.active_generation
+
+    async def is_stream_active(self, subscription_id: str, stream_generation: int) -> bool:
+        del subscription_id
+        return self.active_generation == stream_generation
+
+    async def wait_for_updates(
+        self,
+        client_id: str | None,
+        subscription_id: str,
+        after_sequence: int,
+        timeout_seconds: float,
+    ) -> list[SubscriptionUpdate] | None:
+        del client_id, subscription_id, after_sequence, timeout_seconds
+        await self.release_event.wait()
+        self.release_event.clear()
+        return []
 
 
 def _stream_app_service(fake_service: _FakeSubscriptionService) -> SubscriptionAppService:
@@ -172,6 +203,35 @@ async def test_stream_subscription_keepalive_and_update_flow() -> None:
     assert any("data:" in chunk and "nsu=http://example.com/custom;i=100" in chunk for chunk in chunks)
     assert any("event: close" in chunk for chunk in chunks)
     assert service.deactivated == [("sub-2", 7)]
+
+
+@pytest.mark.asyncio
+async def test_stream_subscription_second_stream_closes_existing_stream() -> None:
+    service = _ClosingSubscriptionService()
+    service.sync_result = SubscriptionSyncResult(updates=[])
+
+    first_body = StreamRequest(clientId="client-1", subscriptionId="sub-1", acknowledgeSequence=0)
+    first_response = await stream_subscription_v1(
+        first_body,
+        opcua_client=cast(OpcUaClientProtocol, _FakeOpcUaClient()),
+        subscription_app_service=_stream_app_service(service),
+    )
+    first_iterator = first_response.body_iterator.__aiter__()
+    assert await first_iterator.__anext__() == ": connected\n\n"
+
+    second_body = StreamRequest(clientId="client-1", subscriptionId="sub-1", acknowledgeSequence=0)
+    second_response = await stream_subscription_v1(
+        second_body,
+        opcua_client=cast(OpcUaClientProtocol, _FakeOpcUaClient()),
+        subscription_app_service=_stream_app_service(service),
+    )
+    second_iterator = second_response.body_iterator.__aiter__()
+    assert await second_iterator.__anext__() == ": connected\n\n"
+
+    assert await first_iterator.__anext__() == "event: close\ndata: {}\n\n"
+
+    await first_iterator.aclose()
+    await second_iterator.aclose()
 
 
 @pytest.mark.asyncio

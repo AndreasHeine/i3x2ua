@@ -269,6 +269,58 @@ def test_v1_subscription_sync_returns_206_on_overflow(client: TestClient) -> Non
     assert "Dropped sequence numbers" in payload["responseDetail"]["detail"]
 
 
+def test_v1_subscription_sync_last_sequence_number_minus_one_clears_pending_updates(client: TestClient) -> None:
+    created = client.post(
+        "/v1/subscriptions",
+        json={"clientId": "my-app-instance-001", "displayName": "Ack All Monitor"},
+    )
+    assert created.status_code == 200
+    subscription_id = created.json()["result"]["subscriptionId"]
+
+    service = fastapi_app(client).state.subscription_service
+    state = service._subscriptions[subscription_id]
+    state.node_to_element_id["ns=2;s=Temperature"] = "property-abc"
+
+    service._append_update(state, "ns=2;s=Temperature", 10.0)
+    service._append_update(state, "ns=2;s=Temperature", 11.0)
+
+    first = client.post(
+        "/v1/subscriptions/sync",
+        json={
+            "clientId": "my-app-instance-001",
+            "subscriptionId": subscription_id,
+            "acknowledgeSequence": 0,
+        },
+    )
+    assert first.status_code == 200
+    first_payload = first.json()
+    assert [item["sequenceNumber"] for item in first_payload["result"][0]["updates"]] == [1, 2]
+
+    ack_all = client.post(
+        "/v1/subscriptions/sync",
+        json={
+            "clientId": "my-app-instance-001",
+            "subscriptionId": subscription_id,
+            "lastSequenceNumber": -1,
+        },
+    )
+    assert ack_all.status_code == 200
+    ack_all_payload = ack_all.json()
+    assert ack_all_payload["success"] is True
+    assert ack_all_payload["result"] == []
+
+    post_ack = client.post(
+        "/v1/subscriptions/sync",
+        json={
+            "clientId": "my-app-instance-001",
+            "subscriptionId": subscription_id,
+            "acknowledgeSequence": 0,
+        },
+    )
+    assert post_ack.status_code == 200
+    assert post_ack.json()["result"] == []
+
+
 def test_v1_subscription_stream_not_found(client: TestClient) -> None:
     response = client.post(
         "/v1/subscriptions/stream",

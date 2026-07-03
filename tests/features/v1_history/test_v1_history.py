@@ -30,6 +30,53 @@ def test_v1_history_query(client: TestClient) -> None:
     assert len(payload["results"][0]["result"]["values"]) == 2
 
 
+def test_v1_history_query_includes_component_histories_when_depth_allows(client: TestClient) -> None:
+    from tests.conftest import ModelNode, fastapi_app
+
+    app = fastapi_app(client)
+    property_id = "property-abc"
+    child_asset_id = "child-asset"
+    child_prop_id = "child-prop"
+
+    app.state.model_cache.nodes_by_id[child_asset_id] = ModelNode(
+        id=child_asset_id,
+        name="ChildAsset",
+        kind="asset",
+        type="ns=1;i=1001",
+        children=[child_prop_id],
+        source_node_id="ns=2;s=ChildAsset",
+    )
+    app.state.model_cache.nodes_by_id[child_prop_id] = ModelNode(
+        id=child_prop_id,
+        name="ChildProp",
+        kind="property",
+        type="i=11",
+        children=[],
+        source_node_id="ns=2;s=ChildProp",
+    )
+    app.state.model_cache.children_by_id[child_asset_id] = [child_prop_id]
+    app.state.model_cache.hierarchy_children_by_id["asset-root"] = [property_id, child_asset_id]
+    app.state.model_cache.composition_children_by_id["asset-root"] = [property_id]
+    app.state.model_cache.composition_children_by_id[child_asset_id] = [child_prop_id]
+
+    response = client.post(
+        "/v1/objects/history",
+        json={
+            "elementIds": ["asset-root"],
+            "startTime": "2026-01-01T00:00:00Z",
+            "endTime": "2026-01-02T00:00:00Z",
+            "maxDepth": 5,
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    result = payload["results"][0]["result"]
+    component_ids = set((result.get("components") or {}).keys())
+    assert property_id in component_ids
+    assert child_prop_id not in component_ids
+    assert isinstance(result["components"][property_id]["values"], list)
+
+
 def test_v1_history_query_serializes_binary_values(client: TestClient) -> None:
     from tests.conftest import fastapi_app
 

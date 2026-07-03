@@ -769,7 +769,7 @@ def test_v1_objecttypes_includes_builtin_scalar_datatype_reference(client: TestC
     assert builtin["displayName"] != "UnknownType"
     assert builtin["schema"]["oneOf"][0]["type"] == "null"
     assert builtin["schema"]["oneOf"][1]["type"] == "string"
-    assert builtin["schema"]["oneOf"][2] == {"type": "array", "items": {"type": "string"}}
+    assert builtin["schema"]["oneOf"][2] == {"type": "array", "items": {"type": ["string", "null"]}}
 
 
 def test_v1_objecttypes_includes_builtin_localizedtext_structured_schema(client: TestClient) -> None:
@@ -835,7 +835,12 @@ def test_v1_objecttypes_resolves_standard_structured_datatype(client: TestClient
         )
         assert resolved is not None
         assert resolved["displayName"] != "UnknownType"
-        assert resolved["schema"]["type"] == "object"
+        assert resolved["schema"]["oneOf"][0]["type"] == "null"
+        scalar_ref = resolved["schema"]["oneOf"][1]["$ref"]
+        assert scalar_ref.startswith("#/$defs/")
+        assert resolved["schema"]["oneOf"][2]["type"] == "array"
+        assert resolved["schema"]["oneOf"][2]["items"]["$ref"] == scalar_ref
+        assert resolved["schema"]["$defs"][scalar_ref.split("#/$defs/", 1)[1]]["type"] == "object"
         assert resolved["schema"]["x-opcua-structureDataType"] == "nsu=http://opcfoundation.org/UA/;i=96"
     finally:
         ua_any.extension_objects_by_datatype = previous_registry
@@ -1448,6 +1453,88 @@ def test_v1_history_query(client: TestClient) -> None:
     assert payload["results"][0]["success"] is True
     assert payload["results"][0]["result"]["isComposition"] is False
     assert len(payload["results"][0]["result"]["values"]) == 2
+
+
+def test_v1_history_query_includes_component_histories_when_depth_allows(client: TestClient) -> None:
+    app = _fastapi_app(client)
+    property_id = "property-abc"
+    child_asset_id = "child-asset"
+    child_prop_id = "child-prop"
+
+    app.state.model_cache.nodes_by_id[child_asset_id] = ModelNode(
+        id=child_asset_id,
+        name="ChildAsset",
+        kind="asset",
+        type="ns=1;i=1001",
+        children=[child_prop_id],
+        source_node_id="ns=2;s=ChildAsset",
+    )
+    app.state.model_cache.nodes_by_id[child_prop_id] = ModelNode(
+        id=child_prop_id,
+        name="ChildProp",
+        kind="property",
+        type="i=11",
+        children=[],
+        source_node_id="ns=2;s=ChildProp",
+    )
+    app.state.model_cache.children_by_id[child_asset_id] = [child_prop_id]
+    app.state.model_cache.hierarchy_children_by_id["asset-root"] = [property_id, child_asset_id]
+    app.state.model_cache.composition_children_by_id["asset-root"] = [property_id]
+    app.state.model_cache.composition_children_by_id[child_asset_id] = [child_prop_id]
+
+    app.state.opcua_client.history_values["ns=2;s=ChildProp"] = [
+        SimpleNamespace(
+            Value=SimpleNamespace(Value=5.0),
+            StatusCode=SimpleNamespace(name="Good"),
+            SourceTimestamp=datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc),
+            ServerTimestamp=None,
+        )
+    ]
+
+    response = client.post(
+        "/v1/objects/history",
+        json={
+            "elementIds": ["asset-root"],
+            "startTime": "2026-01-01T00:00:00Z",
+            "endTime": "2026-01-02T00:00:00Z",
+            "maxDepth": 5,
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    result = payload["results"][0]["result"]
+    component_ids = set((result.get("components") or {}).keys())
+    assert property_id in component_ids
+    assert child_prop_id not in component_ids
+    assert isinstance(result["components"][property_id]["values"], list)
+
+
+def test_v1_history_query_ignores_unsupported_component_history_reads(client: TestClient) -> None:
+    app = _fastapi_app(client)
+
+    async def read_history_values(
+        node_ids: list[str],
+        start_time: datetime | None,
+        end_time: datetime | None,
+    ) -> dict[str, list[Any]]:
+        del start_time, end_time
+        return {node_id: [] for node_id in node_ids}
+
+    app.state.opcua_client.read_history_values = read_history_values
+    response = client.post(
+        "/v1/objects/history",
+        json={
+            "elementIds": ["asset-root"],
+            "startTime": "2026-01-01T00:00:00Z",
+            "endTime": "2026-01-02T00:00:00Z",
+            "maxDepth": 2,
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    result = payload["results"][0]["result"]
+    assert result["isComposition"] is True
+    assert "components" in result
 
 
 def test_v1_value_query_serializes_binary_values(client: TestClient) -> None:

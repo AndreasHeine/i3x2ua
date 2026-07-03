@@ -1702,6 +1702,14 @@ class OpcUaClient:
                     self._record_history_read_success()
                 except Exception as exc:
                     if not self._should_retry_after_disconnect(exc):
+                        if self._is_history_missing_or_unsupported(exc):
+                            logger.info(
+                                "OPC UA history read returned no data or unsupported history endpoint=%s node_id=%s",
+                                self._endpoint,
+                                node_id,
+                            )
+                            self._record_history_read_success()
+                            return node_id, []
                         self._record_failed_request()
                         raise
                     logger.warning(
@@ -1731,6 +1739,21 @@ class OpcUaClient:
             perf_counter() - started,
         )
         return values_by_node_id
+
+    def _is_history_missing_or_unsupported(self, exc: Exception) -> bool:
+        lowered = str(exc).lower()
+        return any(
+            token in lowered
+            for token in (
+                "badhistoryoperationunsupported",
+                "historyoperationunsupported",
+                "historyread not supported",
+                "history read not supported",
+                "badnodata",
+                "goodnodata",
+                "no data exists for the requested time range",
+            )
+        )
 
     async def call_method(self, object_node_id: str, method_node_id: str, args: list[Any]) -> Any:
         started = perf_counter()

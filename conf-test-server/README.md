@@ -49,6 +49,51 @@ On startup, the fixture also reads back a few raw history points from each signa
 - Reduce `--history-sample-seconds` to make history denser.
 - Reduce `--update-interval-seconds` for faster live change detection.
 
+## History composition sample
+
+The fixture is intended to satisfy i3X `QRY-11` style checks for `POST /objects/history` with `maxDepth > 1`.
+Machine objects such as `ConformancePlant/LineA/Mixer-01` expose historized component variables like `Temperature`, `Pressure`, `Speed`, and `IsRunning`, so querying the machine with `maxDepth: 2` should return child histories under `result.components`.
+
+Example request body against i3x2ua:
+
+```json
+{
+	"elementIds": ["<mixer-element-id>"],
+	"startTime": "2026-01-01T00:00:00Z",
+	"endTime": "2026-01-02T00:00:00Z",
+	"maxDepth": 2
+}
+```
+
+Expected shape excerpt:
+
+```json
+{
+	"success": true,
+	"results": [
+		{
+			"success": true,
+			"result": {
+				"isComposition": true,
+				"values": [],
+				"components": {
+					"<temperature-element-id>": {
+						"isComposition": false,
+						"values": [
+							{
+								"value": 56.0,
+								"quality": "Good",
+								"timestamp": "2026-01-01T00:00:00Z"
+							}
+						]
+					}
+				}
+			}
+		}
+	]
+}
+```
+
 ## Connect i3x2ua
 
 ### Single-line launch (PowerShell)

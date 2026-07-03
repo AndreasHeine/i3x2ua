@@ -35,6 +35,18 @@ class _FakeNode:
             raise self._error
         return self._value
 
+    async def read_raw_history(
+        self,
+        starttime: datetime | None,
+        endtime: datetime | None,
+        numvalues: int,
+        return_bounds: bool,
+    ) -> Any:
+        del starttime, endtime, numvalues, return_bounds
+        if self._error is not None:
+            raise self._error
+        return self._value
+
 
 class _FakeClient:
     def __init__(self, node_error: Exception | None = None) -> None:
@@ -197,6 +209,21 @@ async def test_probe_connection_marks_disconnected_if_reconnect_fails(monkeypatc
     await client._probe_connection()
 
     assert client.get_connection_snapshot().state == "Disconnected"
+
+
+@pytest.mark.asyncio
+async def test_read_history_values_treats_unsupported_history_as_empty() -> None:
+    client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
+    nodes = {
+        "good": _FakeNode([SimpleNamespace(Value=SimpleNamespace(Value=1))]),
+        "bad": _FakeNode(error=RuntimeError("BadHistoryOperationUnsupported")),
+    }
+    cast(Any, client)._client = SimpleNamespace(get_node=lambda node_id: nodes[node_id])
+
+    values = await client.read_history_values(["good", "bad"], None, None)
+
+    assert values["good"]
+    assert values["bad"] == []
 
 
 @pytest.mark.asyncio

@@ -903,16 +903,19 @@ def _collect_history_lookup_and_node_ids(
     model: BuildResult,
     resolved_nodes: list[tuple[str, ModelNode | None]],
     max_depth: int,
-) -> tuple[list[tuple[str, ModelNode, list[ModelNode]]], list[str]]:
+) -> tuple[list[tuple[str, ModelNode, list[ModelNode], list[ModelNode]]], list[str]]:
     """Collect history source nodes and node IDs for OPC UA read."""
-    lookup: list[tuple[str, ModelNode, list[ModelNode]]] = []
+    lookup: list[tuple[str, ModelNode, list[ModelNode], list[ModelNode]]] = []
     node_ids: list[str] = []
     for element_id, node in resolved_nodes:
         if node is None:
             continue
-        source_nodes = _collect_history_source_nodes(model, node, max_depth)
-        lookup.append((element_id, node, source_nodes))
-        for source_node in source_nodes:
+        root_source_nodes = [node] if node.kind == "property" else []
+        component_nodes = _collect_value_component_nodes(model, node, max_depth)
+        lookup.append((element_id, node, root_source_nodes, component_nodes))
+        for source_node in root_source_nodes:
+            node_ids.append(source_node.source_node_id)
+        for source_node in component_nodes:
             node_ids.append(source_node.source_node_id)
     return lookup, node_ids
 
@@ -920,18 +923,31 @@ def _collect_history_lookup_and_node_ids(
 def _build_historical_value_result(
     model: BuildResult,
     node: ModelNode,
-    source_nodes: list[ModelNode],
+    root_source_nodes: list[ModelNode],
+    component_nodes: list[ModelNode],
     values_by_node_id: dict[str, list[Any]],
 ) -> HistoricalValueResult:
     """Build HistoricalValueResult from collected source nodes and values."""
     values: list[VQT] = []
-    for source_node in source_nodes:
+    for source_node in root_source_nodes:
         raw_values = values_by_node_id.get(source_node.source_node_id, [])
         values.extend(_to_vqt_from_history_value(item) for item in raw_values)
     values.sort(key=lambda item: item.timestamp)
+
+    components: dict[str, HistoricalValueResult] = {}
+    for component_node in component_nodes:
+        raw_values = values_by_node_id.get(component_node.source_node_id, [])
+        component_values = [_to_vqt_from_history_value(item) for item in raw_values]
+        component_values.sort(key=lambda item: item.timestamp)
+        components[component_node.id] = HistoricalValueResult(
+            isComposition=bool(_composition_children_for_node(model, component_node)),
+            values=component_values,
+        )
+
     return HistoricalValueResult(
         isComposition=bool(_composition_children_for_node(model, node)),
         values=values,
+        components=components or None,
     )
 
 

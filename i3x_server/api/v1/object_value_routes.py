@@ -203,7 +203,10 @@ async def query_historical_values_v1(
         except Exception as exc:
             _raise_opcua_error("read historical values", exc)
 
-    lookup_by_element_id = {element_id: (node, source_nodes) for element_id, node, source_nodes in lookup}
+    lookup_by_element_id = {
+        element_id: (node, root_source_nodes, component_nodes)
+        for element_id, node, root_source_nodes, component_nodes in lookup
+    }
 
     results: list[BulkResultItem[HistoricalValueResult]] = []
     for element_id in body.elementIds:
@@ -212,12 +215,12 @@ async def query_historical_values_v1(
             results.append(_bulk_result_error(element_id, "Object not found"))
             continue
 
-        node, source_nodes = match
-        if not source_nodes:
+        node, root_source_nodes, component_nodes = match
+        if not root_source_nodes and not component_nodes:
             results.append(_bulk_result_error(element_id, "Object history not found"))
             continue
 
-        result = _build_historical_value_result(model, node, source_nodes, values_by_node_id)
+        result = _build_historical_value_result(model, node, root_source_nodes, component_nodes, values_by_node_id)
         results.append(_bulk_result_success(element_id, result))
 
     logger.info(

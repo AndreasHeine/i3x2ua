@@ -60,6 +60,76 @@ _UA_BUILTIN_DATATYPE_NAMES: dict[int, str] = {
     25: "DiagnosticInfo",
 }
 
+_NULLABLE_BUILTIN_SCALAR_IDS = {12, 15, 16}
+_WRAPPER_METADATA_KEYS = {
+    "$defs",
+    "description",
+    "title",
+    "x-opcua-displayName",
+    "x-opcua-nodeId",
+    "x-opcua-structureDataType",
+    "x-opcua-structureTypeId",
+}
+
+
+def _array_items_schema_for_builtin_data_type(
+    source_type_id: str,
+    scalar_schema: Mapping[str, Any],
+) -> dict[str, Any]:
+    node_id_match = re.match(r"^nsu=[^;]+;i=(\d+)$", source_type_id, flags=re.IGNORECASE)
+    builtin_id = int(node_id_match.group(1)) if node_id_match is not None else None
+    items_schema = dict(scalar_schema)
+    if builtin_id not in _NULLABLE_BUILTIN_SCALAR_IDS:
+        return items_schema
+
+    schema_type = items_schema.get("type")
+    if schema_type == "string":
+        items_schema["type"] = ["string", "null"]
+    return items_schema
+
+
+def _wrapped_value_schema(
+    schema: Mapping[str, Any],
+    *,
+    display_name: str,
+    source_type_id: str,
+) -> dict[str, Any]:
+    wrapper: dict[str, Any] = {
+        "title": display_name,
+        "x-opcua-nodeId": source_type_id,
+        "x-opcua-displayName": display_name,
+    }
+
+    for key in ("description", "x-opcua-structureDataType", "x-opcua-structureTypeId"):
+        value = schema.get(key)
+        if value is not None:
+            wrapper[key] = value
+
+    defs = deepcopy(dict(schema.get("$defs", {}))) if isinstance(schema.get("$defs"), Mapping) else {}
+
+    value_schema = deepcopy(dict(schema))
+    for key in _WRAPPER_METADATA_KEYS:
+        value_schema.pop(key, None)
+
+    value_def_key_base = re.sub(r"[^0-9A-Za-z]+", "", display_name) or "Value"
+    value_def_key = f"{value_def_key_base}Value"
+    suffix = 2
+    while value_def_key in defs:
+        value_def_key = f"{value_def_key_base}Value{suffix}"
+        suffix += 1
+    defs[value_def_key] = value_schema
+    wrapper["$defs"] = defs
+
+    value_ref = {"$ref": f"#/$defs/{value_def_key}"}
+
+    wrapper["oneOf"] = [
+        {"type": "null"},
+        value_ref,
+        {"type": "array", "items": deepcopy(value_ref)},
+    ]
+    return wrapper
+
+
 _UA_STANDARD_NON_DATATYPE_TYPE_NAMES: set[str] = {
     "BaseObjectType",
     "FolderType",
@@ -291,6 +361,7 @@ def _synthetic_object_types_from_structure_defs(
                 schema["$defs"] = required_defs
             schema.setdefault("x-opcua-nodeId", source_type_id)
             schema.setdefault("x-opcua-displayName", display_name)
+            schema = _wrapped_value_schema(schema, display_name=display_name, source_type_id=source_type_id)
 
             synthetic_by_source_type_id[source_key] = ObjectTypeResponse(
                 elementId=_virtual_object_type_element_id(namespace_uri, display_name, source_type_id),
@@ -361,7 +432,7 @@ def _datatype_object_type_from_source_type_id(
             "oneOf": [
                 {"type": "null"},
                 dict(scalar_schema),
-                {"type": "array", "items": dict(scalar_schema)},
+                {"type": "array", "items": _array_items_schema_for_builtin_data_type(source_type_id, scalar_schema)},
             ]
         }
 
@@ -384,6 +455,9 @@ def _datatype_object_type_from_source_type_id(
         standard_name = _standard_ua_type_name(source_type_id)
         if standard_name:
             display_name = standard_name
+
+    if "oneOf" not in schema:
+        schema = _wrapped_value_schema(schema, display_name=display_name, source_type_id=source_type_id)
 
     schema_payload = dict(schema)
     schema_payload.setdefault("title", display_name)

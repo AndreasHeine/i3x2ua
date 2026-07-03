@@ -251,6 +251,7 @@ class CurrentValueResult(BaseModel):
 class HistoricalValueResult(BaseModel):
     isComposition: bool
     values: list[VQT] = Field(default_factory=list)
+    components: dict[str, HistoricalValueResult] | None = None
 
 
 class RelatedObjectResult(BaseModel):

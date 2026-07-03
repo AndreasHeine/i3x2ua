@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from i3x_server.api.v1.monolithic import _expanded_node_id
 from i3x_server.infrastructure.opcua.client import OpcUaNamespaceInfo
+from i3x_server.schemas.i3x import ModelNode
 
 
 def test_v1_history_query(client: TestClient) -> None:
@@ -31,7 +32,7 @@ def test_v1_history_query(client: TestClient) -> None:
 
 
 def test_v1_history_query_includes_component_histories_when_depth_allows(client: TestClient) -> None:
-    from tests.conftest import ModelNode, fastapi_app
+    from tests.conftest import fastapi_app
 
     app = fastapi_app(client)
     property_id = "property-abc"

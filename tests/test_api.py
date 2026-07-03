@@ -683,10 +683,13 @@ def test_v1_objecttypes(client: TestClient) -> None:
     assert synthetic["elementId"].startswith("urn:opcua:objecttype:")
     assert synthetic["namespaceUri"] == "http://example.com/custom"
     assert synthetic["displayName"] == "FakeMachineConfig"
-    assert synthetic["schema"]["type"] == "object"
     assert synthetic["schema"]["x-opcua-structureTypeId"] == "nsu=http://example.com/custom;i=3001"
     assert synthetic["schema"]["x-opcua-nodeId"] == "nsu=http://example.com/custom;i=3001"
-    synthetic_thresholds_schema = synthetic["schema"]["properties"]["thresholds"]
+    synthetic_ref = synthetic["schema"]["oneOf"][1]["$ref"]
+    assert isinstance(synthetic_ref, str) and synthetic_ref.startswith("#/$defs/")
+    synthetic_def = synthetic["schema"]["$defs"][synthetic_ref.split("#/$defs/", 1)[1]]
+    assert synthetic_def["type"] == "object"
+    synthetic_thresholds_schema = synthetic_def["properties"]["thresholds"]
     assert isinstance(synthetic_thresholds_schema.get("$ref"), str)
     synthetic_thresholds_ref = synthetic_thresholds_schema["$ref"]
     assert synthetic_thresholds_ref.startswith("#/$defs/")
@@ -797,9 +800,12 @@ def test_v1_objecttypes_includes_builtin_localizedtext_structured_schema(client:
     )
     assert localized_text is not None
     assert localized_text["displayName"] == "LocalizedText"
-    assert localized_text["schema"]["type"] == "object"
-    assert set(localized_text["schema"]["properties"]["Locale"]["type"]) == {"null", "string"}
-    assert set(localized_text["schema"]["properties"]["Text"]["type"]) == {"null", "string"}
+    localized_text_ref = localized_text["schema"]["oneOf"][1]["$ref"]
+    assert localized_text_ref.startswith("#/$defs/")
+    localized_text_def = localized_text["schema"]["$defs"][localized_text_ref.split("#/$defs/", 1)[1]]
+    assert localized_text_def["type"] == "object"
+    assert set(localized_text_def["properties"]["Locale"]["type"]) == {"null", "string"}
+    assert set(localized_text_def["properties"]["Text"]["type"]) == {"null", "string"}
 
 
 def test_v1_objecttypes_resolves_standard_structured_datatype(client: TestClient) -> None:
@@ -958,7 +964,9 @@ def test_v1_objecttypes_registers_standard_ua_structured_datatype_as_known(clien
     assert resolved["elementId"].startswith("urn:opcua:objecttype:")
     assert resolved["displayName"] == "SessionDiagnosticsDataType"
     assert resolved["schema"]["title"] == "SessionDiagnosticsDataType"
-    assert resolved["schema"]["type"] == "object"
+    session_ref = resolved["schema"]["oneOf"][1]["$ref"]
+    assert session_ref.startswith("#/$defs/")
+    assert resolved["schema"]["$defs"][session_ref.split("#/$defs/", 1)[1]]["type"] == "object"
 
 
 def test_v1_objecttypes_registers_standard_ua_role_permission_as_known(client: TestClient) -> None:
@@ -988,7 +996,9 @@ def test_v1_objecttypes_registers_standard_ua_role_permission_as_known(client: T
     assert resolved["elementId"].startswith("urn:opcua:objecttype:")
     assert resolved["displayName"] == "RolePermissionType"
     assert resolved["schema"]["title"] == "RolePermissionType"
-    assert resolved["schema"]["type"] == "object"
+    role_ref = resolved["schema"]["oneOf"][1]["$ref"]
+    assert role_ref.startswith("#/$defs/")
+    assert resolved["schema"]["$defs"][role_ref.split("#/$defs/", 1)[1]]["type"] == "object"
 
 
 def test_v1_objecttypes_registers_generic_custom_nodeid_type_as_known(client: TestClient) -> None:

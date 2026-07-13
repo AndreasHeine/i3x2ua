@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import asdict, fields, is_dataclass
@@ -55,6 +56,22 @@ def _normalize_type_definition_id(type_definition_id: str | None) -> str | None:
     if normalized in {"i=0", "ns=0;i=0", "nsu=http://opcfoundation.org/UA/;i=0"}:
         return None
     return normalized
+
+
+def _reference_type_name(reference_type_id: str | None) -> str | None:
+    if not isinstance(reference_type_id, str) or not reference_type_id:
+        return None
+    match = re.match(r"^(?:ns=0;|nsu=http://opcfoundation.org/UA/;)i=(\d+)$", reference_type_id, flags=re.IGNORECASE)
+    if match is None:
+        return None
+    identifier = int(match.group(1))
+    object_id_names = getattr(ua, "ObjectIdNames", None)
+    if not isinstance(object_id_names, dict):
+        return None
+    candidate = object_id_names.get(identifier)
+    if not isinstance(candidate, str) or not candidate:
+        return None
+    return candidate
 
 
 class OpcUaClient:
@@ -952,12 +969,14 @@ class OpcUaClient:
                 stack = stack[max_nodes_per_browse:]
 
                 nodes = [node for node, _ in batch_entries]
-                member_candidates: list[tuple[str, str, str, str, NodeClass, Any]] = []
+                member_candidates: list[
+                    tuple[str, str, str, str, NodeClass, Any, str | None, str | None, int | None]
+                ] = []
 
                 browsed = await self._browse_children_descriptions(nodes, max_nodes_per_browse)
                 for parent_node, refs in browsed:
                     parent_node_id = parent_node.nodeid.to_string()
-                    for ref in refs:
+                    for ref_index, ref in enumerate(refs):
                         child_node_id = ref.NodeId.to_string()
                         if child_node_id in visited:
                             continue
@@ -976,8 +995,20 @@ class OpcUaClient:
                             child_node = self._client.get_node(ref.NodeId)
                             property_name = ref.BrowseName.Name or child_node_id
                             display_name = ref.DisplayName.Text or property_name
+                            reference_type_id = ref.ReferenceTypeId.to_string()
+                            reference_type = _reference_type_name(reference_type_id)
                             member_candidates.append(
-                                (parent_node_id, child_node_id, property_name, display_name, ref.NodeClass, child_node)
+                                (
+                                    parent_node_id,
+                                    child_node_id,
+                                    property_name,
+                                    display_name,
+                                    ref.NodeClass,
+                                    child_node,
+                                    reference_type_id,
+                                    reference_type,
+                                    ref_index,
+                                )
                             )
 
                 if member_candidates:
@@ -1047,12 +1078,12 @@ class OpcUaClient:
 
     async def _read_object_type_members_limited(
         self,
-        entries: list[tuple[str, str, str, str, NodeClass, Any]],
+        entries: list[tuple[str, str, str, str, NodeClass, Any, str | None, str | None, int | None]],
     ) -> list[tuple[str, OpcUaObjectTypeMemberInfo]]:
         if not entries:
             return []
 
-        all_nodes = [node for _, _, _, _, _, node in entries]
+        all_nodes = [node for _, _, _, _, _, node, _, _, _ in entries]
         all_node_ids = [node.nodeid.to_string() for node in all_nodes]
 
         description_by_node_id: dict[str, str | None] = {}
@@ -1074,7 +1105,7 @@ class OpcUaClient:
                 exc_info=True,
             )
 
-        variable_nodes = [node for _, _, _, _, node_class, node in entries if node_class == NodeClass.Variable]
+        variable_nodes = [node for _, _, _, _, node_class, node, _, _, _ in entries if node_class == NodeClass.Variable]
         variable_node_ids = [node.nodeid.to_string() for node in variable_nodes]
 
         data_type_by_node_id: dict[str, str | None] = {}
@@ -1133,6 +1164,9 @@ class OpcUaClient:
             display_name: str,
             node_class: NodeClass,
             node: Any,
+            reference_type_id: str | None,
+            reference_type: str | None,
+            reference_order: int | None,
         ) -> tuple[str, OpcUaObjectTypeMemberInfo]:
             async with semaphore:
                 data_type: str | None = None
@@ -1141,6 +1175,9 @@ class OpcUaClient:
                         data_type = data_type_by_node_id.get(node_id)
                     else:
                         data_type = await self._read_data_type_or_none(node)
+                    type_definition_id = None
+                else:
+                    type_definition_id = await self._read_type_definition_id_or_none(node)
 
                 data_value = await self._read_data_value_or_none(node) if node_class == NodeClass.Variable else None
                 value = _variant_value_or_self(data_value)
@@ -1174,16 +1211,56 @@ class OpcUaClient:
                         is_array=is_array,
                         value_rank=value_rank,
                         array_dimensions=array_dimensions,
+                        parent_node_id=parent_id,
+                        type_definition_id=type_definition_id,
+                        reference_type_id=reference_type_id,
+                        reference_type=reference_type,
+                        reference_order=reference_order,
                         modelling_rule=modelling_rule,
                     ),
                 )
 
         return await asyncio.gather(
             *[
-                worker(parent_id, node_id, browse_name, display_name, node_class, node)
-                for parent_id, node_id, browse_name, display_name, node_class, node in entries
+                worker(
+                    parent_id,
+                    node_id,
+                    browse_name,
+                    display_name,
+                    node_class,
+                    node,
+                    reference_type_id,
+                    reference_type,
+                    reference_order,
+                )
+                for (
+                    parent_id,
+                    node_id,
+                    browse_name,
+                    display_name,
+                    node_class,
+                    node,
+                    reference_type_id,
+                    reference_type,
+                    reference_order,
+                ) in entries
             ]
         )
+
+    async def _read_type_definition_id_or_none(self, node: Any) -> str | None:
+        try:
+            refs = await node.get_references(refs=ObjectIds.HasTypeDefinition, direction=ua.BrowseDirection.Forward)
+            if not refs:
+                return None
+            return _normalize_type_definition_id(refs[0].NodeId.to_string())
+        except Exception:
+            logger.debug(
+                "OPC UA type definition read failed endpoint=%s node_id=%s",
+                self._endpoint,
+                node.nodeid.to_string(),
+                exc_info=True,
+            )
+            return None
 
     async def _read_modelling_rule_or_none(self, node: Any) -> str | None:
         try:

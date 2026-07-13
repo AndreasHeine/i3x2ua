@@ -168,6 +168,10 @@ def build_object_type_schema(
     }
     if item.parent_node_id:
         schema["x-opcua-superTypeNodeId"] = _expanded_node_id(item.parent_node_id, namespace_infos)
+        schema["x-opcua-typeDefinition"] = _expanded_node_id(item.parent_node_id, namespace_infos)
+    type_references = _references_for_type(item, namespace_infos)
+    if type_references:
+        schema["x-opcua-references"] = type_references
     description = getattr(item, "description", None)
     if description:
         schema["description"] = description
@@ -234,6 +238,10 @@ def _schema_for_single_type(
     if required:
         output["required"] = required
 
+    type_references = _references_for_type(item, namespace_infos)
+    if type_references:
+        output["x-opcua-references"] = type_references
+
     return output, required
 
 
@@ -274,8 +282,31 @@ def _schema_for_member(
     member_array_dimensions = getattr(member, "array_dimensions", None)
     if isinstance(member_array_dimensions, list) and member_array_dimensions:
         schema["x-opcua-arrayDimensions"] = [int(value) for value in member_array_dimensions]
+    member_type_definition_id = getattr(member, "type_definition_id", None)
+    if isinstance(member_type_definition_id, str) and member_type_definition_id:
+        normalized_type_definition_id = _expanded_if_node_id(
+            _node_id_to_string(member_type_definition_id),
+            namespace_infos,
+        )
+        schema["x-opcua-typeDefinition"] = normalized_type_definition_id or member_type_definition_id
     schema["x-opcua-nodeId"] = _expanded_node_id(member.node_id, namespace_infos)
     schema["x-opcua-displayName"] = member.display_name
+    member_reference_type_id = getattr(member, "reference_type_id", None)
+    member_reference_type = getattr(member, "reference_type", None)
+    if isinstance(member_reference_type_id, str) and member_reference_type_id:
+        normalized_reference_type_id = _expanded_if_node_id(
+            _node_id_to_string(member_reference_type_id),
+            namespace_infos,
+        )
+        schema["x-opcua-referenceTypeId"] = normalized_reference_type_id or member_reference_type_id
+    if isinstance(member_reference_type, str) and member_reference_type:
+        schema["x-opcua-referenceType"] = member_reference_type
+    member_reference_order = getattr(member, "reference_order", None)
+    if isinstance(member_reference_order, int):
+        schema["x-opcua-referenceOrder"] = member_reference_order
+    member_references = _references_for_member(member, namespace_infos)
+    if member_references:
+        schema["x-opcua-references"] = member_references
     if member.description:
         schema["description"] = member.description
     if member.value is not None:
@@ -1413,6 +1444,47 @@ def _members(item: OpcUaObjectTypeInfo) -> Iterable[OpcUaObjectTypeMemberInfo]:
         return fallback
 
     return []
+
+
+def _references_for_type(item: OpcUaObjectTypeInfo, namespace_infos: list[OpcUaNamespaceInfo]) -> list[dict[str, Any]]:
+    refs: list[dict[str, Any]] = []
+    if item.parent_node_id:
+        refs.append(
+            {
+                "referenceType": "HasSubtype",
+                "targetNodeId": _expanded_node_id(item.parent_node_id, namespace_infos),
+            }
+        )
+    return refs
+
+
+def _references_for_member(
+    member: OpcUaObjectTypeMemberInfo,
+    namespace_infos: list[OpcUaNamespaceInfo],
+) -> list[dict[str, Any]]:
+    parent_node_id = getattr(member, "parent_node_id", None)
+    if not isinstance(parent_node_id, str) or not parent_node_id:
+        return []
+
+    reference: dict[str, Any] = {
+        "sourceNodeId": _expanded_node_id(parent_node_id, namespace_infos),
+        "targetNodeId": _expanded_node_id(member.node_id, namespace_infos),
+    }
+
+    reference_type = getattr(member, "reference_type", None)
+    if isinstance(reference_type, str) and reference_type:
+        reference["referenceType"] = reference_type
+
+    reference_type_id = getattr(member, "reference_type_id", None)
+    if isinstance(reference_type_id, str) and reference_type_id:
+        normalized_reference_type_id = _expanded_if_node_id(_node_id_to_string(reference_type_id), namespace_infos)
+        reference["referenceTypeId"] = normalized_reference_type_id or reference_type_id
+
+    reference_order = getattr(member, "reference_order", None)
+    if isinstance(reference_order, int):
+        reference["order"] = reference_order
+
+    return [reference]
 
 
 def _def_key(node_id: str) -> str:

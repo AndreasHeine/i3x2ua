@@ -198,31 +198,43 @@ class FakeOpcUaClient:
                 members=[
                     SimpleNamespace(
                         node_id="ns=1;i=2001",
+                        parent_node_id="ns=1;i=1001",
                         browse_name="temperature",
                         display_name="Temperature",
                         description="Current measured temperature",
                         node_class="Variable",
                         data_type="i=11",
+                        reference_type_id="ns=0;i=46",
+                        reference_type="HasProperty",
+                        reference_order=0,
                         value=42.5,
                         modelling_rule="Mandatory",
                     ),
                     SimpleNamespace(
                         node_id="ns=1;i=2002",
+                        parent_node_id="ns=1;i=1001",
                         browse_name="running",
                         display_name="Running",
                         description="Running state",
                         node_class="Variable",
                         data_type="i=1",
+                        reference_type_id="ns=0;i=46",
+                        reference_type="HasProperty",
+                        reference_order=1,
                         value=True,
                         modelling_rule=None,
                     ),
                     SimpleNamespace(
                         node_id="ns=1;i=2003",
+                        parent_node_id="ns=1;i=1001",
                         browse_name="config",
                         display_name="Config",
                         description="Machine configuration",
                         node_class="Variable",
                         data_type="ns=1;i=3001",
+                        reference_type_id="ns=0;i=46",
+                        reference_type="HasProperty",
+                        reference_order=2,
                         value=FakeExtensionObject(
                             "ns=1;i=3001",
                             FakeMachineConfig(
@@ -646,6 +658,7 @@ def test_v1_objecttypes(client: TestClient) -> None:
     assert first["schema"]["x-opcua-displayName"] == "Machine Type"
     assert first["schema"]["description"] == "Machine object type"
     assert "x-opcua-description" not in first["schema"]
+    assert "x-opcua-references" not in first["schema"]
     assert first["schema"]["x-opcua-isAbstract"] is False
     assert isinstance(first["schema"]["properties"], dict)
     assert first["schema"]["properties"]["temperature"]["type"] == "number"
@@ -656,6 +669,18 @@ def test_v1_objecttypes(client: TestClient) -> None:
     assert "x-opcua-description" not in first["schema"]["properties"]["temperature"]
     assert first["schema"]["properties"]["temperature"]["x-opcua-modellingRule"] == "Mandatory"
     assert first["schema"]["properties"]["temperature"]["x-opcua-dataTypeId"] == "nsu=http://opcfoundation.org/UA/;i=11"
+    assert first["schema"]["properties"]["temperature"]["x-opcua-referenceType"] == "HasProperty"
+    assert first["schema"]["properties"]["temperature"]["x-opcua-referenceOrder"] == 0
+    assert (
+        first["schema"]["properties"]["temperature"]["x-opcua-referenceTypeId"]
+        == "nsu=http://opcfoundation.org/UA/;i=46"
+    )
+    assert first["schema"]["properties"]["temperature"]["x-opcua-references"][0]["sourceNodeId"] == (
+        "nsu=http://example.com/custom;i=1001"
+    )
+    assert first["schema"]["properties"]["temperature"]["x-opcua-references"][0]["targetNodeId"] == (
+        "nsu=http://example.com/custom;i=2001"
+    )
     assert first["schema"]["properties"]["temperature"]["x-opcua-value"] == 42.5
     config_schema = first["schema"]["properties"]["config"]
     assert isinstance(config_schema.get("allOf"), list)
@@ -701,6 +726,8 @@ def test_v1_objecttypes(client: TestClient) -> None:
     assert synthetic["schema"]["$defs"][synthetic_thresholds_def_key]["properties"]["max"]["type"] == "number"
 
     second = payload["result"][1]
+    assert second["schema"]["x-opcua-references"][0]["referenceType"] == "HasSubtype"
+    assert second["schema"]["x-opcua-references"][0]["targetNodeId"] == "nsu=http://example.com/custom;i=1001"
     assert second["schema"]["x-opcua-superTypeNodeId"] == "nsu=http://example.com/custom;i=1001"
     assert [item["elementId"] for item in second["related"]["instances"]] == ["sensor-root"]
 

@@ -61,6 +61,11 @@ class OpcUaObjectTypeMemberInfo:
     is_array: bool | None = None
     value_rank: int | None = None
     array_dimensions: list[int] | None = None
+    parent_node_id: str | None = None
+    type_definition_id: str | None = None
+    reference_type_id: str | None = None
+    reference_type: str | None = None
+    reference_order: int | None = None
 
 
 @dataclass(slots=True)

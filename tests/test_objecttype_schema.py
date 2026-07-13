@@ -645,3 +645,53 @@ def test_build_data_type_schema_resolves_expanded_node_id_via_namespace_lookup()
     assert schema["type"] == "object"
     assert schema["title"] == "RolePermissionType"
     assert schema["x-opcua-structureDataType"] == "nsu=http://opcfoundation.org/UA/;i=96"
+
+
+def test_nodeid_datatype_schema_uses_discriminated_identifier_branches() -> None:
+    schema = objecttype_schema.build_data_type_schema(
+        "nsu=http://opcfoundation.org/UA/;i=17",
+        [OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/", display_name="UA")],
+    )
+
+    assert isinstance(schema, dict)
+    assert schema.get("title") == "NodeId"
+    assert isinstance(schema.get("oneOf"), list)
+
+    branches = schema["oneOf"]
+    branch_by_const = {
+        branch["properties"]["NodeIdType"]["const"]: branch
+        for branch in branches
+        if isinstance(branch, dict)
+        and isinstance(branch.get("properties"), dict)
+        and isinstance(branch["properties"].get("NodeIdType"), dict)
+        and "const" in branch["properties"]["NodeIdType"]
+    }
+
+    assert branch_by_const[2]["properties"]["Identifier"]["type"] == "integer"
+    assert branch_by_const[3]["properties"]["Identifier"]["type"] == "string"
+    assert branch_by_const[4]["properties"]["Identifier"]["type"] == "string"
+    assert branch_by_const[4]["properties"]["Identifier"]["format"] == "uuid"
+    assert branch_by_const[5]["properties"]["Identifier"]["type"] == "string"
+    assert branch_by_const[5]["properties"]["Identifier"]["contentEncoding"] == "base64"
+
+
+def test_nodeid_annotation_schema_keeps_nodeidtype_identifier_dependency() -> None:
+    registry = objecttype_schema._SchemaRegistry()
+    ref = objecttype_schema._schema_for_annotation_string("ua.NodeId", registry)
+    assert ref == {"$ref": "#/$defs/NodeId"}
+
+    nodeid_def = registry.defs["NodeId"]
+    assert isinstance(nodeid_def.get("oneOf"), list)
+
+    branches = nodeid_def["oneOf"]
+    branch_by_const = {
+        branch["properties"]["NodeIdType"]["const"]: branch
+        for branch in branches
+        if isinstance(branch, dict)
+        and isinstance(branch.get("properties"), dict)
+        and isinstance(branch["properties"].get("NodeIdType"), dict)
+        and "const" in branch["properties"]["NodeIdType"]
+    }
+    assert branch_by_const[3]["properties"]["Identifier"] == {"type": "string"}
+    assert branch_by_const[4]["properties"]["Identifier"]["format"] == "uuid"
+    assert branch_by_const[5]["properties"]["Identifier"]["contentEncoding"] == "base64"

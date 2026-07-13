@@ -700,6 +700,9 @@ def _merge_metadata_into_registered_definition(
 
 
 def _structure_schema_for_type(structure_type: type[Any], registry: _SchemaRegistry) -> dict[str, Any]:
+    if _is_nodeid_structure_type(structure_type):
+        return _nodeid_discriminated_schema_for_type(structure_type, registry)
+
     properties: dict[str, Any] = {}
 
     if is_dataclass(structure_type):
@@ -737,6 +740,94 @@ def _structure_schema_for_type(structure_type: type[Any], registry: _SchemaRegis
         "properties": properties,
         "additionalProperties": False,
     }
+
+
+def _is_nodeid_structure_type(structure_type: type[Any]) -> bool:
+    return structure_type.__name__ in {"NodeId", "ExpandedNodeId"}
+
+
+def _nodeid_discriminated_schema_for_type(
+    structure_type: type[Any],
+    registry: _SchemaRegistry,
+) -> dict[str, Any]:
+    base_schema = _nodeid_common_schema_for_type(structure_type, registry)
+    base_schema["oneOf"] = _nodeid_identifier_branches()
+    return base_schema
+
+
+def _nodeid_common_schema_for_type(
+    structure_type: type[Any],
+    registry: _SchemaRegistry,
+) -> dict[str, Any]:
+    common_properties: dict[str, Any] = {}
+    required_fields: list[str] = []
+
+    annotations = getattr(structure_type, "__annotations__", {})
+    if isinstance(annotations, Mapping):
+        for name, annotation in annotations.items():
+            if _is_filtered_structure_field(str(name)):
+                continue
+            if str(name) == "Identifier":
+                # Identifier semantics are constrained by oneOf branches below.
+                common_properties[str(name)] = {}
+            else:
+                common_properties[str(name)] = _schema_for_annotation(annotation, registry)
+            required_fields.append(str(name))
+
+    return {
+        "type": "object",
+        "title": structure_type.__name__,
+        "properties": common_properties,
+        "required": required_fields,
+        "additionalProperties": False,
+    }
+
+
+def _nodeid_identifier_branches() -> list[dict[str, Any]]:
+    return [
+        {
+            "properties": {
+                "NodeIdType": {"const": 0},
+                "Identifier": {"type": "integer", "minimum": 0, "maximum": 255},
+            },
+            "required": ["NodeIdType", "Identifier"],
+        },
+        {
+            "properties": {
+                "NodeIdType": {"const": 1},
+                "Identifier": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+            },
+            "required": ["NodeIdType", "Identifier"],
+        },
+        {
+            "properties": {
+                "NodeIdType": {"const": 2},
+                "Identifier": {"type": "integer"},
+            },
+            "required": ["NodeIdType", "Identifier"],
+        },
+        {
+            "properties": {
+                "NodeIdType": {"const": 3},
+                "Identifier": {"type": "string"},
+            },
+            "required": ["NodeIdType", "Identifier"],
+        },
+        {
+            "properties": {
+                "NodeIdType": {"const": 4},
+                "Identifier": {"type": "string", "format": "uuid"},
+            },
+            "required": ["NodeIdType", "Identifier"],
+        },
+        {
+            "properties": {
+                "NodeIdType": {"const": 5},
+                "Identifier": {"type": "string", "contentEncoding": "base64"},
+            },
+            "required": ["NodeIdType", "Identifier"],
+        },
+    ]
 
 
 def _schema_for_annotation(annotation: Any, registry: _SchemaRegistry) -> dict[str, Any]:

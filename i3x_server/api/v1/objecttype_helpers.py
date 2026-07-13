@@ -27,7 +27,11 @@ from i3x_server.api.v1.object_helpers import (
 from i3x_server.application.ports.opcua import OpcUaClientProtocol, OpcUaNamespaceInfo, OpcUaObjectTypeInfo
 from i3x_server.config.settings import Settings, get_settings
 from i3x_server.errors import i3x_http_error
-from i3x_server.schemas.objecttype_schema import build_data_type_schema, json_schema_for_opcua_type
+from i3x_server.schemas.objecttype_schema import (
+    build_data_type_schema,
+    json_schema_for_opcua_type,
+    remove_opcua_schema_fields,
+)
 from i3x_server.schemas.state import BuildResult
 
 logger = logging.getLogger(__name__)
@@ -176,6 +180,10 @@ def _live_type_name_lookup_timeout_seconds() -> float:
 
 def _live_type_name_lookup_max_per_request() -> int:
     return _LIVE_TYPE_NAME_LOOKUP_MAX_PER_REQUEST
+
+
+def _include_mcp_opcua_metadata() -> bool:
+    return _runtime_settings().mcp_include_opcua_metadata
 
 
 @dataclass(slots=True)
@@ -362,6 +370,8 @@ def _synthetic_object_types_from_structure_defs(
             schema.setdefault("x-opcua-nodeId", source_type_id)
             schema.setdefault("x-opcua-displayName", display_name)
             schema = _wrapped_value_schema(schema, display_name=display_name, source_type_id=source_type_id)
+            if not _include_mcp_opcua_metadata():
+                schema = remove_opcua_schema_fields(schema)
 
             synthetic_by_source_type_id[source_key] = ObjectTypeResponse(
                 elementId=_virtual_object_type_element_id(namespace_uri, display_name, source_type_id),
@@ -463,6 +473,8 @@ def _datatype_object_type_from_source_type_id(
     schema_payload.setdefault("title", display_name)
     schema_payload.setdefault("x-opcua-nodeId", source_type_id)
     schema_payload.setdefault("x-opcua-displayName", display_name)
+    if not _include_mcp_opcua_metadata():
+        schema_payload = remove_opcua_schema_fields(schema_payload)
 
     return ObjectTypeResponse(
         elementId=_virtual_object_type_element_id(namespace_uri, display_name, source_type_id),
@@ -505,6 +517,8 @@ def _opaque_datatype_object_type_from_source_type_id(
         "x-opcua-nodeId": source_type_id,
         "x-opcua-displayName": display_name,
     }
+    if not _include_mcp_opcua_metadata():
+        schema_payload = remove_opcua_schema_fields(schema_payload)
 
     return ObjectTypeResponse(
         elementId=_virtual_object_type_element_id(namespace_uri, display_name, source_type_id),
@@ -576,6 +590,8 @@ async def _generic_object_type_from_source_type_id(
         "x-opcua-nodeId": source_type_id,
         "x-opcua-displayName": display_name,
     }
+    if not _include_mcp_opcua_metadata():
+        schema_payload = remove_opcua_schema_fields(schema_payload)
     return ObjectTypeResponse(
         elementId=_virtual_object_type_element_id(canonical_namespace_uri, display_name, source_type_id),
         displayName=display_name,
@@ -656,6 +672,10 @@ async def _build_object_type_context(
         item.model_copy(update={"namespaceUri": _canonical_namespace_uri(item.namespaceUri, namespace_infos)})
         for item in items
     ]
+    if not _include_mcp_opcua_metadata():
+        canonical_items = [
+            item.model_copy(update={"schema_": remove_opcua_schema_fields(item.schema_)}) for item in canonical_items
+        ]
     source_type_to_element_id = {key: item.elementId for key, item in by_source_type_id.items()}
     logger.debug(
         "Object type context built model_nodes=%d object_types=%d items=%d duration_s=%.3f",

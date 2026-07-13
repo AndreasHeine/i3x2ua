@@ -365,9 +365,11 @@ def client() -> Generator[TestClient, None, None]:
     previous_enable_mcp = os.environ.get("I3X_ENABLE_MCP")
     previous_skip_connect = os.environ.get("I3X_SKIP_OPCUA_CONNECT")
     previous_enable_writes = os.environ.get("I3X_ENABLE_WRITES")
+    previous_mcp_include_opcua_metadata = os.environ.get("I3X_MCP_INCLUDE_OPCUA_METADATA")
     os.environ["I3X_ENABLE_MCP"] = "1"
     os.environ["I3X_SKIP_OPCUA_CONNECT"] = "1"
     os.environ["I3X_ENABLE_WRITES"] = "0"
+    os.environ["I3X_MCP_INCLUDE_OPCUA_METADATA"] = "1"
     app = create_app()
     try:
         with TestClient(app) as test_client:
@@ -386,6 +388,10 @@ def client() -> Generator[TestClient, None, None]:
             os.environ.pop("I3X_ENABLE_WRITES", None)
         else:
             os.environ["I3X_ENABLE_WRITES"] = previous_enable_writes
+        if previous_mcp_include_opcua_metadata is None:
+            os.environ.pop("I3X_MCP_INCLUDE_OPCUA_METADATA", None)
+        else:
+            os.environ["I3X_MCP_INCLUDE_OPCUA_METADATA"] = previous_mcp_include_opcua_metadata
 
 
 @pytest.fixture
@@ -394,9 +400,11 @@ def client_without_mcp() -> Generator[TestClient, None, None]:
     previous_enable_mcp = os.environ.get("I3X_ENABLE_MCP")
     previous_skip_connect = os.environ.get("I3X_SKIP_OPCUA_CONNECT")
     previous_enable_writes = os.environ.get("I3X_ENABLE_WRITES")
+    previous_mcp_include_opcua_metadata = os.environ.get("I3X_MCP_INCLUDE_OPCUA_METADATA")
     os.environ.pop("I3X_ENABLE_MCP", None)
     os.environ["I3X_SKIP_OPCUA_CONNECT"] = "1"
     os.environ["I3X_ENABLE_WRITES"] = "0"
+    os.environ["I3X_MCP_INCLUDE_OPCUA_METADATA"] = "1"
     app = create_app()
     try:
         with TestClient(app) as test_client:
@@ -415,6 +423,10 @@ def client_without_mcp() -> Generator[TestClient, None, None]:
             os.environ.pop("I3X_ENABLE_WRITES", None)
         else:
             os.environ["I3X_ENABLE_WRITES"] = previous_enable_writes
+        if previous_mcp_include_opcua_metadata is None:
+            os.environ.pop("I3X_MCP_INCLUDE_OPCUA_METADATA", None)
+        else:
+            os.environ["I3X_MCP_INCLUDE_OPCUA_METADATA"] = previous_mcp_include_opcua_metadata
 
 
 @pytest.fixture
@@ -423,9 +435,11 @@ def client_without_tool_overrides(monkeypatch: pytest.MonkeyPatch) -> Generator[
     previous_enable_mcp = os.environ.get("I3X_ENABLE_MCP")
     previous_skip_connect = os.environ.get("I3X_SKIP_OPCUA_CONNECT")
     previous_enable_writes = os.environ.get("I3X_ENABLE_WRITES")
+    previous_mcp_include_opcua_metadata = os.environ.get("I3X_MCP_INCLUDE_OPCUA_METADATA")
     os.environ["I3X_ENABLE_MCP"] = "1"
     os.environ["I3X_SKIP_OPCUA_CONNECT"] = "1"
     os.environ["I3X_ENABLE_WRITES"] = "0"
+    os.environ["I3X_MCP_INCLUDE_OPCUA_METADATA"] = "1"
     monkeypatch.setattr("i3x_server.mcp.load_tool_overrides", lambda *args, **kwargs: {})
     app = create_app()
     try:
@@ -445,3 +459,7 @@ def client_without_tool_overrides(monkeypatch: pytest.MonkeyPatch) -> Generator[
             os.environ.pop("I3X_ENABLE_WRITES", None)
         else:
             os.environ["I3X_ENABLE_WRITES"] = previous_enable_writes
+        if previous_mcp_include_opcua_metadata is None:
+            os.environ.pop("I3X_MCP_INCLUDE_OPCUA_METADATA", None)
+        else:
+            os.environ["I3X_MCP_INCLUDE_OPCUA_METADATA"] = previous_mcp_include_opcua_metadata

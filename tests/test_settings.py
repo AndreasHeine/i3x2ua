@@ -15,3 +15,11 @@ def test_settings_trim_whitespace_from_env_values(monkeypatch: MonkeyPatch) -> N
     assert settings.model_preload_on_startup is True
     assert settings.model_preload_blocking is False
     assert settings.subscriptions_initial_values is True
+
+
+def test_settings_can_disable_opcua_schema_fields(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setenv("I3X_MCP_INCLUDE_OPCUA_METADATA", "false")
+
+    settings = Settings()
+
+    assert settings.mcp_include_opcua_metadata is False

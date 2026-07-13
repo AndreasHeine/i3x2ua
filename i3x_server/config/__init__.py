@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     subscription_ttl_seconds: int = Field(default=300, ge=1)
     log_level: str = Field(default="INFO")
     enable_writes: bool = Field(default=False)
+    mcp_include_opcua_metadata: bool = Field(default=True)
 
     @field_validator("*", mode="before")
     @classmethod

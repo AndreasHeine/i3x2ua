@@ -47,6 +47,19 @@ class FakeExtensionObject:
         self.Body = body
 
 
+def _contains_opcua_extension_key(value: Any) -> bool:
+    if isinstance(value, Mapping):
+        for key, nested in value.items():
+            if str(key).startswith("x-opcua-"):
+                return True
+            if _contains_opcua_extension_key(nested):
+                return True
+        return False
+    if isinstance(value, list):
+        return any(_contains_opcua_extension_key(item) for item in value)
+    return False
+
+
 def _csp_source_tokens(csp: str) -> set[str]:
     tokens: set[str] = set()
     for directive in csp.split(";"):
@@ -394,9 +407,11 @@ def client() -> Generator[TestClient, None, None]:
     previous_enable_mcp = os.environ.get("I3X_ENABLE_MCP")
     previous_skip_connect = os.environ.get("I3X_SKIP_OPCUA_CONNECT")
     previous_enable_writes = os.environ.get("I3X_ENABLE_WRITES")
+    previous_mcp_include_opcua_metadata = os.environ.get("I3X_MCP_INCLUDE_OPCUA_METADATA")
     os.environ["I3X_ENABLE_MCP"] = "1"
     os.environ["I3X_SKIP_OPCUA_CONNECT"] = "1"
     os.environ["I3X_ENABLE_WRITES"] = "0"
+    os.environ["I3X_MCP_INCLUDE_OPCUA_METADATA"] = "1"
     app = create_app()
     try:
         with TestClient(app) as test_client:
@@ -415,6 +430,10 @@ def client() -> Generator[TestClient, None, None]:
             os.environ.pop("I3X_ENABLE_WRITES", None)
         else:
             os.environ["I3X_ENABLE_WRITES"] = previous_enable_writes
+        if previous_mcp_include_opcua_metadata is None:
+            os.environ.pop("I3X_MCP_INCLUDE_OPCUA_METADATA", None)
+        else:
+            os.environ["I3X_MCP_INCLUDE_OPCUA_METADATA"] = previous_mcp_include_opcua_metadata
 
 
 @pytest.fixture
@@ -422,9 +441,11 @@ def client_without_mcp() -> Generator[TestClient, None, None]:
     previous_enable_mcp = os.environ.get("I3X_ENABLE_MCP")
     previous_skip_connect = os.environ.get("I3X_SKIP_OPCUA_CONNECT")
     previous_enable_writes = os.environ.get("I3X_ENABLE_WRITES")
+    previous_mcp_include_opcua_metadata = os.environ.get("I3X_MCP_INCLUDE_OPCUA_METADATA")
     os.environ.pop("I3X_ENABLE_MCP", None)
     os.environ["I3X_SKIP_OPCUA_CONNECT"] = "1"
     os.environ["I3X_ENABLE_WRITES"] = "0"
+    os.environ["I3X_MCP_INCLUDE_OPCUA_METADATA"] = "1"
     app = create_app()
     try:
         with TestClient(app) as test_client:
@@ -443,6 +464,10 @@ def client_without_mcp() -> Generator[TestClient, None, None]:
             os.environ.pop("I3X_ENABLE_WRITES", None)
         else:
             os.environ["I3X_ENABLE_WRITES"] = previous_enable_writes
+        if previous_mcp_include_opcua_metadata is None:
+            os.environ.pop("I3X_MCP_INCLUDE_OPCUA_METADATA", None)
+        else:
+            os.environ["I3X_MCP_INCLUDE_OPCUA_METADATA"] = previous_mcp_include_opcua_metadata
 
 
 def test_get_model(client: TestClient) -> None:
@@ -730,6 +755,24 @@ def test_v1_objecttypes(client: TestClient) -> None:
     assert second["schema"]["x-opcua-references"][0]["targetNodeId"] == "nsu=http://example.com/custom;i=1001"
     assert second["schema"]["x-opcua-superTypeNodeId"] == "nsu=http://example.com/custom;i=1001"
     assert [item["elementId"] for item in second["related"]["instances"]] == ["sensor-root"]
+
+
+def test_v1_objecttypes_can_disable_opcua_schema_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("I3X_ENABLE_MCP", "1")
+    monkeypatch.setenv("I3X_SKIP_OPCUA_CONNECT", "1")
+    monkeypatch.setenv("I3X_ENABLE_WRITES", "0")
+    monkeypatch.setenv("I3X_MCP_INCLUDE_OPCUA_METADATA", "0")
+
+    app = create_app()
+    with TestClient(app) as test_client:
+        _configure_test_app(app)
+        response = test_client.get("/v1/objecttypes")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    assert payload["result"]
+    assert all(not _contains_opcua_extension_key(item["schema"]) for item in payload["result"])
 
 
 def test_v1_objecttypes_namespace_uri_is_declared(client: TestClient) -> None:

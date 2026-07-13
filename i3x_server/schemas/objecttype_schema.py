@@ -10,7 +10,7 @@ from dataclasses import MISSING, fields, is_dataclass
 from datetime import datetime
 from enum import Enum
 from types import ModuleType
-from typing import Any, get_args, get_origin
+from typing import Any, cast, get_args, get_origin
 
 from asyncua import ua
 
@@ -133,6 +133,8 @@ def build_object_type_schema(
     object_types_by_node_id: Mapping[str, OpcUaObjectTypeInfo],
     element_ids_by_node_id: Mapping[str, str],
     namespace_infos: list[OpcUaNamespaceInfo],
+    *,
+    include_opcua_fields: bool = True,
 ) -> dict[str, Any]:
     lineage = _lineage(item, object_types_by_node_id)
     registry = _SchemaRegistry()
@@ -180,6 +182,8 @@ def build_object_type_schema(
         schema["x-opcua-isAbstract"] = is_abstract
     if merged_required:
         schema["required"] = merged_required
+    if not include_opcua_fields:
+        return cast(dict[str, Any], remove_opcua_schema_fields(schema))
     return schema
 
 
@@ -589,6 +593,8 @@ def _schema_from_data_type(
 def build_data_type_schema(
     data_type: str,
     namespace_infos: list[OpcUaNamespaceInfo],
+    *,
+    include_opcua_fields: bool = True,
 ) -> dict[str, Any] | None:
     registry = _SchemaRegistry()
     schema = _schema_from_data_type(data_type, namespace_infos, registry)
@@ -598,8 +604,23 @@ def build_data_type_schema(
     inlined = _inline_registered_reference(schema, registry)
     expanded = _expand_schema_refs(inlined, registry.defs)
     if isinstance(expanded, Mapping):
-        return dict(expanded)
+        schema_dict = dict(expanded)
+        if not include_opcua_fields:
+            return cast(dict[str, Any], remove_opcua_schema_fields(schema_dict))
+        return schema_dict
     return None
+
+
+def remove_opcua_schema_fields(schema: Any) -> Any:
+    if isinstance(schema, Mapping):
+        return {
+            key: remove_opcua_schema_fields(value)
+            for key, value in schema.items()
+            if not str(key).startswith("x-opcua-")
+        }
+    if isinstance(schema, list):
+        return [remove_opcua_schema_fields(item) for item in schema]
+    return schema
 
 
 def _resolve_structure_type(data_type: str) -> type[Any] | None:

@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     enable_type_browsename_lookup: bool = Field(default=False)
     type_browsename_lookup_timeout_s: float = Field(default=0.05, ge=0)
     type_browsename_lookup_max: int = Field(default=20, ge=0)
+    mcp_include_opcua_metadata: bool = Field(default=True)
     debug_subscription_stream: bool = Field(default=False)
 
     @field_validator("*", mode="before")

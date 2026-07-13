@@ -61,7 +61,7 @@ from i3x_server.config.settings import Settings, get_settings
 from i3x_server.domain.utils import server_name_from_openapi
 from i3x_server.errors import i3x_http_error
 from i3x_server.schemas.i3x import ModelNode
-from i3x_server.schemas.objecttype_schema import build_object_type_schema
+from i3x_server.schemas.objecttype_schema import build_object_type_schema, remove_opcua_schema_fields
 from i3x_server.schemas.state import BuildResult
 from i3x_server.version import get_server_version
 
@@ -106,6 +106,10 @@ def _stream_debug_enabled() -> bool:
 
 def _writes_enabled() -> bool:
     return _runtime_settings().enable_writes
+
+
+def _include_mcp_opcua_metadata() -> bool:
+    return _runtime_settings().mcp_include_opcua_metadata
 
 
 def _raise_subscription_not_found(subscription_id: str) -> Never:
@@ -1280,6 +1284,10 @@ async def _build_object_type_context(
         item.model_copy(update={"namespaceUri": _canonical_namespace_uri(item.namespaceUri, namespace_infos)})
         for item in items
     ]
+    if not _include_mcp_opcua_metadata():
+        canonical_items = [
+            item.model_copy(update={"schema_": remove_opcua_schema_fields(item.schema_)}) for item in canonical_items
+        ]
     source_type_to_element_id = {key: item.elementId for key, item in by_source_type_id.items()}
     logger.debug(
         "Object type context built model_nodes=%d object_types=%d items=%d duration_s=%.3f",
@@ -1496,6 +1504,8 @@ def _synthetic_object_types_from_structure_defs(
                 schema["$defs"] = required_defs
             schema.setdefault("x-opcua-nodeId", source_type_id)
             schema.setdefault("x-opcua-displayName", display_name)
+            if not _include_mcp_opcua_metadata():
+                schema = remove_opcua_schema_fields(schema)
 
             synthetic_by_source_type_id[source_key] = ObjectTypeResponse(
                 elementId=_virtual_object_type_element_id(namespace_uri, display_name, source_type_id),
@@ -1570,6 +1580,8 @@ async def _generic_object_type_from_source_type_id(
         "x-opcua-nodeId": source_type_id,
         "x-opcua-displayName": display_name,
     }
+    if not _include_mcp_opcua_metadata():
+        schema_payload = remove_opcua_schema_fields(schema_payload)
     return ObjectTypeResponse(
         elementId=_virtual_object_type_element_id(canonical_namespace_uri, display_name, source_type_id),
         displayName=display_name,

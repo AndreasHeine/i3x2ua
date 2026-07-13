@@ -166,10 +166,11 @@ def build_object_type_schema(
         "$defs": registry.defs,
         "allOf": all_of,
     }
+    if item.parent_node_id:
+        schema["x-opcua-superTypeNodeId"] = _expanded_node_id(item.parent_node_id, namespace_infos)
     description = getattr(item, "description", None)
     if description:
         schema["description"] = description
-        schema["x-opcua-description"] = description
     is_abstract = getattr(item, "is_abstract", None)
     if is_abstract is not None:
         schema["x-opcua-isAbstract"] = is_abstract
@@ -222,10 +223,11 @@ def _schema_for_single_type(
         "x-opcua-displayName": item.display_name,
         "properties": properties,
     }
+    if item.parent_node_id:
+        output["x-opcua-superTypeNodeId"] = _expanded_node_id(item.parent_node_id, namespace_infos)
     description = getattr(item, "description", None)
     if description:
         output["description"] = description
-        output["x-opcua-description"] = description
     is_abstract = getattr(item, "is_abstract", None)
     if is_abstract is not None:
         output["x-opcua-isAbstract"] = is_abstract
@@ -262,11 +264,20 @@ def _schema_for_member(
 
     if member.modelling_rule:
         schema["x-opcua-modellingRule"] = member.modelling_rule
+    member_data_type = getattr(member, "data_type", None)
+    if member_data_type:
+        normalized_data_type = _expanded_if_node_id(_node_id_to_string(member_data_type), namespace_infos)
+        schema["x-opcua-dataTypeId"] = normalized_data_type or member_data_type
+    member_value_rank = getattr(member, "value_rank", None)
+    if isinstance(member_value_rank, int):
+        schema["x-opcua-valueRank"] = member_value_rank
+    member_array_dimensions = getattr(member, "array_dimensions", None)
+    if isinstance(member_array_dimensions, list) and member_array_dimensions:
+        schema["x-opcua-arrayDimensions"] = [int(value) for value in member_array_dimensions]
     schema["x-opcua-nodeId"] = _expanded_node_id(member.node_id, namespace_infos)
     schema["x-opcua-displayName"] = member.display_name
     if member.description:
         schema["description"] = member.description
-        schema["x-opcua-description"] = member.description
     if member.value is not None:
         schema["x-opcua-value"] = _to_json_metadata_value(member.value, namespace_infos)
     if member.display_name and member.display_name != member.browse_name:

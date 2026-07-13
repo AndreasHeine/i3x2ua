@@ -29,14 +29,16 @@ def test_v1_objecttypes(client: TestClient) -> None:
     assert first["schema"]["type"] == "object"
     assert first["schema"]["x-opcua-nodeId"].startswith("nsu=http://example.com/custom;")
     assert first["schema"]["x-opcua-displayName"] == "Machine Type"
-    assert first["schema"]["x-opcua-description"] == "Machine object type"
+    assert first["schema"]["description"] == "Machine object type"
+    assert "x-opcua-description" not in first["schema"]
     assert first["schema"]["x-opcua-isAbstract"] is False
     assert isinstance(first["schema"]["properties"], dict)
     assert first["schema"]["properties"]["temperature"]["type"] == "number"
     assert first["schema"]["properties"]["running"]["type"] == "boolean"
     assert first["schema"]["properties"]["temperature"]["x-opcua-nodeId"].startswith("nsu=http://example.com/custom;")
     assert first["schema"]["properties"]["temperature"]["x-opcua-displayName"] == "Temperature"
-    assert first["schema"]["properties"]["temperature"]["x-opcua-description"] == "Current measured temperature"
+    assert first["schema"]["properties"]["temperature"]["description"] == "Current measured temperature"
+    assert "x-opcua-description" not in first["schema"]["properties"]["temperature"]
     assert first["schema"]["properties"]["temperature"]["x-opcua-modellingRule"] == "Mandatory"
     assert first["schema"]["properties"]["temperature"]["x-opcua-value"] == 42.5
     config_schema = first["schema"]["properties"]["config"]

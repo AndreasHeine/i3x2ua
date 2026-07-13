@@ -60,6 +60,7 @@ class OpcUaObjectTypeMemberInfo:
     variant_type: str | None = None
     is_array: bool | None = None
     value_rank: int | None = None
+    array_dimensions: list[int] | None = None
 
 
 @dataclass(slots=True)

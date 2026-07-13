@@ -1144,7 +1144,7 @@ class OpcUaClient:
 
                 data_value = await self._read_data_value_or_none(node) if node_class == NodeClass.Variable else None
                 value = _variant_value_or_self(data_value)
-                variant_type, is_array = _variant_metadata(data_value)
+                variant_type, is_array, array_dimensions = _variant_metadata(data_value)
                 if node_class == NodeClass.Variable:
                     if value_rank_batch_ok:
                         value_rank = value_rank_by_node_id.get(node_id)
@@ -1173,6 +1173,7 @@ class OpcUaClient:
                         variant_type=variant_type,
                         is_array=is_array,
                         value_rank=value_rank,
+                        array_dimensions=array_dimensions,
                         modelling_rule=modelling_rule,
                     ),
                 )
@@ -2034,12 +2035,12 @@ def _variant_value_or_self(data_value: Any) -> Any:
     return getattr(variant, "Value", variant)
 
 
-def _variant_metadata(data_value: Any) -> tuple[str | None, bool | None]:
+def _variant_metadata(data_value: Any) -> tuple[str | None, bool | None, list[int] | None]:
     if data_value is None:
-        return None, None
+        return None, None, None
     variant = getattr(data_value, "Value", None)
     if variant is None:
-        return None, None
+        return None, None, None
 
     variant_type = getattr(variant, "VariantType", None)
     variant_type_name = None
@@ -2047,22 +2048,32 @@ def _variant_metadata(data_value: Any) -> tuple[str | None, bool | None]:
         variant_type_name = str(getattr(variant_type, "name", variant_type))
 
     is_array = None
+    array_dimensions: list[int] | None = None
     array_type = getattr(variant, "is_array", None)
     if callable(array_type):
         try:
             is_array = bool(array_type())
         except Exception:
             is_array = None
+    dims = getattr(variant, "Dimensions", None)
+    if isinstance(dims, (list, tuple)) and dims:
+        normalized_dims: list[int] = []
+        for dim in dims:
+            try:
+                normalized_dims.append(int(dim))
+            except (TypeError, ValueError):
+                continue
+        if normalized_dims:
+            array_dimensions = normalized_dims
     if is_array is None:
-        dims = getattr(variant, "Dimensions", None)
-        if dims:
+        if array_dimensions:
             is_array = True
     if is_array is None:
         candidate_value = getattr(variant, "Value", None)
         if isinstance(candidate_value, (list, tuple)):
             is_array = True
 
-    return variant_type_name, is_array
+    return variant_type_name, is_array, array_dimensions
 
 
 def _to_explicit_ua_variant(value: Any, variant_type: str | None) -> ua.Variant | None:

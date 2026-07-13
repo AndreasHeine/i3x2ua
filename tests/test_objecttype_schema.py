@@ -167,6 +167,7 @@ def test_structured_array_schema_inferred_when_placeholder_extension_object_and_
         variant_type="ExtensionObject",
         is_array=False,
         value_rank=1,
+        array_dimensions=[1],
     )
 
     item = OpcUaObjectTypeInfo(
@@ -190,6 +191,12 @@ def test_structured_array_schema_inferred_when_placeholder_extension_object_and_
 
     job_order_list_schema = schema["properties"]["JobOrderList"]
     assert job_order_list_schema["type"] == "array"
+    assert job_order_list_schema["x-opcua-dataTypeId"] in {
+        "ns=22;i=3015",
+        "nsu=http://opcfoundation.org/UA/ISA95-JOBCONTROL_V2/;i=3015",
+    }
+    assert job_order_list_schema["x-opcua-valueRank"] == 1
+    assert job_order_list_schema["x-opcua-arrayDimensions"] == [1]
     assert isinstance(job_order_list_schema["items"].get("$ref"), str)
     assert job_order_list_schema["items"]["$ref"].startswith("#/$defs/")
 

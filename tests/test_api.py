@@ -644,15 +644,18 @@ def test_v1_objecttypes(client: TestClient) -> None:
     assert first["schema"]["type"] == "object"
     assert first["schema"]["x-opcua-nodeId"].startswith("nsu=http://example.com/custom;")
     assert first["schema"]["x-opcua-displayName"] == "Machine Type"
-    assert first["schema"]["x-opcua-description"] == "Machine object type"
+    assert first["schema"]["description"] == "Machine object type"
+    assert "x-opcua-description" not in first["schema"]
     assert first["schema"]["x-opcua-isAbstract"] is False
     assert isinstance(first["schema"]["properties"], dict)
     assert first["schema"]["properties"]["temperature"]["type"] == "number"
     assert first["schema"]["properties"]["running"]["type"] == "boolean"
     assert first["schema"]["properties"]["temperature"]["x-opcua-nodeId"].startswith("nsu=http://example.com/custom;")
     assert first["schema"]["properties"]["temperature"]["x-opcua-displayName"] == "Temperature"
-    assert first["schema"]["properties"]["temperature"]["x-opcua-description"] == "Current measured temperature"
+    assert first["schema"]["properties"]["temperature"]["description"] == "Current measured temperature"
+    assert "x-opcua-description" not in first["schema"]["properties"]["temperature"]
     assert first["schema"]["properties"]["temperature"]["x-opcua-modellingRule"] == "Mandatory"
+    assert first["schema"]["properties"]["temperature"]["x-opcua-dataTypeId"] == "nsu=http://opcfoundation.org/UA/;i=11"
     assert first["schema"]["properties"]["temperature"]["x-opcua-value"] == 42.5
     config_schema = first["schema"]["properties"]["config"]
     assert isinstance(config_schema.get("allOf"), list)
@@ -698,6 +701,7 @@ def test_v1_objecttypes(client: TestClient) -> None:
     assert synthetic["schema"]["$defs"][synthetic_thresholds_def_key]["properties"]["max"]["type"] == "number"
 
     second = payload["result"][1]
+    assert second["schema"]["x-opcua-superTypeNodeId"] == "nsu=http://example.com/custom;i=1001"
     assert [item["elementId"] for item in second["related"]["instances"]] == ["sensor-root"]
 
 

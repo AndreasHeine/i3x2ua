@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import re
 import sys
 import typing
@@ -17,6 +18,16 @@ from asyncua import ua
 from i3x_server.domain.ports.opcua import OpcUaNamespaceInfo, OpcUaObjectTypeInfo, OpcUaObjectTypeMemberInfo
 
 _MANDATORY_RULES = {"mandatory", "mandatoryplaceholder"}
+
+_CANONICAL_STRUCTURE_CORE_KEYS: dict[str, str] = {
+    "nodeid": "canonical-structure:nodeid",
+    "expandednodeid": "canonical-structure:expandednodeid",
+    "localizedtext": "canonical-structure:localizedtext",
+}
+
+_CANONICAL_TYPE_NAME_RULES: tuple[tuple[str, str, str], ...] = (
+    ("ISA95", "DataType", "canonical-structure:isa95-datatype:"),
+)
 
 
 def _is_filtered_structure_field(name: str) -> bool:
@@ -182,6 +193,7 @@ def build_object_type_schema(
         schema["x-opcua-isAbstract"] = is_abstract
     if merged_required:
         schema["required"] = merged_required
+    _dedupe_defs_and_rewrite_local_refs(schema)
     if not include_opcua_fields:
         return cast(dict[str, Any], remove_opcua_schema_fields(schema))
     return schema
@@ -425,7 +437,11 @@ def _reference_or_register_structure(
         definition_name = registry.allocate(schema_key, preferred_name)
         if canonical_key and not registry.has(canonical_key):
             registry.reserve(canonical_key, definition_name)
-        structure_schema = _structure_object_schema(structure_value, registry)
+        structure_type = type(structure_value)
+        if canonical_key and not isinstance(structure_value, Mapping) and _is_structured_class(structure_type):
+            structure_schema = _structure_schema_for_type(structure_type, registry)
+        else:
+            structure_schema = _structure_object_schema(structure_value, registry)
         for key, value in metadata.items():
             structure_schema[key] = value
         registry.set_definition(definition_name, structure_schema)
@@ -680,11 +696,14 @@ def _reference_or_register_structure_from_type(
 def _canonical_schema_key_for_type(structure_type: type[Any]) -> str | None:
     type_name = structure_type.__name__
     core_name = _structure_core_name(type_name)
-    if core_name == "localizedtext":
-        return "canonical-structure:localizedtext"
 
-    if type_name.startswith("ISA95") and type_name.endswith("DataType"):
-        return f"canonical-structure:isa95-datatype:{core_name}"
+    direct_key = _canonical_structure_key_for_core_name(core_name)
+    if direct_key is not None:
+        return direct_key
+
+    for prefix, suffix, key_prefix in _CANONICAL_TYPE_NAME_RULES:
+        if type_name.startswith(prefix) and type_name.endswith(suffix):
+            return f"{key_prefix}{core_name}"
 
     return None
 
@@ -692,15 +711,20 @@ def _canonical_schema_key_for_type(structure_type: type[Any]) -> str | None:
 def _canonical_schema_key_for_structure_value(structure_value: Any) -> str | None:
     type_name = type(structure_value).__name__
     core_name = _structure_core_name(type_name)
-    if core_name == "localizedtext":
-        return "canonical-structure:localizedtext"
+    direct_key = _canonical_structure_key_for_core_name(core_name)
+    if direct_key is not None:
+        return direct_key
 
     if isinstance(structure_value, Mapping):
         keys = {str(key).lower() for key in structure_value.keys()}
         if keys.issubset({"encoding", "locale", "text"}) and {"locale", "text"}.issubset(keys):
-            return "canonical-structure:localizedtext"
+            return _CANONICAL_STRUCTURE_CORE_KEYS["localizedtext"]
 
     return None
+
+
+def _canonical_structure_key_for_core_name(core_name: str) -> str | None:
+    return _CANONICAL_STRUCTURE_CORE_KEYS.get(core_name)
 
 
 def _merge_metadata_into_registered_definition(
@@ -1530,6 +1554,72 @@ def _expand_schema_refs(schema: Any, defs: Mapping[str, Any], stack: tuple[str, 
     for key, value in schema.items():
         expanded[key] = _expand_schema_refs(value, defs, stack)
     return expanded
+
+
+def _dedupe_defs_and_rewrite_local_refs(schema: dict[str, Any]) -> None:
+    defs = schema.get("$defs")
+    if not isinstance(defs, Mapping):
+        return
+
+    alias_by_name: dict[str, str] = {}
+    name_by_fingerprint: dict[str, str] = {}
+    deduped_defs: dict[str, Any] = {}
+
+    for name, definition in defs.items():
+        definition_name = str(name)
+        fingerprint = _schema_fingerprint(definition)
+        winner = name_by_fingerprint.get(fingerprint)
+        if winner is None:
+            name_by_fingerprint[fingerprint] = definition_name
+            alias_by_name[definition_name] = definition_name
+            deduped_defs[definition_name] = definition
+            continue
+        alias_by_name[definition_name] = winner
+
+    if all(source == target for source, target in alias_by_name.items()):
+        return
+
+    _rewrite_local_defs_refs(schema, alias_by_name)
+    schema["$defs"] = deduped_defs
+
+
+def _rewrite_local_defs_refs(value: Any, alias_by_name: Mapping[str, str]) -> Any:
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            value[index] = _rewrite_local_defs_refs(item, alias_by_name)
+        return value
+    if not isinstance(value, dict):
+        return value
+
+    ref = value.get("$ref")
+    if isinstance(ref, str) and ref.startswith("#/$defs/"):
+        definition_name = ref.split("#/$defs/", 1)[1]
+        replacement = alias_by_name.get(definition_name)
+        if replacement is not None:
+            value["$ref"] = f"#/$defs/{replacement}"
+
+    for key, nested in value.items():
+        value[key] = _rewrite_local_defs_refs(nested, alias_by_name)
+    return value
+
+
+def _schema_fingerprint(value: Any) -> str:
+    normalized = _normalize_schema_value(value)
+    try:
+        return json.dumps(normalized, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    except TypeError:
+        return repr(normalized)
+
+
+def _normalize_schema_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            str(key): _normalize_schema_value(item)
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+        }
+    if isinstance(value, list):
+        return [_normalize_schema_value(item) for item in value]
+    return value
 
 
 def _members(item: OpcUaObjectTypeInfo) -> Iterable[OpcUaObjectTypeMemberInfo]:

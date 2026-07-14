@@ -695,3 +695,83 @@ def test_nodeid_annotation_schema_keeps_nodeidtype_identifier_dependency() -> No
     assert branch_by_const[3]["properties"]["Identifier"] == {"type": "string"}
     assert branch_by_const[4]["properties"]["Identifier"]["format"] == "uuid"
     assert branch_by_const[5]["properties"]["Identifier"]["contentEncoding"] == "base64"
+
+
+def test_nodeid_annotation_and_datatype_use_single_canonical_definition() -> None:
+    registry = objecttype_schema._SchemaRegistry()
+
+    annotation_ref = objecttype_schema._schema_for_annotation_string("ua.NodeId", registry)
+    datatype_ref = objecttype_schema._schema_from_data_type(
+        "nsu=http://opcfoundation.org/UA/;i=17",
+        [OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/", display_name="UA")],
+        registry,
+    )
+
+    assert annotation_ref == {"$ref": "#/$defs/NodeId"}
+    assert datatype_ref == {"$ref": "#/$defs/NodeId"}
+    assert "NodeId" in registry.defs
+    assert "NodeId_2" not in registry.defs
+
+
+def test_nodeid_structure_value_and_annotation_share_single_canonical_definition(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class NodeId:
+        __annotations__ = {
+            "Identifier": int,
+            "NamespaceIndex": int,
+            "NodeIdType": int,
+        }
+
+        def __init__(self) -> None:
+            self.Identifier = 42
+            self.NamespaceIndex = 2
+            self.NodeIdType = 2
+
+    monkeypatch.setattr(ua, "NodeId", NodeId)
+
+    registry = objecttype_schema._SchemaRegistry()
+    value_ref = objecttype_schema._reference_or_register_structure(
+        "py-structure:test.nodeid",
+        NodeId(),
+        registry,
+        {},
+    )
+    annotation_ref = objecttype_schema._schema_for_annotation_string("ua.NodeId", registry)
+
+    assert value_ref == {"$ref": "#/$defs/NodeId"}
+    assert annotation_ref == {"$ref": "#/$defs/NodeId"}
+    assert "NodeId_2" not in registry.defs
+    assert isinstance(registry.defs["NodeId"].get("oneOf"), list)
+
+
+def test_dedupe_defs_rewrites_local_refs_to_first_definition() -> None:
+    schema: dict[str, Any] = {
+        "$defs": {
+            "Alpha": {
+                "type": "object",
+                "properties": {
+                    "v": {"type": "integer"},
+                },
+            },
+            "Alpha_2": {
+                "type": "object",
+                "properties": {
+                    "v": {"type": "integer"},
+                },
+            },
+            "Wrapper": {
+                "type": "object",
+                "properties": {
+                    "nested": {"$ref": "#/$defs/Alpha_2"},
+                },
+            },
+        },
+        "allOf": [{"$ref": "#/$defs/Alpha_2"}],
+    }
+
+    objecttype_schema._dedupe_defs_and_rewrite_local_refs(schema)
+
+    assert set(schema["$defs"].keys()) == {"Alpha", "Wrapper"}
+    assert schema["allOf"][0]["$ref"] == "#/$defs/Alpha"
+    assert schema["$defs"]["Wrapper"]["properties"]["nested"]["$ref"] == "#/$defs/Alpha"

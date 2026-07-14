@@ -381,24 +381,24 @@ class OpcUaClient:
             if not filtered_entries:
                 continue
 
-            node_infos = await self._read_node_infos_limited(filtered_entries)
+            nodes = [node for node, _ in filtered_entries]
+            node_infos, all_refs, browsed = await asyncio.gather(
+                self._read_node_infos_limited(filtered_entries),
+                self._browse_references_descriptions(
+                    nodes,
+                    max_nodes_per_browse=max_nodes_per_browse,
+                    reference_type_id=ObjectIds.References,
+                ),
+                self._browse_children_descriptions(nodes, max_nodes_per_browse),
+            )
             output.extend(node_infos)
 
             node_info_by_id = {item.node_id: item for item in node_infos}
-
-            all_refs = await self._browse_references_descriptions(
-                [node for node, _ in filtered_entries],
-                max_nodes_per_browse=max_nodes_per_browse,
-                reference_type_id=ObjectIds.References,
-            )
             for parent_node, refs in all_refs:
                 info = node_info_by_id.get(parent_node.nodeid.to_string())
                 if info is None:
                     continue
                 info.outgoing_references = self._to_reference_infos(refs)
-
-            nodes = [node for node, _ in filtered_entries]
-            browsed = await self._browse_children_descriptions(nodes, max_nodes_per_browse)
             for parent_node, refs in browsed:
                 parent_node_id = parent_node.nodeid.to_string()
                 for ref in refs:
@@ -481,9 +481,11 @@ class OpcUaClient:
             parent_by_node_id = {node.nodeid.to_string(): parent_node_id for node, parent_node_id in entry_batch}
 
             try:
-                browse_names = await self._read_attribute_batch(nodes, AttributeIds.BrowseName)
-                display_names = await self._read_attribute_batch(nodes, AttributeIds.DisplayName)
-                node_classes = await self._read_attribute_batch(nodes, AttributeIds.NodeClass)
+                browse_names, display_names, node_classes = await asyncio.gather(
+                    self._read_attribute_batch(nodes, AttributeIds.BrowseName),
+                    self._read_attribute_batch(nodes, AttributeIds.DisplayName),
+                    self._read_attribute_batch(nodes, AttributeIds.NodeClass),
+                )
             except Exception:
                 logger.warning(
                     "OPC UA batch node read failed endpoint=%s batch_size=%d; falling back to per-node reads",
@@ -525,9 +527,11 @@ class OpcUaClient:
                     object_nodes.append(node)
                     object_or_variable_nodes.append(node)
 
-            data_types_by_node_id = await self._read_optional_node_ids(variable_nodes, AttributeIds.DataType)
-            type_definitions_by_node_id = await self._read_type_definitions(object_or_variable_nodes)
-            event_notifiers_by_node_id = await self._read_optional_scalars(object_nodes, AttributeIds.EventNotifier)
+            data_types_by_node_id, type_definitions_by_node_id, event_notifiers_by_node_id = await asyncio.gather(
+                self._read_optional_node_ids(variable_nodes, AttributeIds.DataType),
+                self._read_type_definitions(object_or_variable_nodes),
+                self._read_optional_scalars(object_nodes, AttributeIds.EventNotifier),
+            )
 
             for node in nodes:
                 node_id = node.nodeid.to_string()

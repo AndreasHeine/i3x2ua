@@ -180,6 +180,8 @@ class OpcUaClientProtocol(Protocol):
 
     def add_reconnect_listener(self, listener: Callable[[], Awaitable[None]]) -> None: ...
 
+    def remove_reconnect_listener(self, listener: Callable[[], Awaitable[None]]) -> None: ...
+
 
 __all__ = [
     "OpcUaClientProtocol",

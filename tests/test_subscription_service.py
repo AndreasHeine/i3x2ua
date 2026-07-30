@@ -24,11 +24,17 @@ from i3x_server.schemas.state import BuildResult
 class FakeOpcUaClient:
     def __init__(self) -> None:
         self.listeners: list[Any] = []
+        self.removed_listeners: list[Any] = []
         self.deleted_subscriptions: list[Any] = []
         self.read_values_calls = 0
 
     def add_reconnect_listener(self, listener: Any) -> None:
         self.listeners.append(listener)
+
+    def remove_reconnect_listener(self, listener: Any) -> None:
+        self.removed_listeners.append(listener)
+        if listener in self.listeners:
+            self.listeners.remove(listener)
 
     async def get_subscription_capabilities(self) -> Any:
         return SimpleNamespace(
@@ -626,6 +632,38 @@ def test_collect_property_source_mappings_depth_limit() -> None:
         "ns=2;s=Temperature": "prop-a",
         "ns=2;s=Pressure": "prop-b",
     }
+
+
+@pytest.mark.asyncio
+async def test_handle_datachange_ignores_unknown_nodes_for_multi_node_subscription() -> None:
+    service = SubscriptionService(cast(OpcUaClientProtocol, FakeOpcUaClient()), interval_seconds=1)
+    created = await service.create_subscription(client_id="c1", display_name="s1")
+    subscription_id = created.subscription_id
+
+    model = _model()
+    assert await service.register_items("c1", subscription_id, ["asset-root"], max_depth=1, model=model) is True
+
+    await service.handle_datachange(subscription_id, "ns=2;s=Unknown", 10.0)
+    synced = await service.sync("c1", subscription_id, acknowledge_sequence=0)
+    assert synced is not None
+    assert all(item.node_id != "ns=2;s=Unknown" for item in synced.updates)
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_close_clears_subscriptions_and_unregisters_listener() -> None:
+    fake_client = FakeOpcUaClient()
+    service = SubscriptionService(cast(OpcUaClientProtocol, fake_client), interval_seconds=1)
+    created = await service.create_subscription(client_id="c1", display_name="s1")
+    subscription_id = created.subscription_id
+
+    model = _model()
+    assert await service.register_items("c1", subscription_id, ["asset-root"], max_depth=1, model=model) is True
+
+    await service.close()
+
+    assert service._subscriptions == {}
+    assert fake_client.removed_listeners
 
 
 def test_append_update_deduplicates_same_value() -> None:

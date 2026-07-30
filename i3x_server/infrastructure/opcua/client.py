@@ -300,6 +300,7 @@ class OpcUaClient:
         self._namespace_infos_cache = None
         self._object_types_cache = None
         self._subscription_caps_cache = None
+        self._reference_type_supertypes_cache = {}
         logger.info("OPC UA disconnect finished endpoint=%s duration_s=%.3f", self._endpoint, perf_counter() - started)
 
     def _ensure_connection_monitor_task(self) -> None:
@@ -1904,6 +1905,7 @@ class OpcUaClient:
             self._subscription_caps_cache = None
             self._namespace_infos_cache = None
             self._object_types_cache = None
+            self._reference_type_supertypes_cache = {}
             logger.info("OPC UA reconnect finished endpoint=%s", self._endpoint)
             listeners = list(self._reconnect_listeners)
 
@@ -1936,6 +1938,10 @@ class OpcUaClient:
 
     def add_reconnect_listener(self, listener: Callable[[], Awaitable[None]]) -> None:
         self._reconnect_listeners.append(listener)
+
+    def remove_reconnect_listener(self, listener: Callable[[], Awaitable[None]]) -> None:
+        with suppress(ValueError):
+            self._reconnect_listeners.remove(listener)
 
     async def read_server_status_data_value(self) -> ua.DataValue:
         values = await self.read_data_values(["i=2256"])

@@ -84,3 +84,9 @@ strict = true
 ignore_missing_imports = true
 files = ["i3x_server", "tests", "run.py", "run_tests.py"]
 exclude = "(^|[\\/])i3X[\\/]demo[\\/]"
+
+[dependency-groups]
+dev = [
+    "pytest-asyncio>=1.4.0",
+    "ruff>=0.16.0",
+]

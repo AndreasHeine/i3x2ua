@@ -138,9 +138,15 @@ class SubscriptionService:
         self._lock = asyncio.Lock()
         self._subscriptions: dict[str, _SubscriptionState] = {}
         self._cleanup_task: asyncio.Task[None] | None = None
+        self._datachange_task: asyncio.Task[None] | None = None
+        self._datachange_queue: asyncio.Queue[tuple[str, str, Any, int | None]] = asyncio.Queue(
+            maxsize=max(1000, self._max_updates_per_subscription)
+        )
+        self._dropped_datachange_events = 0
         self._event_loop: asyncio.AbstractEventLoop | None = None
         self._shutdown_event: asyncio.Event = asyncio.Event()
-        self._opcua_client.add_reconnect_listener(self._handle_client_reconnect)
+        self._reconnect_listener = self._handle_client_reconnect
+        self._opcua_client.add_reconnect_listener(self._reconnect_listener)
 
     def _remember_event_loop(self) -> None:
         try:
@@ -150,32 +156,41 @@ class SubscriptionService:
         if self._event_loop is None or self._event_loop.is_closed():
             self._event_loop = loop
 
-    def _start_datachange_task(
+    def _enqueue_datachange(
         self,
         subscription_id: str,
         node_id: str,
         value: Any,
         client_handle: int | None,
     ) -> None:
-        coroutine = self.handle_datachange(subscription_id, node_id, value, client_handle)
-        try:
-            task = asyncio.create_task(coroutine)
-        except RuntimeError:
-            coroutine.close()
-            raise
-
-        def _log_task_error(done: asyncio.Task[None]) -> None:
-            with_context = {
-                "subscription_id": subscription_id,
-                "node_id": node_id,
-                "client_handle": client_handle,
-            }
+        if self._datachange_queue.full():
             try:
-                done.result()
-            except Exception:
-                logger.exception("OPC UA datachange handling failed", extra=with_context)
+                self._datachange_queue.get_nowait()
+                self._dropped_datachange_events += 1
+            except asyncio.QueueEmpty:
+                pass
+        try:
+            self._datachange_queue.put_nowait((subscription_id, node_id, value, client_handle))
+        except asyncio.QueueFull:
+            self._dropped_datachange_events += 1
 
-        task.add_done_callback(_log_task_error)
+    async def _datachange_loop(self) -> None:
+        try:
+            while True:
+                subscription_id, node_id, value, client_handle = await self._datachange_queue.get()
+                try:
+                    await self.handle_datachange(subscription_id, node_id, value, client_handle)
+                except Exception:
+                    logger.exception(
+                        "OPC UA datachange handling failed",
+                        extra={
+                            "subscription_id": subscription_id,
+                            "node_id": node_id,
+                            "client_handle": client_handle,
+                        },
+                    )
+        except asyncio.CancelledError:
+            return
 
     def schedule_datachange(
         self,
@@ -196,11 +211,13 @@ class SubscriptionService:
         if target_loop is None and current_loop is not None:
             # Capture the app loop lazily on first callback when not already known.
             self._event_loop = current_loop
-            self._start_datachange_task(subscription_id, node_id, value, client_handle)
+            self._ensure_cleanup_task()
+            self._enqueue_datachange(subscription_id, node_id, value, client_handle)
             return
 
         if current_loop is not None and target_loop is current_loop:
-            self._start_datachange_task(subscription_id, node_id, value, client_handle)
+            self._ensure_cleanup_task()
+            self._enqueue_datachange(subscription_id, node_id, value, client_handle)
             return
 
         if target_loop is None:
@@ -210,7 +227,16 @@ class SubscriptionService:
             )
             return
 
-        target_loop.call_soon_threadsafe(self._start_datachange_task, subscription_id, node_id, value, client_handle)
+        target_loop.call_soon_threadsafe(
+            self._ensure_cleanup_task,
+        )
+        target_loop.call_soon_threadsafe(
+            self._enqueue_datachange,
+            subscription_id,
+            node_id,
+            value,
+            client_handle,
+        )
 
     def _now_monotonic(self) -> float:
         self._remember_event_loop()
@@ -222,6 +248,8 @@ class SubscriptionService:
     def _ensure_cleanup_task(self) -> None:
         if self._cleanup_task is None or self._cleanup_task.done():
             self._cleanup_task = asyncio.create_task(self._cleanup_loop())
+        if self._datachange_task is None or self._datachange_task.done():
+            self._datachange_task = asyncio.create_task(self._datachange_loop())
 
     async def _cleanup_loop(self) -> None:
         try:
@@ -289,6 +317,9 @@ class SubscriptionService:
             subscription.update_event.set()
             await self._stop_runtime(subscription)
 
+        async with self._lock:
+            self._subscriptions.clear()
+
         cleanup_task = self._cleanup_task
         self._cleanup_task = None
         if cleanup_task is not None:
@@ -297,6 +328,22 @@ class SubscriptionService:
                 await cleanup_task
             except asyncio.CancelledError:
                 pass
+
+        datachange_task = self._datachange_task
+        self._datachange_task = None
+        if datachange_task is not None:
+            datachange_task.cancel()
+            try:
+                await datachange_task
+            except asyncio.CancelledError:
+                pass
+
+        remove_listener = getattr(self._opcua_client, "remove_reconnect_listener", None)
+        if callable(remove_listener):
+            try:
+                remove_listener(self._reconnect_listener)
+            except Exception:
+                logger.debug("Failed to remove reconnect listener", exc_info=True)
 
     async def create_subscription(self, client_id: str | None, display_name: str | None) -> SubscriptionDetail:
         self._ensure_cleanup_task()
@@ -716,6 +763,19 @@ class SubscriptionService:
                 mapped = state.handle_to_node_id.get(client_handle)
                 if mapped is not None:
                     resolved_node_id = mapped
+
+            if resolved_node_id not in state.monitored_node_ids:
+                mapped_element = state.node_to_element_id.get(resolved_node_id)
+                if mapped_element is None:
+                    mapped_element = state.node_to_element_id.get(resolved_node_id.lower())
+                if mapped_element is not None:
+                    pass
+                elif not state.monitored_node_ids:
+                    return
+                if len(state.monitored_node_ids) == 1:
+                    resolved_node_id = next(iter(state.monitored_node_ids))
+                elif mapped_element is None:
+                    return
 
             self._append_update(state, resolved_node_id, value)
             logger.debug(

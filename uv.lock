@@ -586,6 +586,12 @@ otel = [
     { name = "opentelemetry-sdk" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "pytest-asyncio" },
+    { name = "ruff" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "asyncua", specifier = "==2.0.1" },
@@ -611,6 +617,12 @@ requires-dist = [
     { name = "wsproto", specifier = ">=1.2.0" },
 ]
 provides-extras = ["otel", "dev"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest-asyncio", specifier = ">=1.4.0" },
+    { name = "ruff", specifier = ">=0.16.0" },
+]
 
 [[package]]
 name = "idna"

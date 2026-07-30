@@ -10,7 +10,9 @@ from fastapi import FastAPI
 from fastapi.routing import APIRoute
 
 from i3x_server.bootstrap.app_factory import (
+    INLINE_SCRIPT_PATTERN,
     _configure_otel,
+    _frontend_inline_script_hashes,
     _readable_operation_id,
     _run_model_preload,
     _run_periodic_model_refresh,
@@ -34,6 +36,27 @@ def test_readable_operation_id_prefers_route_name_and_fallback() -> None:
 
     unnamed_route = SimpleNamespace(name="", methods={"POST"}, path_format="/v1/subscriptions/{id}")
     assert _readable_operation_id(cast(APIRoute, unnamed_route)) == "postV1SubscriptionsId"
+
+
+def test_inline_script_pattern_matches_closing_tag_whitespace() -> None:
+    html = "<script>window.__x=1;</script   >"
+    matches = INLINE_SCRIPT_PATTERN.findall(html)
+    assert matches == ["window.__x=1;"]
+
+
+def test_frontend_inline_script_hashes_supports_script_tag_variants(tmp_path: Any) -> None:
+    html = (
+        "<html><body>"
+        "<script>window.a=1;</script>"
+        '<script type="module">window.b=2;</script   >'
+        "<SCRIPT>window.c=3;</SCRIPT >"
+        "</body></html>"
+    )
+    (tmp_path / "index.html").write_text(html, encoding="utf-8")
+
+    hashes = _frontend_inline_script_hashes(tmp_path)
+    assert len(hashes) == 3
+    assert all(item.startswith("'sha256-") and item.endswith("'") for item in hashes)
 
 
 @pytest.mark.asyncio

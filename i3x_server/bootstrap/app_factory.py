@@ -37,7 +37,7 @@ from i3x_server.schemas.state import BuildResult
 
 logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-INLINE_SCRIPT_PATTERN = re.compile(r"<script(?:\s[^>]*)?>(.*?)</script>", re.IGNORECASE | re.DOTALL)
+INLINE_SCRIPT_PATTERN = re.compile(r"<script\b[^>]*>(.*?)</script\s*>", re.IGNORECASE | re.DOTALL)
 
 
 def _status_title(status_code: int) -> str:

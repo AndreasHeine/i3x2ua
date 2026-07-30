@@ -69,10 +69,23 @@ def test_docs_csp_allows_swagger_cdn_assets(client: TestClient) -> None:
 def test_landing_page_csp_remains_strict(client: TestClient) -> None:
     response = client.get("/")
     assert response.status_code == 200
-    csp_sources = _csp_source_tokens(response.headers.get("Content-Security-Policy", ""))
+    csp_header = response.headers.get("Content-Security-Policy", "")
+    csp_sources = _csp_source_tokens(csp_header)
     assert "https://cdn.jsdelivr.net" not in csp_sources
     assert "https://fastapi.tiangolo.com" not in csp_sources
-    assert "'unsafe-inline'" not in csp_sources
+    assert "script-src 'self' 'unsafe-inline'" not in csp_header
+    assert "'sha256-" in csp_header
+
+
+def test_frontend_pages_csp_uses_script_hashes(client: TestClient) -> None:
+    for path in ("/", "/view?endpoint=/v1/info&label=Server%20Info"):
+        response = client.get(path)
+        assert response.status_code == 200
+        csp_header = response.headers.get("Content-Security-Policy", "")
+        directives = [part.strip() for part in csp_header.split(";") if part.strip()]
+        script_directive = next((part for part in directives if part.startswith("script-src ")), "")
+        assert "'unsafe-inline'" not in script_directive
+        assert "'sha256-" in script_directive
 
 
 def test_static_logo_is_served(client: TestClient) -> None:

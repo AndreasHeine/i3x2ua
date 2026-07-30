@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import http
 import logging
 import re
@@ -35,6 +37,7 @@ from i3x_server.schemas.state import BuildResult
 
 logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+INLINE_SCRIPT_PATTERN = re.compile(r"<script(?:\s[^>]*)?>(.*?)</script>", re.IGNORECASE | re.DOTALL)
 
 
 def _status_title(status_code: int) -> str:
@@ -46,6 +49,25 @@ def _status_title(status_code: int) -> str:
 
 def _runtime_settings() -> Settings:
     return Settings(_env_file=None)  # type: ignore[call-arg]
+
+
+def _frontend_inline_script_hashes(frontend_dist: Path) -> tuple[str, ...]:
+    if not frontend_dist.exists():
+        return ()
+    hashes: set[str] = set()
+    for html_file in frontend_dist.rglob("*.html"):
+        try:
+            html = html_file.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for match in INLINE_SCRIPT_PATTERN.finditer(html):
+            script_body = match.group(1)
+            if not script_body.strip():
+                continue
+            digest = hashlib.sha256(script_body.encode("utf-8")).digest()
+            encoded = base64.b64encode(digest).decode("ascii")
+            hashes.add(f"'sha256-{encoded}'")
+    return tuple(sorted(hashes))
 
 
 def _to_lower_camel_case(value: str) -> str:
@@ -411,6 +433,8 @@ def create_app() -> FastAPI:
     # Keep FastAPI's native OpenAPI generator as the single source of truth.
 
     project_root = PROJECT_ROOT
+    frontend_dist = project_root / "dist"
+    frontend_script_hashes = _frontend_inline_script_hashes(frontend_dist)
     static_dir = project_root / "static"
     # Backward-compatible fallback for local setups that still use the legacy img folder.
     if not static_dir.exists():
@@ -528,8 +552,8 @@ def create_app() -> FastAPI:
                 "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
                 "connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
                 if is_docs_route
-                else "default-src 'self'; img-src 'self' data:; style-src 'self'; "
-                "script-src 'self'; connect-src 'self'; object-src 'none'; "
+                else "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
+                f"script-src 'self' {' '.join(frontend_script_hashes)}; connect-src 'self'; object-src 'none'; "
                 "base-uri 'none'; frame-ancestors 'none'"
             )
             response.headers.setdefault(
@@ -570,7 +594,6 @@ def create_app() -> FastAPI:
     if mcp_enabled:
         app.include_router(mcp_router)
 
-    frontend_dist = project_root / "dist"
     if frontend_dist.exists():
         app.frontend("/", directory=str(frontend_dist), fallback=None)
     else:

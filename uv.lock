@@ -570,15 +570,6 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-dev = [
-    { name = "httpx" },
-    { name = "import-linter" },
-    { name = "mypy" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "pytest-cov" },
-    { name = "ruff" },
-]
 otel = [
     { name = "opentelemetry-api" },
     { name = "opentelemetry-exporter-otlp-proto-http" },
@@ -588,7 +579,11 @@ otel = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "import-linter" },
+    { name = "mypy" },
+    { name = "pytest" },
     { name = "pytest-asyncio" },
+    { name = "pytest-cov" },
     { name = "ruff" },
 ]
 
@@ -598,29 +593,26 @@ requires-dist = [
     { name = "fastapi", specifier = "==0.141.1" },
     { name = "httptools", specifier = ">=0.6.0" },
     { name = "httpx", specifier = ">=0.27.0" },
-    { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27.0" },
-    { name = "import-linter", marker = "extra == 'dev'", specifier = ">=2.4.0" },
     { name = "jsonschema", specifier = ">=4.23.0" },
-    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10.0" },
     { name = "opentelemetry-api", marker = "extra == 'otel'", specifier = ">=1.20.0" },
     { name = "opentelemetry-exporter-otlp-proto-http", marker = "extra == 'otel'", specifier = ">=1.20.0" },
     { name = "opentelemetry-instrumentation-fastapi", marker = "extra == 'otel'", specifier = ">=0.41b0" },
     { name = "opentelemetry-sdk", marker = "extra == 'otel'", specifier = ">=1.20.0" },
     { name = "pydantic", specifier = "==2.13.4" },
     { name = "pydantic-settings", specifier = ">=2.3.0" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.0.3" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
-    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5.0.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.5.0" },
     { name = "trio", specifier = ">=0.27.0" },
     { name = "uvicorn", specifier = ">=0.52,<0.53" },
     { name = "wsproto", specifier = ">=1.2.0" },
 ]
-provides-extras = ["otel", "dev"]
+provides-extras = ["otel"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "import-linter", specifier = ">=2.4.0" },
+    { name = "mypy", specifier = ">=1.10.0" },
+    { name = "pytest", specifier = ">=9.0.3" },
     { name = "pytest-asyncio", specifier = ">=1.4.0" },
+    { name = "pytest-cov", specifier = ">=5.0.0" },
     { name = "ruff", specifier = ">=0.16.0" },
 ]
 

@@ -136,8 +136,11 @@ Requirements:
 Install dependencies:
 
 ```bash
-uv sync --extra dev
+uv sync
+uv sync --group dev
 ```
+
+Use `uv sync` for runtime dependencies and `uv sync --group dev` when you need linting, typing, and test tooling.
 
 Start API:
 
@@ -287,6 +290,12 @@ Then use these environment values:
 - `NGINX_SSL_CERTIFICATE_KEY=/etc/nginx/certs/https-sample/privkey.pem`
 
 ## Development
+
+Before running the commands below, make sure dev tools are installed:
+
+```bash
+uv sync --group dev
+```
 
 ```bash
 uv run ruff check .

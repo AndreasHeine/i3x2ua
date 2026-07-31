@@ -54,7 +54,7 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync --extra dev --frozen
+        run: uv sync --group dev --frozen
 
       - name: Run import-linter
         run: uv run lint-imports
@@ -78,7 +78,7 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync --extra dev --frozen
+        run: uv sync --group dev --frozen
 
       - name: Run Ruff
         run: uv run ruff check .
@@ -102,7 +102,7 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync --extra dev --frozen
+        run: uv sync --group dev --frozen
 
       - name: Run MyPy
         run: uv run mypy .
@@ -141,7 +141,7 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync --extra dev --frozen
+        run: uv sync --group dev --frozen
 
       - name: Run Pytest with Coverage
         run: uv run pytest -q

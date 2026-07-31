@@ -37,7 +37,46 @@ from i3x_server.schemas.state import BuildResult
 
 logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-INLINE_SCRIPT_PATTERN = re.compile(r"<script\b[^>]*>(.*?)</script\s*>", re.IGNORECASE | re.DOTALL)
+
+
+def _is_tag_name_boundary(value: str, index: int) -> bool:
+    if index >= len(value):
+        return True
+    return not (value[index].isalnum() or value[index] in {"_", "-", ":"})
+
+
+def _extract_inline_script_bodies(html: str) -> list[str]:
+    lower_html = html.lower()
+    cursor = 0
+    script_bodies: list[str] = []
+
+    while True:
+        start = lower_html.find("<script", cursor)
+        if start == -1:
+            break
+        if not _is_tag_name_boundary(lower_html, start + len("<script")):
+            cursor = start + 1
+            continue
+
+        open_end = html.find(">", start)
+        if open_end == -1:
+            break
+
+        close_start = lower_html.find("</script", open_end + 1)
+        if close_start == -1:
+            break
+        if not _is_tag_name_boundary(lower_html, close_start + len("</script")):
+            cursor = close_start + 1
+            continue
+
+        close_end = html.find(">", close_start)
+        if close_end == -1:
+            break
+
+        script_bodies.append(html[open_end + 1 : close_start])
+        cursor = close_end + 1
+
+    return script_bodies
 
 
 def _status_title(status_code: int) -> str:
@@ -60,8 +99,7 @@ def _frontend_inline_script_hashes(frontend_dist: Path) -> tuple[str, ...]:
             html = html_file.read_text(encoding="utf-8")
         except OSError:
             continue
-        for match in INLINE_SCRIPT_PATTERN.finditer(html):
-            script_body = match.group(1)
+        for script_body in _extract_inline_script_bodies(html):
             if not script_body.strip():
                 continue
             digest = hashlib.sha256(script_body.encode("utf-8")).digest()

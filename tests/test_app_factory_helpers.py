@@ -10,8 +10,8 @@ from fastapi import FastAPI
 from fastapi.routing import APIRoute
 
 from i3x_server.bootstrap.app_factory import (
-    INLINE_SCRIPT_PATTERN,
     _configure_otel,
+    _extract_inline_script_bodies,
     _frontend_inline_script_hashes,
     _readable_operation_id,
     _run_model_preload,
@@ -38,10 +38,14 @@ def test_readable_operation_id_prefers_route_name_and_fallback() -> None:
     assert _readable_operation_id(cast(APIRoute, unnamed_route)) == "postV1SubscriptionsId"
 
 
-def test_inline_script_pattern_matches_closing_tag_whitespace() -> None:
+def test_extract_inline_script_bodies_matches_closing_tag_whitespace() -> None:
     html = "<script>window.__x=1;</script   >"
-    matches = INLINE_SCRIPT_PATTERN.findall(html)
-    assert matches == ["window.__x=1;"]
+    assert _extract_inline_script_bodies(html) == ["window.__x=1;"]
+
+
+def test_extract_inline_script_bodies_matches_closing_tag_with_trailing_text() -> None:
+    html = "<script>window.__y=2;</script\t\n bar>"
+    assert _extract_inline_script_bodies(html) == ["window.__y=2;"]
 
 
 def test_frontend_inline_script_hashes_supports_script_tag_variants(tmp_path: Any) -> None:
@@ -49,13 +53,14 @@ def test_frontend_inline_script_hashes_supports_script_tag_variants(tmp_path: An
         "<html><body>"
         "<script>window.a=1;</script>"
         '<script type="module">window.b=2;</script   >'
+        "<script>window.d=4;</script\t\n bar>"
         "<SCRIPT>window.c=3;</SCRIPT >"
         "</body></html>"
     )
     (tmp_path / "index.html").write_text(html, encoding="utf-8")
 
     hashes = _frontend_inline_script_hashes(tmp_path)
-    assert len(hashes) == 3
+    assert len(hashes) == 4
     assert all(item.startswith("'sha256-") and item.endswith("'") for item in hashes)
 
 

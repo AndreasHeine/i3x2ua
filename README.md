@@ -41,7 +41,7 @@ flowchart LR
 	Nginx --> CertStore
 	Certbot -. renews certs .-> Nginx
 
-	subgraph Core[i3x2ua-core]
+	subgraph Core[i3x2ua-instance]
 		Routers[Router-Layer /v1 /ua optional /mcp]
 		Deps[Dependency Layer]
 		Services[Application Services]
@@ -220,7 +220,6 @@ MCP write policy: `PUT` routes are intentionally excluded from MCP tool generati
 ## Current Limitations
 
 - historical update APIs are not implemented (`PUT /v1/objects/history`, `PUT /v1/objects/{element_id}/history` return `501 Not Implemented`)
-- `GET /v1/objects/{element_id}/history` currently returns `501 Not Implemented`
 - current-value write support is optional and controlled by `I3X_ENABLE_WRITES`:
 	- `I3X_ENABLE_WRITES=1`: `capabilities.update.current=true`, `PUT /v1/objects/value` enabled
 	- default (`I3X_ENABLE_WRITES` unset/0): write endpoints return `501 Not Implemented`

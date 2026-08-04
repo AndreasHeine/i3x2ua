@@ -1,14 +1,18 @@
+![i3x2ua Logo](img/logo-small.png)
+
 # The i3X API Gateway for OPC UA — REST, MCP & Real-Time Streaming
 
 **FastAPI gateway implementing the i3X API over OPC UA — exposes OPC UA address spaces as standardized REST and MCP endpoints with JSON responses, OpenAPI docs, and Server-Sent Event subscriptions. Built for teams that do not have deep OPC UA expertise.**
 
 [![Container Build](https://github.com/AndreasHeine/i3x2ua/actions/workflows/docker.yml/badge.svg?branch=master)](https://github.com/AndreasHeine/i3x2ua/actions/workflows/docker.yml) [![Quality Checks](https://github.com/AndreasHeine/i3x2ua/actions/workflows/quality.yml/badge.svg?branch=master)](https://github.com/AndreasHeine/i3x2ua/actions/workflows/quality.yml) [![Coverage](https://codecov.io/gh/AndreasHeine/i3x2ua/branch/master/graph/badge.svg)](https://codecov.io/gh/AndreasHeine/i3x2ua)
 
-![i3X Logo](static/i3X_logo.png)
 
 ## **Industrial Information Interoperability eXchange (i3X)**
 
 > The Industrial Information Interoperability Exchange (i3X™) is an open, common API initiative proposed to address a growing interoperability challenge in modern manufacturing architectures: **manufacturing data silo proliferation and API chaos**. As manufacturers adopt heterogeneous software stacks from multiple vendors, the industry risks repeating past fragmentation seen with protocols, platforms, and namespaces - this time at the API layer.
+
+
+![i3X Logo](static/i3X_logo.png)
 
 ## Architecture Overview
 

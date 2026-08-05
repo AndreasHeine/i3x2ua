@@ -1480,8 +1480,25 @@ def test_v1_objects_list_include_metadata_uses_expanded_source_type_id(client: T
     result = payload["results"][0]["result"]
     assert result["typeElementId"].startswith("urn:opcua:objecttype:")
     metadata = payload["results"][0]["result"]["metadata"]
-    assert metadata["typeNamespaceUri"] == "http://example.com/i3x"
+    assert metadata["typeNamespaceUri"] == "http://example.com/runtime"
     assert metadata["sourceTypeId"] == "nsu=http://example.com/runtime;s=Temperature"
+
+
+def test_v1_objects_list_include_metadata_asset_type_namespace_uses_type_source_id(client: TestClient) -> None:
+    response = client.post(
+        "/v1/objects/list",
+        json={"elementIds": ["asset-root"], "includeMetadata": True},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+
+    result = payload["results"][0]["result"]
+    assert result["typeElementId"].startswith("urn:opcua:objecttype:")
+
+    metadata = result["metadata"]
+    assert metadata["sourceTypeId"] == "nsu=http://example.com/custom;i=1001"
+    assert metadata["typeNamespaceUri"] == "http://example.com/custom"
 
 
 def test_v1_objects_list_include_metadata_exposes_composition_parent_id(client: TestClient) -> None:

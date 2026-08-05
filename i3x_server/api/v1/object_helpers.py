@@ -72,6 +72,12 @@ def _namespace_uri_from_expanded_node_id(node_id: str) -> str | None:
     return namespace_uri or None
 
 
+def _is_opcua_node_id(value: str) -> bool:
+    if value.startswith("nsu="):
+        return True
+    return bool(re.match(r"^(?:ns=\d+;)?[isgb]=.+$", value, flags=re.IGNORECASE))
+
+
 def _is_null_opcua_type_node_id(node_id: str) -> bool:
     normalized = node_id.strip()
     if re.match(r"^nsu=[^;]+;i=0$", normalized, flags=re.IGNORECASE):
@@ -403,15 +409,12 @@ def _resolve_type_namespace_uri(
     namespace_infos: list[OpcUaNamespaceInfo],
 ) -> str | None:
     type_namespace_uri = _namespace_uri_from_expanded_node_id(type_element_id)
-    if type_namespace_uri is None:
+    if type_namespace_uri is None and _is_opcua_node_id(type_element_id):
         resolved_type_namespace_uri = _namespace_uri_for_node_id(type_element_id, namespace_infos)
         if resolved_type_namespace_uri:
             type_namespace_uri = resolved_type_namespace_uri
     if type_namespace_uri is None:
         type_namespace_uri = _namespace_uri_from_expanded_node_id(source_type_id_expanded)
-    if type_namespace_uri is None:
-        resolved_source_namespace_uri = _namespace_uri_for_node_id(type_element_id.split(":")[0], namespace_infos)
-        type_namespace_uri = resolved_source_namespace_uri or None
     if type_namespace_uri is not None:
         type_namespace_uri = _canonical_namespace_uri(type_namespace_uri, namespace_infos)
     return type_namespace_uri

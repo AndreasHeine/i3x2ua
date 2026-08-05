@@ -144,7 +144,7 @@ def test_v1_objects_list_include_metadata_uses_expanded_source_type_id(client: T
     result = payload["results"][0]["result"]
     assert result["typeElementId"].startswith("urn:opcua:objecttype:")
     metadata = payload["results"][0]["result"]["metadata"]
-    assert metadata["typeNamespaceUri"] == "http://example.com/i3x"
+    assert metadata["typeNamespaceUri"] == "http://example.com/runtime"
     assert metadata["sourceTypeId"] == "nsu=http://example.com/runtime;s=Temperature"
 
 

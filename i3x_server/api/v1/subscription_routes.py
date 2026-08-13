@@ -43,7 +43,14 @@ from i3x_server.schemas.state import BuildResult
 router = APIRouter(prefix="/v1", tags=["v1"])
 
 
-@router.post("/subscriptions")
+@router.post(
+    "/subscriptions",
+    summary="Create subscription",
+    description=(
+        "Create a subscription for a client and return its subscription ID. "
+        "The subscription can then be used for register, sync, and stream operations."
+    ),
+)
 async def create_subscription_v1(
     body: CreateSubscriptionRequest,
     subscription_app_service: SubscriptionAppService = Depends(get_subscription_app_service),
@@ -61,7 +68,13 @@ async def create_subscription_v1(
     )
 
 
-@router.post("/subscriptions/register")
+@router.post(
+    "/subscriptions/register",
+    summary="Register monitored objects",
+    description=(
+        "Register element IDs to a subscription. Each requested ID receives a per-item success or error result."
+    ),
+)
 async def register_monitored_items_v1(
     body: RegisterMonitoredItemsRequest,
     model: BuildResult = Depends(get_or_build_model),
@@ -79,7 +92,13 @@ async def register_monitored_items_v1(
     return _bulk_response(results)
 
 
-@router.post("/subscriptions/unregister")
+@router.post(
+    "/subscriptions/unregister",
+    summary="Unregister monitored objects",
+    description=(
+        "Remove element IDs from a subscription. Each requested ID receives a per-item success or error result."
+    ),
+)
 async def remove_monitored_items_v1(
     body: RegisterMonitoredItemsRequest,
     model: BuildResult = Depends(get_or_build_model),
@@ -232,7 +251,7 @@ async def stream_subscription_v1(
         "older entries from the queue. "
         "Pass `acknowledgeSequence=-1` to acknowledge and discard **all** pending updates. "
         "Returns HTTP 206 with a `responseDetail` if updates were dropped due to queue overflow since the last sync. "
-        "Returns HTTP 400 if the subscription has an active SSE stream - close the stream before calling sync."
+        "Returns HTTP 400 if the subscription has an active SSE stream; close the stream before calling sync."
     ),
 )
 async def sync_subscription_v1(
@@ -289,7 +308,13 @@ async def sync_subscription_v1(
     return SuccessResponse(result=result_payload)
 
 
-@router.post("/subscriptions/delete")
+@router.post(
+    "/subscriptions/delete",
+    summary="Delete subscriptions",
+    description=(
+        "Delete one or more subscriptions for the provided clientId. Returns per-subscription success or error results."
+    ),
+)
 async def delete_subscriptions_v1(
     body: DeleteSubscriptionsRequest,
     subscription_app_service: SubscriptionAppService = Depends(get_subscription_app_service),
@@ -299,7 +324,11 @@ async def delete_subscriptions_v1(
     return _bulk_response(_map_delete_subscription_bulk_result_items(items))
 
 
-@router.post("/subscriptions/list")
+@router.post(
+    "/subscriptions/list",
+    summary="List subscriptions",
+    description=("List subscriptions for the provided clientId. Optionally filter to specific subscription IDs."),
+)
 async def list_subscriptions_v1(
     body: ListSubscriptionsRequest,
     opcua_client: OpcUaClientProtocol = Depends(get_opcua_client),

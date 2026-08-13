@@ -25,7 +25,15 @@ from i3x_server.schemas.state import BuildResult
 router = APIRouter(prefix="/v1", tags=["v1"])
 
 
-@router.get("/objects", response_model=SuccessResponse[list[ObjectInstanceResponse]])
+@router.get(
+    "/objects",
+    response_model=SuccessResponse[list[ObjectInstanceResponse]],
+    summary="List objects",
+    description=(
+        "Return object instances from the current model. "
+        "Supports optional filters for typeElementId, metadata inclusion, and root-only listing."
+    ),
+)
 async def get_objects_v1(
     request: Request,
     type_element_id: str | None = Query(default=None, alias="typeElementId"),
@@ -95,7 +103,14 @@ async def get_objects_v1(
     )
 
 
-@router.post("/objects/list", response_model=BulkResponse[ObjectInstanceResponse])
+@router.post(
+    "/objects/list",
+    response_model=BulkResponse[ObjectInstanceResponse],
+    summary="Query objects by ID",
+    description=(
+        "Resolve one or more object element IDs in a bulk request. Unknown IDs return per-item not-found errors."
+    ),
+)
 async def list_objects_by_id_v1(
     request: Request,
     body: GetObjectsRequest,

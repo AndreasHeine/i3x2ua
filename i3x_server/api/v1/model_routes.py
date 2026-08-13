@@ -15,14 +15,27 @@ from i3x_server.schemas.state import BuildResult
 router = APIRouter(prefix="/v1", tags=["v1"])
 
 
-@router.get("/model/metrics", response_model=SuccessResponse[ModelMetricsResponse])
+@router.get(
+    "/model/metrics",
+    response_model=SuccessResponse[ModelMetricsResponse],
+    summary="Get model metrics",
+    description=("Return build, topology, quality, coverage, and namespace metrics for the current model snapshot."),
+)
 async def get_model_metrics_v1(
     model: BuildResult = Depends(get_or_build_model),
 ) -> SuccessResponse[ModelMetricsResponse]:
     return SuccessResponse(result=_build_model_metrics(model))
 
 
-@router.get("/model/namespace-gaps", response_model=SuccessResponse[ModelNamespaceGapResponse])
+@router.get(
+    "/model/namespace-gaps",
+    response_model=SuccessResponse[ModelNamespaceGapResponse],
+    summary="List namespace gaps",
+    description=(
+        "Return model nodes that are missing resolved namespace URIs, "
+        "including counts grouped by node kind and namespace index."
+    ),
+)
 async def get_model_namespace_gaps_v1(
     limit: int = Query(default=50, ge=1, le=500),
     model: BuildResult = Depends(get_or_build_model),

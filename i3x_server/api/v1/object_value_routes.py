@@ -106,7 +106,7 @@ async def query_related_objects_v1(
         "Quality and timestamp are sourced directly from the OPC UA server; quality values are "
         "`Good`, `Uncertain`, or `Bad`. "
         "A null value with `Good` or `Uncertain` quality is normalized to `GoodNoData`. "
-        "When `maxDepth > 1`, component values are recursed using the **composition** adjacency only ÔÇö "
+        "When `maxDepth > 1`, component values are recursed using the **composition** adjacency only; "
         "hierarchy-only children are never included. "
         "Failing items include an item-level `responseDetail` alongside `error`."
     ),
@@ -174,7 +174,7 @@ async def query_last_known_values_v1(
     description=(
         "Return historical values for one or more objects within the specified time range. "
         "Values are ordered by source timestamp ascending. "
-        "Component recursion follows the **composition** adjacency only ÔÇö hierarchy-only children are excluded. "
+        "Component recursion follows the **composition** adjacency only; hierarchy-only children are excluded. "
         "Failing items include an item-level `responseDetail` alongside `error`."
     ),
 )
@@ -270,17 +270,38 @@ async def update_object_values_v1(
     return _bulk_response(results)
 
 
-@router.get("/objects/{element_id}/history")
+@router.get(
+    "/objects/{element_id}/history",
+    summary="Get object history by path",
+    description=(
+        "Path-style historical value retrieval for a single object. "
+        "This endpoint is currently not implemented; use POST /v1/objects/history."
+    ),
+)
 async def get_historical_values_v1(element_id: str) -> None:
     _not_implemented(f"Historical values for '{element_id}'")
 
 
-@router.put("/objects/{element_id}/history")
+@router.put(
+    "/objects/{element_id}/history",
+    summary="Update object history by path",
+    description=(
+        "Path-style historical value updates for a single object. This endpoint is currently not implemented."
+    ),
+)
 async def update_object_history_v1(element_id: str) -> None:
     _not_implemented(f"Historical value updates for '{element_id}'")
 
 
-@router.put("/objects/{element_id}/value", response_model=SuccessResponse[None])
+@router.put(
+    "/objects/{element_id}/value",
+    response_model=SuccessResponse[None],
+    summary="Update current value by path",
+    description=(
+        "Write the current value for a single object element ID. "
+        "Writes are accepted only for writable property nodes when write support is enabled."
+    ),
+)
 async def update_object_value_v1(
     element_id: str,
     request: Request,

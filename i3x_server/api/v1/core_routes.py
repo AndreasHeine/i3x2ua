@@ -18,7 +18,12 @@ from i3x_server.application.services.model_query import ModelQueryService
 router = APIRouter(prefix="/v1", tags=["v1"])
 
 
-@router.get("/info", response_model=SuccessResponse[ServerInfo])
+@router.get(
+    "/info",
+    response_model=SuccessResponse[ServerInfo],
+    summary="Get server info",
+    description=("Return i3X server metadata including supported capabilities, server version, and spec version."),
+)
 async def get_info_v1(
     model_query_service: ModelQueryService = Depends(get_model_query_service),
 ) -> SuccessResponse[ServerInfo]:
@@ -26,7 +31,12 @@ async def get_info_v1(
     return SuccessResponse(result=ServerInfo.model_validate(info.model_dump()))
 
 
-@router.get("/namespaces", response_model=SuccessResponse[list[Namespace]])
+@router.get(
+    "/namespaces",
+    response_model=SuccessResponse[list[Namespace]],
+    summary="List namespaces",
+    description="Return all namespaces available in the current model.",
+)
 async def get_namespaces_v1(
     model_query_service: ModelQueryService = Depends(get_model_query_service),
 ) -> SuccessResponse[list[Namespace]]:
@@ -35,7 +45,12 @@ async def get_namespaces_v1(
     return SuccessResponse(result=payload)
 
 
-@router.get("/relationshiptypes", response_model=SuccessResponse[list[RelationshipType]])
+@router.get(
+    "/relationshiptypes",
+    response_model=SuccessResponse[list[RelationshipType]],
+    summary="List relationship types",
+    description=("Return all relationship types known to the server. Optionally filter by namespace URI."),
+)
 async def get_relationship_types_v1(
     namespace_uri: str | None = Query(default=None, alias="namespaceUri"),
     model_query_service: ModelQueryService = Depends(get_model_query_service),
@@ -44,7 +59,15 @@ async def get_relationship_types_v1(
     return SuccessResponse(result=[RelationshipType.model_validate(item) for item in items])
 
 
-@router.post("/relationshiptypes/query", response_model=BulkResponse[RelationshipType])
+@router.post(
+    "/relationshiptypes/query",
+    response_model=BulkResponse[RelationshipType],
+    summary="Query relationship types by ID",
+    description=(
+        "Resolve one or more relationship type element IDs using a bulk request. "
+        "Unknown IDs return per-item not-found errors."
+    ),
+)
 async def query_relationship_types_v1(
     body: GetRelationshipTypesRequest,
     model_query_service: ModelQueryService = Depends(get_model_query_service),

@@ -20,7 +20,15 @@ from i3x_server.schemas.state import BuildResult
 router = APIRouter(prefix="/v1", tags=["v1"])
 
 
-@router.get("/objecttypes", response_model=SuccessResponse[list[ObjectTypeResponse]])
+@router.get(
+    "/objecttypes",
+    response_model=SuccessResponse[list[ObjectTypeResponse]],
+    summary="List object types",
+    description=(
+        "Return object type definitions discovered from OPC UA and synthesized model types. "
+        "Optionally filter by namespaceUri."
+    ),
+)
 async def get_object_types_v1(
     request: Request,
     namespace_uri: str | None = Query(default=None, alias="namespaceUri"),
@@ -40,7 +48,15 @@ async def get_object_types_v1(
     return SuccessResponse(result=items)
 
 
-@router.post("/objecttypes/query", response_model=BulkResponse[ObjectTypeResponse])
+@router.post(
+    "/objecttypes/query",
+    response_model=BulkResponse[ObjectTypeResponse],
+    summary="Query object types by ID",
+    description=(
+        "Resolve one or more object type element IDs using a bulk request. "
+        "Unknown IDs return per-item not-found errors."
+    ),
+)
 async def query_object_types_v1(
     request: Request,
     body: GetObjectTypesRequest,

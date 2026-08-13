@@ -110,7 +110,6 @@ def test_read_resource_content_variants(tmp_path: Path, monkeypatch: pytest.Monk
     openapi = _read_resource_content(request, "i3x://openapi")
     assert json.loads(openapi["text"]) == {"openapi": "3.1.0"}
     assert _read_resource_content(request, "i3x://mcp-overrides")["mimeType"] == "application/json"
-    assert _read_resource_content(request, "i3x://docs/quick-reference")["mimeType"] == "text/markdown"
     assert json.loads(_read_resource_content(request, "i3x://prompts/demo")["text"])["name"] == "demo"
 
     with pytest.raises(HTTPException):

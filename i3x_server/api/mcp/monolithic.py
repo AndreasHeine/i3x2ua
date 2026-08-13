@@ -86,12 +86,6 @@ def _resource_catalog(request: Request) -> list[dict[str, Any]]:
             "description": "Runtime MCP tool, prompt, and feature overrides",
             "mimeType": "application/json",
         },
-        {
-            "uri": "i3x://docs/quick-reference",
-            "name": "Quick reference",
-            "description": "Server quick reference documentation",
-            "mimeType": "text/markdown",
-        },
     ]
 
     for prompt in list_prompt_metadata(_prompt_registry(request)):
@@ -147,16 +141,6 @@ def _read_resource_content(request: Request, uri: str) -> dict[str, Any]:
         return {
             "uri": uri,
             "mimeType": "application/json",
-            "text": path.read_text(encoding="utf-8"),
-        }
-
-    if uri == "i3x://docs/quick-reference":
-        path = project_root / "docs" / "QUICK_REFERENCE.md"
-        if not path.exists():
-            _raise_invalid_resource(uri)
-        return {
-            "uri": uri,
-            "mimeType": "text/markdown",
             "text": path.read_text(encoding="utf-8"),
         }
 

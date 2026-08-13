@@ -555,7 +555,7 @@ def test_mcp_resources_list_request(client: TestClient) -> None:
     assert response.status_code == 200
     payload = response.json()
     resources = payload["result"]["resources"]
-    assert any(item["uri"] == "i3x://docs/quick-reference" for item in resources)
+    assert any(item["uri"] == "i3x://mcp-overrides" for item in resources)
 
 
 def test_mcp_resources_read_request(client: TestClient) -> None:

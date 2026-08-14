@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, Depends, Query, Request
 
 from i3x_server.api.v1.common_helpers import _resolve_model_nodes
@@ -23,6 +25,10 @@ from i3x_server.bootstrap.dependencies import get_opcua_client, get_or_build_mod
 from i3x_server.schemas.state import BuildResult
 
 router = APIRouter(prefix="/v1", tags=["v1"])
+
+# Serializing the full model can take ~1s; yield often enough to keep the event loop
+# responsive for other requests, SSE streams, and OPC UA keep-alives.
+_RESPONSE_CHUNK_SIZE = 50
 
 
 @router.get(
@@ -88,8 +94,9 @@ async def get_objects_v1(
             )
             == type_element_id
         ]
-    return SuccessResponse(
-        result=[
+    instances: list[ObjectInstanceResponse] = []
+    for offset in range(0, len(nodes), _RESPONSE_CHUNK_SIZE):
+        instances.extend(
             _to_object_instance(
                 model,
                 node,
@@ -98,9 +105,10 @@ async def get_objects_v1(
                 object_type_element_ids_by_node_id,
                 object_type_element_ids_by_source_type,
             )
-            for node in nodes
-        ]
-    )
+            for node in nodes[offset : offset + _RESPONSE_CHUNK_SIZE]
+        )
+        await asyncio.sleep(0)
+    return SuccessResponse(result=instances)
 
 
 @router.post(

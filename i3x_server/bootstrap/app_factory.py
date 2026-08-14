@@ -26,6 +26,7 @@ from starlette.middleware.gzip import GZipMiddleware
 from i3x_server.api.mcp import router as mcp_router
 from i3x_server.api.ua import router as ua_router
 from i3x_server.api.v1 import router as v1_router
+from i3x_server.api.v1.objecttype_helpers import warm_object_type_context
 from i3x_server.application.errors import ApplicationServiceError
 from i3x_server.config.settings import Settings, settings
 from i3x_server.infrastructure.opcua.client import OpcUaClient
@@ -204,6 +205,20 @@ def _configure_otel(app: FastAPI) -> None:
     logger.info("OpenTelemetry configured service=%s", settings.otel_service_name)
 
 
+async def _warm_object_type_context(app: FastAPI, model: BuildResult) -> None:
+    started = perf_counter()
+    try:
+        context = await warm_object_type_context(app, model, app.state.opcua_client)
+    except Exception:
+        logger.exception("Object type context warm-up failed; will build on first request")
+        return
+    logger.info(
+        "Object type context warmed items=%d duration_s=%.3f",
+        len(context.items),
+        perf_counter() - started,
+    )
+
+
 async def _run_model_preload(app: FastAPI) -> None:
     try:
         started = asyncio.get_running_loop().time()
@@ -254,7 +269,9 @@ async def _run_model_preload(app: FastAPI) -> None:
             metrics.object_type_reads,
             metrics.object_type_count_last,
         )
-        logger.info("Namespace metadata preload skipped at startup; loading on first request")
+        # Scheduled separately: get_or_build_model awaits this task, and the warm-up must
+        # not hold early requests behind it once the model itself is ready.
+        app.state.object_type_warm_task = asyncio.create_task(_warm_object_type_context(app, preload))
     except Exception:
         logger.exception("Model preload failed")
         if settings.fail_startup_on_model_preload_error and settings.model_preload_blocking:
@@ -294,6 +311,7 @@ async def _run_periodic_model_refresh(app: FastAPI) -> None:
                 len(built.action_to_method),
                 perf_counter() - started,
             )
+            await _warm_object_type_context(app, built)
         except Exception:
             logger.exception("Periodic model refresh failed")
 
@@ -390,6 +408,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.model_lock = asyncio.Lock()
     app.state.model_preload_task = None
     app.state.model_refresh_task = None
+    app.state.object_type_warm_task = None
     if mcp_enabled:
         openapi_spec = app.openapi()
         if not isinstance(openapi_spec, dict):
@@ -438,6 +457,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             preload_task.cancel()
             with suppress(asyncio.CancelledError):
                 await preload_task
+        warm_task = getattr(app.state, "object_type_warm_task", None)
+        if warm_task is not None and not warm_task.done():
+            warm_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await warm_task
         await app.state.subscription_service.close()
         if not skip_connect:
             await opcua_client.disconnect()

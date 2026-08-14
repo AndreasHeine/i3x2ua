@@ -8,6 +8,7 @@ from contextlib import nullcontext as _nullcontext
 from copy import deepcopy
 from dataclasses import dataclass
 from time import perf_counter
+from types import SimpleNamespace
 from typing import Any
 
 from asyncua import ua
@@ -708,9 +709,11 @@ async def _get_object_type_context(
     lock = getattr(request.app.state, "object_type_lock", None)
     async with lock if lock else _nullcontext():
         cache = getattr(request.app.state, "object_type_context_cache", None)
-        model_token = id(model)
-        namespace_token = id(resolved_namespace_infos)
-        object_types_token = id(object_types)
+        # Content-derived tokens: id() is unsafe (CPython reuses addresses) and would also
+        # force a rebuild whenever a metadata TTL refresh returns an equivalent new list.
+        model_token = (model.build_completed_at_utc, len(model.nodes_by_id))
+        namespace_token = tuple((info.uri, info.display_name) for info in resolved_namespace_infos)
+        object_types_token = tuple(item.node_id for item in object_types)
         if isinstance(cache, dict):
             if (
                 cache.get("model_token") == model_token
@@ -747,6 +750,18 @@ async def _get_object_type_context(
             perf_counter() - started,
         )
         return context
+
+
+async def warm_object_type_context(
+    app: Any,
+    model: BuildResult,
+    opcua_client: OpcUaClientProtocol,
+) -> _ObjectTypeContext:
+    """Populate the object type context cache outside of a request.
+
+    Keeps the ~5s rebuild off the first request after startup and after each model refresh.
+    """
+    return await _get_object_type_context(SimpleNamespace(app=app), model, opcua_client)
 
 
 async def _get_object_endpoint_context(

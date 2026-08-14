@@ -531,3 +531,93 @@ async def test_get_namespace_infos_tolerates_partial_metadata_failures(monkeypat
         OpcUaNamespaceInfo(uri="urn:ok", display_name="Component Ok"),
         OpcUaNamespaceInfo(uri="urn:fail", display_name=""),
     ]
+
+
+class _RefTypeNode:
+    def __init__(self, node_id: str, browse_name: str) -> None:
+        self.nodeid = SimpleNamespace(to_string=lambda: node_id)
+        self._browse_name = browse_name
+
+    async def read_browse_name(self) -> SimpleNamespace:
+        return SimpleNamespace(Name=self._browse_name)
+
+
+class _RefTypeClient:
+    """Reference type tree where HasComponent and HasProperty share ancestors."""
+
+    SUPERTYPES = {
+        "HasComponent": "Aggregates",
+        "HasProperty": "Aggregates",
+        "Aggregates": "HasChild",
+        "HasChild": "HierarchicalReferences",
+        "HierarchicalReferences": "References",
+        "References": None,
+    }
+
+    def __init__(self) -> None:
+        self.browsed: list[str] = []
+
+    def get_node(self, node_id: Any) -> _RefTypeNode:
+        key = node_id.to_string() if hasattr(node_id, "to_string") else str(node_id)
+        return _RefTypeNode(key, key)
+
+
+@pytest.mark.asyncio
+async def test_resolve_reference_type_supertypes_caches_every_ancestor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_client = _RefTypeClient()
+    client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
+    cast(Any, client)._client = fake_client
+
+    async def _browse_references_descriptions(
+        nodes: list[Any],
+        max_nodes_per_browse: int,
+        reference_type_id: int,
+        browse_direction: Any = None,
+        include_subtypes: bool = True,
+    ) -> list[tuple[Any, list[Any]]]:
+        del max_nodes_per_browse, reference_type_id, browse_direction, include_subtypes
+        node = nodes[0]
+        node_id = node.nodeid.to_string()
+        fake_client.browsed.append(node_id)
+        supertype = _RefTypeClient.SUPERTYPES[node_id]
+        if supertype is None:
+            return [(node, [])]
+        return [(node, [SimpleNamespace(NodeId=SimpleNamespace(to_string=lambda s=supertype: s))])]
+
+    monkeypatch.setattr(client, "_browse_references_descriptions", _browse_references_descriptions)
+
+    assert await client.resolve_reference_type_supertype_browse_names("HasComponent") == [
+        "HasComponent",
+        "Aggregates",
+        "HasChild",
+        "HierarchicalReferences",
+        "References",
+    ]
+    assert fake_client.browsed == [
+        "HasComponent",
+        "Aggregates",
+        "HasChild",
+        "HierarchicalReferences",
+        "References",
+    ]
+
+    # The shared ancestors are already cached, so only HasProperty itself is browsed.
+    fake_client.browsed.clear()
+    assert await client.resolve_reference_type_supertype_browse_names("HasProperty") == [
+        "HasProperty",
+        "Aggregates",
+        "HasChild",
+        "HierarchicalReferences",
+        "References",
+    ]
+    assert fake_client.browsed == ["HasProperty"]
+
+    fake_client.browsed.clear()
+    assert await client.resolve_reference_type_supertype_browse_names("HasChild") == [
+        "HasChild",
+        "HierarchicalReferences",
+        "References",
+    ]
+    assert fake_client.browsed == []

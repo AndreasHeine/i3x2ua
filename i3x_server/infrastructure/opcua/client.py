@@ -167,64 +167,72 @@ class OpcUaClient:
     async def resolve_reference_type_supertype_browse_names(self, reference_type_id: str) -> list[str]:
         if not isinstance(reference_type_id, str) or not reference_type_id:
             return []
+        return await self._resolve_reference_type_chain(reference_type_id, set())
 
-        cached = self._reference_type_supertypes_cache.get(reference_type_id)
+    async def _resolve_reference_type_chain(self, type_id: str, in_progress: set[str]) -> list[str]:
+        """Browse names of ``type_id`` followed by its supertypes, nearest ancestor first.
+
+        Every node reached is cached in its own right, so sibling reference types that
+        converge on shared ancestors resolve those ancestors only once.
+        """
+        cached = self._reference_type_supertypes_cache.get(type_id)
         if cached is not None:
             cached_at, cached_names = cached
             if self._is_metadata_cache_entry_fresh(cached_at):
                 return list(cached_names)
-            del self._reference_type_supertypes_cache[reference_type_id]
+            del self._reference_type_supertypes_cache[type_id]
+
+        if type_id in in_progress:
+            return []
+        in_progress.add(type_id)
 
         discovered_names: list[str] = []
         seen_names: set[str] = set()
-        visited_type_ids: set[str] = set()
-        pending_type_ids: list[str] = [reference_type_id]
+        type_node = self._client.get_node(type_id)
 
-        while pending_type_ids:
-            current_type_id = pending_type_ids.pop()
-            if current_type_id in visited_type_ids:
-                continue
-            visited_type_ids.add(current_type_id)
+        try:
+            browse_name_obj = await type_node.read_browse_name()
+            browse_name = getattr(browse_name_obj, "Name", None)
+            if isinstance(browse_name, str) and browse_name:
+                seen_names.add(browse_name)
+                discovered_names.append(browse_name)
+        except Exception:
+            logger.debug(
+                "OPC UA browse name read failed for reference type endpoint=%s reference_type_id=%s",
+                self._endpoint,
+                type_id,
+                exc_info=True,
+            )
 
-            type_node = self._client.get_node(current_type_id)
-            try:
-                browse_name_obj = await type_node.read_browse_name()
-                browse_name = getattr(browse_name_obj, "Name", None)
-                if isinstance(browse_name, str) and browse_name and browse_name not in seen_names:
-                    seen_names.add(browse_name)
-                    discovered_names.append(browse_name)
-            except Exception:
-                logger.debug(
-                    "OPC UA browse name read failed for reference type endpoint=%s reference_type_id=%s",
-                    self._endpoint,
-                    current_type_id,
-                    exc_info=True,
-                )
+        try:
+            supertype_refs_by_node = await self._browse_references_descriptions(
+                [type_node],
+                max_nodes_per_browse=1,
+                reference_type_id=ObjectIds.HasSubtype,
+                browse_direction=ua.BrowseDirection.Inverse,
+                include_subtypes=False,
+            )
+        except Exception:
+            logger.debug(
+                "OPC UA supertype browse failed endpoint=%s reference_type_id=%s",
+                self._endpoint,
+                type_id,
+                exc_info=True,
+            )
+            supertype_refs_by_node = []
 
-            try:
-                supertype_refs_by_node = await self._browse_references_descriptions(
-                    [type_node],
-                    max_nodes_per_browse=1,
-                    reference_type_id=ObjectIds.HasSubtype,
-                    browse_direction=ua.BrowseDirection.Inverse,
-                    include_subtypes=False,
-                )
-            except Exception:
-                logger.debug(
-                    "OPC UA supertype browse failed endpoint=%s reference_type_id=%s",
-                    self._endpoint,
-                    current_type_id,
-                    exc_info=True,
-                )
-                continue
+        for _, refs in supertype_refs_by_node:
+            for ref in refs:
+                supertype_id = ref.NodeId.to_string()
+                if not isinstance(supertype_id, str) or not supertype_id:
+                    continue
+                for name in await self._resolve_reference_type_chain(supertype_id, in_progress):
+                    if name not in seen_names:
+                        seen_names.add(name)
+                        discovered_names.append(name)
 
-            for _, refs in supertype_refs_by_node:
-                for ref in refs:
-                    supertype_id = ref.NodeId.to_string()
-                    if isinstance(supertype_id, str) and supertype_id and supertype_id not in visited_type_ids:
-                        pending_type_ids.append(supertype_id)
-
-        self._reference_type_supertypes_cache[reference_type_id] = (perf_counter(), list(discovered_names))
+        in_progress.discard(type_id)
+        self._reference_type_supertypes_cache[type_id] = (perf_counter(), list(discovered_names))
         return list(discovered_names)
 
     async def connect(self) -> None:

@@ -20,6 +20,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from typing import IO
 
 REPO_ROOT = Path(__file__).resolve().parent
 CONFORMANCE_TESTS_DIR = REPO_ROOT / "i3X" / "conformance-tests"
@@ -37,15 +38,15 @@ I3X_CONFORMANCE_ENV = {
 }
 
 
-def _stream_output(prefix: str, pipe: object) -> None:
-    for raw_line in iter(pipe.readline, ""):  # type: ignore[union-attr]
+def _stream_output(prefix: str, pipe: IO[str]) -> None:
+    for raw_line in iter(pipe.readline, ""):
         if not raw_line:
             break
         sys.stdout.write(f"[{prefix}] {raw_line}")
         sys.stdout.flush()
 
 
-def _start_process(name: str, command: list[str], cwd: Path, env: dict[str, str]) -> subprocess.Popen:
+def _start_process(name: str, command: list[str], cwd: Path, env: dict[str, str]) -> subprocess.Popen[str]:
     print(f"[run-conformance] starting {name}: {' '.join(command)} (cwd={cwd})")
     process = subprocess.Popen(
         command,
@@ -56,12 +57,13 @@ def _start_process(name: str, command: list[str], cwd: Path, env: dict[str, str]
         text=True,
         bufsize=1,
     )
+    assert process.stdout is not None
     thread = threading.Thread(target=_stream_output, args=(name, process.stdout), daemon=True)
     thread.start()
     return process
 
 
-def _stop_process(name: str, process: subprocess.Popen | None, timeout: float = 10.0) -> None:
+def _stop_process(name: str, process: subprocess.Popen[str] | None, timeout: float = 10.0) -> None:
     if process is None or process.poll() is not None:
         return
     print(f"[run-conformance] stopping {name} (pid={process.pid})")
@@ -96,9 +98,9 @@ def main() -> None:
     opcua_endpoint = f"opc.tcp://{args.opcua_host}:{args.opcua_port}/freeopcua/server/"
     i3x_endpoint = f"http://{args.i3x_host}:{args.i3x_port}/v1"
 
-    opcua_process: subprocess.Popen | None = None
-    i3x_process: subprocess.Popen | None = None
-    test_tool_process: subprocess.Popen | None = None
+    opcua_process: subprocess.Popen[str] | None = None
+    i3x_process: subprocess.Popen[str] | None = None
+    test_tool_process: subprocess.Popen[str] | None = None
 
     try:
         opcua_process = _start_process(

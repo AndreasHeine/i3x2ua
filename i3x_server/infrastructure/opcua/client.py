@@ -132,7 +132,7 @@ class OpcUaClient:
         self._subscription_caps_cache: OpcUaSubscriptionCapabilities | None = None
         self._namespace_infos_cache: tuple[float, list[OpcUaNamespaceInfo]] | None = None
         self._object_types_cache: tuple[float, list[OpcUaObjectTypeInfo]] | None = None
-        self._reference_type_supertypes_cache: dict[str, list[str]] = {}
+        self._reference_type_supertypes_cache: dict[str, tuple[float, list[str]]] = {}
         self._runtime_metrics = OpcUaRuntimeMetrics()
         self._request_metrics = OpcUaRequestMetrics()
         self._goodish_quality_labels = {"good", "uncertain"}
@@ -158,13 +158,22 @@ class OpcUaClient:
             since=self._connection_state_since,
         )
 
+    def _is_metadata_cache_entry_fresh(self, cached_at: float) -> bool:
+        """TTL of 0 means entries never expire."""
+        if self._metadata_cache_ttl_seconds == 0:
+            return True
+        return perf_counter() - cached_at <= self._metadata_cache_ttl_seconds
+
     async def resolve_reference_type_supertype_browse_names(self, reference_type_id: str) -> list[str]:
         if not isinstance(reference_type_id, str) or not reference_type_id:
             return []
 
         cached = self._reference_type_supertypes_cache.get(reference_type_id)
         if cached is not None:
-            return list(cached)
+            cached_at, cached_names = cached
+            if self._is_metadata_cache_entry_fresh(cached_at):
+                return list(cached_names)
+            del self._reference_type_supertypes_cache[reference_type_id]
 
         discovered_names: list[str] = []
         seen_names: set[str] = set()
@@ -215,7 +224,7 @@ class OpcUaClient:
                     if isinstance(supertype_id, str) and supertype_id and supertype_id not in visited_type_ids:
                         pending_type_ids.append(supertype_id)
 
-        self._reference_type_supertypes_cache[reference_type_id] = list(discovered_names)
+        self._reference_type_supertypes_cache[reference_type_id] = (perf_counter(), list(discovered_names))
         return list(discovered_names)
 
     async def connect(self) -> None:
@@ -834,7 +843,7 @@ class OpcUaClient:
         now = perf_counter()
         if self._namespace_infos_cache is not None:
             cached_at, cached_value = self._namespace_infos_cache
-            if self._metadata_cache_ttl_seconds == 0 or now - cached_at <= self._metadata_cache_ttl_seconds:
+            if self._is_metadata_cache_entry_fresh(cached_at):
                 logger.debug(
                     "OPC UA namespace info cache hit endpoint=%s age_s=%.3f",
                     self._endpoint,
@@ -948,7 +957,7 @@ class OpcUaClient:
         now = perf_counter()
         if self._object_types_cache is not None:
             cached_at, cached_value = self._object_types_cache
-            if self._metadata_cache_ttl_seconds == 0 or now - cached_at <= self._metadata_cache_ttl_seconds:
+            if self._is_metadata_cache_entry_fresh(cached_at):
                 logger.debug(
                     "OPC UA object types cache hit endpoint=%s age_s=%.3f",
                     self._endpoint,

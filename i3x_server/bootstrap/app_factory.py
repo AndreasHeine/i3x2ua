@@ -302,7 +302,10 @@ async def _run_periodic_model_refresh(app: FastAPI) -> None:
             async with lock:
                 built = await app.state.model_builder.build()
                 app.state.model_cache = built
-                app.state.object_type_context_cache = None
+                # Keep the existing object-type context unless the refreshed model is
+                # materially different. This avoids a pointless rebuild on equivalent
+                # refreshes while still allowing _get_object_type_context() to detect
+                # genuine changes via content-derived tokens.
             logger.info(
                 "Periodic model refresh finished nodes=%d roots=%d properties=%d actions=%d duration_s=%.3f",
                 len(built.nodes_by_id),

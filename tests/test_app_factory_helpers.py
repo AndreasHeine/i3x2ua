@@ -156,7 +156,7 @@ async def test_monolithic_object_type_context_cache_uses_content_tokens() -> Non
         instances_by_type_id={},
         property_to_node={},
         action_to_method={},
-        build_completed_at_utc="2026-01-01T00:00:00Z",
+        build_completed_at_utc="2026-02-01T00:00:00Z",
     )
     cached_context = monolithic._ObjectTypeContext(
         namespace_infos=[],
@@ -167,7 +167,14 @@ async def test_monolithic_object_type_context_cache_uses_content_tokens() -> Non
     )
     app = FastAPI()
     app.state.object_type_context_cache = {
-        "model_token": (model_a.build_completed_at_utc, len(model_a.nodes_by_id)),
+        "model_token": (
+            len(model_a.nodes_by_id),
+            len(model_a.root_ids),
+            len(model_a.property_to_node),
+            len(model_a.action_to_method),
+            tuple(sorted(model_a.nodes_by_id)),
+            tuple(sorted(model_a.root_ids)),
+        ),
         "namespace_token": tuple(),
         "object_types_token": tuple(),
         "context": cached_context,
@@ -225,6 +232,12 @@ async def test_run_periodic_model_refresh_rebuilds_cache(monkeypatch: pytest.Mon
         def reset_runtime_metrics(self) -> None:
             return None
 
+        async def get_namespace_infos(self) -> list[object]:
+            return []
+
+        async def get_object_types(self) -> list[object]:
+            return []
+
     sleep_calls = 0
 
     async def _fake_sleep(_: float) -> None:
@@ -249,7 +262,7 @@ async def test_run_periodic_model_refresh_rebuilds_cache(monkeypatch: pytest.Mon
 
     assert build_calls == 1
     assert app.state.model_cache is model
-    assert app.state.object_type_context_cache is None
+    assert isinstance(app.state.object_type_context_cache, dict)
 
 
 @pytest.mark.asyncio

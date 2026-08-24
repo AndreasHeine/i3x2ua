@@ -709,9 +709,18 @@ async def _get_object_type_context(
     lock = getattr(request.app.state, "object_type_lock", None)
     async with lock if lock else _nullcontext():
         cache = getattr(request.app.state, "object_type_context_cache", None)
-        # Content-derived tokens: id() is unsafe (CPython reuses addresses) and would also
-        # force a rebuild whenever a metadata TTL refresh returns an equivalent new list.
-        model_token = (model.build_completed_at_utc, len(model.nodes_by_id))
+        # Content-derived tokens: id() is unsafe (CPython reuses addresses), and the
+        # build timestamp changes on every refresh even when the model data is identical.
+        # Use stable model content instead of volatile timestamps so equivalent refreshes
+        # hit the cache without missing on harmless rebuild churn.
+        model_token = (
+            len(model.nodes_by_id),
+            len(model.root_ids),
+            len(model.property_to_node),
+            len(model.action_to_method),
+            tuple(sorted(model.nodes_by_id)),
+            tuple(sorted(model.root_ids)),
+        )
         namespace_token = tuple((info.uri, info.display_name) for info in resolved_namespace_infos)
         object_types_token = tuple(item.node_id for item in object_types)
         if isinstance(cache, dict):

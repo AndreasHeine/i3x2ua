@@ -1320,13 +1320,15 @@ async def _get_object_type_context(
     )
     object_types = await opcua_client.get_object_types()
 
-    # Shared lock to prevent concurrent heavy rebuilds from multiple clients
+    # Shared lock to prevent concurrent heavy rebuilds from multiple clients.
+    # Use content-derived tokens instead of object identity so equivalent refreshed
+    # models and metadata snapshots share a valid cache entry.
     lock = getattr(request.app.state, "object_type_lock", None)
     async with lock if lock else _nullcontext():
         cache = getattr(request.app.state, "object_type_context_cache", None)
-        model_token = id(model)
-        namespace_token = id(resolved_namespace_infos)
-        object_types_token = id(object_types)
+        model_token = (model.build_completed_at_utc, len(model.nodes_by_id))
+        namespace_token = tuple((info.uri, info.display_name) for info in resolved_namespace_infos)
+        object_types_token = tuple(item.node_id for item in object_types)
         if isinstance(cache, dict):
             if (
                 cache.get("model_token") == model_token

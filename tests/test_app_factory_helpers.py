@@ -20,6 +20,7 @@ from i3x_server.bootstrap.app_factory import (
     _status_title,
     _to_lower_camel_case,
 )
+from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
 
 
@@ -138,8 +139,9 @@ async def test_run_model_preload_failure_without_raise(monkeypatch: pytest.Monke
 
 @pytest.mark.asyncio
 async def test_monolithic_object_type_context_cache_uses_content_tokens() -> None:
+    model_node = ModelNode(id="n1", name="n1", kind="asset", source_node_id="n1")
     model_a = BuildResult(
-        nodes_by_id={"n1": "node"},
+        nodes_by_id={"n1": model_node},
         root_ids=["n1"],
         children_by_id={},
         instances_by_type_id={},
@@ -148,7 +150,7 @@ async def test_monolithic_object_type_context_cache_uses_content_tokens() -> Non
         build_completed_at_utc="2026-01-01T00:00:00Z",
     )
     model_b = BuildResult(
-        nodes_by_id={"n1": "node"},
+        nodes_by_id={"n1": model_node},
         root_ids=["n1"],
         children_by_id={},
         instances_by_type_id={},
@@ -189,9 +191,9 @@ async def test_monolithic_object_type_context_cache_uses_content_tokens() -> Non
     monkeypatch.setattr(monolithic, "_build_object_type_context", _raise_if_called)
     try:
         result = await monolithic._get_object_type_context(
-            SimpleNamespace(app=app),
+            cast(Any, SimpleNamespace(app=app)),
             model_b,
-            _OpcUaClient(),
+            cast(Any, _OpcUaClient()),
             namespace_infos=[],
         )
     finally:

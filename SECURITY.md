@@ -27,6 +27,8 @@ Please include as much information as possible:
 
 Please do **not** disclose vulnerabilities publicly before they have been reviewed and addressed.
 
+E-Mail: info@andreas-heine.net
+
 ## Security Practices
 
 ### Dependency Management

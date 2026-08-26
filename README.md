@@ -166,6 +166,13 @@ $env:I3X_ENABLE_MCP="1"
 uv run uvicorn i3x_server.main:app --reload --host 127.0.0.1 --port 8000 --loop none
 ```
 
+MCP with enhanced Schemas e.g. EnumValues, References, ModelingRules, ...
+```powershell
+$env:I3X_ENABLE_MCP="1"
+$env:I3X_MCP_INCLUDE_OPCUA_METADATA="1"
+uv run uvicorn i3x_server.main:app --reload --host 127.0.0.1 --port 8000 --loop none
+```
+
 If you do not set `I3X_ENABLE_MCP`, the app starts without MCP support and `/mcp` returns `404`.
 
 Use encrypted OPC UA with the included sample client certificate (development/testing):

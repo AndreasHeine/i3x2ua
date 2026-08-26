@@ -1,7 +1,7 @@
 [project]
 name = "i3x2ua"
-version = "0.1.0"
-description = "i3X REST server backed by OPC UA"
+version = "1.7.6"
+description = "The i3X API Gateway for OPC UA"
 license = { file = "LICENSE" }
 requires-python = ">=3.12,<3.15"
 classifiers = [

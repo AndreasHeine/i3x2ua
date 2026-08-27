@@ -61,6 +61,12 @@ jobs:
         with:
           platforms: arm64,amd64
 
+      - name: Resolve lowercase image reference
+        id: image_ref
+        shell: bash
+        run: |
+          echo "name=${REGISTRY}/${IMAGE_NAME,,}" >> "$GITHUB_OUTPUT"
+
       - name: Determine server build version
         id: build_version
         shell: bash
@@ -102,7 +108,7 @@ jobs:
         if: ${{ github.event_name != 'pull_request' }}
         uses: aquasecurity/trivy-action@v0.36.0
         with:
-          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
+          image-ref: ${{ steps.image_ref.outputs.name }}@${{ steps.build.outputs.digest }}
           format: sarif
           output: trivy-results.sarif
           severity: CRITICAL,HIGH
@@ -118,7 +124,7 @@ jobs:
         if: ${{ github.event_name != 'pull_request' }}
         uses: aquasecurity/trivy-action@v0.36.0
         with:
-          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
+          image-ref: ${{ steps.image_ref.outputs.name }}@${{ steps.build.outputs.digest }}
           format: table
           severity: CRITICAL
           ignore-unfixed: true

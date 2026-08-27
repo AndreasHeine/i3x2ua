@@ -19,6 +19,7 @@ on:
 permissions:
   contents: read
   packages: write
+  security-events: write
 
 env:
   REGISTRY: ghcr.io
@@ -81,6 +82,7 @@ jobs:
           echo "Resolved BUILD_VERSION=${value}"
 
       - name: Build Docker image (push on non-PR events)
+        id: build
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -88,5 +90,36 @@ jobs:
           platforms: ${{ env.PLATFORMS }}
           tags: ${{ steps.metadata.outputs.tags }}
           labels: ${{ steps.metadata.outputs.labels }}
+          annotations: ${{ steps.metadata.outputs.annotations }}
           build-args: |
             BUILD_VERSION=${{ steps.build_version.outputs.build_version }}
+          sbom: true
+          provenance: mode=max
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Scan image for vulnerabilities (report)
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+
+      - name: Upload vulnerability scan results
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+
+      - name: Fail on critical vulnerabilities
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
+          format: table
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"

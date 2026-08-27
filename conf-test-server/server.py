@@ -16,6 +16,8 @@ ATTRIBUTE_IDS = cast(Any, ua).AttributeIds
 
 logger = logging.getLogger("i3x.conformance.server")
 
+_PRUNED_ROOT_CHILD_NAMES = frozenset({"Locations", "Aliases"})
+
 
 @dataclass(slots=True)
 class SignalNode:
@@ -53,6 +55,7 @@ class ConformanceFixtureServer:
         self._deep_levels = deep_levels
         self._stop_event = asyncio.Event()
         self._signals: list[SignalNode] = []
+        self._volatile_counter = 0
         self._server: Server | None = None
 
     async def run(self) -> None:
@@ -82,6 +85,15 @@ class ConformanceFixtureServer:
         server.set_server_name("i3x2ua Conformance Fixture")
 
         idx = await server.register_namespace(self._namespace_uri)
+
+        await self._prune_optional_root_children(server)
+
+        # Added before any other fixture node so it lands early in the browse order that
+        # the i3X conformance object sampling (first objects per distinct type) depends on.
+        self._signals.extend(await self._create_top_level_signal(idx, server.nodes.objects))
+
+        await self._create_volatile_counter(server, idx)
+
         plant = await server.nodes.objects.add_object(idx, "ConformancePlant")
 
         line_a = await plant.add_object(idx, "LineA")
@@ -115,6 +127,74 @@ class ConformanceFixtureServer:
             await self._seed_history()
 
         return server
+
+    async def _prune_optional_root_children(self, server: Server) -> None:
+        """Remove optional ns=0 nodes that asyncua adds under Objects during ``init()``.
+
+        ``Locations`` and ``Aliases`` are empty organizational nodes, but they occupy the
+        first distinct ``typeElementId`` slots of ``GET /objects``. The i3X conformance
+        suite samples history candidates from those first slots, so leaving them in place
+        pushes every historized variable out of the sample and makes QRY-08 untestable.
+        """
+        doomed: list[Any] = []
+        for child in await server.nodes.objects.get_children():
+            try:
+                browse_name = await child.read_browse_name()
+            except Exception:
+                logger.debug("Could not read browse name while pruning root children", exc_info=True)
+                continue
+            if browse_name.Name in _PRUNED_ROOT_CHILD_NAMES:
+                doomed.append(child)
+
+        if not doomed:
+            return
+
+        try:
+            await server.delete_nodes(doomed, recursive=True)
+        except Exception:
+            logger.warning("Failed to prune optional root children; QRY-08 sampling may stay untestable", exc_info=True)
+            return
+
+        logger.info("Pruned %d optional ns=0 node(s) under the Objects folder", len(doomed))
+
+    async def _create_volatile_counter(self, server: Server, idx: int) -> None:
+        """Expose a node whose value changes on every read.
+
+        i3X `SUB-13` acknowledges the sync queue and immediately re-syncs milliseconds later,
+        so only a node that differs between two back-to-back reads can leave a pending update
+        behind. Writing to this node would clear the callback, so it stays out of
+        ``self._signals`` and is never historized.
+        """
+        counter = await server.nodes.objects.add_variable(
+            idx,
+            "ConformanceVolatileCounter",
+            ua.Variant(0, ua.VariantType.Int64),
+        )
+        status = server.iserver.aspace.set_attribute_value_callback(
+            counter.nodeid,
+            ATTRIBUTE_IDS.Value,
+            self._next_volatile_counter_value,
+        )
+        if status.is_bad():
+            logger.warning("Could not install volatile counter read callback status=%s", status)
+            return
+        logger.info("Installed volatile counter read callback node=%s", counter.nodeid.to_string())
+
+    def _next_volatile_counter_value(self, node_id: Any, attribute_id: Any) -> ua.DataValue:
+        self._volatile_counter += 1
+        now = datetime.now(tz=timezone.utc)
+        opcua_timestamp = cast(Any, now)
+        return ua.DataValue(
+            Value=ua.Variant(self._volatile_counter, ua.VariantType.Int64),
+            SourceTimestamp=opcua_timestamp,
+            ServerTimestamp=opcua_timestamp,
+        )
+
+    async def _create_top_level_signal(self, idx: int, parent: Any) -> list[SignalNode]:
+        signal = await parent.add_variable(idx, "ConformanceHistorySignal", 42.0)
+        await signal.set_writable()
+        await self._set_historizing_flags(signal)
+        return [SignalNode("ConformanceHistorySignal", signal, 42.0, 7.5, 37.0, 0.6, ua.VariantType.Double)]
 
     async def _create_machine(
         self,

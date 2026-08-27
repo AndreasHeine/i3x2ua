@@ -28,9 +28,16 @@ uv run python conf-test-server/server.py --host 127.0.0.1 --port 4840 --history-
 
 ## Exposed model
 
+- `ConformanceHistorySignal` (Double, directly under the `Objects` folder)
 - `ConformancePlant`
 - `ConformancePlant/LineA/Mixer-01`
 - `ConformancePlant/LineB/Heater-01`
+
+`ConformanceHistorySignal` is created before every other fixture node so it appears early in the OPC UA browse order.
+The i3X conformance suite samples history candidates by taking the first object of each distinct `typeElementId` from `GET /objects`; without an early historized variable the sample only contains folder/`Server` nodes and `QRY-08` skips as untestable.
+
+For the same reason the fixture deletes the optional ns=0 `Locations` and `Aliases` nodes that `asyncua` creates under `Objects` during `init()`.
+They are empty organizational nodes, but they contribute two of the three distinct types the sampler collects, which would push `ConformanceHistorySignal` out of the sample.
 
 Each machine includes:
 

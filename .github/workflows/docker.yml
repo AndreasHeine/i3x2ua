@@ -100,7 +100,7 @@ jobs:
 
       - name: Scan image for vulnerabilities (report)
         if: ${{ github.event_name != 'pull_request' }}
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
           format: sarif
@@ -116,7 +116,7 @@ jobs:
 
       - name: Fail on critical vulnerabilities
         if: ${{ github.event_name != 'pull_request' }}
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
           format: table

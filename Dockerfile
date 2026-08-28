@@ -6,6 +6,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 RUN apt-get update \
+    && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends \
         build-essential \
         cargo \
@@ -16,7 +17,8 @@ RUN apt-get update \
         rustc \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir uv
+RUN python -m pip install --no-cache-dir --upgrade pip setuptools \
+    && pip install --no-cache-dir uv
 
 COPY pyproject.toml uv.lock README.md /app/
 COPY i3x_server /app/i3x_server
@@ -40,12 +42,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 RUN apt-get update \
+    && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
         tini \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 app \
-    && useradd --uid 10001 --gid app --create-home --shell /usr/sbin/nologin app
+    && useradd --uid 10001 --gid app --create-home --shell /usr/sbin/nologin app \
+    && python -m pip install --no-cache-dir --upgrade pip setuptools
 
 COPY --from=builder /app/.venv /app/.venv
 COPY i3x_server /app/i3x_server

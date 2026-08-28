@@ -1,4 +1,4 @@
-FROM python:3.14-slim AS builder
+FROM python:3.14.7-slim AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
@@ -31,7 +31,7 @@ RUN cd /app/frontend \
     && npm run build
 
 
-FROM python:3.14-slim AS runtime
+FROM python:3.14.7-slim AS runtime
 
 ARG BUILD_VERSION=master
 

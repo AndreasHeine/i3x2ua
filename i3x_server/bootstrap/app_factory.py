@@ -35,6 +35,7 @@ from i3x_server.mcp import build_mcp_tools, get_api_prefix, init_mcp_metrics, lo
 from i3x_server.model.builder import ModelBuilder
 from i3x_server.prompts.registry import PromptRegistry
 from i3x_server.schemas.state import BuildResult
+from i3x_server.version import get_server_version
 
 logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -479,7 +480,7 @@ def create_app() -> FastAPI:
     )
     app = FastAPI(
         title="The i3X API Gateway for OPC UA",
-        version="1.4",
+        version=get_server_version(),
         description=description,
         lifespan=lifespan,
         generate_unique_id_function=_readable_operation_id,

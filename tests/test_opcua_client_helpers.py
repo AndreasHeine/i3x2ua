@@ -478,11 +478,13 @@ async def test_get_namespace_infos_tolerates_partial_metadata_failures(monkeypat
     class _NamespaceMetaClient:
         def __init__(self) -> None:
             self._nodes: dict[str, _Node] = {
+                "i=2254": _Node("i=2254", value=["urn:test:server"]),
                 "i=11715": _Node("i=11715"),
                 "component-ok": _Node("component-ok", display_name="Component Ok"),
                 "component-fail": _Node("component-fail", display_name="Component Fail"),
                 "uri-ok": _Node("uri-ok", value="urn:ok"),
                 "uri-fail": _Node("uri-fail", value_error=TimeoutError("metadata timeout")),
+                "version-ok": _Node("version-ok", value="2.0"),
             }
 
         def get_node(self, node_id: Any) -> _Node:
@@ -513,7 +515,10 @@ async def test_get_namespace_infos_tolerates_partial_metadata_failures(monkeypat
         return [
             (
                 nodes[0],
-                [SimpleNamespace(BrowseName=SimpleNamespace(Name="NamespaceUri"), NodeId="uri-ok")],
+                [
+                    SimpleNamespace(BrowseName=SimpleNamespace(Name="NamespaceUri"), NodeId="uri-ok"),
+                    SimpleNamespace(BrowseName=SimpleNamespace(Name="NamespaceVersion"), NodeId="version-ok"),
+                ],
             ),
             (
                 nodes[1],
@@ -528,8 +533,13 @@ async def test_get_namespace_infos_tolerates_partial_metadata_failures(monkeypat
     infos = await client.get_namespace_infos()
 
     assert infos == [
-        OpcUaNamespaceInfo(uri="urn:ok", display_name="Component Ok"),
-        OpcUaNamespaceInfo(uri="urn:fail", display_name=""),
+        OpcUaNamespaceInfo(
+            uri="urn:ok",
+            display_name="Component Ok",
+            namespace_version="2.0",
+            server_uri="urn:test:server",
+        ),
+        OpcUaNamespaceInfo(uri="urn:fail", display_name="", server_uri="urn:test:server"),
     ]
 
 

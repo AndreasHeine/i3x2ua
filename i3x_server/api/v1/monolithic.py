@@ -409,19 +409,43 @@ def _to_urn_token(value: str) -> str:
     return token or "unknown"
 
 
+def _server_uri_for_namespace_infos(namespace_infos: list[OpcUaNamespaceInfo]) -> str:
+    for item in namespace_infos:
+        if isinstance(item.server_uri, str) and item.server_uri.strip():
+            return item.server_uri.strip()
+    return "unknown-server"
+
+
+def _namespace_version_for_uri(namespace_uri: str, namespace_infos: list[OpcUaNamespaceInfo]) -> str:
+    normalized_uri = _normalize_namespace_uri(namespace_uri)
+    for item in namespace_infos:
+        if _normalize_namespace_uri(item.uri) == normalized_uri:
+            if isinstance(item.namespace_version, str) and item.namespace_version.strip():
+                return item.namespace_version.strip()
+            break
+    return "unknown-version"
+
+
+def _server_uri_token(server_uri: str) -> str:
+    return _to_urn_token(re.sub(r"^urn:", "", server_uri.strip(), flags=re.IGNORECASE))
+
+
 def _object_type_element_id(
     item: OpcUaObjectTypeInfo,
     namespace_uri: str,
+    server_uri: str,
+    namespace_version: str,
 ) -> str:
     # Keep element IDs stable, queryable, and unique across namespaces.
     return ":".join(
         [
             "urn",
-            "opcua",
+            _server_uri_token(server_uri),
             "objecttype",
             _to_urn_token(namespace_uri),
+            f"v-{_to_urn_token(namespace_version)}",
             _to_urn_token(item.browse_name),
-            _to_urn_token(item.node_id),
+            _to_urn_token(item.node_id.split(";", 1)[-1]),
         ]
     )
 
@@ -430,17 +454,35 @@ def _virtual_object_type_element_id(
     namespace_uri: str,
     display_name: str,
     source_type_id: str,
+    server_uri: str,
+    namespace_version: str,
 ) -> str:
     # Keep synthetic structure IDs in the same namespace as regular objecttypes.
     return ":".join(
         [
             "urn",
-            "opcua",
+            _server_uri_token(server_uri),
             "objecttype",
             _to_urn_token(namespace_uri),
+            f"v-{_to_urn_token(namespace_version)}",
             _to_urn_token(display_name),
-            _to_urn_token(source_type_id),
+            _to_urn_token(source_type_id.split(";", 1)[-1]),
         ]
+    )
+
+
+def _virtual_element_id(
+    namespace_uri: str,
+    display_name: str,
+    source_type_id: str,
+    namespace_infos: list[OpcUaNamespaceInfo],
+) -> str:
+    return _virtual_object_type_element_id(
+        namespace_uri,
+        display_name,
+        source_type_id,
+        _server_uri_for_namespace_infos(namespace_infos),
+        _namespace_version_for_uri(namespace_uri, namespace_infos),
     )
 
 
@@ -453,7 +495,12 @@ def _to_object_type(
     element_ids_by_source_type: dict[str, str],
 ) -> ObjectTypeResponse:
     namespace_uri = _namespace_uri_for_node_id(item.node_id, namespace_infos)
-    element_id = _object_type_element_id(item, namespace_uri)
+    element_id = _object_type_element_id(
+        item,
+        namespace_uri,
+        _server_uri_for_namespace_infos(namespace_infos),
+        _namespace_version_for_uri(namespace_uri, namespace_infos),
+    )
     source_type_id = _expanded_node_id(item.node_id, namespace_infos)
     related_instances = _object_type_related_instances(
         model,
@@ -477,7 +524,12 @@ def _object_type_element_ids_by_node_id(
     namespace_infos: list[OpcUaNamespaceInfo],
 ) -> dict[str, str]:
     return {
-        item.node_id: _object_type_element_id(item, _namespace_uri_for_node_id(item.node_id, namespace_infos))
+        item.node_id: _object_type_element_id(
+            item,
+            _namespace_uri_for_node_id(item.node_id, namespace_infos),
+            _server_uri_for_namespace_infos(namespace_infos),
+            _namespace_version_for_uri(_namespace_uri_for_node_id(item.node_id, namespace_infos), namespace_infos),
+        )
         for item in object_types
     }
 
@@ -1104,7 +1156,7 @@ def _unknown_type_element_id(
     """
     namespace_uri = namespace_infos[0].uri if namespace_infos else "https://cesmii.org/i3x/unknown"
     namespace_uri = _canonical_namespace_uri(namespace_uri, namespace_infos) if namespace_infos else namespace_uri
-    return _virtual_object_type_element_id(namespace_uri, "UnknownType", "nsu=http://opcfoundation.org/UA/;i=0")
+    return _virtual_element_id(namespace_uri, "UnknownType", "nsu=http://opcfoundation.org/UA/;i=0", namespace_infos)
 
 
 def _unknown_type_placeholder(
@@ -1251,7 +1303,6 @@ async def _build_object_type_context(
         unresolved_key = unresolved_id.lower()
         source_match = by_source_type_id.get(unresolved_key)
         if source_match is not None:
-            items.append(_object_type_alias_with_element_id(source_match, unresolved_id))
             continue
 
         datatype_item = _datatype_object_type_from_source_type_id(unresolved_id, namespace_infos)
@@ -1334,7 +1385,9 @@ async def _get_object_type_context(
             tuple(sorted(model.nodes_by_id)),
             tuple(sorted(model.root_ids)),
         )
-        namespace_token = tuple((info.uri, info.display_name) for info in resolved_namespace_infos)
+        namespace_token = tuple(
+            (info.uri, info.display_name, info.namespace_version, info.server_uri) for info in resolved_namespace_infos
+        )
         object_types_token = tuple(item.node_id for item in object_types)
         if isinstance(cache, dict):
             if (
@@ -1520,7 +1573,7 @@ def _synthetic_object_types_from_structure_defs(
                 schema = remove_opcua_schema_fields(schema)
 
             synthetic_by_source_type_id[source_key] = ObjectTypeResponse(
-                elementId=_virtual_object_type_element_id(namespace_uri, display_name, source_type_id),
+                elementId=_virtual_element_id(namespace_uri, display_name, source_type_id, namespace_infos),
                 displayName=display_name,
                 namespaceUri=namespace_uri,
                 sourceTypeId=source_type_id,
@@ -1595,7 +1648,7 @@ async def _generic_object_type_from_source_type_id(
     if not _include_mcp_opcua_metadata():
         schema_payload = remove_opcua_schema_fields(schema_payload)
     return ObjectTypeResponse(
-        elementId=_virtual_object_type_element_id(canonical_namespace_uri, display_name, source_type_id),
+        elementId=_virtual_element_id(canonical_namespace_uri, display_name, source_type_id, namespace_infos),
         displayName=display_name,
         namespaceUri=canonical_namespace_uri,
         sourceTypeId=source_type_id,

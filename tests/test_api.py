@@ -189,9 +189,24 @@ class FakeOpcUaClient:
 
     async def get_namespace_infos(self) -> list[OpcUaNamespaceInfo]:
         return [
-            OpcUaNamespaceInfo(uri="http://example.com/i3x", display_name="I3X"),
-            OpcUaNamespaceInfo(uri="http://example.com/custom", display_name="Custom"),
-            OpcUaNamespaceInfo(uri="http://example.com/runtime", display_name="Runtime"),
+            OpcUaNamespaceInfo(
+                uri="http://example.com/i3x",
+                display_name="I3X",
+                namespace_version="1.0",
+                server_uri="urn:test-server",
+            ),
+            OpcUaNamespaceInfo(
+                uri="http://example.com/custom",
+                display_name="Custom",
+                namespace_version="1.0",
+                server_uri="urn:test-server",
+            ),
+            OpcUaNamespaceInfo(
+                uri="http://example.com/runtime",
+                display_name="Runtime",
+                namespace_version="1.0",
+                server_uri="urn:test-server",
+            ),
         ]
 
     async def get_object_types(self) -> list[SimpleNamespace]:
@@ -685,7 +700,7 @@ def test_v1_objecttypes(client: TestClient) -> None:
     assert payload["success"] is True
     assert len(payload["result"]) >= 3
     first = payload["result"][0]
-    assert first["elementId"].startswith("urn:opcua:objecttype:")
+    assert first["elementId"].startswith("urn:") and ":objecttype:" in first["elementId"]
     assert isinstance(first["displayName"], str)
     assert isinstance(first["namespaceUri"], str)
     assert isinstance(first["sourceTypeId"], str)
@@ -746,7 +761,7 @@ def test_v1_objecttypes(client: TestClient) -> None:
     synthetic = next(
         item for item in payload["result"] if item["sourceTypeId"] == "nsu=http://example.com/custom;i=3001"
     )
-    assert synthetic["elementId"].startswith("urn:opcua:objecttype:")
+    assert synthetic["elementId"].startswith("urn:") and ":objecttype:" in synthetic["elementId"]
     assert synthetic["namespaceUri"] == "http://example.com/custom"
     assert synthetic["displayName"] == "FakeMachineConfig"
     assert synthetic["schema"]["x-opcua-structureTypeId"] == "nsu=http://example.com/custom;i=3001"
@@ -855,7 +870,7 @@ def test_v1_objecttypes_includes_builtin_scalar_datatype_reference(client: TestC
         None,
     )
     assert builtin is not None
-    assert builtin["elementId"].startswith("urn:opcua:objecttype:")
+    assert builtin["elementId"].startswith("urn:") and ":objecttype:" in builtin["elementId"]
     assert builtin["displayName"] != "UnknownType"
     assert builtin["schema"]["oneOf"][0]["type"] == "null"
     assert builtin["schema"]["oneOf"][1]["type"] == "string"
@@ -959,12 +974,14 @@ def test_v1_objecttypes_registers_source_type_alias_element_id(client: TestClien
     assert payload["success"] is True
 
     alias = next(
-        (item for item in payload["result"] if item["elementId"] == "nsu=http://example.com/custom;i=3001"),
+        (item for item in payload["result"] if item["sourceTypeId"] == "nsu=http://example.com/custom;i=3001"),
         None,
     )
     assert alias is not None
     assert alias["displayName"] == "FakeMachineConfig"
     assert alias["sourceTypeId"] == "nsu=http://example.com/custom;i=3001"
+    assert alias["elementId"].startswith("urn:test-server:objecttype:")
+    assert alias["elementId"] != alias["sourceTypeId"]
     assert alias["schema"]["x-opcua-nodeId"] == "nsu=http://example.com/custom;i=3001"
 
 
@@ -1017,7 +1034,7 @@ def test_v1_objecttypes_registers_standard_ua_optionset_datatype_as_known(client
         None,
     )
     assert resolved is not None
-    assert resolved["elementId"].startswith("urn:opcua:objecttype:")
+    assert resolved["elementId"].startswith("urn:") and ":objecttype:" in resolved["elementId"]
     assert resolved["displayName"] == "AccessRestrictionType"
     assert resolved["schema"]["title"] == "AccessRestrictionType"
     assert resolved["schema"]["oneOf"][0]["type"] == "null"
@@ -1048,7 +1065,7 @@ def test_v1_objecttypes_registers_standard_ua_structured_datatype_as_known(clien
         None,
     )
     assert resolved is not None
-    assert resolved["elementId"].startswith("urn:opcua:objecttype:")
+    assert resolved["elementId"].startswith("urn:") and ":objecttype:" in resolved["elementId"]
     assert resolved["displayName"] == "SessionDiagnosticsDataType"
     assert resolved["schema"]["title"] == "SessionDiagnosticsDataType"
     session_ref = resolved["schema"]["oneOf"][1]["$ref"]
@@ -1080,7 +1097,7 @@ def test_v1_objecttypes_registers_standard_ua_role_permission_as_known(client: T
         None,
     )
     assert resolved is not None
-    assert resolved["elementId"].startswith("urn:opcua:objecttype:")
+    assert resolved["elementId"].startswith("urn:") and ":objecttype:" in resolved["elementId"]
     assert resolved["displayName"] == "RolePermissionType"
     assert resolved["schema"]["title"] == "RolePermissionType"
     role_ref = resolved["schema"]["oneOf"][1]["$ref"]
@@ -1112,7 +1129,7 @@ def test_v1_objecttypes_registers_generic_custom_nodeid_type_as_known(client: Te
         None,
     )
     assert resolved is not None
-    assert resolved["elementId"].startswith("urn:opcua:objecttype:")
+    assert resolved["elementId"].startswith("urn:") and ":objecttype:" in resolved["elementId"]
     assert resolved["displayName"] == "DataType"
     assert isinstance(resolved["schema"].get("oneOf"), list)
 
@@ -1141,7 +1158,7 @@ def test_v1_objecttypes_unresolved_standard_property_datatype_gets_fallback_sche
         None,
     )
     assert resolved is not None
-    assert resolved["elementId"].startswith("urn:opcua:objecttype:")
+    assert resolved["elementId"].startswith("urn:") and ":objecttype:" in resolved["elementId"]
     assert not resolved["displayName"].startswith("InferredType_")
     assert isinstance(resolved["schema"].get("oneOf"), list)
     assert resolved["schema"]["x-opcua-nodeId"] == "nsu=http://opcfoundation.org/UA/;i=14119"
@@ -1478,7 +1495,7 @@ def test_v1_objects_list_include_metadata_uses_expanded_source_type_id(client: T
     payload = response.json()
     assert payload["success"] is True
     result = payload["results"][0]["result"]
-    assert result["typeElementId"].startswith("urn:opcua:objecttype:")
+    assert result["typeElementId"].startswith("urn:") and ":objecttype:" in result["typeElementId"]
     metadata = payload["results"][0]["result"]["metadata"]
     assert metadata["typeNamespaceUri"] == "http://example.com/runtime"
     assert metadata["sourceTypeId"] == "nsu=http://example.com/runtime;s=Temperature"
@@ -1494,7 +1511,7 @@ def test_v1_objects_list_include_metadata_asset_type_namespace_uses_type_source_
     assert payload["success"] is True
 
     result = payload["results"][0]["result"]
-    assert result["typeElementId"].startswith("urn:opcua:objecttype:")
+    assert result["typeElementId"].startswith("urn:") and ":objecttype:" in result["typeElementId"]
 
     metadata = result["metadata"]
     assert metadata["sourceTypeId"] == "nsu=http://example.com/custom;i=1001"
@@ -1543,7 +1560,7 @@ def test_v1_objects_list_property_null_type_resolves_to_unknown_type(client: Tes
     assert payload["success"] is True
 
     result = payload["results"][0]["result"]
-    assert result["typeElementId"].startswith("urn:opcua:objecttype:")
+    assert result["typeElementId"].startswith("urn:") and ":objecttype:" in result["typeElementId"]
     assert result["typeElementId"] != "nsu=http://opcfoundation.org/UA/;i=0"
 
     object_types = client.get("/v1/objecttypes").json()["result"]

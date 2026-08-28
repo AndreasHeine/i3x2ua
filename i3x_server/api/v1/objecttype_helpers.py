@@ -20,7 +20,9 @@ from i3x_server.api.v1.object_helpers import (
     _is_null_opcua_type_node_id,
     _namespace_uri_for_node_id,
     _namespace_uri_from_expanded_node_id,
+    _namespace_version_for_uri,
     _object_type_element_ids_by_node_id,
+    _server_uri_for_namespace_infos,
     _to_object_type,
     _unknown_type_element_id,
     _virtual_object_type_element_id,
@@ -194,6 +196,21 @@ class _ObjectTypeContext:
     element_ids_by_node_id: dict[str, str]
     items: list[ObjectTypeResponse]
     source_type_to_element_id: dict[str, str]
+
+
+def _virtual_element_id(
+    namespace_uri: str,
+    display_name: str,
+    source_type_id: str,
+    namespace_infos: list[OpcUaNamespaceInfo],
+) -> str:
+    return _virtual_object_type_element_id(
+        namespace_uri,
+        display_name,
+        source_type_id,
+        _server_uri_for_namespace_infos(namespace_infos),
+        _namespace_version_for_uri(namespace_uri, namespace_infos),
+    )
 
 
 def _unknown_type_placeholder(
@@ -375,7 +392,7 @@ def _synthetic_object_types_from_structure_defs(
                 schema = remove_opcua_schema_fields(schema)
 
             synthetic_by_source_type_id[source_key] = ObjectTypeResponse(
-                elementId=_virtual_object_type_element_id(namespace_uri, display_name, source_type_id),
+                elementId=_virtual_element_id(namespace_uri, display_name, source_type_id, namespace_infos),
                 displayName=display_name,
                 namespaceUri=namespace_uri,
                 sourceTypeId=source_type_id,
@@ -478,7 +495,7 @@ def _datatype_object_type_from_source_type_id(
         schema_payload = remove_opcua_schema_fields(schema_payload)
 
     return ObjectTypeResponse(
-        elementId=_virtual_object_type_element_id(namespace_uri, display_name, source_type_id),
+        elementId=_virtual_element_id(namespace_uri, display_name, source_type_id, namespace_infos),
         displayName=display_name,
         namespaceUri=namespace_uri,
         sourceTypeId=source_type_id,
@@ -522,7 +539,7 @@ def _opaque_datatype_object_type_from_source_type_id(
         schema_payload = remove_opcua_schema_fields(schema_payload)
 
     return ObjectTypeResponse(
-        elementId=_virtual_object_type_element_id(namespace_uri, display_name, source_type_id),
+        elementId=_virtual_element_id(namespace_uri, display_name, source_type_id, namespace_infos),
         displayName=display_name,
         namespaceUri=namespace_uri,
         sourceTypeId=source_type_id,
@@ -594,7 +611,7 @@ async def _generic_object_type_from_source_type_id(
     if not _include_mcp_opcua_metadata():
         schema_payload = remove_opcua_schema_fields(schema_payload)
     return ObjectTypeResponse(
-        elementId=_virtual_object_type_element_id(canonical_namespace_uri, display_name, source_type_id),
+        elementId=_virtual_element_id(canonical_namespace_uri, display_name, source_type_id, namespace_infos),
         displayName=display_name,
         namespaceUri=canonical_namespace_uri,
         sourceTypeId=source_type_id,
@@ -637,7 +654,6 @@ async def _build_object_type_context(
         unresolved_key = unresolved_id.lower()
         source_match = by_source_type_id.get(unresolved_key)
         if source_match is not None:
-            items.append(_object_type_alias_with_element_id(source_match, unresolved_id))
             continue
 
         datatype_item = _datatype_object_type_from_source_type_id(unresolved_id, namespace_infos)
@@ -721,7 +737,9 @@ async def _get_object_type_context(
             tuple(sorted(model.nodes_by_id)),
             tuple(sorted(model.root_ids)),
         )
-        namespace_token = tuple((info.uri, info.display_name) for info in resolved_namespace_infos)
+        namespace_token = tuple(
+            (info.uri, info.display_name, info.namespace_version, info.server_uri) for info in resolved_namespace_infos
+        )
         object_types_token = tuple(item.node_id for item in object_types)
         if isinstance(cache, dict):
             if (

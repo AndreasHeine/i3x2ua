@@ -158,9 +158,24 @@ class FakeOpcUaClient:
 
     async def get_namespace_infos(self) -> list[OpcUaNamespaceInfo]:
         return [
-            OpcUaNamespaceInfo(uri="http://example.com/i3x", display_name="I3X"),
-            OpcUaNamespaceInfo(uri="http://example.com/custom", display_name="Custom"),
-            OpcUaNamespaceInfo(uri="http://example.com/runtime", display_name="Runtime"),
+            OpcUaNamespaceInfo(
+                uri="http://example.com/i3x",
+                display_name="I3X",
+                namespace_version="1.0",
+                server_uri="urn:test-server",
+            ),
+            OpcUaNamespaceInfo(
+                uri="http://example.com/custom",
+                display_name="Custom",
+                namespace_version="1.0",
+                server_uri="urn:test-server",
+            ),
+            OpcUaNamespaceInfo(
+                uri="http://example.com/runtime",
+                display_name="Runtime",
+                namespace_version="1.0",
+                server_uri="urn:test-server",
+            ),
         ]
 
     async def get_object_types(self) -> list[SimpleNamespace]:

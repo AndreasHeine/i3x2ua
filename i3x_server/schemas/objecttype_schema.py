@@ -1707,7 +1707,7 @@ def _definition_name(
     item: OpcUaObjectTypeInfo,
     element_ids_by_node_id: Mapping[str, str],
 ) -> str:
-    return element_ids_by_node_id.get(item.node_id, f"urn:opcua:objecttype:{item.browse_name.lower()}")
+    return element_ids_by_node_id.get(item.node_id, f"unresolved-objecttype:{item.browse_name.lower()}")
 
 
 def _expanded_node_id(node_id: str, namespace_infos: list[OpcUaNamespaceInfo]) -> str:

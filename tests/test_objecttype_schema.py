@@ -9,6 +9,7 @@ from typing import Any, cast
 import pytest
 from asyncua import ua
 
+from i3x_server.api.v1.object_helpers import _object_type_element_id
 from i3x_server.infrastructure.opcua.client import OpcUaNamespaceInfo, OpcUaObjectTypeInfo, OpcUaObjectTypeMemberInfo
 from i3x_server.schemas import objecttype_schema
 from i3x_server.schemas.objecttype_schema import build_object_type_schema
@@ -31,6 +32,49 @@ class Variant:
         self.Value = value
         self.VariantType = SimpleNamespace(name=variant_type_name)
         self.Dimensions = [0] if is_array else None
+
+
+def test_object_type_element_id_is_stable_without_namespace_index() -> None:
+    namespace_infos = [
+        OpcUaNamespaceInfo(
+            uri="http://opcfoundation.org/UA/Machinery/",
+            display_name="Machinery",
+            namespace_version="2.0",
+            server_uri="urn:company:server-a",
+        )
+    ]
+    first = OpcUaObjectTypeInfo(
+        node_id="ns=3;i=1014",
+        parent_node_id=None,
+        browse_name="MonitoringType",
+        display_name="MonitoringType",
+        properties={},
+    )
+    same_type_with_new_index = OpcUaObjectTypeInfo(
+        node_id="ns=4;i=1014",
+        parent_node_id=None,
+        browse_name="MonitoringType",
+        display_name="MonitoringType",
+        properties={},
+    )
+
+    first_id = _object_type_element_id(
+        first,
+        namespace_infos[0].uri,
+        namespace_infos[0].server_uri or "",
+        namespace_infos[0].namespace_version or "",
+    )
+    second_id = _object_type_element_id(
+        same_type_with_new_index,
+        namespace_infos[0].uri,
+        namespace_infos[0].server_uri or "",
+        namespace_infos[0].namespace_version or "",
+    )
+
+    assert first_id == second_id
+    assert first_id == (
+        "urn:company-server-a:objecttype:http-opcfoundation-org-ua-machinery:v-2-0:monitoringtype:i-1014"
+    )
 
 
 class DataValue:

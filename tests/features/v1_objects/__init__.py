@@ -142,7 +142,7 @@ def test_v1_objects_list_include_metadata_uses_expanded_source_type_id(client: T
     payload = response.json()
     assert payload["success"] is True
     result = payload["results"][0]["result"]
-    assert result["typeElementId"].startswith("urn:opcua:objecttype:")
+    assert result["typeElementId"].startswith("urn:") and ":objecttype:" in result["typeElementId"]
     metadata = payload["results"][0]["result"]["metadata"]
     assert metadata["typeNamespaceUri"] == "http://example.com/runtime"
     assert metadata["sourceTypeId"] == "nsu=http://example.com/runtime;s=Temperature"
@@ -190,7 +190,7 @@ def test_v1_objects_list_property_null_type_resolves_to_unknown_type(client: Tes
     assert payload["success"] is True
 
     result = payload["results"][0]["result"]
-    assert result["typeElementId"].startswith("urn:opcua:objecttype:")
+    assert result["typeElementId"].startswith("urn:") and ":objecttype:" in result["typeElementId"]
     assert result["typeElementId"] != "nsu=http://opcfoundation.org/UA/;i=0"
 
     object_types = client.get("/v1/objecttypes").json()["result"]

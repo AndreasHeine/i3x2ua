@@ -72,6 +72,8 @@ class OpcUaObjectTypeMemberInfo:
 class OpcUaNamespaceInfo:
     uri: str
     display_name: str
+    namespace_version: str | None = None
+    server_uri: str | None = None
 
 
 @dataclass(slots=True)

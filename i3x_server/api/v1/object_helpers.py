@@ -118,18 +118,43 @@ def _to_urn_token(value: str) -> str:
     return token or "unknown"
 
 
+def _server_uri_for_namespace_infos(namespace_infos: list[OpcUaNamespaceInfo]) -> str:
+    for item in namespace_infos:
+        if isinstance(item.server_uri, str) and item.server_uri.strip():
+            return item.server_uri.strip()
+    return "unknown-server"
+
+
+def _namespace_version_for_uri(namespace_uri: str, namespace_infos: list[OpcUaNamespaceInfo]) -> str:
+    normalized_uri = _normalize_namespace_uri(namespace_uri)
+    for item in namespace_infos:
+        if _normalize_namespace_uri(item.uri) == normalized_uri:
+            if isinstance(item.namespace_version, str) and item.namespace_version.strip():
+                return item.namespace_version.strip()
+            break
+    return "unknown-version"
+
+
+def _server_uri_token(server_uri: str) -> str:
+    normalized = re.sub(r"^urn:", "", server_uri.strip(), flags=re.IGNORECASE)
+    return _to_urn_token(normalized)
+
+
 def _object_type_element_id(
     item: OpcUaObjectTypeInfo,
     namespace_uri: str,
+    server_uri: str,
+    namespace_version: str,
 ) -> str:
     return ":".join(
         [
             "urn",
-            "opcua",
+            _server_uri_token(server_uri),
             "objecttype",
             _to_urn_token(namespace_uri),
+            f"v-{_to_urn_token(namespace_version)}",
             _to_urn_token(item.browse_name),
-            _to_urn_token(item.node_id),
+            _to_urn_token(item.node_id.split(";", 1)[-1]),
         ]
     )
 
@@ -138,15 +163,18 @@ def _virtual_object_type_element_id(
     namespace_uri: str,
     display_name: str,
     source_type_id: str,
+    server_uri: str,
+    namespace_version: str,
 ) -> str:
     return ":".join(
         [
             "urn",
-            "opcua",
+            _server_uri_token(server_uri),
             "objecttype",
             _to_urn_token(namespace_uri),
+            f"v-{_to_urn_token(namespace_version)}",
             _to_urn_token(display_name),
-            _to_urn_token(source_type_id),
+            _to_urn_token(source_type_id.split(";", 1)[-1]),
         ]
     )
 
@@ -156,7 +184,12 @@ def _object_type_element_ids_by_node_id(
     namespace_infos: list[OpcUaNamespaceInfo],
 ) -> dict[str, str]:
     return {
-        item.node_id: _object_type_element_id(item, _namespace_uri_for_node_id(item.node_id, namespace_infos))
+        item.node_id: _object_type_element_id(
+            item,
+            _namespace_uri_for_node_id(item.node_id, namespace_infos),
+            _server_uri_for_namespace_infos(namespace_infos),
+            _namespace_version_for_uri(_namespace_uri_for_node_id(item.node_id, namespace_infos), namespace_infos),
+        )
         for item in object_types
     }
 
@@ -453,7 +486,13 @@ def _build_object_instance_metadata(
 def _unknown_type_element_id(namespace_infos: list[OpcUaNamespaceInfo]) -> str:
     namespace_uri = namespace_infos[0].uri if namespace_infos else "https://cesmii.org/i3x/unknown"
     namespace_uri = _canonical_namespace_uri(namespace_uri, namespace_infos) if namespace_infos else namespace_uri
-    return _virtual_object_type_element_id(namespace_uri, "UnknownType", "nsu=http://opcfoundation.org/UA/;i=0")
+    return _virtual_object_type_element_id(
+        namespace_uri,
+        "UnknownType",
+        "nsu=http://opcfoundation.org/UA/;i=0",
+        _server_uri_for_namespace_infos(namespace_infos),
+        _namespace_version_for_uri(namespace_uri, namespace_infos),
+    )
 
 
 def _resolved_type_element_id_for_node(
@@ -551,7 +590,12 @@ def _to_object_type(
     element_ids_by_source_type: dict[str, str],
 ) -> ObjectTypeResponse:
     namespace_uri = _namespace_uri_for_node_id(item.node_id, namespace_infos)
-    element_id = _object_type_element_id(item, namespace_uri)
+    element_id = _object_type_element_id(
+        item,
+        namespace_uri,
+        _server_uri_for_namespace_infos(namespace_infos),
+        _namespace_version_for_uri(namespace_uri, namespace_infos),
+    )
     source_type_id = _expanded_node_id(item.node_id, namespace_infos)
     related_instances = _object_type_related_instances(
         model,

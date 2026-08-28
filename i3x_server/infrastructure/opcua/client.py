@@ -862,7 +862,24 @@ class OpcUaClient:
         started = perf_counter()
         cold_build = self._runtime_metrics.namespace_info_builds == 0
         uris = await self.get_namespaces()
+        server_uri: str | None = None
+        try:
+            server_array_node = self._client.get_node(f"i={ObjectIds.Server_ServerArray}")
+            server_array = await server_array_node.read_value()
+            if isinstance(server_array, (list, tuple)) and server_array:
+                candidate = server_array[0]
+                if isinstance(candidate, str) and candidate.strip():
+                    server_uri = candidate.strip()
+        except Exception:
+            logger.warning(
+                "OPC UA ServerArray read failed endpoint=%s; server URI unavailable",
+                self._endpoint,
+                exc_info=True,
+            )
+
         display_by_uri: dict[str, str] = {}
+        uri_by_component_id: dict[str, str] = {}
+        version_by_component_id: dict[str, str] = {}
 
         try:
             limits = await self.get_operational_limits()
@@ -917,14 +934,18 @@ class OpcUaClient:
                 )
 
                 for ref in refs:
-                    if ref.BrowseName.Name != "NamespaceUri":
+                    if ref.BrowseName.Name not in {"NamespaceUri", "NamespaceVersion"}:
                         continue
                     child = self._client.get_node(ref.NodeId)
                     try:
-                        uri_value = await child.read_value()
-                        uri = str(uri_value)
-                        if uri:
-                            display_by_uri[uri] = component_display or uri
+                        value = await child.read_value()
+                        if ref.BrowseName.Name == "NamespaceUri":
+                            uri = str(value)
+                            if uri:
+                                display_by_uri[uri] = component_display or uri
+                                uri_by_component_id[component.nodeid.to_string()] = uri
+                        elif isinstance(value, str) and value.strip():
+                            version_by_component_id[component.nodeid.to_string()] = value.strip()
                     except Exception as exc:
                         metadata_failures += 1
                         logger.debug(
@@ -933,8 +954,6 @@ class OpcUaClient:
                             child.nodeid.to_string(),
                             exc_info=exc,
                         )
-                    break
-
             if metadata_failures:
                 logger.warning(
                     "OPC UA namespace metadata partially read endpoint=%s failures=%d; "
@@ -948,7 +967,21 @@ class OpcUaClient:
                 self._endpoint,
             )
 
-        infos = [OpcUaNamespaceInfo(uri=uri, display_name=display_by_uri.get(uri, "")) for uri in uris]
+        resolved_versions = {
+            uri: version_by_component_id[component_id]
+            for component_id, uri in uri_by_component_id.items()
+            if component_id in version_by_component_id
+        }
+
+        infos = [
+            OpcUaNamespaceInfo(
+                uri=uri,
+                display_name=display_by_uri.get(uri, ""),
+                namespace_version=resolved_versions.get(uri),
+                server_uri=server_uri,
+            )
+            for uri in uris
+        ]
         self._namespace_infos_cache = (perf_counter(), infos)
         self._runtime_metrics.namespace_info_builds += 1
         self._runtime_metrics.namespace_info_count_last = len(infos)

@@ -50,6 +50,7 @@ services:
       # I3X_OTEL_SERVICE_NAME: i3x2ua  # OpenTelemetry service name.
       # I3X_OTEL_OTLP_ENDPOINT: ""  # OTLP collector base endpoint.
       I3X_ENABLE_MCP: 1  # Enable MCP endpoints and tool catalog.
+      I3X_ENABLE_WRITES: 1  # Enable write operations.
       # I3X_SKIP_OPCUA_CONNECT: 0  # Skip OPC UA connect for dev/testing.
       # I3X_DEBUG_SUBSCRIPTION_STREAM: 0  # Enable verbose SSE stream diagnostics.
       # I3X_RELOAD: 0  # Auto-reload toggle for run.py.
@@ -99,10 +100,10 @@ services:
       NGINX_SSL_CERTIFICATE_KEY: /etc/nginx/certs/https-sample/privkey.pem  # TLS private key file in container.
       NGINX_HTTP_PORT: 80  # Internal container HTTP listen port.
       NGINX_HTTPS_PORT: 443  # Internal container HTTPS listen port.
-      # NGINX_BASIC_AUTH_ENABLED: 0  # Enable Basic Auth at reverse proxy.
-      # NGINX_BASIC_AUTH_USER: ""  # Basic Auth username.
-      # NGINX_BASIC_AUTH_PASSWORD: ""  # Basic Auth password.
-      # NGINX_BASIC_AUTH_REALM: i3x2ua  # Basic Auth realm text.
+      NGINX_BASIC_AUTH_ENABLED: 1  # Enable Basic Auth at reverse proxy.
+      NGINX_BASIC_AUTH_USER: "admin"  # Basic Auth username.
+      NGINX_BASIC_AUTH_PASSWORD: "pw1"  # Basic Auth password.
+      NGINX_BASIC_AUTH_REALM: i3x2ua  # Basic Auth realm text.
     volumes:
       - ./certs:/etc/nginx/certs:ro
     read_only: true

@@ -17,7 +17,8 @@ upstream_port="${NGINX_UPSTREAM_PORT:-8000}"
 server_name="${NGINX_SERVER_NAME:-_}"
 basic_auth_enabled="${NGINX_BASIC_AUTH_ENABLED:-0}"
 https_enabled="${NGINX_HTTPS_ENABLED:-0}"
-auth_file="/etc/nginx/.htpasswd"
+# Container runs read_only; conf.d is the only writable path available for the generated auth file.
+auth_file="/etc/nginx/conf.d/.htpasswd"
 cert_file="${NGINX_SSL_CERTIFICATE:-/etc/nginx/certs/fullchain.pem}"
 key_file="${NGINX_SSL_CERTIFICATE_KEY:-/etc/nginx/certs/privkey.pem}"
 realm="${NGINX_BASIC_AUTH_REALM:-i3x2ua}"
@@ -99,6 +100,10 @@ server {
   ssl_protocols TLSv1.2 TLSv1.3;
   ssl_prefer_server_ciphers on;
 
+  location = /v1/info {
+$(printf '%s\n' "$proxy_block")
+  }
+
   location = /v1/subscriptions/stream {
 $(printf '%s\n' "$auth_block")
 $(printf '%s\n' "$sse_proxy_block")
@@ -115,6 +120,10 @@ else
 server {
   listen 80;
   server_name $server_name;
+
+  location = /v1/info {
+$(printf '%s\n' "$proxy_block")
+  }
 
   location = /v1/subscriptions/stream {
 $(printf '%s\n' "$auth_block")

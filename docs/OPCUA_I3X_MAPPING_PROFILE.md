@@ -31,6 +31,9 @@ added later without changing the mapping contract described here.
 1. Object instance `elementId`
 - Implementation-owned stable identifier.
 - Must be unique within the i3X address space.
+- Generated as `<kind>-SHA1(ExpandedNodeId)[:16]`, where the ExpandedNodeId
+  uses the namespace URI (`nsu=...`) rather than a session-specific namespace
+  index (`ns=N`).
 
 2. Object instance `typeElementId`
 - The i3X type reference used by clients.

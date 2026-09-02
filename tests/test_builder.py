@@ -4,6 +4,7 @@ from typing import cast
 
 import pytest
 
+from i3x_server.domain.ports.opcua import OpcUaNamespaceInfo
 from i3x_server.infrastructure.opcua.client import OpcUaClientProtocol, OpcUaNodeInfo, OpcUaReferenceInfo
 from i3x_server.model.builder import ModelBuilder, _kind_for_node
 from i3x_server.model.mapper import infer_kind, map_type, stable_i3x_id
@@ -43,6 +44,29 @@ class FakeOpcuaForBuilder:
                 event_notifier=False,
             ),
         ]
+
+
+class FakeOpcuaWithNamespaceInfo:
+    def __init__(self, node_id: str, namespace_infos: list[OpcUaNamespaceInfo]) -> None:
+        self._node_id = node_id
+        self._namespace_infos = namespace_infos
+
+    async def browse_tree(self) -> list[OpcUaNodeInfo]:
+        return [
+            OpcUaNodeInfo(
+                node_id=self._node_id,
+                parent_node_id=None,
+                browse_name="Machine",
+                display_name="Machine",
+                node_class="Object",
+                data_type=None,
+                type_definition_id="ns=0;i=58",
+                event_notifier=False,
+            )
+        ]
+
+    async def get_namespace_infos(self) -> list[OpcUaNamespaceInfo]:
+        return self._namespace_infos
 
 
 class FakeOpcuaWithOutgoingReferences:
@@ -249,6 +273,41 @@ async def test_model_builder_prefers_outgoing_reference_metadata_when_present() 
     assert result.hierarchy_children_by_id[root_id] == [action_id]
     assert result.relationships_by_id[root_id]["HasComponent"] == [property_id]
     assert result.relationships_by_id[root_id]["HasChildren"] == [action_id]
+
+
+@pytest.mark.asyncio
+async def test_model_builder_element_ids_ignore_namespace_index_reordering() -> None:
+    standard = OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/", display_name="OPC UA")
+    process_values = OpcUaNamespaceInfo(
+        uri="http://opcfoundation.org/UA/Machinery/ProcessValues/",
+        display_name="Process Values",
+    )
+    other = OpcUaNamespaceInfo(uri="urn:example:other", display_name="Other")
+
+    first_builder = ModelBuilder(
+        cast(
+            OpcUaClientProtocol,
+            FakeOpcuaWithNamespaceInfo("ns=1;s=Machine", [standard, process_values]),
+        )
+    )
+    reordered_builder = ModelBuilder(
+        cast(
+            OpcUaClientProtocol,
+            FakeOpcuaWithNamespaceInfo("ns=2;s=Machine", [standard, other, process_values]),
+        )
+    )
+
+    first_result = await first_builder.build()
+    reordered_result = await reordered_builder.build()
+
+    expected_id = stable_i3x_id(
+        "nsu=http://opcfoundation.org/UA/Machinery/ProcessValues/;s=Machine",
+        "asset",
+    )
+    assert first_result.root_ids == [expected_id]
+    assert reordered_result.root_ids == [expected_id]
+    assert first_result.nodes_by_id[expected_id].source_node_id == "ns=1;s=Machine"
+    assert reordered_result.nodes_by_id[expected_id].source_node_id == "ns=2;s=Machine"
 
 
 @pytest.mark.asyncio

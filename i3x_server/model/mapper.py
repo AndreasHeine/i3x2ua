@@ -237,6 +237,7 @@ def map_node(
     node: OpcUaNodeInfo,
     children: list[str],
     *,
+    element_id: str | None = None,
     parent_id: str | None = None,
     is_composition: bool = False,
     semantic_role: SemanticRole = "unknown",
@@ -246,7 +247,7 @@ def map_node(
 ) -> ModelNode:
     kind = infer_kind(node)
     return ModelNode(
-        id=stable_i3x_id(node.node_id, kind),
+        id=element_id or stable_i3x_id(node.node_id, kind),
         name=node.display_name or node.browse_name,
         kind=kind,
         type=map_type(node, kind),

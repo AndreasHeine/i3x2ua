@@ -4,7 +4,8 @@ import logging
 from datetime import datetime, timezone
 from time import perf_counter
 
-from i3x_server.domain.ports.opcua import OpcUaClientProtocol, OpcUaNodeInfo
+from i3x_server.domain.ports.opcua import OpcUaClientProtocol, OpcUaNamespaceInfo, OpcUaNodeInfo
+from i3x_server.domain.utils import expanded_node_id
 from i3x_server.model.mapper import classify_opcua_reference_with_confidence, map_node, stable_i3x_id
 from i3x_server.model.semantic_profiles import (
     ResolvedProfileSet,
@@ -32,6 +33,7 @@ class ModelBuilder:
         map_started = perf_counter()
         by_source_node = {node.node_id: node for node in opc_nodes}
 
+        namespace_infos: list[OpcUaNamespaceInfo] = []
         namespace_uri_by_index: dict[int, str] = {}
         get_namespace_infos = getattr(self._opcua_client, "get_namespace_infos", None)
         if callable(get_namespace_infos):
@@ -81,6 +83,10 @@ class ModelBuilder:
 
         child_ids_by_source: dict[str, list[str]] = {}
         mapped_id_by_source: dict[str, str] = {}
+        identity_node_id_by_source = {
+            source_id: expanded_node_id(opc_node.node_id, namespace_infos)
+            for source_id, opc_node in by_source_node.items()
+        }
         hierarchy_candidate_parents_by_child: dict[str, list[tuple[int, str, str]]] = {}
         composition_candidate_parents_by_child: dict[str, list[tuple[int, str, str]]] = {}
         graph_related_by_source: dict[str, list[tuple[str, str]]] = {}
@@ -90,7 +96,7 @@ class ModelBuilder:
         namespace_uri_by_source: dict[str, str | None] = {}
 
         for source_id, opc_node in by_source_node.items():
-            mapped_id = stable_i3x_id(opc_node.node_id, _kind_for_node(opc_node))
+            mapped_id = stable_i3x_id(identity_node_id_by_source[source_id], _kind_for_node(opc_node))
             mapped_id_by_source[source_id] = mapped_id
             namespace_uri = resolve_namespace_uri(opc_node.node_id, namespace_uri_by_index)
             namespace_uri_by_source[source_id] = namespace_uri
@@ -100,7 +106,7 @@ class ModelBuilder:
             child_sources = child_sources_by_parent.get(source_id, [])
             child_ids = [
                 stable_i3x_id(
-                    by_source_node[child_source].node_id,
+                    identity_node_id_by_source[child_source],
                     _kind_for_node(by_source_node[child_source]),
                 )
                 for child_source in child_sources
@@ -132,7 +138,7 @@ class ModelBuilder:
             seen_relationship_edges: set[tuple[str, str]] = set()
             for target_source_id, reference_type_id, reference_browse_name in reference_entries:
                 child_node = by_source_node[target_source_id]
-                child_id = stable_i3x_id(child_node.node_id, _kind_for_node(child_node))
+                child_id = stable_i3x_id(identity_node_id_by_source[target_source_id], _kind_for_node(child_node))
                 if (target_source_id, child_id) in seen_relationship_edges:
                     continue
                 seen_relationship_edges.add((target_source_id, child_id))
@@ -274,6 +280,7 @@ class ModelBuilder:
             mapped = map_node(
                 opc_node,
                 child_ids,
+                element_id=mapped_id,
                 parent_id=selected_parent_id_resolved,
                 is_composition=bool(composition_children),
                 semantic_role=semantic_role,

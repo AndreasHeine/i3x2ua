@@ -405,9 +405,7 @@ class SubscriptionService:
         async with self._lock:
             stale_bins = list(self._bins.values())
             self._bins.clear()
-            affected_node_ids = [
-                node_id for bin_ in stale_bins for node_id in bin_.node_handles
-            ]
+            affected_node_ids = [node_id for bin_ in stale_bins for node_id in bin_.node_handles]
             for node_id in affected_node_ids:
                 monitor = self._node_monitors.get(node_id)
                 if monitor is not None:
@@ -1266,7 +1264,6 @@ class SubscriptionService:
                 await asyncio.sleep(self._interval_seconds)
         except asyncio.CancelledError:
             return
-
 
     async def _seed_initial_updates(self, subscription_id: str) -> None:
         if not self._seed_initial_values:

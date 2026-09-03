@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     subscription_native_timeout_refresh_mode: str = Field(default="adaptive")
     subscription_native_timeout_refresh_keepalives: int = Field(default=3, ge=1)
     subscription_native_timeout_refresh_max_seconds: float = Field(default=30.0, gt=0)
+    subscription_max_concurrent_native_admissions: int = Field(default=4, ge=1)
+    subscription_native_backoff_seconds: float = Field(default=30.0, gt=0)
     log_level: str = Field(default="INFO")
     cors_allowed_origins: list[str] = Field(default_factory=list)
     otel_enabled: bool = Field(default=False)

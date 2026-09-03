@@ -369,6 +369,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         native_timeout_refresh_mode=settings.subscription_native_timeout_refresh_mode,
         native_timeout_refresh_keepalives=settings.subscription_native_timeout_refresh_keepalives,
         native_timeout_refresh_max_seconds=settings.subscription_native_timeout_refresh_max_seconds,
+        max_concurrent_native_admissions=settings.subscription_max_concurrent_native_admissions,
+        native_backoff_seconds=settings.subscription_native_backoff_seconds,
     )
     # Install a chained signal handler so that active SSE streaming connections
     # are closed *before* Uvicorn's "Waiting for connections to close" phase.

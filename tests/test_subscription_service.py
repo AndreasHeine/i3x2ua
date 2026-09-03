@@ -14,7 +14,9 @@ from i3x_server.infrastructure.opcua.client import (
 from i3x_server.infrastructure.subscriptions.service import (
     SubscriptionService,
     _DataChangeHandler,
+    _ManagedBin,
     _min_positive,
+    _NodeMonitor,
     _SubscriptionState,
 )
 from i3x_server.schemas.i3x import ModelNode
@@ -27,6 +29,9 @@ class FakeOpcUaClient:
         self.removed_listeners: list[Any] = []
         self.deleted_subscriptions: list[Any] = []
         self.read_values_calls = 0
+        self.create_subscription_calls = 0
+        self.subscribe_calls = 0
+        self.unsubscribed_calls: list[tuple[Any, list[int]]] = []
 
     def add_reconnect_listener(self, listener: Any) -> None:
         self.listeners.append(listener)
@@ -47,11 +52,19 @@ class FakeOpcUaClient:
 
     async def create_datachange_subscription(self, publishing_interval_ms: float, handler: Any) -> Any:
         del publishing_interval_ms, handler
-        return SimpleNamespace(id="ua-sub")
+        self.create_subscription_calls += 1
+        return SimpleNamespace(id=f"ua-sub-{self.create_subscription_calls}")
 
     async def subscribe_data_changes(self, subscription: Any, node_ids: list[str]) -> int | list[int]:
-        del subscription, node_ids
-        return [1, 2, 3]
+        del subscription
+        handles: list[int] = []
+        for _ in node_ids:
+            self.subscribe_calls += 1
+            handles.append(self.subscribe_calls)
+        return handles
+
+    async def unsubscribe_data_changes(self, subscription: Any, handles: list[int]) -> None:
+        self.unsubscribed_calls.append((subscription, list(handles)))
 
     async def delete_subscription(self, subscription: Any) -> None:
         self.deleted_subscriptions.append(subscription)
@@ -431,7 +444,7 @@ async def test_single_monitored_object_fallbacks_element_id_when_mapping_missing
 
 
 @pytest.mark.asyncio
-async def test_polling_path_collects_updates() -> None:
+async def test_shared_polling_loop_collects_updates() -> None:
     client = FakeOpcUaClient()
     service = SubscriptionService(cast(OpcUaClientProtocol, client), interval_seconds=1)
     created = await service.create_subscription(client_id="c1", display_name="poll")
@@ -440,11 +453,13 @@ async def test_polling_path_collects_updates() -> None:
     model = _model()
     await service.register_items("c1", subscription_id, ["asset-root"], max_depth=2, model=model)
 
+    node_id = "ns=2;s=Temperature"
     async with service._lock:
-        state = service._subscriptions[subscription_id]
-        state.mode = "polling"
+        monitor = _NodeMonitor(node_id=node_id, mode="polling")
+        monitor.subscriber_ids.add(subscription_id)
+        service._node_monitors[node_id] = monitor
 
-    task = asyncio.create_task(service._polling_loop(subscription_id))
+    task = asyncio.create_task(service._shared_polling_loop())
     await asyncio.sleep(0.05)
     task.cancel()
     await task
@@ -482,16 +497,16 @@ async def test_wait_for_updates_refreshes_native_timeout_without_callbacks() -> 
 
 
 @pytest.mark.asyncio
-async def test_must_use_polling_limits_and_helpers() -> None:
+async def test_can_open_new_bin_limits_and_helpers() -> None:
     service = SubscriptionService(cast(OpcUaClientProtocol, FakeOpcUaClient()), interval_seconds=1)
-    created = await service.create_subscription(client_id="c1", display_name=None)
-    subscription_id = created.subscription_id
-    model = _model()
-    await service.register_items("c1", subscription_id, ["asset-root"], max_depth=0, model=model)
 
     async with service._lock:
-        state = service._subscriptions[subscription_id]
-        state.monitored_node_ids = {"a", "b", "c"}
+        service._bins["bin-existing"] = _ManagedBin(
+            bin_id="bin-existing",
+            ua_subscription=object(),
+            capacity=1,
+            node_handles={"ns=2;s=Existing": 1},
+        )
 
     caps = OpcUaSubscriptionCapabilities(
         max_monitored_items_per_call=1,
@@ -500,9 +515,52 @@ async def test_must_use_polling_limits_and_helpers() -> None:
         max_subscriptions_per_session=1,
         max_monitored_items_per_subscription=1,
     )
-    assert await service._must_use_polling(state, caps) is True
+    assert await service._can_open_new_bin(caps) is False
     assert _min_positive(None, 0, -1) is None
     assert _min_positive(None, 5, 2) == 2
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_two_subscriptions_on_same_node_share_native_runtime() -> None:
+    """Phase 1 of the shared-monitoring plan: two subscriptions on the same node
+    share a single native OPC UA subscription and see the same datachange fan-out.
+    """
+    client = FakeOpcUaClient()
+    service = SubscriptionService(cast(OpcUaClientProtocol, client), interval_seconds=1, seed_initial_values=False)
+    model = _model()
+
+    sub_a = await service.create_subscription(client_id="client-a", display_name="poll")
+    sub_b = await service.create_subscription(client_id="client-b", display_name="stream")
+    assert await service.register_items("client-a", sub_a.subscription_id, ["prop-a"], max_depth=0, model=model)
+    assert await service.register_items("client-b", sub_b.subscription_id, ["prop-a"], max_depth=0, model=model)
+
+    # Only one native OPC UA subscription was created for the shared node.
+    assert client.create_subscription_calls == 1
+
+    async with service._lock:
+        monitor = service._node_monitors["ns=2;s=Temperature"]
+        assert monitor.subscriber_ids == {sub_a.subscription_id, sub_b.subscription_id}
+
+    # A single node-level datachange fans out to both subscriptions' buffers.
+    await service._fanout_node_value("ns=2;s=Temperature", 42.0)
+    synced_a = await service.sync("client-a", sub_a.subscription_id, acknowledge_sequence=0)
+    synced_b = await service.sync("client-b", sub_b.subscription_id, acknowledge_sequence=0)
+    assert synced_a is not None and synced_a.updates and synced_a.updates[0].value == 42.0
+    assert synced_b is not None and synced_b.updates and synced_b.updates[0].value == 42.0
+
+    # Releasing one subscription keeps the shared monitor alive for the other.
+    assert await service.unregister_items("client-a", sub_a.subscription_id, ["prop-a"], model=model) is True
+    async with service._lock:
+        assert "ns=2;s=Temperature" in service._node_monitors
+        assert service._node_monitors["ns=2;s=Temperature"].subscriber_ids == {sub_b.subscription_id}
+
+    # Releasing the last subscriber reclaims/deletes the shared OPC UA subscription.
+    assert await service.unregister_items("client-b", sub_b.subscription_id, ["prop-a"], model=model) is True
+    async with service._lock:
+        assert "ns=2;s=Temperature" not in service._node_monitors
+    assert len(client.deleted_subscriptions) == 1
+
     await service.close()
 
 
@@ -686,3 +744,136 @@ def test_append_update_deduplicates_same_value() -> None:
     assert len(state.updates) == 2
     parsed_timestamp = datetime.fromisoformat(state.updates[0].timestamp.replace("Z", "+00:00"))
     assert parsed_timestamp <= datetime.now(timezone.utc)
+
+
+@pytest.mark.asyncio
+async def test_distinct_nodes_are_packed_into_one_bin() -> None:
+    """Phase 2: two distinct nodes with spare per-subscription capacity share one bin."""
+    client = FakeOpcUaClient()
+    service = SubscriptionService(cast(OpcUaClientProtocol, client), interval_seconds=1, seed_initial_values=False)
+    created = await service.create_subscription(client_id="c1", display_name=None)
+    subscription_id = created.subscription_id
+    model = _model()
+
+    assert await service.register_items("c1", subscription_id, ["asset-root"], max_depth=2, model=model) is True
+
+    # Two distinct properties (prop-a, prop-b) resolved to two node monitors, but only
+    # one native OPC UA subscription (bin) was opened since the fake server's capacity
+    # (100) comfortably fits both.
+    assert client.create_subscription_calls == 1
+
+    async with service._lock:
+        assert len(service._bins) == 1
+        bin_ = next(iter(service._bins.values()))
+        assert set(bin_.node_handles.keys()) == {"ns=2;s=Temperature", "ns=2;s=Pressure"}
+        assert service._node_monitors["ns=2;s=Temperature"].bin_id == bin_.bin_id
+        assert service._node_monitors["ns=2;s=Pressure"].bin_id == bin_.bin_id
+
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_bin_overflow_opens_second_bin() -> None:
+    """Phase 2: once a bin is full, the next node opens a new bin instead of failing."""
+
+    class _TinyCapacityClient(FakeOpcUaClient):
+        async def get_subscription_capabilities(self) -> Any:
+            return SimpleNamespace(
+                max_monitored_items_per_call=1,
+                max_subscriptions=10,
+                max_monitored_items=10,
+                max_subscriptions_per_session=10,
+                max_monitored_items_per_subscription=1,
+            )
+
+    client = _TinyCapacityClient()
+    service = SubscriptionService(cast(OpcUaClientProtocol, client), interval_seconds=1, seed_initial_values=False)
+    created = await service.create_subscription(client_id="c1", display_name=None)
+    subscription_id = created.subscription_id
+    model = _model()
+
+    assert await service.register_items("c1", subscription_id, ["asset-root"], max_depth=2, model=model) is True
+
+    # Capacity of 1 monitored item per bin forces the two distinct nodes into two bins.
+    assert client.create_subscription_calls == 2
+    async with service._lock:
+        assert len(service._bins) == 2
+        assert all(len(bin_.node_handles) == 1 for bin_ in service._bins.values())
+
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_bin_reclaimed_when_last_node_released_others_kept() -> None:
+    """Phase 2: releasing one node from a shared bin keeps the bin for the remaining node."""
+    client = FakeOpcUaClient()
+    service = SubscriptionService(cast(OpcUaClientProtocol, client), interval_seconds=1, seed_initial_values=False)
+    created = await service.create_subscription(client_id="c1", display_name=None)
+    subscription_id = created.subscription_id
+    model = _model()
+
+    assert await service.register_items("c1", subscription_id, ["prop-a", "prop-b"], max_depth=0, model=model) is True
+    async with service._lock:
+        bin_id = service._node_monitors["ns=2;s=Temperature"].bin_id
+
+    # Drop just prop-a; prop-b (same bin) must stay monitored, and only that one
+    # monitored item is unsubscribed rather than tearing down the whole bin.
+    assert await service.unregister_items("c1", subscription_id, ["prop-a"], model=model) is True
+    async with service._lock:
+        assert bin_id in service._bins
+        assert "ns=2;s=Temperature" not in service._bins[bin_id].node_handles
+        assert "ns=2;s=Pressure" in service._bins[bin_id].node_handles
+    assert client.unsubscribed_calls
+    assert not client.deleted_subscriptions
+
+    # Dropping the last node in the bin reclaims (deletes) the whole OPC UA subscription.
+    assert await service.unregister_items("c1", subscription_id, ["prop-b"], model=model) is True
+    async with service._lock:
+        assert bin_id not in service._bins
+    assert len(client.deleted_subscriptions) == 1
+
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_native_admission_failure_backs_off_to_polling() -> None:
+    """Phase 4: a real OPC UA rejection triggers a cooldown so later admissions poll instead of retrying native."""
+
+    class _FailingCreateClient(FakeOpcUaClient):
+        async def create_datachange_subscription(self, publishing_interval_ms: float, handler: Any) -> Any:
+            del publishing_interval_ms, handler
+            raise RuntimeError("simulated ServiceFault: BadTooManySubscriptions")
+
+    client = _FailingCreateClient()
+    service = SubscriptionService(
+        cast(OpcUaClientProtocol, client),
+        interval_seconds=1,
+        seed_initial_values=False,
+        native_backoff_seconds=60.0,
+    )
+    created_a = await service.create_subscription(client_id="c1", display_name=None)
+    model = _model()
+    assert await service.register_items("c1", created_a.subscription_id, ["prop-a"], max_depth=0, model=model) is True
+
+    async with service._lock:
+        assert service._node_monitors["ns=2;s=Temperature"].mode == "polling"
+    assert service._native_backoff_until_monotonic > 0.0
+
+    # A second, unrelated node registered shortly after should skip native entirely
+    # (no further create_datachange_subscription attempts) while backoff is active.
+    attempts_before = 0
+
+    async def _count_and_fail(*_args: Any, **_kwargs: Any) -> Any:
+        nonlocal attempts_before
+        attempts_before += 1
+        raise RuntimeError("should not be retried during backoff")
+
+    client.create_datachange_subscription = _count_and_fail  # type: ignore[method-assign]
+
+    created_b = await service.create_subscription(client_id="c2", display_name=None)
+    assert await service.register_items("c2", created_b.subscription_id, ["prop-b"], max_depth=0, model=model) is True
+    async with service._lock:
+        assert service._node_monitors["ns=2;s=Pressure"].mode == "polling"
+    assert attempts_before == 0
+
+    await service.close()

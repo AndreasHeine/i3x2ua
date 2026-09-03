@@ -2007,6 +2007,9 @@ class OpcUaClient:
         nodes = [self._client.get_node(node_id) for node_id in node_ids]
         return await subscription.subscribe_data_change(nodes)
 
+    async def unsubscribe_data_changes(self, subscription: Any, handles: list[int]) -> None:
+        await subscription.unsubscribe(handles)
+
     async def delete_subscription(self, subscription: Any) -> None:
         await subscription.delete()
 

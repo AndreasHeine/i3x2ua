@@ -57,12 +57,6 @@ class SubscriptionDetail:
 
 
 @dataclass(slots=True)
-class _SubscriptionRuntime:
-    ua_subscription: Any | None = None
-    polling_task: asyncio.Task[None] | None = None
-
-
-@dataclass(slots=True)
 class _SubscriptionState:
     subscription_id: str
     client_id: str | None
@@ -75,7 +69,6 @@ class _SubscriptionState:
     updates: list[SubscriptionUpdate] = field(default_factory=list)
     sequence_number: int = 0
     mode: str = "idle"
-    runtime: _SubscriptionRuntime = field(default_factory=_SubscriptionRuntime)
     update_event: asyncio.Event = field(default_factory=asyncio.Event)
     active_stream_generation: int = 0
     stream_connected: bool = False
@@ -84,6 +77,34 @@ class _SubscriptionState:
     last_activity_monotonic: float = 0.0
     native_refresh_interval_seconds: float | None = None
     native_timeout_count: int = 0
+
+
+@dataclass(slots=True)
+class _NodeMonitor:
+    """Shared OPC UA monitoring runtime for one node_id, fanned out to N subscriptions.
+
+    Reference-counted across every i3X subscription that monitors this node_id,
+    instead of one dedicated runtime per subscription. In native mode the node is
+    packed into a shared `_ManagedBin` (one OPC UA subscription can hold many
+    monitored items); in polling mode it is read by the single shared polling loop.
+    """
+
+    node_id: str
+    mode: str = "idle"
+    subscriber_ids: set[str] = field(default_factory=set)
+    bin_id: str | None = None
+    native_refresh_interval_seconds: float | None = None
+
+
+@dataclass(slots=True)
+class _ManagedBin:
+    """One native OPC UA subscription shared by multiple monitored nodes (Phase 2 bin-packing)."""
+
+    bin_id: str
+    ua_subscription: Any
+    capacity: int
+    node_handles: dict[str, int] = field(default_factory=dict)
+    native_refresh_interval_seconds: float | None = None
 
 
 class _DataChangeHandler:
@@ -108,6 +129,29 @@ class _DataChangeHandler:
         return None
 
 
+class _NodeDataChangeHandler:
+    """Datachange handler for a shared, potentially multi-node OPC UA subscription (bin)."""
+
+    def __init__(self, service: SubscriptionService, bin_id: str) -> None:
+        self._service = service
+        self._bin_id = bin_id
+
+    def datachange_notification(self, node: Any, val: Any, data: Any) -> None:
+        del data
+        try:
+            node_id = node.nodeid.to_string()
+        except Exception:
+            logger.warning(
+                "Unable to resolve node_id for datachange in bin_id=%s; dropping update",
+                self._bin_id,
+            )
+            return
+        self._service.schedule_node_datachange(node_id, val)
+
+    def event_notification(self, event: Any) -> None:
+        return None
+
+
 class SubscriptionService:
     def __init__(
         self,
@@ -119,6 +163,8 @@ class SubscriptionService:
         native_timeout_refresh_mode: str = "adaptive",
         native_timeout_refresh_keepalives: int = 3,
         native_timeout_refresh_max_seconds: float = 30.0,
+        max_concurrent_native_admissions: int = 4,
+        native_backoff_seconds: float = 30.0,
     ) -> None:
         self._opcua_client = opcua_client
         self._interval_seconds = max(0.1, float(interval_seconds))
@@ -137,9 +183,19 @@ class SubscriptionService:
         self._native_timeout_refresh_max_seconds = max(0.1, float(native_timeout_refresh_max_seconds))
         self._lock = asyncio.Lock()
         self._subscriptions: dict[str, _SubscriptionState] = {}
+        self._node_monitors: dict[str, _NodeMonitor] = {}
+        self._bins: dict[str, _ManagedBin] = {}
+        self._native_admission_semaphore = asyncio.Semaphore(max(1, int(max_concurrent_native_admissions)))
+        self._native_backoff_seconds = max(0.1, float(native_backoff_seconds))
+        self._native_backoff_until_monotonic: float = 0.0
         self._cleanup_task: asyncio.Task[None] | None = None
         self._datachange_task: asyncio.Task[None] | None = None
+        self._node_datachange_task: asyncio.Task[None] | None = None
+        self._shared_polling_task: asyncio.Task[None] | None = None
         self._datachange_queue: asyncio.Queue[tuple[str, str, Any, int | None]] = asyncio.Queue(
+            maxsize=max(1000, self._max_updates_per_subscription)
+        )
+        self._node_datachange_queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue(
             maxsize=max(1000, self._max_updates_per_subscription)
         )
         self._dropped_datachange_events = 0
@@ -191,6 +247,71 @@ class SubscriptionService:
                     )
         except asyncio.CancelledError:
             return
+
+    def _enqueue_node_datachange(self, node_id: str, value: Any) -> None:
+        if self._node_datachange_queue.full():
+            try:
+                self._node_datachange_queue.get_nowait()
+                self._dropped_datachange_events += 1
+            except asyncio.QueueEmpty:
+                pass
+        try:
+            self._node_datachange_queue.put_nowait((node_id, value))
+        except asyncio.QueueFull:
+            self._dropped_datachange_events += 1
+
+    async def _node_datachange_loop(self) -> None:
+        try:
+            while True:
+                node_id, value = await self._node_datachange_queue.get()
+                try:
+                    await self._fanout_node_value(node_id, value)
+                except Exception:
+                    logger.exception(
+                        "Shared node datachange fan-out failed",
+                        extra={"node_id": node_id},
+                    )
+        except asyncio.CancelledError:
+            return
+
+    async def _fanout_node_value(self, node_id: str, value: Any) -> None:
+        """Deliver one node-level value change to every subscription monitoring it."""
+        async with self._lock:
+            monitor = self._node_monitors.get(node_id)
+            subscriber_ids = list(monitor.subscriber_ids) if monitor is not None else []
+        for subscription_id in subscriber_ids:
+            await self.handle_datachange(subscription_id, node_id, value)
+
+    def schedule_node_datachange(self, node_id: str, value: Any) -> None:
+        target_loop = self._event_loop
+        if target_loop is not None and target_loop.is_closed():
+            target_loop = None
+
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            current_loop = None
+
+        if target_loop is None and current_loop is not None:
+            self._event_loop = current_loop
+            self._ensure_cleanup_task()
+            self._enqueue_node_datachange(node_id, value)
+            return
+
+        if current_loop is not None and target_loop is current_loop:
+            self._ensure_cleanup_task()
+            self._enqueue_node_datachange(node_id, value)
+            return
+
+        if target_loop is None:
+            logger.warning(
+                "Dropping shared node datachange because no running event loop is available",
+                extra={"node_id": node_id},
+            )
+            return
+
+        target_loop.call_soon_threadsafe(self._ensure_cleanup_task)
+        target_loop.call_soon_threadsafe(self._enqueue_node_datachange, node_id, value)
 
     def schedule_datachange(
         self,
@@ -250,6 +371,10 @@ class SubscriptionService:
             self._cleanup_task = asyncio.create_task(self._cleanup_loop())
         if self._datachange_task is None or self._datachange_task.done():
             self._datachange_task = asyncio.create_task(self._datachange_loop())
+        if self._node_datachange_task is None or self._node_datachange_task.done():
+            self._node_datachange_task = asyncio.create_task(self._node_datachange_loop())
+        if self._shared_polling_task is None or self._shared_polling_task.done():
+            self._shared_polling_task = asyncio.create_task(self._shared_polling_loop())
 
     async def _cleanup_loop(self) -> None:
         try:
@@ -272,21 +397,44 @@ class SubscriptionService:
 
                 for state in removed:
                     logger.warning("Subscription expired by TTL subscription_id=%s", state.subscription_id)
-                    await self._stop_runtime(state)
+                    await self._release_all_nodes(state)
         except asyncio.CancelledError:
             return
 
     async def _handle_client_reconnect(self) -> None:
         async with self._lock:
-            candidates = [
-                item.subscription_id
-                for item in self._subscriptions.values()
-                if item.mode == "native" and item.monitored_node_ids
+            stale_bins = list(self._bins.values())
+            self._bins.clear()
+            affected_node_ids = [
+                node_id for bin_ in stale_bins for node_id in bin_.node_handles
             ]
+            for node_id in affected_node_ids:
+                monitor = self._node_monitors.get(node_id)
+                if monitor is not None:
+                    monitor.bin_id = None
+                    monitor.mode = "idle"
 
-        for subscription_id in candidates:
-            logger.info("Reconfiguring native subscription after reconnect subscription_id=%s", subscription_id)
-            await self._reconfigure_runtime(subscription_id)
+        for bin_ in stale_bins:
+            logger.info(
+                "Reconfiguring native bin after reconnect bin_id=%s node_count=%d",
+                bin_.bin_id,
+                len(bin_.node_handles),
+            )
+            # The old ua_subscription is presumed dead after reconnect; best-effort cleanup.
+            with suppress(Exception):
+                await self._opcua_client.delete_subscription(bin_.ua_subscription)
+
+            for node_id in sorted(bin_.node_handles):
+                async with self._lock:
+                    monitor = self._node_monitors.get(node_id)
+                if monitor is None:
+                    continue
+                await self._start_node_monitor_runtime(monitor)
+
+        async with self._lock:
+            subscription_ids = list(self._subscriptions.keys())
+        for subscription_id in subscription_ids:
+            await self._update_subscription_mode(subscription_id)
 
     def initiate_shutdown(self) -> None:
         """Signal all active SSE streams to close immediately.
@@ -315,7 +463,7 @@ class SubscriptionService:
         for subscription in subscriptions:
             # Signal any waiting stream tasks (wait_for_updates) to wake up and terminate
             subscription.update_event.set()
-            await self._stop_runtime(subscription)
+            await self._release_all_nodes(subscription)
 
         async with self._lock:
             self._subscriptions.clear()
@@ -335,6 +483,24 @@ class SubscriptionService:
             datachange_task.cancel()
             try:
                 await datachange_task
+            except asyncio.CancelledError:
+                pass
+
+        node_datachange_task = self._node_datachange_task
+        self._node_datachange_task = None
+        if node_datachange_task is not None:
+            node_datachange_task.cancel()
+            try:
+                await node_datachange_task
+            except asyncio.CancelledError:
+                pass
+
+        shared_polling_task = self._shared_polling_task
+        self._shared_polling_task = None
+        if shared_polling_task is not None:
+            shared_polling_task.cancel()
+            try:
+                await shared_polling_task
             except asyncio.CancelledError:
                 pass
 
@@ -423,7 +589,7 @@ class SubscriptionService:
                 results.append(SubscriptionDeleteResult(success=True, subscription_id=subscription_id))
 
         for state in removed:
-            await self._stop_runtime(state)
+            await self._release_all_nodes(state)
             logger.info(
                 "Subscription deleted subscription_id=%s client_id=%s monitored_nodes=%d",
                 state.subscription_id,
@@ -450,7 +616,8 @@ class SubscriptionService:
             state = self._subscriptions.get(subscription_id)
             if state is None or (client_id is not None and state.client_id != client_id):
                 return False
-            previous_monitored_nodes = len(state.monitored_node_ids)
+            previous_node_ids = set(state.monitored_node_ids)
+            previous_monitored_nodes = len(previous_node_ids)
             for element_id in element_ids:
                 state.monitored_objects[element_id] = max_depth
             monitored_node_ids, node_to_element_id = self._resolve_monitored_node_ids(
@@ -468,7 +635,7 @@ class SubscriptionService:
             }
             self._touch(state)
 
-        await self._reconfigure_runtime(subscription_id)
+        await self._apply_monitored_node_diff(subscription_id, previous_node_ids, monitored_node_ids)
         logger.info(
             "Subscription monitored items updated subscription_id=%s requested=%d total_objects=%d "
             "monitored_nodes=%d previous_monitored_nodes=%d max_depth=%d",
@@ -497,7 +664,8 @@ class SubscriptionService:
             state = self._subscriptions.get(subscription_id)
             if state is None or (client_id is not None and state.client_id != client_id):
                 return False
-            previous_monitored_nodes = len(state.monitored_node_ids)
+            previous_node_ids = set(state.monitored_node_ids)
+            previous_monitored_nodes = len(previous_node_ids)
             for element_id in element_ids:
                 state.monitored_objects.pop(element_id, None)
             monitored_node_ids, node_to_element_id = self._resolve_monitored_node_ids(
@@ -515,7 +683,7 @@ class SubscriptionService:
             }
             self._touch(state)
 
-        await self._reconfigure_runtime(subscription_id)
+        await self._apply_monitored_node_diff(subscription_id, previous_node_ids, monitored_node_ids)
         logger.info(
             "Subscription monitored items removed subscription_id=%s requested=%d total_objects=%d "
             "monitored_nodes=%d previous_monitored_nodes=%d",
@@ -789,60 +957,98 @@ class SubscriptionService:
             # Removed self._touch(state) to ensure server notifications don't keep stale subscriptions alive.
             # Only client activity (sync, wait_for_updates) should refresh the TTL.
 
-    async def _reconfigure_runtime(self, subscription_id: str) -> None:
+    async def _apply_monitored_node_diff(
+        self,
+        subscription_id: str,
+        previous_node_ids: set[str],
+        new_node_ids: set[str],
+    ) -> None:
+        """Reconcile a subscription's monitored nodes against the shared node registry."""
+        removed = previous_node_ids - new_node_ids
+        added = new_node_ids - previous_node_ids
+
+        for node_id in removed:
+            await self._release_node_monitor(node_id, subscription_id)
+        for node_id in added:
+            await self._acquire_node_monitor(node_id, subscription_id)
+
+        await self._update_subscription_mode(subscription_id)
+        await self._seed_initial_updates(subscription_id)
+
+    async def _release_all_nodes(self, state: _SubscriptionState) -> None:
+        for node_id in list(state.monitored_node_ids):
+            await self._release_node_monitor(node_id, state.subscription_id)
+        async with self._lock:
+            state.mode = "idle"
+            state.native_refresh_interval_seconds = None
+
+    async def _update_subscription_mode(self, subscription_id: str) -> None:
         async with self._lock:
             state = self._subscriptions.get(subscription_id)
-
-        if state is None:
-            return
-
-        await self._stop_runtime(state)
-
-        if not state.monitored_node_ids:
-            async with self._lock:
+            if state is None:
+                return
+            if not state.monitored_node_ids:
                 state.mode = "idle"
-            return
+                state.native_refresh_interval_seconds = None
+                return
 
-        caps = await self._opcua_client.get_subscription_capabilities()
-        should_poll = await self._must_use_polling(state, caps)
+            modes: list[str] = []
+            native_intervals: list[float] = []
+            for node_id in state.monitored_node_ids:
+                monitor = self._node_monitors.get(node_id)
+                mode = monitor.mode if monitor is not None else "idle"
+                modes.append(mode)
+                if (
+                    monitor is not None
+                    and monitor.mode == "native"
+                    and monitor.native_refresh_interval_seconds is not None
+                ):
+                    native_intervals.append(monitor.native_refresh_interval_seconds)
 
-        if should_poll:
-            await self._start_polling(state)
-            await self._seed_initial_updates(subscription_id)
-            return
+            if modes and all(mode == "native" for mode in modes):
+                state.mode = "native"
+                state.native_refresh_interval_seconds = min(native_intervals) if native_intervals else None
+            else:
+                state.mode = "polling"
+                state.native_refresh_interval_seconds = None
 
-        try:
-            await self._start_native_subscription(state)
-            await self._seed_initial_updates(subscription_id)
-        except Exception:
-            logger.exception(
-                "Native OPC UA subscription failed; switching to polling",
-                extra={"subscription_id": state.subscription_id},
-            )
-            await self._start_polling(state)
-            await self._seed_initial_updates(subscription_id)
-
-    async def _must_use_polling(self, state: _SubscriptionState, caps: OpcUaSubscriptionCapabilities) -> bool:
-        node_count = len(state.monitored_node_ids)
-        max_per_subscription = _min_positive(
-            caps.max_monitored_items_per_call,
-            caps.max_monitored_items_per_subscription,
-        )
-        if max_per_subscription is not None and node_count > max_per_subscription:
-            return True
-
+    async def _acquire_node_monitor(self, node_id: str, subscription_id: str) -> None:
         async with self._lock:
-            native_subscriptions = [item for item in self._subscriptions.values() if item.mode == "native"]
-            native_count = len(native_subscriptions)
-            native_monitored = sum(len(item.monitored_node_ids) for item in native_subscriptions)
+            monitor = self._node_monitors.get(node_id)
+            if monitor is not None:
+                monitor.subscriber_ids.add(subscription_id)
+                return
+            monitor = _NodeMonitor(node_id=node_id)
+            monitor.subscriber_ids.add(subscription_id)
+            self._node_monitors[node_id] = monitor
 
-        if caps.max_subscriptions is not None and native_count + 1 > caps.max_subscriptions:
-            return True
-        if caps.max_subscriptions_per_session is not None and native_count + 1 > caps.max_subscriptions_per_session:
-            return True
-        if caps.max_monitored_items is not None and native_monitored + node_count > caps.max_monitored_items:
-            return True
-        return False
+        await self._start_node_monitor_runtime(monitor)
+
+    async def _release_node_monitor(self, node_id: str, subscription_id: str) -> None:
+        async with self._lock:
+            monitor = self._node_monitors.get(node_id)
+            if monitor is None:
+                return
+            monitor.subscriber_ids.discard(subscription_id)
+            should_stop = not monitor.subscriber_ids
+            if should_stop:
+                del self._node_monitors[node_id]
+
+        if should_stop:
+            await self._stop_node_monitor_runtime(monitor)
+
+    async def _can_open_new_bin(self, caps: OpcUaSubscriptionCapabilities) -> bool:
+        async with self._lock:
+            bin_count = len(self._bins)
+            total_monitored = sum(len(bin_.node_handles) for bin_ in self._bins.values())
+
+        if caps.max_subscriptions is not None and bin_count + 1 > caps.max_subscriptions:
+            return False
+        if caps.max_subscriptions_per_session is not None and bin_count + 1 > caps.max_subscriptions_per_session:
+            return False
+        if caps.max_monitored_items is not None and total_monitored + 1 > caps.max_monitored_items:
+            return False
+        return True
 
     def _extract_revised_subscription_parameters(self, ua_subscription: Any) -> tuple[float | None, int | None]:
         publishing_interval_ms = _positive_float_or_none(
@@ -874,119 +1080,193 @@ class SubscriptionService:
         target_interval_seconds = keepalive_period_seconds * self._native_timeout_refresh_keepalives
         return max(0.1, min(self._native_timeout_refresh_max_seconds, target_interval_seconds))
 
-    async def _start_native_subscription(self, state: _SubscriptionState) -> None:
-        handler = _DataChangeHandler(self, state.subscription_id)
-        sorted_node_ids = sorted(state.monitored_node_ids)
-        ua_subscription = await self._opcua_client.create_datachange_subscription(
-            publishing_interval_ms=float(self._interval_seconds * 1000),
-            handler=handler,
-        )
-        handles = await self._opcua_client.subscribe_data_changes(ua_subscription, sorted_node_ids)
-        handle_to_node_id: dict[int, str] = {}
-        if isinstance(handles, list):
-            for handle, node_id in zip(handles, sorted_node_ids, strict=False):
-                normalized = _to_client_handle(handle)
-                if normalized is not None:
-                    handle_to_node_id[normalized] = node_id
-        else:
-            normalized = _to_client_handle(handles)
-            if normalized is not None and sorted_node_ids:
-                handle_to_node_id[normalized] = sorted_node_ids[0]
+    async def _start_node_monitor_runtime(self, monitor: _NodeMonitor) -> None:
+        if self._now_monotonic() < self._native_backoff_until_monotonic:
+            await self._start_polling_node_monitor(monitor)
+            return
 
-        async with self._lock:
-            live = self._subscriptions.get(state.subscription_id)
-            if live is None:
-                await self._opcua_client.delete_subscription(ua_subscription)
-                return
-            live.runtime.ua_subscription = ua_subscription
-            live.handle_to_node_id = handle_to_node_id
-            live.mode = "native"
-            live.native_timeout_count = 0
-            live.native_refresh_interval_seconds = self._compute_native_refresh_interval_seconds(ua_subscription)
-        logger.info(
-            "Subscription runtime started subscription_id=%s mode=native monitored_nodes=%d handles=%d",
-            state.subscription_id,
-            len(sorted_node_ids),
-            len(handle_to_node_id),
-        )
-        if self._native_timeout_refresh_mode == "adaptive":
-            logger.info(
-                "Subscription native timeout refresh configured subscription_id=%s interval_s=%.3f mode=%s",
-                state.subscription_id,
-                live.native_refresh_interval_seconds or self._interval_seconds,
-                self._native_timeout_refresh_mode,
+        caps = await self._opcua_client.get_subscription_capabilities()
+        try:
+            acquired = await self._acquire_native_bin_slot(monitor, caps)
+        except Exception:
+            logger.exception(
+                "Native OPC UA monitor failed for node_id=%s; backing off native admissions for %.1fs",
+                monitor.node_id,
+                self._native_backoff_seconds,
             )
+            self._native_backoff_until_monotonic = self._now_monotonic() + self._native_backoff_seconds
+            acquired = False
 
-    async def _start_polling(self, state: _SubscriptionState) -> None:
-        task = asyncio.create_task(self._polling_loop(state.subscription_id))
+        if not acquired:
+            await self._start_polling_node_monitor(monitor)
+
+    async def _acquire_native_bin_slot(self, monitor: _NodeMonitor, caps: OpcUaSubscriptionCapabilities) -> bool:
+        """Pack monitor.node_id into an existing bin with spare capacity, or open a new one."""
+        capacity = _min_positive(
+            caps.max_monitored_items_per_call,
+            caps.max_monitored_items_per_subscription,
+        )
+        if capacity is not None and capacity < 1:
+            return False
+        effective_capacity = capacity or _DEFAULT_BIN_CAPACITY
+
         async with self._lock:
-            live = self._subscriptions.get(state.subscription_id)
-            if live is None:
-                task.cancel()
+            target_bin = next((b for b in self._bins.values() if len(b.node_handles) < b.capacity), None)
+
+        if target_bin is not None:
+            return await self._add_node_to_bin(monitor, target_bin)
+
+        if not await self._can_open_new_bin(caps):
+            return False
+
+        return await self._open_new_bin(monitor, effective_capacity)
+
+    async def _subscribe_single_node(self, ua_subscription: Any, node_id: str) -> int | None:
+        handles = await self._opcua_client.subscribe_data_changes(ua_subscription, [node_id])
+        if isinstance(handles, list):
+            handle = handles[0] if handles else None
+        else:
+            handle = handles
+        return _to_client_handle(handle)
+
+    async def _open_new_bin(self, monitor: _NodeMonitor, capacity: int) -> bool:
+        bin_id = f"bin-{uuid4()}"
+        async with self._native_admission_semaphore:
+            handler = _NodeDataChangeHandler(self, bin_id)
+            ua_subscription = await self._opcua_client.create_datachange_subscription(
+                publishing_interval_ms=float(self._interval_seconds * 1000),
+                handler=handler,
+            )
+            handle = await self._subscribe_single_node(ua_subscription, monitor.node_id)
+        if handle is None:
+            with suppress(Exception):
+                await self._opcua_client.delete_subscription(ua_subscription)
+            return False
+
+        async with self._lock:
+            live = self._node_monitors.get(monitor.node_id)
+            if live is None or live is not monitor:
+                # Monitor was released concurrently (no subscribers left); undo the create.
+                await self._opcua_client.delete_subscription(ua_subscription)
+                return False
+            new_bin = _ManagedBin(bin_id=bin_id, ua_subscription=ua_subscription, capacity=capacity)
+            new_bin.node_handles[monitor.node_id] = handle
+            new_bin.native_refresh_interval_seconds = self._compute_native_refresh_interval_seconds(ua_subscription)
+            self._bins[bin_id] = new_bin
+            live.bin_id = bin_id
+            live.mode = "native"
+            live.native_refresh_interval_seconds = new_bin.native_refresh_interval_seconds
+        logger.info(
+            "Node monitor bin opened bin_id=%s node_id=%s capacity=%d",
+            bin_id,
+            monitor.node_id,
+            capacity,
+        )
+        return True
+
+    async def _add_node_to_bin(self, monitor: _NodeMonitor, target_bin: _ManagedBin) -> bool:
+        async with self._native_admission_semaphore:
+            handle = await self._subscribe_single_node(target_bin.ua_subscription, monitor.node_id)
+        if handle is None:
+            return False
+
+        async with self._lock:
+            live = self._node_monitors.get(monitor.node_id)
+            live_bin = self._bins.get(target_bin.bin_id)
+            if live is None or live is not monitor or live_bin is None:
+                # Monitor released concurrently, or the bin was reclaimed/closed under us.
+                with suppress(Exception):
+                    await self._opcua_client.unsubscribe_data_changes(target_bin.ua_subscription, [handle])
+                return False
+            live_bin.node_handles[monitor.node_id] = handle
+            live.bin_id = live_bin.bin_id
+            live.mode = "native"
+            live.native_refresh_interval_seconds = live_bin.native_refresh_interval_seconds
+        logger.info(
+            "Node monitor added to bin bin_id=%s node_id=%s size=%d/%d",
+            target_bin.bin_id,
+            monitor.node_id,
+            len(target_bin.node_handles),
+            target_bin.capacity,
+        )
+        return True
+
+    async def _start_polling_node_monitor(self, monitor: _NodeMonitor) -> None:
+        async with self._lock:
+            live = self._node_monitors.get(monitor.node_id)
+            if live is None or live is not monitor:
                 return
-            live.runtime.polling_task = task
             live.mode = "polling"
-            live.native_timeout_count = 0
+            live.bin_id = None
             live.native_refresh_interval_seconds = None
         logger.info(
-            "Subscription runtime started subscription_id=%s mode=polling monitored_nodes=%d interval_s=%.3f",
-            state.subscription_id,
-            len(state.monitored_node_ids),
+            "Node monitor runtime started node_id=%s mode=polling interval_s=%.3f",
+            monitor.node_id,
             self._interval_seconds,
         )
 
-    async def _stop_runtime(self, state: _SubscriptionState) -> None:
-        polling_task = state.runtime.polling_task
-        ua_subscription = state.runtime.ua_subscription
-        state.runtime.polling_task = None
-        state.runtime.ua_subscription = None
-        state.handle_to_node_id = {}
-        state.mode = "idle"
-        state.native_timeout_count = 0
-        state.native_refresh_interval_seconds = None
+    async def _stop_node_monitor_runtime(self, monitor: _NodeMonitor) -> None:
+        bin_id = monitor.bin_id
+        monitor.bin_id = None
+        monitor.mode = "idle"
+        monitor.native_refresh_interval_seconds = None
 
-        if polling_task is not None:
-            polling_task.cancel()
-            try:
-                await polling_task
-            except asyncio.CancelledError:
-                pass
+        if bin_id is None:
+            return
 
-        if ua_subscription is not None:
+        async with self._lock:
+            target_bin = self._bins.get(bin_id)
+            handle = target_bin.node_handles.pop(monitor.node_id, None) if target_bin is not None else None
+            bin_now_empty = target_bin is not None and not target_bin.node_handles
+            if bin_now_empty:
+                del self._bins[bin_id]
+
+        if target_bin is None:
+            return
+
+        if bin_now_empty:
             try:
-                await self._opcua_client.delete_subscription(ua_subscription)
+                await self._opcua_client.delete_subscription(target_bin.ua_subscription)
             except Exception:
                 logger.debug(
-                    "Ignoring delete failure for stale OPC UA subscription subscription_id=%s",
-                    state.subscription_id,
+                    "Ignoring delete failure for empty bin bin_id=%s",
+                    bin_id,
+                    exc_info=True,
+                )
+            logger.info("Node monitor bin reclaimed bin_id=%s", bin_id)
+        elif handle is not None:
+            try:
+                await self._opcua_client.unsubscribe_data_changes(target_bin.ua_subscription, [handle])
+            except Exception:
+                logger.debug(
+                    "Ignoring unsubscribe failure bin_id=%s node_id=%s",
+                    bin_id,
+                    monitor.node_id,
                     exc_info=True,
                 )
 
-    async def _polling_loop(self, subscription_id: str) -> None:
+    async def _shared_polling_loop(self) -> None:
+        """Single batched read loop covering every node currently in polling mode."""
         try:
             while True:
                 async with self._lock:
-                    state = self._subscriptions.get(subscription_id)
-                    if state is None or state.mode != "polling":
-                        return
-                    node_ids = sorted(state.monitored_node_ids)
+                    node_ids = sorted(
+                        node_id for node_id, monitor in self._node_monitors.items() if monitor.mode == "polling"
+                    )
 
                 if node_ids:
                     try:
                         values = await self._opcua_client.read_values(node_ids)
                     except Exception:
-                        logger.exception("Polling read failed", extra={"subscription_id": subscription_id})
+                        logger.exception("Shared polling read failed node_count=%d", len(node_ids))
                     else:
-                        async with self._lock:
-                            state = self._subscriptions.get(subscription_id)
-                            if state is None or state.mode != "polling":
-                                return
-                            for node_id, value in zip(node_ids, values, strict=False):
-                                self._append_update(state, node_id, value)
+                        for node_id, value in zip(node_ids, values, strict=False):
+                            await self._fanout_node_value(node_id, value)
 
                 await asyncio.sleep(self._interval_seconds)
         except asyncio.CancelledError:
             return
+
 
     async def _seed_initial_updates(self, subscription_id: str) -> None:
         if not self._seed_initial_values:
@@ -1132,6 +1412,10 @@ def _min_positive(*values: int | None) -> int | None:
     if not positive:
         return None
     return min(positive)
+
+
+_DEFAULT_BIN_CAPACITY = 1000
+"""Fallback per-subscription monitored-item capacity when the server advertises none."""
 
 
 def _positive_int_or_none(value: Any) -> int | None:

@@ -17,7 +17,7 @@ from pathlib import Path
 
 BASE_COMMAND = ["uv", "run", "--group", "dev"]
 TARGET_COVERAGE_PERCENT = 85.0
-COVERAGE_XML_PATH = Path("coverage.xml")
+COVERAGE_XML_PATH = Path(".coverage.xml")
 
 COMMANDS: list[list[str]] = [
     [*BASE_COMMAND, "ruff", "check", "."],

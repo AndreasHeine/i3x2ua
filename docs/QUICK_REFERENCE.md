@@ -206,8 +206,6 @@ For JSON-RPC clients (e.g., LM Studio), configure the MCP server URL as:
 https://admin:password@your-domain.com/mcp
 ```
 
-For detailed setup, see `docs/LM_STUDIO_MCP_GUIDE.md` and its capability matrix.
-
 ---
 
 ## Troubleshooting Quick Fixes

@@ -16,7 +16,7 @@ dependencies = [
     "pydantic==2.13.5",
     "pydantic-settings>=2.3.0",
     "trio>=0.27.0",
-    "uvicorn>=0.52,<0.53",
+    "uvicorn>=0.53,<0.54",
     "wsproto>=1.2.0",
 ]
 

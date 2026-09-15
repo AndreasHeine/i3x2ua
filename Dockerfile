@@ -1,21 +1,17 @@
-FROM python:3.14.7-slim AS builder
+FROM python:3.14.7-alpine AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-RUN apt-get update \
-    && apt-get upgrade -y \
-    && apt-get install -y --no-install-recommends \
-        build-essential \
+RUN apk add --no-cache \
+        build-base \
         cargo \
-        libssl-dev \
+        openssl-dev \
         nodejs \
         npm \
-        pkg-config \
-        rustc \
-    && rm -rf /var/lib/apt/lists/*
+        pkgconf
 
 RUN python -m pip install --no-cache-dir --upgrade pip setuptools \
     && pip install --no-cache-dir uv
@@ -31,7 +27,7 @@ RUN cd /app/frontend \
     && npm run build
 
 
-FROM python:3.14.7-slim AS runtime
+FROM python:3.14.7-alpine AS runtime
 
 ARG BUILD_VERSION=master
 
@@ -41,15 +37,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-RUN apt-get update \
-    && apt-get upgrade -y \
-    && apt-get install -y --no-install-recommends \
+RUN apk add --no-cache \
         ca-certificates \
         tini \
-    && rm -rf /var/lib/apt/lists/* \
-    && groupadd --gid 10001 app \
-    && useradd --uid 10001 --gid app --create-home --shell /usr/sbin/nologin app \
-    && python -m pip install --no-cache-dir --upgrade pip setuptools
+    && addgroup -g 10001 -S app \
+    && adduser -u 10001 -S -D -H -G app app
 
 COPY --from=builder /app/.venv /app/.venv
 COPY i3x_server /app/i3x_server

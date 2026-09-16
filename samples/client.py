@@ -52,7 +52,7 @@ import urllib.parse
 import urllib.request
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 _BATCH_SIZE = 50  # keep request bodies small and avoid server-side partial-content limits
 
@@ -94,13 +94,19 @@ class I3XClient:
             self._ssl_context.verify_mode = ssl.CERT_NONE
         self._auth_header: str | None = None
         if username is not None:
-            credentials = base64.b64encode(f"{username}:{password or ''}".encode("utf-8")).decode("ascii")
+            credentials = base64.b64encode(f"{username}:{password or ''}".encode()).decode("ascii")
             self._auth_header = f"Basic {credentials}"
         # Caches: resolved once, reused for the lifetime of the client.
         self.objects_by_id: dict[str, DiscoveredObject] = {}
         self.object_types_by_id: dict[str, dict[str, Any]] = {}
 
-    def _request(self, method: str, path: str, params: dict[str, Any] | None = None, body: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _request(
+        self,
+        method: str,
+        path: str,
+        params: dict[str, Any] | None = None,
+        body: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         url = f"{self.base_url}{path}"
         if params:
             url = f"{url}?{urllib.parse.urlencode(params)}"
@@ -115,7 +121,7 @@ class I3XClient:
         request = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
             with urllib.request.urlopen(request, timeout=self.timeout, context=self._ssl_context) as response:
-                return json.loads(response.read().decode("utf-8"))
+                return cast("dict[str, Any]", json.loads(response.read().decode("utf-8")))
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
             raise I3XRequestError(f"{method} {path} -> HTTP {exc.code}: {detail}") from exc
@@ -133,7 +139,7 @@ class I3XClient:
 
     def get_root_objects(self) -> list[dict[str, Any]]:
         payload = self._get("/v1/objects", params={"root": "true", "includeMetadata": "true"})
-        return payload.get("result", [])
+        return cast("list[dict[str, Any]]", payload.get("result", []))
 
     def list_objects(self, element_ids: list[str]) -> list[dict[str, Any]]:
         """Batched lookup of Objects (with metadata) by elementId, chunked to _BATCH_SIZE."""

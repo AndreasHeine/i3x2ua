@@ -47,8 +47,8 @@ services:
       I3X_LOG_LEVEL: INFO  # Application log level.
       # I3X_CORS_ALLOWED_ORIGINS: "[]"  # JSON array of allowed CORS origins.
       # I3X_OTEL_ENABLED: false  # Enable OpenTelemetry instrumentation.
-      # I3X_OTEL_SERVICE_NAME: i3x2ua  # OpenTelemetry service name.
-      # I3X_OTEL_OTLP_ENDPOINT: ""  # OTLP collector base endpoint.
+      # OTEL_SERVICE_NAME: i3x2ua  # OpenTelemetry service name.
+      # OTEL_EXPORTER_OTLP_ENDPOINT: ""  # OTLP collector base endpoint.
       I3X_ENABLE_MCP: 1  # Enable MCP endpoints and tool catalog.
       I3X_ENABLE_WRITES: 1  # Enable write operations.
       # I3X_SKIP_OPCUA_CONNECT: 0  # Skip OPC UA connect for dev/testing.

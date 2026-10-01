@@ -17,12 +17,12 @@ This pulls in:
 
 | Package | Purpose |
 |---|---|
-| `opentelemetry-api` | API surface (tracer, meter, span) |
-| `opentelemetry-sdk` | SDK with TracerProvider / MeterProvider |
-| `opentelemetry-exporter-otlp-proto-http` | OTLP/HTTP exporter for traces and metrics |
-| `opentelemetry-instrumentation-fastapi` | Auto-instrumentation of every HTTP route |
+| `opentelemetry-api` | API surface used by FastAPI and custom MCP instrumentation |
+| `opentelemetry-sdk` | SDK with tracer, meter, and logger providers |
+| `opentelemetry-exporter-otlp-proto-http` | OTLP/HTTP exporter |
 
-All packages are **optional** — the server starts and runs normally without them.
+FastAPI always installs `opentelemetry-api`. The SDK and exporter remain optional
+and are installed by the `otel` extra.
 
 ---
 
@@ -31,34 +31,36 @@ All packages are **optional** — the server starts and runs normally without th
 | Variable | Default | Description |
 |---|---|---|
 | `I3X_OTEL_ENABLED` | `false` | Set to `true` / `1` to enable OpenTelemetry |
-| `I3X_OTEL_SERVICE_NAME` | `i3x2ua` | Value of the `service.name` resource attribute |
-| `I3X_OTEL_OTLP_ENDPOINT` | *(unset)* | Base URL of your OTLP collector (no trailing slash) |
+| `OTEL_SERVICE_NAME` | `i3x2ua` | Value of the `service.name` resource attribute |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | *(unset)* | Base URL of your OTLP collector (no trailing slash) |
+
+The legacy `I3X_OTEL_SERVICE_NAME` and `I3X_OTEL_OTLP_ENDPOINT` settings remain
+supported as fallbacks when the corresponding standard variables are unset.
 
 ### Minimal local setup
 
 ```env
 I3X_OTEL_ENABLED=true
-I3X_OTEL_OTLP_ENDPOINT=http://localhost:4318
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 ```
 
 ### Production `.env` example
 
 ```env
 I3X_OTEL_ENABLED=true
-I3X_OTEL_SERVICE_NAME=i3x2ua-prod
-I3X_OTEL_OTLP_ENDPOINT=https://otel-collector.example.com
+OTEL_SERVICE_NAME=i3x2ua-prod
+OTEL_EXPORTER_OTLP_ENDPOINT=https://otel-collector.example.com
 ```
 
-> **Note**: `I3X_OTEL_ENABLED=true` without setting `I3X_OTEL_OTLP_ENDPOINT`
-> activates the SDK and FastAPI auto-instrumentation but does **not** export
-> data anywhere. This is useful for local debugging with a custom exporter or
-> when you want spans only in logs.
+> **Note**: `I3X_OTEL_ENABLED=true` without an OTLP endpoint enables native
+> instrumentation only when another component has configured an OpenTelemetry
+> provider. It does not create an export pipeline by itself.
 
 ---
 
 ## What Gets Instrumented
 
-### 1. HTTP routes (FastAPI auto-instrumentation)
+### 1. HTTP routes (FastAPI native telemetry)
 
 Every request handled by FastAPI automatically creates a span:
 
@@ -125,7 +127,7 @@ docker run --rm -p 4318:4318 -p 16686:16686 \
 ```
 
 Open `http://localhost:16686` to browse traces.
-Set `I3X_OTEL_OTLP_ENDPOINT=http://localhost:4318`.
+Set `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318`.
 
 ### Option B — OpenTelemetry Collector + Jaeger (docker-compose)
 
@@ -188,8 +190,8 @@ services:
   i3x2ua:
     environment:
       I3X_OTEL_ENABLED: "true"
-      I3X_OTEL_SERVICE_NAME: "i3x2ua"
-      I3X_OTEL_OTLP_ENDPOINT: "http://otel-collector:4318"
+      OTEL_SERVICE_NAME: "i3x2ua"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4318"
 ```
 
 ---
@@ -197,18 +199,9 @@ services:
 ## Verifying the integration
 
 1. Start the server with `I3X_OTEL_ENABLED=true`.
-2. Look for these log lines at startup:
-
-   ```
-   INFO  i3x_server.bootstrap.app_factory OpenTelemetry OTLP trace exporter configured endpoint=http://localhost:4318
-   INFO  i3x_server.bootstrap.app_factory FastAPI OpenTelemetry instrumentation enabled
-   INFO  i3x_server.bootstrap.app_factory OpenTelemetry OTLP metric exporter configured endpoint=http://localhost:4318
-   INFO  i3x_server.bootstrap.app_factory OpenTelemetry configured service=i3x2ua
-   ```
-
-3. Call any MCP tool (e.g. `GET /mcp/tools`, then `POST /mcp` with
+2. Call any MCP tool (e.g. `GET /mcp/tools`, then `POST /mcp` with
    `method: tools/call`).
-4. Open your tracing backend and search for service name `i3x2ua` — you should
+3. Open your tracing backend and search for service name `i3x2ua` — you should
    see a `POST /mcp` root span with a `mcp.tool_call` child span.
 
 ---
@@ -217,8 +210,7 @@ services:
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| No log lines about OTel at startup | `I3X_OTEL_ENABLED` is not set or is `false` | Set `I3X_OTEL_ENABLED=true` |
-| `opentelemetry-sdk not installed` warning | Extras not installed | Run `uv pip install "i3x2ua[otel]"` |
-| `OTLP trace exporter skipped` warning | Exporter package missing | Run `uv pip install "i3x2ua[otel]"` |
+| No telemetry data | `I3X_OTEL_ENABLED` is not set or is `false` | Set `I3X_OTEL_ENABLED=true` |
+| Automatic telemetry configuration warning | SDK or exporter is missing | Run `uv pip install "i3x2ua[otel]"` |
 | Spans visible but no metrics | OTLP metrics exporter or SDK metrics missing | Same extras install |
-| Collector unreachable errors | Wrong endpoint or collector not running | Check `I3X_OTEL_OTLP_ENDPOINT` and collector status |
+| Collector unreachable errors | Wrong endpoint or collector not running | Check `OTEL_EXPORTER_OTLP_ENDPOINT` and collector status |

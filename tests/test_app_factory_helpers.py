@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-import sys
+import os
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -11,14 +11,15 @@ from fastapi.routing import APIRoute
 
 from i3x_server.api.v1 import monolithic
 from i3x_server.bootstrap.app_factory import (
-    _configure_otel,
     _extract_inline_script_bodies,
     _frontend_inline_script_hashes,
+    _prepare_otel_environment,
     _readable_operation_id,
     _run_model_preload,
     _run_periodic_model_refresh,
     _status_title,
     _to_lower_camel_case,
+    create_app,
 )
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
@@ -287,124 +288,33 @@ async def test_run_periodic_model_refresh_disabled_when_interval_zero(monkeypatc
     await _run_periodic_model_refresh(app)
 
 
-def test_configure_otel_disabled_and_import_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    app = FastAPI()
-    monkeypatch.setattr("i3x_server.bootstrap.app_factory.settings.otel_enabled", False)
-    _configure_otel(app)
+@pytest.mark.parametrize("enabled", [False, True])
+def test_create_app_configures_native_telemetry(monkeypatch: pytest.MonkeyPatch, enabled: bool) -> None:
+    monkeypatch.setattr("i3x_server.bootstrap.app_factory.settings.otel_enabled", enabled)
+    monkeypatch.setenv("OTEL_SERVICE_NAME", "test-service")
+    app = create_app()
 
+    assert app._telemetry == {
+        "tracer_provider": None,
+        "meter_provider": None,
+        "logger_provider": None,
+        "tracing": enabled,
+        "metrics": enabled,
+        "logs": False,
+        "operation_spans": enabled,
+        "auto_configure": enabled,
+        "exclude": None,
+    }
+
+
+def test_prepare_otel_environment_preserves_standard_values(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("i3x_server.bootstrap.app_factory.settings.otel_enabled", True)
-    monkeypatch.setattr("i3x_server.bootstrap.app_factory.settings.otel_otlp_endpoint", None)
-    monkeypatch.setattr("i3x_server.bootstrap.app_factory.settings.otel_service_name", "svc")
+    monkeypatch.setattr("i3x_server.bootstrap.app_factory.settings.otel_service_name", "legacy-service")
+    monkeypatch.setattr("i3x_server.bootstrap.app_factory.settings.otel_otlp_endpoint", "http://legacy:4318")
+    monkeypatch.setenv("OTEL_SERVICE_NAME", "standard-service")
+    monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
 
-    import builtins
+    _prepare_otel_environment()
 
-    original_import = builtins.__import__
-
-    def _import_with_forced_failure(
-        name: str,
-        globals: Any = None,
-        locals: Any = None,
-        fromlist: Any = (),
-        level: int = 0,
-    ) -> Any:
-        if name.startswith("opentelemetry"):
-            raise ImportError("missing")
-        return original_import(name, globals, locals, fromlist, level)
-
-    monkeypatch.setattr(builtins, "__import__", _import_with_forced_failure)
-    _configure_otel(app)
-
-
-def test_configure_otel_with_stubbed_modules(monkeypatch: pytest.MonkeyPatch) -> None:
-    app = FastAPI()
-    monkeypatch.setattr("i3x_server.bootstrap.app_factory.settings.otel_enabled", True)
-    monkeypatch.setattr("i3x_server.bootstrap.app_factory.settings.otel_otlp_endpoint", None)
-    monkeypatch.setattr("i3x_server.bootstrap.app_factory.settings.otel_service_name", "svc")
-
-    class _Resource:
-        @staticmethod
-        def create(data: dict[str, str]) -> dict[str, str]:
-            return data
-
-    class _TracerProvider:
-        def __init__(self, resource: Any) -> None:
-            self.resource = resource
-            self.processors: list[Any] = []
-
-        def add_span_processor(self, processor: Any) -> None:
-            self.processors.append(processor)
-
-    class _BatchSpanProcessor:
-        def __init__(self, exporter: Any) -> None:
-            self.exporter = exporter
-
-    trace_module = SimpleNamespace(set_tracer_provider=lambda provider: provider)
-
-    class _FastAPIInstrumentor:
-        @staticmethod
-        def instrument_app(target_app: FastAPI) -> None:
-            target_app.state.otel_instrumented = True
-
-    class _MeterProvider:
-        def __init__(self, resource: Any, metric_readers: list[Any]) -> None:
-            self.resource = resource
-            self.metric_readers = metric_readers
-
-    class _PeriodicExportingMetricReader:
-        def __init__(self, exporter: Any) -> None:
-            self.exporter = exporter
-
-    class _Meter:
-        def create_counter(self, name: str, description: str) -> Any:
-            del name, description
-            return SimpleNamespace(add=lambda value, attrs=None: (value, attrs))
-
-        def create_histogram(self, name: str, description: str, unit: str) -> Any:
-            del name, description, unit
-            return SimpleNamespace(record=lambda value, attrs=None: (value, attrs))
-
-    metrics_module = SimpleNamespace(
-        set_meter_provider=lambda provider: provider,
-        get_meter=lambda name: _Meter(),
-    )
-
-    monkeypatch.setitem(
-        sys.modules,
-        "opentelemetry",
-        SimpleNamespace(metrics=metrics_module, trace=trace_module),
-    )
-    monkeypatch.setitem(sys.modules, "opentelemetry.metrics", metrics_module)
-    monkeypatch.setitem(sys.modules, "opentelemetry.trace", trace_module)
-    monkeypatch.setitem(
-        sys.modules,
-        "opentelemetry.sdk.resources",
-        SimpleNamespace(SERVICE_NAME="service.name", Resource=_Resource),
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "opentelemetry.sdk.trace",
-        SimpleNamespace(TracerProvider=_TracerProvider),
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "opentelemetry.sdk.trace.export",
-        SimpleNamespace(BatchSpanProcessor=_BatchSpanProcessor),
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "opentelemetry.instrumentation.fastapi",
-        SimpleNamespace(FastAPIInstrumentor=_FastAPIInstrumentor),
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "opentelemetry.sdk.metrics",
-        SimpleNamespace(MeterProvider=_MeterProvider),
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "opentelemetry.sdk.metrics.export",
-        SimpleNamespace(PeriodicExportingMetricReader=_PeriodicExportingMetricReader),
-    )
-
-    _configure_otel(app)
-    assert getattr(app.state, "otel_instrumented", False) is True
+    assert os.environ["OTEL_SERVICE_NAME"] == "standard-service"
+    assert os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://legacy:4318"

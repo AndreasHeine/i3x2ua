@@ -5,6 +5,7 @@ import base64
 import hashlib
 import http
 import logging
+import os
 import re
 import signal
 import types
@@ -139,71 +140,12 @@ def _configure_logging() -> None:
     logging.getLogger("asyncua").setLevel(logging.WARNING)
 
 
-def _configure_otel(app: FastAPI) -> None:
+def _prepare_otel_environment() -> None:
     if not settings.otel_enabled:
         return
-
-    try:
-        from opentelemetry import metrics as otel_metrics
-        from opentelemetry import trace as otel_trace
-        from opentelemetry.sdk.resources import SERVICE_NAME, Resource
-        from opentelemetry.sdk.trace import TracerProvider
-        from opentelemetry.sdk.trace.export import BatchSpanProcessor
-    except ImportError:
-        logger.warning(
-            "opentelemetry-sdk not installed; tracing disabled. Install the 'otel' extras: pip install 'i3x2ua[otel]'."
-        )
-        return
-
-    resource = Resource.create({SERVICE_NAME: settings.otel_service_name})
-    tracer_provider = TracerProvider(resource=resource)
-    otlp_endpoint = settings.otel_otlp_endpoint
-
-    if otlp_endpoint:
-        try:
-            from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-
-            tracer_provider.add_span_processor(
-                BatchSpanProcessor(OTLPSpanExporter(endpoint=f"{otlp_endpoint.rstrip('/')}/v1/traces"))
-            )
-            logger.info("OpenTelemetry OTLP trace exporter configured endpoint=%s", otlp_endpoint)
-        except ImportError:
-            logger.warning("opentelemetry-exporter-otlp-proto-http not installed; OTLP trace exporter skipped.")
-    else:
-        logger.info("OpenTelemetry enabled but I3X_OTEL_OTLP_ENDPOINT not set; spans will not be exported.")
-
-    otel_trace.set_tracer_provider(tracer_provider)
-
-    try:
-        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-
-        FastAPIInstrumentor.instrument_app(app)
-        logger.info("FastAPI OpenTelemetry instrumentation enabled")
-    except ImportError:
-        logger.warning("opentelemetry-instrumentation-fastapi not installed; FastAPI auto-instrumentation skipped.")
-
-    try:
-        from opentelemetry.sdk.metrics import MeterProvider
-        from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
-    except ImportError:
-        logger.info("OpenTelemetry configured (traces only) service=%s", settings.otel_service_name)
-        return
-
-    if otlp_endpoint:
-        try:
-            from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
-
-            reader = PeriodicExportingMetricReader(
-                OTLPMetricExporter(endpoint=f"{otlp_endpoint.rstrip('/')}/v1/metrics")
-            )
-            meter_provider = MeterProvider(resource=resource, metric_readers=[reader])
-            otel_metrics.set_meter_provider(meter_provider)
-            logger.info("OpenTelemetry OTLP metric exporter configured endpoint=%s", otlp_endpoint)
-        except ImportError:
-            logger.warning("opentelemetry-exporter-otlp-proto-http not installed; OTLP metric exporter skipped.")
-
-    init_mcp_metrics()
-    logger.info("OpenTelemetry configured service=%s", settings.otel_service_name)
+    os.environ.setdefault("OTEL_SERVICE_NAME", settings.otel_service_name)
+    if settings.otel_otlp_endpoint:
+        os.environ.setdefault("OTEL_EXPORTER_OTLP_ENDPOINT", settings.otel_otlp_endpoint)
 
 
 async def _warm_object_type_context(app: FastAPI, model: BuildResult) -> None:
@@ -323,6 +265,8 @@ async def _run_periodic_model_refresh(app: FastAPI) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _configure_logging()
+    if settings.otel_enabled:
+        init_mcp_metrics()
     runtime_toggle_settings = _runtime_settings()
     mcp_enabled = runtime_toggle_settings.enable_mcp
     opcua_client = OpcUaClient(
@@ -476,6 +420,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 def create_app() -> FastAPI:
     mcp_enabled = _runtime_settings().enable_mcp
+    _prepare_otel_environment()
     description = (
         "Turn any OPC UA server into an i3X-compliant REST and MCP Enabled API with OpenAPI docs, "
         "JSON, and live SSE streams. No OPC UA expertise required."
@@ -486,6 +431,13 @@ def create_app() -> FastAPI:
         description=description,
         lifespan=lifespan,
         generate_unique_id_function=_readable_operation_id,
+        telemetry={
+            "tracing": settings.otel_enabled,
+            "metrics": settings.otel_enabled,
+            "logs": False,
+            "operation_spans": settings.otel_enabled,
+            "auto_configure": settings.otel_enabled,
+        },
     )
     app.add_middleware(GZipMiddleware, minimum_size=1)
     cors_origins = settings.cors_allowed_origins
@@ -667,5 +619,4 @@ def create_app() -> FastAPI:
     else:
         logger.warning("Frontend dist directory not found at %s; UI pages are unavailable", frontend_dist)
 
-    _configure_otel(app)
     return app

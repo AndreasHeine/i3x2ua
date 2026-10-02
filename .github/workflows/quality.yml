@@ -141,7 +141,7 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync --group dev --frozen
+        run: uv sync --extra otel --group dev --frozen
 
       - name: Run Pytest with Coverage
         run: uv run pytest -q

@@ -1,4 +1,4 @@
-FROM python:3.14.7-alpine AS builder
+FROM python:3.14.8-alpine AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
@@ -27,7 +27,7 @@ RUN cd /app/frontend \
     && npm run build
 
 
-FROM python:3.14.7-alpine AS runtime
+FROM python:3.14.8-alpine AS runtime
 
 ARG BUILD_VERSION=master
 

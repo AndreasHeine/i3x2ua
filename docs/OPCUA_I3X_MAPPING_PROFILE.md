@@ -144,6 +144,27 @@ value recursion.
 
 ## Current Output Shape
 
+### Scalar Datatypes in ObjectType JSON Schemas
+
+Standard OPC UA scalar datatypes are resolved using their namespace-zero
+identity. Compact (`i=26`), indexed (`ns=0;i=26`), expanded
+(`nsu=http://opcfoundation.org/UA/;i=26`), and named (`Number`) representations
+produce the same scalar schema.
+
+- `Number`, `Float`, and `Double` map to JSON Schema `number`.
+- `Integer`, `UInteger`, concrete integer types, and `Enumeration` map to `integer`.
+- `Boolean` maps to `boolean`; `DateTime` maps to `string` with `date-time` format.
+- Declared arrays apply the scalar mapping to their `items`.
+
+Numeric identifiers in custom namespaces must not be interpreted as built-in
+datatypes merely because their identifier matches a namespace-zero type.
+Missing or unresolved scalar datatypes use an unconstrained schema (`{}`),
+accepting any JSON value, including null. Known string datatypes remain `string`.
+Arrays of unresolved datatypes retain `type: array` with `items: {}`. Member
+metadata and mandatory modelling rules are preserved. Unconstrained datatype
+schemas are not wrapped in nullable/array `oneOf` branches, which would overlap.
+Custom datatype ancestry resolution is not provided by this scalar mapper.
+
 The mapped i3X object currently carries the following fields in code:
 
 - `id`

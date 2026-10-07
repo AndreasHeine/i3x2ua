@@ -7,8 +7,10 @@ from typing import Any, cast
 
 import pytest
 from fastapi import HTTPException
+from jsonschema import Draft202012Validator
 
 import i3x_server.api.v1.monolithic as v1
+from i3x_server.api.v1 import objecttype_helpers
 from i3x_server.infrastructure.opcua.client import OpcUaNamespaceInfo
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
@@ -129,6 +131,34 @@ def test_element_and_urn_token_helpers() -> None:
 def test_builtin_ua_datatype_helper_detection() -> None:
     assert v1._is_builtin_ua_datatype_node_id("nsu=http://opcfoundation.org/UA/;i=12") is True
     assert v1._is_builtin_ua_datatype_node_id("nsu=http://opcfoundation.org/UA/;i=11492") is False
+
+
+def test_unconstrained_datatype_wrapper_accepts_null_and_arrays_without_overlapping_branches() -> None:
+    schema = objecttype_helpers._wrapped_value_schema(
+        {},
+        display_name="Unknown",
+        source_type_id="nsu=urn:custom;i=999999",
+    )
+    assert "oneOf" not in schema
+    validator = Draft202012Validator(schema)
+    values: list[Any] = [None, True, 42, 1.5, "text", [], {}, [None, 42]]
+    for value in values:
+        validator.validate(value)
+
+
+def test_unresolved_builtin_datatype_fallback_is_unconstrained(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(objecttype_helpers, "build_data_type_schema", lambda *_args: None)
+    response = objecttype_helpers._datatype_object_type_from_source_type_id(
+        "nsu=http://opcfoundation.org/UA/;i=24",
+        [OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/", display_name="UA")],
+    )
+    assert response is not None
+    schema = response.model_dump(by_alias=True)["schema"]
+    assert "oneOf" not in schema
+    validator = Draft202012Validator(schema)
+    values: list[Any] = [None, True, 42, 1.5, "text", [], {}, [None, 42]]
+    for value in values:
+        validator.validate(value)
 
 
 def test_standard_ua_datatype_scalar_schema_detection() -> None:

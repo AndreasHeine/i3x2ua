@@ -118,6 +118,9 @@ def _wrapped_value_schema(
     for key in _WRAPPER_METADATA_KEYS:
         value_schema.pop(key, None)
 
+    if not value_schema:
+        return wrapper
+
     value_def_key_base = re.sub(r"[^0-9A-Za-z]+", "", display_name) or "Value"
     value_def_key = f"{value_def_key_base}Value"
     suffix = 2
@@ -438,7 +441,7 @@ def _scalar_schema_for_standard_ua_datatype_node_id(element_id: str) -> dict[str
         return None
 
     inferred = json_schema_for_opcua_type(name)
-    if inferred == {"type": "string"}:
+    if not inferred or inferred == {"type": "string"}:
         return None
     return inferred
 
@@ -456,13 +459,20 @@ def _datatype_object_type_from_source_type_id(
             scalar_schema = _scalar_schema_for_standard_ua_datatype_node_id(source_type_id)
         if scalar_schema is None:
             return None
-        schema = {
-            "oneOf": [
-                {"type": "null"},
-                dict(scalar_schema),
-                {"type": "array", "items": _array_items_schema_for_builtin_data_type(source_type_id, scalar_schema)},
-            ]
-        }
+        schema = (
+            {
+                "oneOf": [
+                    {"type": "null"},
+                    dict(scalar_schema),
+                    {
+                        "type": "array",
+                        "items": _array_items_schema_for_builtin_data_type(source_type_id, scalar_schema),
+                    },
+                ]
+            }
+            if scalar_schema
+            else {}
+        )
 
     node_id_match = re.match(r"^nsu=[^;]+;i=(\d+)$", source_type_id, flags=re.IGNORECASE)
     numeric_id = int(node_id_match.group(1)) if node_id_match is not None else None

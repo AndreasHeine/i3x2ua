@@ -83,30 +83,28 @@ class _SchemaRegistry:
 
 def json_schema_for_opcua_type(data_type: str | None) -> dict[str, Any]:
     if data_type is None:
-        return {"type": "string"}
+        return {}
 
     type_name_token = data_type
     normalized = data_type.lower()
-    node_id_match = re.match(r"^(?:ns=0;|nsu=http://opcfoundation.org/UA/;)i=(\d+)$", data_type, flags=re.IGNORECASE)
+    node_id_match = re.fullmatch(r"(?:ns=0;|nsu=http://opcfoundation.org/UA/;)?i=(\d+)", data_type, flags=re.IGNORECASE)
     if node_id_match is not None:
         object_id_name = _ua_object_id_name(int(node_id_match.group(1)))
         if object_id_name:
             type_name_token = object_id_name
             normalized = object_id_name.lower()
 
-    if normalized.endswith("i=10") or normalized.endswith("i=11"):
-        return {"type": "number"}
-    if any(normalized.endswith(f"i={idx}") for idx in [2, 3, 4, 5, 6, 7, 8, 9]):
-        return {"type": "integer"}
-    # DateTime (i=13) and subtypes
-    if normalized.endswith("i=13"):
-        return {"type": "string", "format": "date-time"}
+    elif re.match(r"^(?:ns=|nsu=|[isgb]=)", data_type, flags=re.IGNORECASE):
+        # Identifiers in other namespaces are not OPC UA built-in type identifiers.
+        return {}
 
-    if "boolean" in normalized or normalized.endswith("i=1"):
+    if normalized in {"string", "guid", "bytestring", "xmlelement"}:
+        return {"type": "string"}
+    if "boolean" in normalized:
         return {"type": "boolean"}
-    if any(token in normalized for token in ["double", "float"]):
+    if normalized == "number" or any(token in normalized for token in ["double", "float"]):
         return {"type": "number"}
-    if any(
+    if normalized in {"integer", "uinteger"} or any(
         token in normalized
         for token in [
             "sbyte",
@@ -136,7 +134,7 @@ def json_schema_for_opcua_type(data_type: str | None) -> dict[str, Any]:
         if _is_datetime_annotation_type(type_candidate):
             return {"type": "string", "format": "date-time"}
 
-    return {"type": "string"}
+    return {}
 
 
 def build_object_type_schema(
@@ -411,10 +409,7 @@ def _schema_for_array_items(
             return from_data_type
         return {"type": "object"}
 
-    if data_type is not None:
-        return json_schema_for_opcua_type(data_type)
-
-    return {"type": "string"}
+    return json_schema_for_opcua_type(data_type)
 
 
 def _reference_or_register_structure(

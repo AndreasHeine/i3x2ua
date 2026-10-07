@@ -8,11 +8,208 @@ from typing import Any, cast
 
 import pytest
 from asyncua import ua
+from asyncua.ua.object_ids import ObjectIds
+from jsonschema import Draft202012Validator
 
 from i3x_server.api.v1.object_helpers import _object_type_element_id
 from i3x_server.infrastructure.opcua.client import OpcUaNamespaceInfo, OpcUaObjectTypeInfo, OpcUaObjectTypeMemberInfo
 from i3x_server.schemas import objecttype_schema
 from i3x_server.schemas.objecttype_schema import build_object_type_schema
+
+
+@pytest.mark.parametrize(
+    ("type_name", "expected"),
+    [
+        ("Boolean", {"type": "boolean"}),
+        ("SByte", {"type": "integer"}),
+        ("Byte", {"type": "integer"}),
+        ("Int16", {"type": "integer"}),
+        ("UInt16", {"type": "integer"}),
+        ("Int32", {"type": "integer"}),
+        ("UInt32", {"type": "integer"}),
+        ("Int64", {"type": "integer"}),
+        ("UInt64", {"type": "integer"}),
+        ("Float", {"type": "number"}),
+        ("Double", {"type": "number"}),
+        ("String", {"type": "string"}),
+        ("Guid", {"type": "string"}),
+        ("ByteString", {"type": "string"}),
+        ("XmlElement", {"type": "string"}),
+        ("DateTime", {"type": "string", "format": "date-time"}),
+        ("Number", {"type": "number"}),
+        ("Integer", {"type": "integer"}),
+        ("UInteger", {"type": "integer"}),
+        ("Enumeration", {"type": "integer"}),
+    ],
+)
+def test_builtin_scalar_schema_is_independent_of_nodeid_representation(
+    type_name: str,
+    expected: dict[str, str],
+) -> None:
+    identifier = getattr(ObjectIds, type_name)
+    for token in (
+        ua.NodeId(ua.Int32(identifier), ua.Int16(0)).to_string(),
+        f"ns=0;i={identifier}",
+        f"nsu=http://opcfoundation.org/UA/;i={identifier}",
+        type_name,
+    ):
+        assert objecttype_schema.json_schema_for_opcua_type(token) == expected, token
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        "ns=2;i=11",
+        "ns=2;i=26",
+        "nsu=urn:custom:Double;i=11",
+        "ns=0;s=Double",
+        "s=Boolean",
+        "i=999999",
+        "UnknownScalar",
+        "",
+        None,
+    ],
+)
+def test_scalar_schema_does_not_guess_builtin_types_from_unresolved_nodeids(token: str | None) -> None:
+    schema = objecttype_schema.json_schema_for_opcua_type(token)
+    assert schema == {}
+    validator = Draft202012Validator(schema)
+    values: list[Any] = [None, True, 42, 1.5, "text", [], {}, {"value": 42}]
+    for value in values:
+        validator.validate(value)
+
+
+@pytest.mark.parametrize("data_type", [None, "ns=2;i=999999"])
+@pytest.mark.parametrize("include_opcua_fields", [True, False])
+@pytest.mark.parametrize("is_array", [True, False])
+def test_unresolved_member_schema_preserves_metadata_and_array_shape(
+    data_type: str | None,
+    include_opcua_fields: bool,
+    is_array: bool,
+) -> None:
+    member = OpcUaObjectTypeMemberInfo(
+        node_id="ns=2;i=2000",
+        browse_name="Values",
+        display_name="Values",
+        description="Values of an unresolved datatype",
+        node_class="Variable",
+        data_type=data_type,
+        modelling_rule="Mandatory",
+        value=None,
+        schema_value=None,
+        is_array=is_array,
+        value_rank=1 if is_array else -1,
+    )
+    item = OpcUaObjectTypeInfo(
+        node_id="ns=2;i=1000",
+        parent_node_id=None,
+        browse_name="UnknownValuesType",
+        display_name="UnknownValuesType",
+        properties={"Values": data_type},
+        members=[member],
+    )
+    schema = build_object_type_schema(
+        item,
+        {item.node_id: item},
+        {item.node_id: "unknown-values"},
+        [
+            OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/", display_name="UA"),
+            OpcUaNamespaceInfo(uri="urn:unused", display_name="Unused"),
+            OpcUaNamespaceInfo(uri="urn:custom", display_name="Custom"),
+        ],
+        include_opcua_fields=include_opcua_fields,
+    )
+    prop = schema["properties"]["Values"]
+    if is_array:
+        assert prop["type"] == "array"
+        assert prop["items"] == {}
+    else:
+        assert "type" not in prop
+    assert prop["description"] == member.description
+    if include_opcua_fields and data_type:
+        assert prop["x-opcua-dataTypeId"] == "nsu=urn:custom;i=999999"
+    elif not include_opcua_fields:
+        assert not any(key.startswith("x-opcua-") for key in prop)
+    validator = Draft202012Validator(schema)
+    values: list[Any] = [None, True, 42, 1.5, "text", [], {}]
+    validator.validate({"Values": values})
+    if is_array:
+        assert not validator.is_valid({"Values": 42})
+    else:
+        for value in values:
+            validator.validate({"Values": value})
+    assert not validator.is_valid({})
+
+
+@pytest.mark.parametrize("include_opcua_fields", [True, False])
+def test_process_value_schema_accepts_numbers_in_inherited_definitions(include_opcua_fields: bool) -> None:
+    data_type = ua.NodeId(ua.Int32(ObjectIds.Number), ua.Int16(0)).to_string()
+
+    def member(name: str, node_id: str, *, is_array: bool = False) -> OpcUaObjectTypeMemberInfo:
+        return OpcUaObjectTypeMemberInfo(
+            node_id=node_id,
+            browse_name=name,
+            display_name=name,
+            description=None,
+            node_class="Variable",
+            data_type=data_type,
+            modelling_rule="Mandatory" if name == "AnalogSignal" else "Optional",
+            value=None,
+            schema_value=None,
+            variant_type="Null",
+            is_array=is_array,
+            value_rank=1 if is_array else -1,
+        )
+
+    parent = OpcUaObjectTypeInfo(
+        node_id="ns=1;i=1022",
+        parent_node_id=None,
+        browse_name="AnalogSignalType",
+        display_name="AnalogSignalType",
+        properties={"AnalogSignal": data_type},
+        members=[member("AnalogSignal", "ns=1;i=2000")],
+    )
+    item = OpcUaObjectTypeInfo(
+        node_id="ns=1;i=1003",
+        parent_node_id=parent.node_id,
+        browse_name="ProcessValueType",
+        display_name="ProcessValueType",
+        properties={"AnalogSignal": data_type, "ProcessValueSetpoint": data_type, "Samples": data_type},
+        members=[
+            member("AnalogSignal", "ns=1;i=2001"),
+            member("ProcessValueSetpoint", "ns=1;i=2002"),
+            member("Samples", "ns=1;i=2003", is_array=True),
+        ],
+    )
+    schema = build_object_type_schema(
+        item,
+        {parent.node_id: parent, item.node_id: item},
+        {parent.node_id: "analog-signal-type", item.node_id: "process-value-type"},
+        [
+            OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/", display_name="UA"),
+            OpcUaNamespaceInfo(uri="urn:test", display_name="Test"),
+        ],
+        include_opcua_fields=include_opcua_fields,
+    )
+
+    assert schema["properties"]["AnalogSignal"]["type"] == "number"
+    assert schema["properties"]["ProcessValueSetpoint"]["type"] == "number"
+    assert schema["properties"]["Samples"]["items"]["type"] == "number"
+    for definition in schema["$defs"].values():
+        assert definition["properties"]["AnalogSignal"]["type"] == "number"
+    assert schema["required"] == ["AnalogSignal"]
+    Draft202012Validator.check_schema(schema)
+    validator = Draft202012Validator(schema)
+    for analog_signal in (12, 12.5):
+        validator.validate({"AnalogSignal": analog_signal, "ProcessValueSetpoint": 15.0, "Samples": [1, 2.5]})
+    for payload in (
+        {"AnalogSignal": "12.5"},
+        {"AnalogSignal": True},
+        {"AnalogSignal": 12.5, "ProcessValueSetpoint": "15"},
+        {"AnalogSignal": 12.5, "Samples": ["1"]},
+        {},
+    ):
+        assert not validator.is_valid(payload)
 
 
 @dataclass(slots=True)

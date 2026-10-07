@@ -4,10 +4,10 @@
     "specVersion": "1.0",
     "build": 6
   },
-  "endpoint": "http://127.0.0.1:8000/v1",
+  "endpoint": "http://localhost:8000/v1",
   "summary": {
-    "verdict": "1.0 Compatible",
-    "headline": "All required (MUST) behavior passed. Optional features were omitted: Update historical values (PUT /objects/history). Implement and declare them to reach Full 1.0 Compliance.",
+    "verdict": "Full 1.0 Compliance",
+    "headline": "All required and optional behavior passed, and the type system exposes rich structured types. 🎉",
     "counts": {
       "pass": 56,
       "fail": 0,
@@ -35,15 +35,13 @@
         "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#security--authentication"
       }
     ],
-    "omittedFeatures": [
-      "update.history"
-    ],
+    "omittedFeatures": [],
     "typeSystemRich": true,
     "specVersion": "1.0",
     "serverName": "The i3X API Gateway for OPC UA",
     "notes": [],
     "docsUrl": "https://www.i3x.dev/sdk/category/server-developers",
-    "finishedAt": "2026-09-07T16:59:12.580Z"
+    "finishedAt": "2026-10-07T15:46:05.078Z"
   },
   "results": [
     {
@@ -102,7 +100,7 @@
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#transport--encoding",
       "status": "pass",
       "message": "gzip honored (169 compressed bytes)",
-      "ms": 4,
+      "ms": 3,
       "index": 4,
       "total": 60
     },
@@ -132,7 +130,7 @@
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#security--authentication",
       "status": "warn",
       "message": "The server accepted an unauthenticated request to GET /namespaces. This is acceptable for development and testing, but in production implementations MUST require authentication.",
-      "ms": 1,
+      "ms": 2,
       "index": 6,
       "total": 60
     },
@@ -190,7 +188,7 @@
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#object-type-endpoints",
       "status": "pass",
       "message": "333 type(s)",
-      "ms": 34,
+      "ms": 24,
       "index": 10,
       "total": 60
     },
@@ -261,7 +259,7 @@
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#relationship-type-endpoints",
       "status": "pass",
       "message": "4 relationship type(s)",
-      "ms": 2,
+      "ms": 3,
       "index": 15,
       "total": 60
     },
@@ -304,7 +302,7 @@
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#object-endpoints",
       "status": "pass",
       "message": "828 object(s)",
-      "ms": 59,
+      "ms": 52,
       "index": 18,
       "total": 60
     },
@@ -318,7 +316,7 @@
       "refTitle": "Implementation Guide § Objects",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#objects",
       "status": "pass",
-      "ms": 0,
+      "ms": 1,
       "index": 19,
       "total": 60
     },
@@ -362,7 +360,7 @@
       "refTitle": "Implementation Guide § Object Endpoints",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#object-endpoints",
       "status": "pass",
-      "ms": 5,
+      "ms": 4,
       "index": 22,
       "total": 60
     },
@@ -376,7 +374,7 @@
       "refTitle": "Implementation Guide § Object Endpoints",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#object-endpoints",
       "status": "pass",
-      "ms": 54,
+      "ms": 55,
       "index": 23,
       "total": 60
     },
@@ -390,7 +388,7 @@
       "refTitle": "Implementation Guide § Object Endpoints",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#object-endpoints",
       "status": "pass",
-      "ms": 4,
+      "ms": 3,
       "index": 24,
       "total": 60
     },
@@ -405,7 +403,7 @@
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#object-endpoints",
       "status": "pass",
       "message": "47 edge(s) discovered",
-      "ms": 15,
+      "ms": 4,
       "index": 25,
       "total": 60
     },
@@ -448,7 +446,7 @@
       "refTitle": "Implementation Guide § Object Endpoints",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#object-endpoints",
       "status": "pass",
-      "ms": 1,
+      "ms": 2,
       "index": 28,
       "total": 60
     },
@@ -492,7 +490,7 @@
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#objects",
       "status": "pass",
       "message": "5 value(s) validated against their type schemas",
-      "ms": 1,
+      "ms": 0,
       "index": 31,
       "total": 60
     },
@@ -506,7 +504,7 @@
       "refTitle": "Implementation Guide § Response Format — Bulk Response",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#bulk-response",
       "status": "pass",
-      "ms": 1,
+      "ms": 3,
       "index": 32,
       "total": 60
     },
@@ -521,7 +519,7 @@
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#maxdepth-parameter-semantics",
       "status": "pass",
       "message": "2 component value(s)",
-      "ms": 3,
+      "ms": 2,
       "index": 33,
       "total": 60
     },
@@ -563,7 +561,7 @@
       "refTitle": "Implementation Guide § Query Methods",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#query-methods",
       "status": "pass",
-      "message": "294 historical point(s) validated",
+      "message": "298 historical point(s) validated",
       "ms": 0,
       "index": 36,
       "total": 60
@@ -578,7 +576,7 @@
       "refTitle": "Implementation Guide § Response Format — Bulk Response",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#bulk-response",
       "status": "pass",
-      "ms": 2,
+      "ms": 3,
       "index": 37,
       "total": 60
     },
@@ -592,7 +590,7 @@
       "refTitle": "Implementation Guide § Query Methods",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#query-methods",
       "status": "pass",
-      "ms": 5,
+      "ms": 4,
       "index": 38,
       "total": 60
     },
@@ -607,7 +605,7 @@
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#maxdepth-parameter-semantics",
       "status": "pass",
       "message": "2 component(s) with history",
-      "ms": 7,
+      "ms": 8,
       "index": 39,
       "total": 60
     },
@@ -622,7 +620,7 @@
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#update-methods",
       "status": "pass",
       "message": "wrote current value back to \"property-96539f2467e1b945\"",
-      "ms": 9,
+      "ms": 11,
       "index": 40,
       "total": 60
     },
@@ -637,7 +635,7 @@
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#update-methods",
       "status": "pass",
       "message": "Read-after-write returned the written value",
-      "ms": 3,
+      "ms": 2,
       "index": 41,
       "total": 60
     },
@@ -651,7 +649,7 @@
       "refTitle": "Implementation Guide § Response Format — Bulk Response",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#bulk-response",
       "status": "pass",
-      "ms": 8,
+      "ms": 10,
       "index": 42,
       "total": 60
     },
@@ -664,10 +662,8 @@
       "phase": "Update Methods (optional)",
       "refTitle": "Implementation Guide § Update Methods",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#update-methods",
-      "status": "skip",
-      "reason": "omitted",
-      "message": "Optional feature not declared by the server (capabilities.update.history = false) — omission is allowed",
-      "ms": 0,
+      "status": "pass",
+      "ms": 12,
       "index": 43,
       "total": 60
     },
@@ -680,9 +676,10 @@
       "phase": "Update Methods (optional)",
       "refTitle": "Implementation Guide § Update Methods",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#update-methods",
-      "status": "pass",
-      "message": "Undeclared update endpoints correctly refuse requests",
-      "ms": 6,
+      "status": "skip",
+      "message": "Both update capabilities are declared — nothing to verify here",
+      "reason": "untestable",
+      "ms": 0,
       "index": 44,
       "total": 60
     },
@@ -696,7 +693,7 @@
       "refTitle": "Implementation Guide § Subscriptions",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#subscriptions",
       "status": "pass",
-      "ms": 9,
+      "ms": 2,
       "index": 45,
       "total": 60
     },
@@ -739,7 +736,7 @@
       "refTitle": "Implementation Guide § Subscriptions",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#subscriptions",
       "status": "pass",
-      "ms": 4,
+      "ms": 5,
       "index": 48,
       "total": 60
     },
@@ -754,7 +751,7 @@
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#registering-and-unregistering-objects",
       "status": "pass",
       "message": "registered 2 object(s)",
-      "ms": 10,
+      "ms": 9,
       "index": 49,
       "total": 60
     },
@@ -827,7 +824,7 @@
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#sync",
       "status": "pass",
       "message": "queue cleared through sequence 5 in a single round trip",
-      "ms": 7,
+      "ms": 8,
       "index": 54,
       "total": 60
     },
@@ -855,7 +852,7 @@
       "refTitle": "Implementation Guide § Streaming",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#streaming",
       "status": "pass",
-      "ms": 14,
+      "ms": 13,
       "index": 56,
       "total": 60
     },
@@ -884,7 +881,7 @@
       "refTitle": "Implementation Guide § Subscriptions",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#subscriptions",
       "status": "pass",
-      "ms": 10,
+      "ms": 9,
       "index": 58,
       "total": 60
     },
@@ -898,7 +895,7 @@
       "refTitle": "Implementation Guide § Subscription Life Cycle",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#subscription-life-cycle",
       "status": "pass",
-      "ms": 2,
+      "ms": 3,
       "index": 59,
       "total": 60
     },

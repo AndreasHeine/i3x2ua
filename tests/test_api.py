@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import os
 import time
-from collections.abc import Generator, Mapping
+from collections.abc import AsyncGenerator, Generator, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -2916,7 +2916,7 @@ async def test_mcp_endpoint_exposes_sse_discovery(monkeypatch: pytest.MonkeyPatc
         }
     )
     response = await mcp_api._sse_endpoint(request)
-    stream = response.body_iterator
+    stream = cast(AsyncGenerator[str, None], response.body_iterator)
     assert await anext(stream) == "event: endpoint\n"
     assert await anext(stream) == "data: http://testserver/mcp\n\n"
     assert await anext(stream) == ": keep-alive\n\n"

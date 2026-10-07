@@ -4,6 +4,7 @@ import json
 import logging
 import re
 from collections.abc import Mapping
+from contextlib import nullcontext as _nullcontext
 from copy import deepcopy
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -18,33 +19,31 @@ from fastapi.responses import JSONResponse, Response
 
 from i3x_server.errors import i3x_http_error
 
-try:
-    from contextlib import nullcontext as _nullcontext
 
-    from opentelemetry import trace as _otel_trace
-    from opentelemetry.trace import Status as _OtelStatus
-    from opentelemetry.trace import StatusCode as _OtelStatusCode
-    from opentelemetry.trace import get_current_span
+def _load_otel_tracing() -> tuple[Any, Any, Any, Any]:
+    try:
+        from opentelemetry import trace as otel_trace
+        from opentelemetry.trace import Status as otel_status
+        from opentelemetry.trace import StatusCode as otel_status_code
+        from opentelemetry.trace import get_current_span
+    except ImportError:  # pragma: no cover - optional dependency
+        return None, None, None, None
 
-    # Tracer is a proxy — it forwards to whatever global TracerProvider is set
-    # later by _configure_otel(), so module-level initialisation is safe.
-    _mcp_tracer = _otel_trace.get_tracer("i3x_server.mcp")
+    # Tracer is a proxy — it forwards to the global TracerProvider configured later.
+    return (
+        otel_status,
+        otel_status_code,
+        get_current_span,
+        otel_trace.get_tracer("i3x_server.mcp"),
+    )
 
-    # Meter instruments bind to the provider at creation time, so they must
-    # NOT be created here at import time (the real MeterProvider is installed
-    # later by _configure_otel()).  They are populated by init_mcp_metrics()
-    # which is called from app_factory after the provider is configured.
-    _mcp_tool_calls: Any = None
-    _mcp_tool_duration: Any = None
-except ImportError:  # pragma: no cover - optional dependency
-    from contextlib import nullcontext as _nullcontext
 
-    get_current_span = None
-    _mcp_tracer = None
-    _OtelStatus = None
-    _OtelStatusCode = None
-    _mcp_tool_calls = None
-    _mcp_tool_duration = None
+_OtelStatus, _OtelStatusCode, get_current_span, _mcp_tracer = _load_otel_tracing()
+
+# Meter instruments bind to the provider at creation time, so they are populated
+# by init_mcp_metrics() after the provider is configured.
+_mcp_tool_calls: Any = None
+_mcp_tool_duration: Any = None
 
 MCP_EXCLUDED_OPERATION_IDS = {"streamSubscription"}
 _MCP_INTERNAL_BASE_URL = httpx.URL("http://mcp.local")

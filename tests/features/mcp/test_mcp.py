@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from typing import Any
+from collections.abc import AsyncGenerator, Mapping
+from typing import Any, cast
 
 import pytest
 from fastapi.exceptions import HTTPException
@@ -453,7 +453,7 @@ async def test_mcp_endpoint_exposes_sse_discovery(monkeypatch: pytest.MonkeyPatc
         }
     )
     response = await mcp_api._sse_endpoint(request)
-    stream = response.body_iterator
+    stream = cast(AsyncGenerator[str, None], response.body_iterator)
     assert await anext(stream) == "event: endpoint\n"
     assert await anext(stream) == "data: http://testserver/mcp\n\n"
     assert await anext(stream) == ": keep-alive\n\n"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Mapping
 from pathlib import Path
@@ -16,6 +17,7 @@ from i3x_server.prompts.api import execute_prompt, get_prompt, list_prompt_metad
 from i3x_server.prompts.registry import PromptRegistry
 
 router = APIRouter(prefix="/mcp", tags=["mcp"])
+_SSE_KEEPALIVE_INTERVAL_SECONDS = 15
 
 
 class McpCallRequest(BaseModel):
@@ -167,14 +169,9 @@ async def _sse_endpoint(request: Request) -> StreamingResponse:
         yield "event: endpoint\n"
         yield f"data: {str(request.base_url).rstrip('/')}/mcp\n\n"
 
-        for method in (
-            "notifications/prompts/list_changed",
-            "notifications/resources/list_changed",
-            "notifications/roots/list_changed",
-        ):
-            notification = _jsonrpc_notification(method, {})
-            yield "event: message\n"
-            yield f"data: {json.dumps(notification, ensure_ascii=False)}\n\n"
+        while True:
+            await asyncio.sleep(_SSE_KEEPALIVE_INTERVAL_SECONDS)
+            yield ": keep-alive\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
@@ -210,9 +207,9 @@ async def _handle_jsonrpc(request: Request, message: dict[str, Any]) -> dict[str
                 "serverInfo": {"name": "i3x", "version": "1.0"},
                 "capabilities": {
                     "tools": {"listChanged": False},
-                    "prompts": {"listChanged": True},
-                    "resources": {"listChanged": True},
-                    "roots": {"listChanged": True},
+                    "prompts": {"listChanged": False},
+                    "resources": {"listChanged": False},
+                    "roots": {"listChanged": False},
                 },
             },
         )

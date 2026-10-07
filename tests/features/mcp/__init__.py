@@ -10,7 +10,9 @@ from typing import Any
 import pytest
 from fastapi.exceptions import HTTPException
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 
+from i3x_server.api.mcp import monolithic as mcp_api
 from i3x_server.mcp import _safe_internal_request_url, get_api_prefix
 from tests.conftest import fastapi_app
 
@@ -413,15 +415,29 @@ def test_mcp_support_is_disabled_by_default(client_without_mcp: TestClient) -> N
     assert not any(path.startswith("/mcp") for path in openapi["paths"])
 
 
-def test_mcp_endpoint_exposes_sse_discovery(client: TestClient) -> None:
-    response = client.get("/mcp")
-    assert response.status_code == 200
-    assert response.headers["content-type"].startswith("text/event-stream")
-    assert "event: endpoint" in response.text
-    assert "/mcp" in response.text
-    assert '"method": "notifications/prompts/list_changed"' in response.text
-    assert '"method": "notifications/resources/list_changed"' in response.text
-    assert '"method": "notifications/roots/list_changed"' in response.text
+async def test_mcp_endpoint_exposes_sse_discovery(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(mcp_api, "_SSE_KEEPALIVE_INTERVAL_SECONDS", 0)
+    request = Request(
+        {
+            "type": "http",
+            "http_version": "1.1",
+            "method": "GET",
+            "scheme": "http",
+            "path": "/mcp",
+            "raw_path": b"/mcp",
+            "query_string": b"",
+            "root_path": "",
+            "headers": [],
+            "server": ("testserver", 80),
+            "client": ("testclient", 50000),
+        }
+    )
+    response = await mcp_api._sse_endpoint(request)
+    stream = response.body_iterator
+    assert await anext(stream) == "event: endpoint\n"
+    assert await anext(stream) == "data: http://testserver/mcp\n\n"
+    assert await anext(stream) == ": keep-alive\n\n"
+    await stream.aclose()
 
 
 def test_mcp_initialize_request(client: TestClient) -> None:
@@ -440,9 +456,9 @@ def test_mcp_initialize_request(client: TestClient) -> None:
     assert payload["id"] == 1
     assert payload["result"]["protocolVersion"] == "2025-06-18"
     assert payload["result"]["capabilities"]["tools"]["listChanged"] is False
-    assert payload["result"]["capabilities"]["prompts"]["listChanged"] is True
-    assert payload["result"]["capabilities"]["resources"]["listChanged"] is True
-    assert payload["result"]["capabilities"]["roots"]["listChanged"] is True
+    assert payload["result"]["capabilities"]["prompts"]["listChanged"] is False
+    assert payload["result"]["capabilities"]["resources"]["listChanged"] is False
+    assert payload["result"]["capabilities"]["roots"]["listChanged"] is False
 
 
 def test_mcp_tools_list_request(client: TestClient) -> None:

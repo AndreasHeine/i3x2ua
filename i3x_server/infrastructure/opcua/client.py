@@ -2282,6 +2282,8 @@ def _variant_metadata(data_value: Any) -> tuple[str | None, bool | None, list[in
 
 
 def _to_explicit_ua_variant(value: Any, variant_type: str | None) -> ua.Variant | None:
+    if value is None:
+        return ua.Variant(None, ua.VariantType.Null)
     if variant_type is None:
         return None
     normalized = variant_type.strip()

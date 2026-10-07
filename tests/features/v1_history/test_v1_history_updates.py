@@ -26,7 +26,7 @@ def test_history_upsert_preserves_current_value(client: TestClient, monkeypatch:
     count = len(records)
     update = _update()
     update["value"]["quality"] = "Uncertain"
-    update["value"]["timestamp"] = "2026-01-01T11:00:00+01:00"
+    update["value"]["timestamp"] = "2026-01-01T10:00:00Z"
     response = client.put("/v1/objects/history", json={"updates": [update]})
     assert response.status_code == 200
     assert response.json() == {
@@ -139,6 +139,7 @@ def test_history_rejects_invalid_timestamp(client: TestClient, timestamp: Any) -
         (None, "Good", False),
         (None, "Uncertain", False),
         (1, "GoodNoData", False),
+        (1, "Bad", False),
         (1, "Unknown", False),
         (None, "Bad", True),
         (None, "GoodNoData", True),
@@ -152,6 +153,7 @@ def test_history_quality_validation(
     valid: bool,
 ) -> None:
     monkeypatch.setenv("I3X_ENABLE_WRITES", "1")
+    fastapi_app(client).state.model_cache.nodes_by_id["property-abc"].type = "nsu=http://opcfoundation.org/UA/;i=11"
     update = _update(value=value)
     update["value"]["quality"] = quality
     response = client.put("/v1/objects/history", json={"updates": [update]})

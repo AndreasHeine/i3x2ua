@@ -106,8 +106,8 @@ def historical_data_value(
             raise ValueError("A null value requires Bad or GoodNoData quality")
         variant = ua.Variant(None, ua.VariantType.Null)
     else:
-        if quality == "GoodNoData":
-            raise ValueError("GoodNoData quality requires a null value")
+        if quality in {"Bad", "GoodNoData"}:
+            raise ValueError("Bad and GoodNoData quality require a null value")
         if variant_type not in _SUPPORTED_TYPES:
             raise ValueError(f"Historical writes for {variant_type.name} values are not supported")
         converted, shape = _convert_value(value, variant_type)

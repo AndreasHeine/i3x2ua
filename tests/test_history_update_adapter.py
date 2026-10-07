@@ -228,6 +228,7 @@ def test_history_null_quality_and_timezone() -> None:
     for value, quality, timestamp in (
         (None, "Good", TIMESTAMP),
         (1, "GoodNoData", TIMESTAMP),
+        (1, "Bad", TIMESTAMP),
         (1, "unknown", TIMESTAMP),
         (1, "Good", TIMESTAMP.replace(tzinfo=None)),
     ):

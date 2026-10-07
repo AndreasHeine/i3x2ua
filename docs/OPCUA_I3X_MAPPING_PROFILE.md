@@ -193,13 +193,31 @@ values via hierarchy.
 `POST /objects/related` returns relationships across all three planes (hierarchy,
 composition, and graph) for each requested element.
 
+## Write Validation
+
+Both current-value write routes and the bulk historical write route validate
+values against the target's published i3X ObjectType JSON Schema before checking
+permissions or submitting a mutation, including before accepting a current-value
+no-op. Constraints include enums, bounds, required fields, formats, and declared
+nullability. OPC UA type/access checks still apply after schema validation.
+Element IDs must be nonempty and printable, without surrounding whitespace.
+
+Schema discovery uses the same type registry as object/type endpoints. Missing,
+malformed, or unresolvable schemas fail explicitly with a 502 error; schema-invalid
+values fail with 400. Local schema references are supported, but external references
+are rejected and schemas are never downloaded during validation. Bulk routes
+report these failures per item.
+
 ## Historical Updates
 
 `PUT /v1/objects/history` accepts `{"updates": [{"elementId": "...", "value":
 {"value": 19.5, "quality": "Good", "timestamp": "2026-01-01T10:00:00Z"}}]}`.
-All three VQT fields are required. Timestamps must be RFC 3339 with a timezone
-and at most six fractional digits; they are normalized to UTC without substituting
-the current time. Null values require `Bad` or `GoodNoData`; `GoodNoData` requires null.
+All three VQT fields are required. Timestamps must be RFC 3339 UTC with a `Z`
+suffix (case-insensitive); timezone offsets, including `+00:00`, are rejected.
+Extra fractional digits beyond microsecond precision are accepted only when all
+are zero, preserving the instant exactly without rounding or substituting the
+current time. Null values require `Bad` or `GoodNoData`, and both qualities require
+null. Null is accepted only if the published ObjectType schema permits it.
 
 With `I3X_ENABLE_WRITES=1`, each Variable-backed property is mapped to
 `UpdateDataDetails(NodeId=..., PerformInsertReplace=Update)`. The typed value,
@@ -214,9 +232,14 @@ Custom structured values are rejected explicitly.
 Both AccessLevel and UserAccessLevel must include `HistoryWrite`, independently
 of `CurrentWrite` and `Historizing`. Each submitted entry produces a bulk result
 in request order, including repeated element IDs. Success has `result: null`;
-failures include `responseDetail`. Unsupported history services produce item-level
-501 errors; `BadNotWritable` and user-access denial produce 403 errors. Both the
-overall HistoryUpdate status and per-value OperationResults are checked.
+failures include `responseDetail`. An explicit `BadServiceUnsupported` from
+HistoryUpdate returns HTTP 501 with ordered item results and top-level
+`responseDetail` if no earlier item succeeded; subsequent eligible entries are
+not sent upstream again. If earlier items succeeded, the HTTP 200 mixed bulk
+response is preserved. Node-specific `BadHistoryOperationUnsupported` and
+`BadNotImplemented` produce item-level 501 errors; `BadNotWritable` and user-access
+denial produce 403 errors and do not establish service-wide unavailability.
+Both the overall HistoryUpdate status and per-value OperationResults are checked.
 
 Bulk updates are not atomic and historical mutations are not automatically
 retried: a timeout may occur after the historian applied an update. Clients

@@ -7,6 +7,7 @@ from typing import Any
 from asyncua.ua.status_codes import StatusCodes
 from asyncua.ua.uaerrors import UaStatusCodeError
 from fastapi import APIRouter, Depends, Request
+from fastapi.responses import JSONResponse
 
 from i3x_server.api.v1.common_helpers import (
     _good_no_data_vqt,
@@ -31,6 +32,7 @@ from i3x_server.api.v1.contracts import (
     _bulk_response,
     _bulk_result_error,
     _bulk_result_success,
+    validate_write_element_id,
 )
 from i3x_server.api.v1.monolithic import (
     _build_historical_value_result,
@@ -52,6 +54,7 @@ from i3x_server.api.v1.object_helpers import (
     _find_model_node,
 )
 from i3x_server.api.v1.objecttype_helpers import _get_object_endpoint_context
+from i3x_server.api.v1.write_validation import WriteValidationError, WriteValueValidator
 from i3x_server.application.ports.opcua import OpcUaClientProtocol
 from i3x_server.bootstrap.dependencies import get_opcua_client, get_or_build_model
 from i3x_server.schemas.i3x import ModelNode
@@ -252,6 +255,7 @@ async def query_historical_values_v1(
     ),
 )
 async def update_object_values_v1(
+    request: Request,
     body: UpdateObjectValuesRequest,
     model: BuildResult = Depends(get_or_build_model),
     opcua_client: OpcUaClientProtocol = Depends(get_opcua_client),
@@ -260,12 +264,14 @@ async def update_object_values_v1(
         _not_implemented("Current value updates")
 
     results: list[BulkResultItem[None]] = []
+    schema_validator = WriteValueValidator(request, model, opcua_client)
     for update in body.updates:
         ok, status_code, message, _diagnostics = await _write_object_value_by_element_id(
             model=model,
             opcua_client=opcua_client,
             element_id=update.elementId,
             payload_value=update.value,
+            schema_validator=schema_validator,
         )
         if ok:
             results.append(_bulk_result_success(update.elementId, None))
@@ -278,6 +284,7 @@ async def update_object_values_v1(
 @router.put(
     "/objects/history",
     response_model=BulkResponse[None],
+    responses={501: {"description": "Writes disabled or upstream HistoryUpdate service unavailable"}},
     summary="Update historical values",
     description=(
         "Insert or replace historical records by source timestamp for Variable-backed property elements. "
@@ -291,39 +298,50 @@ async def update_historical_values_v1(
     body: UpdateObjectHistoryRequest,
     model: BuildResult = Depends(get_or_build_model),
     opcua_client: OpcUaClientProtocol = Depends(get_opcua_client),
-) -> BulkResponse[None]:
+) -> BulkResponse[None] | JSONResponse:
     if not _writes_enabled():
         _not_implemented("Historical value updates")
 
     results: list[BulkResultItem[None]] = []
+    schema_validator = WriteValueValidator(request, model, opcua_client)
+    service_unsupported = False
     principal = request.headers.get("x-principal") or "anonymous"
     for update in body.updates:
         node = _find_model_node(model, update.elementId)
         status_code, message = 200, "ok"
+        history_update_attempted = False
         if node is None:
             status_code, message = 404, f"Element not found: {update.elementId}"
         elif node.kind != "property":
             status_code, message = 400, "Historical writes require a Variable-backed property element"
         else:
             try:
-                writable, user_writable = await opcua_client.read_history_write_access(node.source_node_id)
-                if not writable or not user_writable:
-                    status_code, message = 403, "Target does not permit historical writes"
+                await schema_validator.validate(node, update.value.value)
+                if service_unsupported:
+                    status_code, message = 501, "OPC UA HistoryUpdate service is unavailable"
                 else:
-                    await opcua_client.write_history_value(
-                        node.source_node_id,
-                        update.value.value,
-                        update.value.quality,
-                        update.value.timestamp,
-                    )
+                    writable, user_writable = await opcua_client.read_history_write_access(node.source_node_id)
+                    if not writable or not user_writable:
+                        status_code, message = 403, "Target does not permit historical writes"
+                    else:
+                        history_update_attempted = True
+                        await opcua_client.write_history_value(
+                            node.source_node_id,
+                            update.value.value,
+                            update.value.quality,
+                            update.value.timestamp,
+                        )
+            except WriteValidationError as exc:
+                status_code, message = exc.status_code, str(exc)
             except ValueError as exc:
                 status_code, message = 400, str(exc)
             except UaStatusCodeError as exc:
                 if exc.code in {
                     StatusCodes.BadHistoryOperationUnsupported,
-                    StatusCodes.BadServiceUnsupported,
                     StatusCodes.BadNotImplemented,
-                }:
+                } or (exc.code == StatusCodes.BadServiceUnsupported and history_update_attempted):
+                    if exc.code == StatusCodes.BadServiceUnsupported:
+                        service_unsupported = True
                     status_code, message = 501, f"OPC UA historical writes unsupported: {exc}"
                 elif exc.code == StatusCodes.BadNodeIdUnknown:
                     status_code, message = 404, str(exc)
@@ -354,7 +372,20 @@ async def update_historical_values_v1(
             if status_code == 200
             else _bulk_result_error(update.elementId, message, code=status_code)
         )
-    return _bulk_response(results)
+    response = _bulk_response(results)
+    if service_unsupported and not any(item.success for item in results):
+        return JSONResponse(
+            status_code=501,
+            content={
+                **response.model_dump(),
+                "responseDetail": {
+                    "title": "Not Implemented",
+                    "status": 501,
+                    "detail": "The upstream OPC UA server does not support the HistoryUpdate service",
+                },
+            },
+        )
+    return response
 
 
 @router.get(
@@ -402,6 +433,10 @@ async def update_object_value_v1(
     if body is None:
         _raise_invalid_argument("body", None, "Missing request body")
 
+    try:
+        validate_write_element_id(element_id)
+    except ValueError as exc:
+        _raise_invalid_argument("elementId", element_id, str(exc))
     node = _find_model_node(model, element_id)
     if node is None:
         _raise_not_found("Object", element_id)
@@ -417,6 +452,7 @@ async def update_object_value_v1(
         opcua_client=opcua_client,
         element_id=element_id,
         payload_value=body.value,
+        schema_validator=WriteValueValidator(request, model, opcua_client),
     )
     if not ok:
         logger.warning(

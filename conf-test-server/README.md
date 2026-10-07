@@ -6,6 +6,7 @@ It provides:
 
 - deterministic live changes for subscription tests (`SUB-*`)
 - pre-seeded historical values for history tests (`QRY-*`)
+- real in-memory historical upserts for historical write tests (`UPD-04`)
 - multiple objects with numeric child variables so object selection is less likely to land on empty/infrastructure nodes
 
 ## Run
@@ -49,6 +50,31 @@ Each machine includes:
 All four variables are marked with historizing/access flags.
 The numeric variables are continuously updated, and `IsRunning` toggles periodically so history queries can return boolean samples as well.
 On startup, the fixture also reads back a few raw history points from each signal and logs a warning if the history backend is not returning samples.
+
+## Historical writes
+
+The fixture installs its own HistoryUpdate request dispatch and in-memory history
+manager because asyncua 2.1.0 does not implement this server-side service. No
+installed asyncua files or gateway behavior are patched.
+
+Historized fixture signals expose both `HistoryRead` and `HistoryWrite` in
+AccessLevel and UserAccessLevel (using bit masks, not enum bit positions).
+`UpdateDataDetails` with `PerformUpdateType.Update` inserts or replaces a record
+by SourceTimestamp, preserves its VQT, and makes it available through normal
+history reads without changing the current Value attribute. Results include
+per-value operation statuses. Other update modes, non-signal targets, access
+denials, and incompatible scalar types are rejected explicitly.
+
+This is a development-only, no-security, in-memory historian. Records are lost
+on restart; automatic history collection retains the configured period/count.
+The transport extension uses asyncua internals and is covered by a real TCP
+integration test that also exercises the gateway REST write/read routes.
+It is not a production historian or a general OPC UA HistoryUpdate implementation.
+
+To exercise `UPD-04`, also enable `I3X_ENABLE_WRITES=1` on the gateway. Restart
+the fixture and gateway after upgrading so cached node permissions are refreshed,
+then rerun the conformance suite. Do not disable schema validation or report
+success without storing the record.
 
 ## Helpful tuning
 
@@ -108,13 +134,13 @@ Expected shape excerpt:
 Start i3x2ua with all conformance-relevant settings in one command:
 
 ```powershell
-$env:I3X_OPCUA_ENDPOINT="opc.tcp://127.0.0.1:4840/freeopcua/server/"; $env:I3X_OPCUA_SECURITY_MODE="None"; $env:I3X_OPCUA_SECURITY_POLICY=""; $env:I3X_SUBSCRIPTIONS_INITIAL_VALUES="true"; $env:I3X_SUBSCRIPTION_INTERVAL_SECONDS="0.2"; $env:I3X_MODEL_PRELOAD_ON_STARTUP="true"; $env:I3X_MODEL_PRELOAD_BLOCKING="true"; $env:I3X_SKIP_OPCUA_CONNECT="0"; uv run uvicorn i3x_server.main:app --host 127.0.0.1 --port 8000 --loop none
+$env:I3X_OPCUA_ENDPOINT="opc.tcp://127.0.0.1:4840/freeopcua/server/"; $env:I3X_OPCUA_SECURITY_MODE="None"; $env:I3X_OPCUA_SECURITY_POLICY=""; $env:I3X_ENABLE_WRITES="1"; $env:I3X_SUBSCRIPTIONS_INITIAL_VALUES="true"; $env:I3X_SUBSCRIPTION_INTERVAL_SECONDS="0.2"; $env:I3X_MODEL_PRELOAD_ON_STARTUP="true"; $env:I3X_MODEL_PRELOAD_BLOCKING="true"; $env:I3X_SKIP_OPCUA_CONNECT="0"; uv run uvicorn i3x_server.main:app --host 127.0.0.1 --port 8000 --loop none
 ```
 
 ### Single-line launch (cmd)
 
 ```cmd
-set "I3X_OPCUA_ENDPOINT=opc.tcp://127.0.0.1:4840/freeopcua/server/" && set "I3X_OPCUA_SECURITY_MODE=None" && set "I3X_OPCUA_SECURITY_POLICY=" && set "I3X_SUBSCRIPTIONS_INITIAL_VALUES=true" && set "I3X_SUBSCRIPTION_INTERVAL_SECONDS=0.2" && set "I3X_MODEL_PRELOAD_ON_STARTUP=true" && set "I3X_MODEL_PRELOAD_BLOCKING=true" && set "I3X_SKIP_OPCUA_CONNECT=0" && uv run uvicorn i3x_server.main:app --host 127.0.0.1 --port 8000 --loop none
+set "I3X_OPCUA_ENDPOINT=opc.tcp://127.0.0.1:4840/freeopcua/server/" && set "I3X_OPCUA_SECURITY_MODE=None" && set "I3X_OPCUA_SECURITY_POLICY=" && set "I3X_ENABLE_WRITES=1" && set "I3X_SUBSCRIPTIONS_INITIAL_VALUES=true" && set "I3X_SUBSCRIPTION_INTERVAL_SECONDS=0.2" && set "I3X_MODEL_PRELOAD_ON_STARTUP=true" && set "I3X_MODEL_PRELOAD_BLOCKING=true" && set "I3X_SKIP_OPCUA_CONNECT=0" && uv run uvicorn i3x_server.main:app --host 127.0.0.1 --port 8000 --loop none
 ```
 
 Note: In Windows `cmd`, avoid `set VAR=value && ...` because the space before `&&` becomes part of the value (for example `true `), which can break boolean parsing. Use `set "VAR=value"` as shown above.
@@ -126,6 +152,7 @@ Note: In Windows `cmd`, avoid `set VAR=value && ...` because the space before `&
 | `I3X_OPCUA_ENDPOINT` | `opc.tcp://127.0.0.1:4840/freeopcua/server/` | Points i3x2ua at the fixture server |
 | `I3X_OPCUA_SECURITY_MODE` | `None` | No TLS needed for local fixture |
 | `I3X_OPCUA_SECURITY_POLICY` | _(empty)_ | Matches security mode None |
+| `I3X_ENABLE_WRITES` | `1` | Enables current-value and history write conformance checks |
 | `I3X_SUBSCRIPTIONS_INITIAL_VALUES` | `true` | Seeds current values into new subscriptions immediately |
 | `I3X_SUBSCRIPTION_INTERVAL_SECONDS` | `0.2` | Subsecond polling keeps update queues fresh for conformance timing |
 | `I3X_MODEL_PRELOAD_ON_STARTUP` | `true` | Ensures model is ready before conformance suite connects |

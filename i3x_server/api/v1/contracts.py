@@ -2,11 +2,29 @@ from __future__ import annotations
 
 import http
 import re
-from typing import Any, Generic, Literal, TypeVar
+from typing import Annotated, Any, Generic, Literal, TypeVar
 
-from pydantic import AliasChoices, AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    AfterValidator,
+    AliasChoices,
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 T = TypeVar("T")
+
+
+def validate_write_element_id(value: str) -> str:
+    if not value or value != value.strip() or not value.isprintable():
+        raise ValueError("elementId must be non-empty, printable, and have no surrounding whitespace")
+    return value
+
+
+WriteElementId = Annotated[str, AfterValidator(validate_write_element_id)]
 
 
 class SuccessResponse(BaseModel, Generic[T]):
@@ -310,7 +328,7 @@ class WriteVQTRequest(BaseModel):
 
 
 class ValueUpdateItemRequest(BaseModel):
-    elementId: str
+    elementId: WriteElementId
     value: Any
 
 
@@ -328,27 +346,31 @@ class HistoryWriteVQTRequest(BaseModel):
     @field_validator("timestamp", mode="before")
     @classmethod
     def _require_rfc3339_timestamp(cls, value: Any) -> str:
-        if (
-            not isinstance(value, str)
-            or re.fullmatch(r"\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:[Zz]|[+-]\d{2}:\d{2})", value)
-            is None
-        ):
-            raise ValueError("timestamp must be RFC 3339 with a timezone and at most microsecond precision")
-        return value
+        if not isinstance(value, str):
+            raise ValueError("timestamp must be a UTC RFC 3339 string")
+        normalized = value
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d+)?[Zz]", normalized) is None:
+            raise ValueError("timestamp must be RFC 3339 UTC with a Z suffix and no timezone offset")
+        fractional = normalized.split(".", 1)[1][:-1] if "." in normalized else ""
+        if any(digit != "0" for digit in fractional[6:]):
+            raise ValueError("timestamp cannot be represented exactly at microsecond precision")
+        if len(fractional) > 6:
+            normalized = normalized.split(".", 1)[0] + "." + fractional[:6] + "Z"
+        return normalized[:-1] + "Z"
 
     @model_validator(mode="after")
     def _validate_null_quality(self) -> HistoryWriteVQTRequest:
         if self.value is None and self.quality not in {"Bad", "GoodNoData"}:
             raise ValueError("A null value requires Bad or GoodNoData quality")
-        if self.quality == "GoodNoData" and self.value is not None:
-            raise ValueError("GoodNoData quality requires a null value")
+        if self.quality in {"Bad", "GoodNoData"} and self.value is not None:
+            raise ValueError("Bad and GoodNoData quality require a null value")
         return self
 
 
 class HistoryUpdateItemRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    elementId: str = Field(min_length=1)
+    elementId: WriteElementId
     value: HistoryWriteVQTRequest
 
 

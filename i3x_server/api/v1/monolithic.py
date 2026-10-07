@@ -45,6 +45,7 @@ from i3x_server.api.v1.contracts import (
     StreamRequest,
     SubscribeCapabilities,
     UpdateCapabilities,
+    validate_write_element_id,
 )
 from i3x_server.api.v1.objecttype_helpers import (
     _datatype_object_type_from_source_type_id,
@@ -52,6 +53,7 @@ from i3x_server.api.v1.objecttype_helpers import (
     _scalar_schema_for_standard_ua_datatype_node_id,
     _standard_ua_type_name,
 )
+from i3x_server.api.v1.write_validation import WriteValidationError, WriteValueValidator
 from i3x_server.application.ports.opcua import (
     OpcUaClientProtocol,
     OpcUaNamespaceInfo,
@@ -245,6 +247,7 @@ async def _write_object_value_by_element_id(
     opcua_client: OpcUaClientProtocol,
     element_id: str,
     payload_value: Any,
+    schema_validator: WriteValueValidator,
 ) -> tuple[bool, int, str, dict[str, Any]]:
     node = _find_model_node(model, element_id)
     write_value = _normalize_write_payload(payload_value)
@@ -253,12 +256,21 @@ async def _write_object_value_by_element_id(
         "requestedValuePreview": _value_preview_for_log(write_value),
         "resolvedVariantType": None,
     }
+    try:
+        validate_write_element_id(element_id)
+    except ValueError as exc:
+        return False, 400, str(exc), diagnostics
     if node is None:
         return False, 404, f"Element not found: {element_id}", diagnostics
     if node.kind != "property":
         return False, 400, "bad_type_or_range", diagnostics
 
     target_node_id = node.source_node_id
+
+    try:
+        await schema_validator.validate(node, write_value)
+    except WriteValidationError as exc:
+        return False, exc.status_code, str(exc), diagnostics
 
     try:
         writable, user_writable = await opcua_client.read_write_access(target_node_id)
@@ -284,7 +296,7 @@ async def _write_object_value_by_element_id(
         diagnostics["exception"] = str(exc)
         return False, status_code, error_class, diagnostics
 
-    if not _is_valid_write_type(write_value, variant_type):
+    if write_value is not None and not _is_valid_write_type(write_value, variant_type):
         return False, 400, "bad_type_or_range", diagnostics
 
     try:

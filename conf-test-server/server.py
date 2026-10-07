@@ -6,17 +6,141 @@ import inspect
 import logging
 import math
 import signal
+import time
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, cast
 
 from asyncua import Server, ua  # type: ignore[attr-defined]
+from asyncua.common.connection import TransportLimits
+from asyncua.crypto.permission_rules import UserRole
+from asyncua.server.binary_server_asyncio import BinaryServer, OPCUAProtocol
+from asyncua.server.history import HistoryDict, HistoryManager
+from asyncua.server.internal_server import InternalServer
+from asyncua.server.uaprocessor import UaProcessor
+from asyncua.ua.attribute_ids import AttributeIds
+from asyncua.ua.object_ids import ObjectIds
+from asyncua.ua.status_codes import StatusCodes
+from asyncua.ua.ua_binary import struct_from_binary
+from asyncua.ua.uaerrors import BadSessionNotActivated, BadUserAccessDenied
 
 ATTRIBUTE_IDS = cast(Any, ua).AttributeIds
 
 logger = logging.getLogger("i3x.conformance.server")
 
 _PRUNED_ROOT_CHILD_NAMES = frozenset({"Locations", "Aliases"})
+
+
+class FixtureProcessor(UaProcessor):
+    """Add the missing asyncua 2.1 HistoryUpdate transport dispatch."""
+
+    def __init__(self, iserver: InternalServer, transport: asyncio.Transport, limits: TransportLimits) -> None:
+        super().__init__(iserver, transport, limits)
+
+    async def _process_message(self, typeid: ua.NodeId, requesthdr: Any, seqhdr: Any, body: Any) -> bool:
+        if typeid != ua.NodeId(ua.Int32(ObjectIds.HistoryUpdateRequest_Encoding_DefaultBinary)):
+            return bool(await super()._process_message(typeid, requesthdr, seqhdr, body))  # type: ignore[no-untyped-call]
+        if self.session is None or self.session.user is None:
+            raise BadUserAccessDenied
+        if not self.session.is_activated():
+            raise BadSessionNotActivated
+        if self.session.user.role not in {UserRole.Admin, UserRole.User}:
+            raise BadUserAccessDenied
+        self.session_last_activity = time.monotonic()
+        self.session.touch()
+        params = struct_from_binary(ua.HistoryUpdateParameters, body)
+        response = ua.HistoryUpdateResponse()
+        response.Results = await self.session.history_update(params)
+        self.send_response(requesthdr.RequestHandle, seqhdr, response)  # type: ignore[no-untyped-call]
+        return True
+
+
+class FixtureProtocol(OPCUAProtocol):
+    def connection_made(self, transport: asyncio.BaseTransport) -> None:
+        super().connection_made(transport)
+        if self.processor is not None and self.transport is not None:
+            # Replace the processor before the scheduled message loop can run.
+            self.processor = FixtureProcessor(self.iserver, self.transport, self.limits)
+            self.processor.set_policies(self.policies)  # type: ignore[no-untyped-call]
+
+
+class FixtureBinaryServer(BinaryServer):
+    def _make_protocol(self) -> OPCUAProtocol:
+        return FixtureProtocol(self.iserver, self._policies, self.clients, self.closing_tasks, self.limits)
+
+
+class FixtureServer(Server):
+    async def start(self) -> None:
+        await self._setup_server_nodes()
+        await self.iserver.start()
+        try:
+            host, port = self._get_bind_socket_info()
+            if host is None or port is None:
+                raise ValueError("Fixture endpoint requires a host and port")
+            self.bserver = FixtureBinaryServer(self.iserver, host, port, self.limits)
+            self.bserver.set_policies(self._policies)
+            await self.bserver.start()
+        except Exception:
+            logger.exception("Failed to start fixture OPC UA listener")
+            await self.iserver.stop()
+            raise
+
+
+class WritableHistoryDict(HistoryDict):
+    """Fixture-only upserts into asyncua's in-memory raw history."""
+
+    def upsert(self, node_id: ua.NodeId, value: ua.DataValue) -> None:
+        records = self._datachanges[node_id]
+        records[:] = [record for record in records if record.SourceTimestamp != value.SourceTimestamp]
+        records.append(deepcopy(value))
+        records.sort(key=lambda record: record.SourceTimestamp or ua.get_win_epoch())
+        _, count = self._datachanges_period[node_id]
+        if count and len(records) > count:
+            del records[:-count]
+
+
+class FixtureHistoryManager(HistoryManager):
+    def __init__(self, iserver: InternalServer) -> None:
+        super().__init__(iserver)
+        self.fixture_storage = WritableHistoryDict()
+        self.set_storage(self.fixture_storage)
+        self.writable_types: dict[ua.NodeId, ua.VariantType] = {}
+
+    def update_history(self, params: ua.HistoryUpdateParameters) -> list[ua.HistoryUpdateResult]:
+        results: list[ua.HistoryUpdateResult] = []
+        for details in params.HistoryUpdateDetails:
+            code = StatusCodes.Good
+            if not isinstance(details, ua.UpdateDataDetails):
+                code = StatusCodes.BadHistoryOperationUnsupported
+            elif details.PerformInsertReplace != ua.PerformUpdateType.Update:
+                code = StatusCodes.BadHistoryOperationUnsupported
+            elif details.NodeId not in self.writable_types:
+                code = StatusCodes.BadNotWritable
+            else:
+                for attribute in (AttributeIds.AccessLevel, AttributeIds.UserAccessLevel):
+                    access = self.iserver.aspace.read_attribute_value(details.NodeId, attribute)
+                    if access.Value is None or not int(access.Value.Value) & (1 << int(ua.AccessLevel.HistoryWrite)):
+                        code = StatusCodes.BadUserAccessDenied
+                        break
+            result = ua.HistoryUpdateResult(StatusCode=ua.StatusCode(ua.UInt32(code)))
+            if code == StatusCodes.Good and isinstance(details, ua.UpdateDataDetails):
+                for value in details.UpdateValues:
+                    operation_code = StatusCodes.Good
+                    if value.SourceTimestamp is None:
+                        operation_code = StatusCodes.BadInvalidArgument
+                    elif value.Value is None or value.Value.VariantType not in (
+                        self.writable_types[details.NodeId],
+                        ua.VariantType.Null,
+                    ):
+                        operation_code = StatusCodes.BadTypeMismatch
+                    elif value.Value.is_array:
+                        operation_code = StatusCodes.BadTypeMismatch
+                    else:
+                        self.fixture_storage.upsert(details.NodeId, value)
+                    result.OperationResults.append(ua.StatusCode(ua.UInt32(operation_code)))
+            results.append(result)
+        return results
 
 
 @dataclass(slots=True)
@@ -79,8 +203,12 @@ class ConformanceFixtureServer:
                 await asyncio.gather(updater_task, return_exceptions=True)
 
     async def _build_server(self) -> Server:
-        server = Server()
+        server = FixtureServer()
         await server.init()
+        history_manager = FixtureHistoryManager(server.iserver)
+        server.iserver.history_manager = history_manager
+        await history_manager.init()
+        server.set_security_policy([ua.SecurityPolicyType.NoSecurity])
         server.set_endpoint(self._endpoint)
         server.set_server_name("i3x2ua Conformance Fixture")
 
@@ -123,6 +251,11 @@ class ConformanceFixtureServer:
         await self._create_deep_nested_structure(idx=idx, parent=plant)
 
         await self._configure_history(server)
+        for signal_node in self._signals:
+            if signal_node.node.nodeid not in history_manager.fixture_storage._datachanges:
+                raise RuntimeError(f"History storage was not configured for {signal_node.name}")
+            history_manager.writable_types[signal_node.node.nodeid] = signal_node.variant_type
+            await self._set_historizing_flags(signal_node.node)
         if self._history_seed_minutes > 0:
             await self._seed_history()
 
@@ -248,8 +381,14 @@ class ConformanceFixtureServer:
             await depth_path.set_writable()
 
     async def _set_historizing_flags(self, node: Any) -> None:
-        access_level = (
-            int(ua.AccessLevel.CurrentRead) | int(ua.AccessLevel.CurrentWrite) | int(ua.AccessLevel.HistoryRead)
+        access_level = sum(
+            1 << int(access)
+            for access in (
+                ua.AccessLevel.CurrentRead,
+                ua.AccessLevel.CurrentWrite,
+                ua.AccessLevel.HistoryRead,
+                ua.AccessLevel.HistoryWrite,
+            )
         )
         data_value = ua.DataValue(ua.Variant(access_level, ua.VariantType.Byte))
         await node.write_attribute(ATTRIBUTE_IDS.AccessLevel, data_value)

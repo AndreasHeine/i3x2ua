@@ -158,6 +158,14 @@ def test_to_explicit_ua_variant_returns_none_for_unknown_type() -> None:
     assert _to_explicit_ua_variant(60, "UnknownType") is None
 
 
+def test_to_explicit_ua_variant_preserves_schema_approved_null() -> None:
+    variant = _to_explicit_ua_variant(None, "Double")
+
+    assert variant is not None
+    assert variant.VariantType == ua.VariantType.Null
+    assert variant.Value is None
+
+
 def test_assert_file_exists(tmp_path: Path) -> None:
     present = tmp_path / "present.pem"
     present.write_text("x", encoding="utf-8")

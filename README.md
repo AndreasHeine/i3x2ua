@@ -235,8 +235,11 @@ MCP write policy: `PUT` routes are intentionally excluded from MCP tool generati
 	- `I3X_ENABLE_WRITES=1`: `capabilities.update.current=true`, `capabilities.update.history=true`, both bulk write endpoints enabled
 	- default (`I3X_ENABLE_WRITES` unset/0): write endpoints return `501 Not Implemented`
 - `PUT /v1/objects/history` inserts or replaces records by source timestamp. It requires a complete VQT and OPC UA `HistoryWrite` access. Capabilities describe gateway support, not write permission for every upstream node.
+- Current-value and historical writes validate values against the target's published ObjectType JSON Schema, including formats and nullability. Invalid values fail with 400; missing or invalid schemas fail with 502. External schema references are not downloaded or accepted.
+- Historical timestamps require UTC with a `Z` suffix; extra fractional digits beyond six are accepted only when zero, without rounding. `Bad` and `GoodNoData` require null, and null requires one of those qualities plus schema-declared nullability. Write element IDs must be printable with no surrounding whitespace.
 - Historical writes support Variable-backed property elements with built-in Boolean, numeric, String, DateTime, Guid, and base64 ByteString values, including rectangular arrays. Composition fan-out and custom structured values are not supported.
 - The upstream server must implement HistoryUpdate. The standard asyncua 2.1.0 server rejects it; gateway responses preserve this failure rather than reporting success. Historical mutations are not automatically retried after a transport failure.
+- Explicit service-wide `BadServiceUnsupported` returns HTTP 501 unless earlier items succeeded, in which case mixed results retain HTTP 200. Node-level unsupported operations and permission denials remain item-level failures and are not assumed to mean the whole service is unavailable.
 
 ## Docker
 

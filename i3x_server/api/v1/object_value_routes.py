@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 from time import perf_counter
 from typing import Any
 
+from asyncua.ua.status_codes import StatusCodes
+from asyncua.ua.uaerrors import UaStatusCodeError
 from fastapi import APIRouter, Depends, Request
 
 from i3x_server.api.v1.common_helpers import (
@@ -22,6 +25,7 @@ from i3x_server.api.v1.contracts import (
     HistoricalValueResult,
     RelatedObjectResult,
     SuccessResponse,
+    UpdateObjectHistoryRequest,
     UpdateObjectValueRequest,
     UpdateObjectValuesRequest,
     _bulk_response,
@@ -30,6 +34,7 @@ from i3x_server.api.v1.contracts import (
 )
 from i3x_server.api.v1.monolithic import (
     _build_historical_value_result,
+    _classify_write_error,
     _collect_history_lookup_and_node_ids,
     _collect_value_component_nodes,
     _not_implemented,
@@ -267,6 +272,88 @@ async def update_object_values_v1(
         else:
             results.append(_bulk_result_error(update.elementId, message, code=status_code))
 
+    return _bulk_response(results)
+
+
+@router.put(
+    "/objects/history",
+    response_model=BulkResponse[None],
+    summary="Update historical values",
+    description=(
+        "Insert or replace historical records by source timestamp for Variable-backed property elements. "
+        "Requires I3X_ENABLE_WRITES and HistoryWrite permission on the OPC UA server. "
+        "Each item requires a complete VQT; current values are not changed. "
+        "Results preserve request order, including repeated element IDs. Mutations are not automatically retried."
+    ),
+)
+async def update_historical_values_v1(
+    request: Request,
+    body: UpdateObjectHistoryRequest,
+    model: BuildResult = Depends(get_or_build_model),
+    opcua_client: OpcUaClientProtocol = Depends(get_opcua_client),
+) -> BulkResponse[None]:
+    if not _writes_enabled():
+        _not_implemented("Historical value updates")
+
+    results: list[BulkResultItem[None]] = []
+    principal = request.headers.get("x-principal") or "anonymous"
+    for update in body.updates:
+        node = _find_model_node(model, update.elementId)
+        status_code, message = 200, "ok"
+        if node is None:
+            status_code, message = 404, f"Element not found: {update.elementId}"
+        elif node.kind != "property":
+            status_code, message = 400, "Historical writes require a Variable-backed property element"
+        else:
+            try:
+                writable, user_writable = await opcua_client.read_history_write_access(node.source_node_id)
+                if not writable or not user_writable:
+                    status_code, message = 403, "Target does not permit historical writes"
+                else:
+                    await opcua_client.write_history_value(
+                        node.source_node_id,
+                        update.value.value,
+                        update.value.quality,
+                        update.value.timestamp,
+                    )
+            except ValueError as exc:
+                status_code, message = 400, str(exc)
+            except UaStatusCodeError as exc:
+                if exc.code in {
+                    StatusCodes.BadHistoryOperationUnsupported,
+                    StatusCodes.BadServiceUnsupported,
+                    StatusCodes.BadNotImplemented,
+                }:
+                    status_code, message = 501, f"OPC UA historical writes unsupported: {exc}"
+                elif exc.code == StatusCodes.BadNodeIdUnknown:
+                    status_code, message = 404, str(exc)
+                elif exc.code in {
+                    StatusCodes.BadHistoryOperationInvalid,
+                    StatusCodes.BadInvalidArgument,
+                    StatusCodes.BadTimestampNotSupported,
+                }:
+                    status_code, message = 400, str(exc)
+                else:
+                    status_code, message = _classify_write_error(exc)
+                    message = f"{message}: {exc}"
+            except Exception as exc:
+                status_code, message = _classify_write_error(exc)
+                message = f"{message}: {exc}"
+        logger.log(
+            logging.INFO if status_code == 200 else logging.WARNING,
+            "History write audit principal=%s element_id=%s node_id=%s timestamp=%s decision=%s detail=%s",
+            principal,
+            update.elementId,
+            node.source_node_id if node is not None else None,
+            update.value.timestamp.isoformat(),
+            "allow" if status_code == 200 else "deny",
+            message,
+        )
+        results.append(
+            _bulk_result_success(update.elementId, None)
+            if status_code == 200
+            else _bulk_result_error(update.elementId, message, code=status_code)
+        )
     return _bulk_response(results)
 
 

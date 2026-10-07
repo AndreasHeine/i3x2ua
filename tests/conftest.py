@@ -118,6 +118,9 @@ class FakeOpcUaClient:
         self.user_writable_by_node_id: dict[str, bool] = {"ns=2;s=Temperature": True}
         self.variant_type_by_node_id: dict[str, str] = {"ns=2;s=Temperature": "Double"}
         self.write_failures: dict[str, Exception] = {}
+        self.history_writable_by_node_id: dict[str, bool] = {"ns=2;s=Temperature": True}
+        self.history_user_writable_by_node_id: dict[str, bool] = {"ns=2;s=Temperature": True}
+        self.history_write_failures: dict[str, Exception] = {}
         self.history_values: dict[str, list[SimpleNamespace]] = {
             "ns=2;s=Temperature": [
                 SimpleNamespace(
@@ -303,6 +306,34 @@ class FakeOpcUaClient:
 
     async def read_variant_type(self, node_id: str) -> str | None:
         return self.variant_type_by_node_id.get(node_id)
+
+    async def read_history_write_access(self, node_id: str) -> tuple[bool, bool]:
+        return (
+            self.history_writable_by_node_id.get(node_id, False),
+            self.history_user_writable_by_node_id.get(node_id, False),
+        )
+
+    async def write_history_value(self, node_id: str, value: Any, quality: str, timestamp: datetime) -> None:
+        failure = self.history_write_failures.get(node_id)
+        if failure is not None:
+            self._request_metrics.failed_request_count += 1
+            raise failure
+        variant_type = self.variant_type_by_node_id.get(node_id)
+        if variant_type == "Double" and value is not None:
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                raise ValueError("Value does not conform to OPC UA Double")
+        records = self.history_values.setdefault(node_id, [])
+        records[:] = [record for record in records if record.SourceTimestamp != timestamp]
+        records.append(
+            SimpleNamespace(
+                Value=SimpleNamespace(Value=value),
+                StatusCode=SimpleNamespace(name=quality),
+                SourceTimestamp=timestamp,
+                ServerTimestamp=None,
+            )
+        )
+        records.sort(key=lambda record: record.SourceTimestamp)
+        self._request_metrics.history_write_count += 1
 
     async def write_value(self, node_id: str, value: Any, variant_type: str | None = None) -> None:
         del variant_type

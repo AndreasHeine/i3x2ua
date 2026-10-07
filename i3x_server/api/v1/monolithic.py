@@ -1676,7 +1676,10 @@ def _to_vqt_from_history_value(data_value: Any) -> VQT:
         or getattr(data_value, "timestamp", None)
     )
     quality = _normalize_quality(getattr(data_value, "StatusCode", None) or getattr(data_value, "status", None))
-    return VQT(value=_to_json_safe_value(value), quality=quality, timestamp=_normalize_timestamp(timestamp))
+    safe_value = _to_json_safe_value(value)
+    if safe_value is None and quality not in ("Bad", "GoodNoData"):
+        quality = "GoodNoData"
+    return VQT(value=safe_value, quality=quality, timestamp=_normalize_timestamp(timestamp))
 
 
 def _increment_counter(counter: dict[str, int], key: str) -> None:

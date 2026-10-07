@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import http
-from typing import Any, Generic, TypeVar
+import re
+from typing import Any, Generic, Literal, TypeVar
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 T = TypeVar("T")
 
@@ -315,6 +316,46 @@ class ValueUpdateItemRequest(BaseModel):
 
 class UpdateObjectValuesRequest(BaseModel):
     updates: list[ValueUpdateItemRequest]
+
+
+class HistoryWriteVQTRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    value: Any
+    quality: Literal["Good", "Uncertain", "Bad", "GoodNoData"]
+    timestamp: AwareDatetime
+
+    @field_validator("timestamp", mode="before")
+    @classmethod
+    def _require_rfc3339_timestamp(cls, value: Any) -> str:
+        if (
+            not isinstance(value, str)
+            or re.fullmatch(r"\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:[Zz]|[+-]\d{2}:\d{2})", value)
+            is None
+        ):
+            raise ValueError("timestamp must be RFC 3339 with a timezone and at most microsecond precision")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_null_quality(self) -> HistoryWriteVQTRequest:
+        if self.value is None and self.quality not in {"Bad", "GoodNoData"}:
+            raise ValueError("A null value requires Bad or GoodNoData quality")
+        if self.quality == "GoodNoData" and self.value is not None:
+            raise ValueError("GoodNoData quality requires a null value")
+        return self
+
+
+class HistoryUpdateItemRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    elementId: str = Field(min_length=1)
+    value: HistoryWriteVQTRequest
+
+
+class UpdateObjectHistoryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    updates: list[HistoryUpdateItemRequest] = Field(min_length=1)
 
 
 class RegisterMonitoredItemsRequest(BaseModel):

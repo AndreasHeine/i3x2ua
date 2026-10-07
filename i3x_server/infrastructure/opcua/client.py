@@ -16,6 +16,8 @@ from asyncua.client.client import Client
 from asyncua.ua import NodeClass
 from asyncua.ua.attribute_ids import AttributeIds
 from asyncua.ua.object_ids import ObjectIds
+from asyncua.ua.status_codes import StatusCodes
+from asyncua.ua.uaerrors import UaError
 
 from i3x_server.domain.ports.opcua import (
     OpcUaClientProtocol,
@@ -30,6 +32,7 @@ from i3x_server.domain.ports.opcua import (
     OpcUaRuntimeMetrics,
     OpcUaSubscriptionCapabilities,
 )
+from i3x_server.infrastructure.opcua.history import historical_data_value
 
 __all__ = [
     "OpcUaClient",
@@ -1713,6 +1716,68 @@ class OpcUaClient:
                 return _is_write_access_allowed(access_level), _is_write_access_allowed(user_access_level)
             self._record_failed_request()
             raise
+
+    async def read_history_write_access(self, node_id: str) -> tuple[bool, bool]:
+        node = self._client.get_node(node_id)
+        try:
+            values = await node.read_attributes([AttributeIds.AccessLevel, AttributeIds.UserAccessLevel])
+            if len(values) != 2:
+                raise UaError("Incomplete OPC UA history access response")
+            for item in values:
+                if item.StatusCode is None:
+                    raise UaError("Missing OPC UA history access status")
+                item.StatusCode.check()
+            mask = 1 << ua.AccessLevel.HistoryWrite
+            return (
+                bool(int(_attribute_scalar_value(values[0])) & mask),
+                bool(int(_attribute_scalar_value(values[1])) & mask),
+            )
+        except Exception:
+            self._record_failed_request()
+            raise
+
+    async def write_history_value(self, node_id: str, value: Any, quality: str, timestamp: datetime) -> None:
+        node = self._client.get_node(node_id)
+        try:
+            variant_type = await node.read_data_type_as_variant_type()
+            attributes = await node.read_attributes([AttributeIds.ValueRank, AttributeIds.ArrayDimensions])
+            if len(attributes) != 2:
+                raise UaError("Incomplete OPC UA history type response")
+            for attribute in attributes:
+                if attribute.StatusCode is None:
+                    raise UaError("Missing OPC UA history type status")
+            rank_attribute, dimensions_attribute = attributes
+            assert rank_attribute.StatusCode is not None
+            assert dimensions_attribute.StatusCode is not None
+            rank_attribute.StatusCode.check()
+            dimensions = None
+            if dimensions_attribute.StatusCode.value != StatusCodes.BadAttributeIdInvalid:
+                dimensions_attribute.StatusCode.check()
+                dimensions = _attribute_scalar_value(dimensions_attribute)
+            data_value = historical_data_value(
+                value,
+                quality,
+                timestamp,
+                variant_type,
+                int(_attribute_scalar_value(rank_attribute)),
+                dimensions,
+            )
+            details = ua.UpdateDataDetails(
+                NodeId=node.nodeid,
+                PerformInsertReplace=ua.PerformUpdateType.Update,
+                UpdateValues=[data_value],
+            )
+            # Do not replay a mutation after a timeout: the server may already have applied it.
+            result = await node.history_update(details)
+            result.StatusCode.check()
+            if len(result.OperationResults) != 1:
+                raise UaError("Incomplete OPC UA HistoryUpdate operation results")
+            result.OperationResults[0].check()
+        except Exception:
+            self._record_failed_request()
+            raise
+        self._request_metrics.history_write_count += 1
+        logger.info("OPC UA history update ok node_id=%s timestamp=%s", node_id, timestamp.isoformat())
 
     async def read_variant_type(self, node_id: str) -> str | None:
         node = self._client.get_node(node_id)

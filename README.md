@@ -209,7 +209,7 @@ Active endpoints are exposed under `/v1` for:
 - object queries and values (`/objects`, `/objects/list`, `/objects/related`, `/objects/value`, `/objects/history`)
 - subscriptions (`/subscriptions`, `/subscriptions/register`, `/subscriptions/unregister`, `/subscriptions/sync`, `/subscriptions/list`, `/subscriptions/delete`, `/subscriptions/stream`)
 
-Current scope emphasis: this implementation prioritizes read/query/subscribe operations and includes optional current-value write support.
+Current scope emphasis: this implementation prioritizes read/query/subscribe operations and includes optional current-value and historical write support.
 
 Optional OPC UA diagnostic endpoints are exposed under `/ua`:
 
@@ -230,10 +230,13 @@ MCP write policy: `PUT` routes are intentionally excluded from MCP tool generati
 
 ## Current Limitations
 
-- historical update APIs are not implemented (`PUT /v1/objects/history`, `PUT /v1/objects/{element_id}/history` return `501 Not Implemented`)
-- current-value write support is optional and controlled by `I3X_ENABLE_WRITES`:
-	- `I3X_ENABLE_WRITES=1`: `capabilities.update.current=true`, `PUT /v1/objects/value` enabled
+- path-style historical updates remain unimplemented (`PUT /v1/objects/{element_id}/history` returns `501 Not Implemented`); use the standard bulk endpoint.
+- current-value and historical write support is optional and controlled by `I3X_ENABLE_WRITES`:
+	- `I3X_ENABLE_WRITES=1`: `capabilities.update.current=true`, `capabilities.update.history=true`, both bulk write endpoints enabled
 	- default (`I3X_ENABLE_WRITES` unset/0): write endpoints return `501 Not Implemented`
+- `PUT /v1/objects/history` inserts or replaces records by source timestamp. It requires a complete VQT and OPC UA `HistoryWrite` access. Capabilities describe gateway support, not write permission for every upstream node.
+- Historical writes support Variable-backed property elements with built-in Boolean, numeric, String, DateTime, Guid, and base64 ByteString values, including rectangular arrays. Composition fan-out and custom structured values are not supported.
+- The upstream server must implement HistoryUpdate. The standard asyncua 2.1.0 server rejects it; gateway responses preserve this failure rather than reporting success. Historical mutations are not automatically retried after a transport failure.
 
 ## Docker
 
@@ -275,7 +278,7 @@ The default compose setup also enables container hardening (`read_only`, `tmpfs`
 Optional environment variables:
 
 - `I3X_ENABLE_MCP=1` to enable MCP support; it is disabled by default
-- `I3X_ENABLE_WRITES=1` to enable current-value writes (`PUT /v1/objects/value` and `PUT /v1/objects/{element_id}/value`)
+- `I3X_ENABLE_WRITES=1` to enable current-value writes (`PUT /v1/objects/value` and `PUT /v1/objects/{element_id}/value`) and historical writes (`PUT /v1/objects/history`)
 - `I3X_OPCUA_CERTS_DIR=./certs` to mount OPC UA client/server certificate files into the app container (`/app/certs`)
 - `NGINX_HTTPS_ENABLED=1` to enable TLS termination
 - `NGINX_SSL_CERTS_DIR=./certs` with `fullchain.pem` and `privkey.pem`

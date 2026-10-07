@@ -92,7 +92,7 @@ def _build_server_info(server_version: str | None = None, server_name: str | Non
         serverName=server_name or server_name_from_openapi(),
         capabilities=ServerCapabilities(
             query={"history": True},
-            update={"current": writes_enabled, "history": False},
+            update={"current": writes_enabled, "history": writes_enabled},
             subscribe={"stream": True},
         ),
     )

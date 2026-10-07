@@ -4,6 +4,7 @@ import json
 import logging
 import re
 from collections.abc import Mapping
+from contextlib import nullcontext as _nullcontext
 from copy import deepcopy
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -15,18 +16,34 @@ from urllib.parse import quote, urlsplit
 import httpx
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response
-from opentelemetry import metrics as _otel_metrics
-from opentelemetry import trace as _otel_trace
-from opentelemetry.metrics import Counter, Histogram
-from opentelemetry.trace import Status as _OtelStatus
-from opentelemetry.trace import StatusCode as _OtelStatusCode
-from opentelemetry.trace import get_current_span
 
 from i3x_server.errors import i3x_http_error
 
-_mcp_tracer = _otel_trace.get_tracer("i3x_server.mcp")
-_mcp_tool_calls: Counter | None = None
-_mcp_tool_duration: Histogram | None = None
+
+def _load_otel_tracing() -> tuple[Any, Any, Any, Any]:
+    try:
+        from opentelemetry import trace as otel_trace
+        from opentelemetry.trace import Status as otel_status
+        from opentelemetry.trace import StatusCode as otel_status_code
+        from opentelemetry.trace import get_current_span
+    except ImportError:  # pragma: no cover - optional dependency
+        return None, None, None, None
+
+    # Tracer is a proxy — it forwards to the global TracerProvider configured later.
+    return (
+        otel_status,
+        otel_status_code,
+        get_current_span,
+        otel_trace.get_tracer("i3x_server.mcp"),
+    )
+
+
+_OtelStatus, _OtelStatusCode, get_current_span, _mcp_tracer = _load_otel_tracing()
+
+# Meter instruments bind to the provider at creation time, so they are populated
+# by init_mcp_metrics() after the provider is configured.
+_mcp_tool_calls: Any = None
+_mcp_tool_duration: Any = None
 
 MCP_EXCLUDED_OPERATION_IDS = {"streamSubscription"}
 _MCP_INTERNAL_BASE_URL = httpx.URL("http://mcp.local")
@@ -46,7 +63,13 @@ def init_mcp_metrics() -> None:
     where this function is called.
     """
     global _mcp_tool_calls, _mcp_tool_duration
-    meter = _otel_metrics.get_meter("i3x_server.mcp")
+    try:
+        from opentelemetry import metrics as otel_metrics
+    except ImportError:  # pragma: no cover - optional dependency
+        logger.warning("OpenTelemetry metrics API is unavailable; MCP metrics are disabled.")
+        return
+
+    meter = otel_metrics.get_meter("i3x_server.mcp")
     _mcp_tool_calls = meter.create_counter(
         "mcp.tool_calls",
         description="Total number of MCP tool invocations",
@@ -59,9 +82,10 @@ def init_mcp_metrics() -> None:
 
 
 def _trace_log_fields(request: Request) -> tuple[str, str]:
-    span_context = get_current_span().get_span_context()
-    if span_context.is_valid:
-        return (f"{span_context.trace_id:032x}", f"{span_context.span_id:016x}")
+    if get_current_span is not None:
+        span_context = get_current_span().get_span_context()
+        if span_context.is_valid:
+            return (f"{span_context.trace_id:032x}", f"{span_context.span_id:016x}")
 
     traceparent = request.headers.get("traceparent", "")
     match = _TRACEPARENT_PATTERN.match(traceparent)
@@ -475,14 +499,18 @@ async def invoke_mcp_tool(request: Request, tool: McpToolDefinition, arguments: 
         trace_id,
         span_id,
     )
-    span_ctx = _mcp_tracer.start_as_current_span(
-        "mcp.tool_call",
-        attributes={
-            "mcp.tool.name": tool.name,
-            "mcp.tool.method": tool.method,
-            "mcp.tool.path": tool.path,
-            "mcp.tool.arg_count": len(arguments),
-        },
+    span_ctx = (
+        _mcp_tracer.start_as_current_span(
+            "mcp.tool_call",
+            attributes={
+                "mcp.tool.name": tool.name,
+                "mcp.tool.method": tool.method,
+                "mcp.tool.path": tool.path,
+                "mcp.tool.arg_count": len(arguments),
+            },
+        )
+        if _mcp_tracer is not None
+        else _nullcontext()
     )
     with span_ctx as _span:
         try:
@@ -554,8 +582,9 @@ async def invoke_mcp_tool(request: Request, tool: McpToolDefinition, arguments: 
                 }
 
             duration_s = perf_counter() - started
-            _span.set_attribute("http.response.status_code", response.status_code)
-            _span.set_attribute("mcp.tool.duration_s", duration_s)
+            if _span is not None:
+                _span.set_attribute("http.response.status_code", response.status_code)
+                _span.set_attribute("mcp.tool.duration_s", duration_s)
             if _mcp_tool_calls is not None:
                 _mcp_tool_calls.add(
                     1,
@@ -575,8 +604,10 @@ async def invoke_mcp_tool(request: Request, tool: McpToolDefinition, arguments: 
             )
             return {"status_code": response.status_code, "body": body}
         except Exception as _exc:
-            _span.record_exception(_exc)
-            _span.set_status(_OtelStatus(_OtelStatusCode.ERROR))
+            if _span is not None:
+                _span.record_exception(_exc)
+                if _OtelStatus is not None and _OtelStatusCode is not None:
+                    _span.set_status(_OtelStatus(_OtelStatusCode.ERROR))
             if _mcp_tool_calls is not None:
                 _mcp_tool_calls.add(1, {"mcp.tool.name": tool.name, "error": "true"})
             logger.exception(

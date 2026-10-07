@@ -181,7 +181,7 @@ I3X_ENABLE_MCP=1 uv run uvicorn i3x_server.main:app --host 0.0.0.0 --port 8000
 
 ### MCP Endpoints
 
-- **Discovery**: `GET /mcp` — Returns SSE endpoint for MCP discovery.
+- **Discovery**: `GET /mcp` — Opens an SSE stream for MCP discovery; the stream remains open and sends periodic keepalives. List-changed notifications are not currently supported; prompt overrides are loaded at server startup.
 - **Tool listing**: `GET /mcp/tools` — Returns tool catalog in REST format.
 - **Tool calling**: `POST /mcp/call` — REST-style tool invocation.
 - **Prompt listing**: `GET /mcp/prompts` — Returns prompt metadata.

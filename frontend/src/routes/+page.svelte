@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
 
   const title = 'i3X API Gateway for OPC UA';
-  const description = 'Turn any OPC UA server into a standards-compatible i3X API and MCP endpoint.';
+  const description = 'Turn any OPC UA server into an i3X-compliant REST and MCP Enabled API.';
 
   const baseLinks = [
     { label: 'API Documentation', href: '/docs' },

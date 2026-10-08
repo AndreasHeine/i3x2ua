@@ -11,7 +11,6 @@ from fastapi.responses import JSONResponse
 
 from i3x_server.api.v1.common_helpers import (
     _good_no_data_vqt,
-    _raise_not_found,
     _raise_opcua_error,
     _resolve_model_nodes,
 )
@@ -25,14 +24,11 @@ from i3x_server.api.v1.contracts import (
     GetRelatedObjectsRequest,
     HistoricalValueResult,
     RelatedObjectResult,
-    SuccessResponse,
     UpdateObjectHistoryRequest,
-    UpdateObjectValueRequest,
     UpdateObjectValuesRequest,
     _bulk_response,
     _bulk_result_error,
     _bulk_result_success,
-    validate_write_element_id,
 )
 from i3x_server.api.v1.monolithic import (
     _build_historical_value_result,
@@ -41,8 +37,6 @@ from i3x_server.api.v1.monolithic import (
     _collect_value_component_nodes,
     _not_implemented,
     _parse_history_time_range,
-    _raise_invalid_argument,
-    _raise_write_error,
     _vqt_from_data_value,
     _write_object_value_by_element_id,
     _writes_enabled,
@@ -386,97 +380,3 @@ async def update_historical_values_v1(
             },
         )
     return response
-
-
-@router.get(
-    "/objects/{element_id}/history",
-    summary="Get object history by path",
-    description=(
-        "Path-style historical value retrieval for a single object. "
-        "This endpoint is currently not implemented; use POST /v1/objects/history."
-    ),
-)
-async def get_historical_values_v1(element_id: str) -> None:
-    _not_implemented(f"Historical values for '{element_id}'")
-
-
-@router.put(
-    "/objects/{element_id}/history",
-    summary="Update object history by path",
-    description=(
-        "Path-style historical value updates for a single object. This endpoint is currently not implemented."
-    ),
-)
-async def update_object_history_v1(element_id: str) -> None:
-    _not_implemented(f"Historical value updates for '{element_id}'")
-
-
-@router.put(
-    "/objects/{element_id}/value",
-    response_model=SuccessResponse[None],
-    summary="Update current value by path",
-    description=(
-        "Write the current value for a single object element ID. "
-        "Writes are accepted only for writable property nodes when write support is enabled."
-    ),
-)
-async def update_object_value_v1(
-    element_id: str,
-    request: Request,
-    body: UpdateObjectValueRequest | None = None,
-    model: BuildResult = Depends(get_or_build_model),
-    opcua_client: OpcUaClientProtocol = Depends(get_opcua_client),
-) -> SuccessResponse[None]:
-    if not _writes_enabled():
-        _not_implemented(f"Value update for '{element_id}'")
-
-    if body is None:
-        _raise_invalid_argument("body", None, "Missing request body")
-
-    try:
-        validate_write_element_id(element_id)
-    except ValueError as exc:
-        _raise_invalid_argument("elementId", element_id, str(exc))
-    node = _find_model_node(model, element_id)
-    if node is None:
-        _raise_not_found("Object", element_id)
-    if node.kind != "property":
-        _raise_write_error(400, "bad_type_or_range")
-
-    target_node_id = node.source_node_id
-    principal = request.headers.get("x-principal") or "anonymous"
-    started = perf_counter()
-
-    ok, status_code, error_class, diagnostics = await _write_object_value_by_element_id(
-        model=model,
-        opcua_client=opcua_client,
-        element_id=element_id,
-        payload_value=body.value,
-        schema_validator=WriteValueValidator(request, model, opcua_client),
-    )
-    if not ok:
-        logger.warning(
-            (
-                "Write audit principal=%s element_id=%s node_id=%s decision=deny class=%s "
-                "variant_type=%s value_type=%s value_preview=%s error=%s duration_s=%.3f"
-            ),
-            principal,
-            element_id,
-            target_node_id,
-            error_class,
-            diagnostics.get("resolvedVariantType"),
-            diagnostics.get("requestedValueType"),
-            diagnostics.get("requestedValuePreview"),
-            diagnostics.get("exception"),
-            perf_counter() - started,
-        )
-        _raise_write_error(status_code, error_class)
-
-    logger.info(
-        "Write audit principal=%s element_id=%s node_id=%s decision=allow class=ok duration_s=%.3f",
-        principal,
-        element_id,
-        target_node_id,
-        perf_counter() - started,
-    )
-    return SuccessResponse(result=None)

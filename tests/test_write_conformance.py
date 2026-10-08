@@ -3,7 +3,6 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 from unittest.mock import AsyncMock
-from urllib.parse import quote
 
 import pytest
 from asyncua import ua
@@ -38,12 +37,10 @@ def _publish_schema(client: TestClient, schema: dict[str, Any]) -> None:
 
 def _write(client: TestClient, operation: str, value: Any, element_id: str = "property-abc") -> Any:
     vqt = {"value": value, "quality": "Bad" if value is None else "Good", "timestamp": "2026-01-01T10:00:00Z"}
-    if operation == "single":
-        return client.put(f"/v1/objects/{quote(element_id, safe='')}/value", json={"value": value})
     return client.put(f"/v1/objects/{operation}", json={"updates": [{"elementId": element_id, "value": vqt}]})
 
 
-@pytest.mark.parametrize("operation", ["single", "value", "history"])
+@pytest.mark.parametrize("operation", ["value", "history"])
 @pytest.mark.parametrize(
     ("schema", "value", "expected"),
     [
@@ -78,10 +75,10 @@ def test_both_write_paths_validate_published_schema(
     monkeypatch.setattr(opcua, "write_value", current_write)
     monkeypatch.setattr(opcua, "write_history_value", history_write)
     response = _write(client, operation, value)
-    assert response.status_code == (400 if operation == "single" and not expected else 200)
+    assert response.status_code == 200
     assert response.json()["success"] is expected
     if not expected:
-        failure = response.json() if operation == "single" else response.json()["results"][0]
+        failure = response.json()["results"][0]
         assert failure["responseDetail"]["status"] == 400
         assert "ObjectType" in failure["responseDetail"]["detail"]
         current_write.assert_not_awaited()
@@ -92,7 +89,7 @@ def test_both_write_paths_validate_published_schema(
         current_write.assert_awaited_once()
 
 
-@pytest.mark.parametrize("operation", ["single", "value", "history"])
+@pytest.mark.parametrize("operation", ["value", "history"])
 def test_schema_accepts_a_valid_datetime(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -106,7 +103,7 @@ def test_schema_accepts_a_valid_datetime(
     assert response.json()["success"] is True
 
 
-@pytest.mark.parametrize("operation", ["single", "value", "history"])
+@pytest.mark.parametrize("operation", ["value", "history"])
 def test_schema_rejects_even_a_current_noop(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -122,7 +119,7 @@ def test_schema_rejects_even_a_current_noop(
     opcua.read_data_values.assert_not_awaited()
 
 
-@pytest.mark.parametrize("operation", ["single", "value", "history"])
+@pytest.mark.parametrize("operation", ["value", "history"])
 @pytest.mark.parametrize("mode", ["discovery", "missing", "invalid", "external", "unresolved"])
 def test_schema_resolution_failure_never_writes(
     client: TestClient,
@@ -151,14 +148,14 @@ def test_schema_resolution_failure_never_writes(
     monkeypatch.setattr(opcua, "write_value", write)
     monkeypatch.setattr(opcua, "write_history_value", history_write)
     response = _write(client, operation, 19.5)
-    assert response.status_code == (502 if operation == "single" else 200)
-    failure = response.json() if operation == "single" else response.json()["results"][0]
+    assert response.status_code == 200
+    failure = response.json()["results"][0]
     assert failure["responseDetail"]["status"] == 502
     write.assert_not_awaited()
     history_write.assert_not_awaited()
 
 
-@pytest.mark.parametrize("operation", ["single", "value", "history"])
+@pytest.mark.parametrize("operation", ["value", "history"])
 @pytest.mark.parametrize("element_id", [" property-abc", "property-abc ", "property\x01abc"])
 def test_write_element_id_syntax(
     client: TestClient,

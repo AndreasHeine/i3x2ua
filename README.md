@@ -230,10 +230,10 @@ MCP write policy: `PUT` routes are intentionally excluded from MCP tool generati
 
 ## Current Limitations
 
-- path-style historical updates remain unimplemented (`PUT /v1/objects/{element_id}/history` returns `501 Not Implemented`); use the standard bulk endpoint.
 - current-value and historical write support is optional and controlled by `I3X_ENABLE_WRITES`:
 	- `I3X_ENABLE_WRITES=1`: `capabilities.update.current=true`, `capabilities.update.history=true`, both bulk write endpoints enabled
 	- default (`I3X_ENABLE_WRITES` unset/0): write endpoints return `501 Not Implemented`
+- Write operations use the standard bulk endpoints only: `PUT /v1/objects/value` and `PUT /v1/objects/history`. Historical reads use `POST /v1/objects/history`.
 - `PUT /v1/objects/history` inserts or replaces records by source timestamp. It requires a complete VQT and OPC UA `HistoryWrite` access. Capabilities describe gateway support, not write permission for every upstream node.
 - Current-value and historical writes validate values against the target's published ObjectType JSON Schema, including formats and nullability. Invalid values fail with 400; missing or invalid schemas fail with 502. External schema references are not downloaded or accepted.
 - Historical timestamps require UTC with a `Z` suffix; extra fractional digits beyond six are accepted only when zero, without rounding. `Bad` and `GoodNoData` require null, and null requires one of those qualities plus schema-declared nullability. Write element IDs must be printable with no surrounding whitespace.
@@ -281,7 +281,7 @@ The default compose setup also enables container hardening (`read_only`, `tmpfs`
 Optional environment variables:
 
 - `I3X_ENABLE_MCP=1` to enable MCP support; it is disabled by default
-- `I3X_ENABLE_WRITES=1` to enable current-value writes (`PUT /v1/objects/value` and `PUT /v1/objects/{element_id}/value`) and historical writes (`PUT /v1/objects/history`)
+- `I3X_ENABLE_WRITES=1` to enable current-value writes (`PUT /v1/objects/value`) and historical writes (`PUT /v1/objects/history`)
 - `I3X_OPCUA_CERTS_DIR=./certs` to mount OPC UA client/server certificate files into the app container (`/app/certs`)
 - `NGINX_HTTPS_ENABLED=1` to enable TLS termination
 - `NGINX_SSL_CERTS_DIR=./certs` with `fullchain.pem` and `privkey.pem`

@@ -161,8 +161,6 @@ def _with_runtime_argument_overrides(
             body_dict.setdefault("startTime", "2026-01-01T00:00:00Z")
             body_dict.setdefault("endTime", "2026-01-02T00:00:00Z")
             body_dict.setdefault("maxDepth", 1)
-        if tool_name == "updateObjectValue":
-            body_dict = {"value": 123}
         if tool_name == "createSubscription":
             body_dict.setdefault("clientId", "mcp-runtime-smoke")
             body_dict.setdefault("displayName", "MCP Runtime Smoke")
@@ -738,7 +736,7 @@ def test_mcp_jsonrpc_tools_call_returns_jsonrpc_error_for_http_exception(client:
             "jsonrpc": "2.0",
             "id": 301,
             "method": "tools/call",
-            "params": {"name": "updateObjectValue", "arguments": {}},
+            "params": {"name": "queryLastKnownValues", "arguments": {}},
         },
     )
 
@@ -777,18 +775,6 @@ def test_mcp_call_supports_body_arguments(client: TestClient) -> None:
     assert payload["success"] is True
     assert payload["results"][0]["success"] is True
     assert payload["results"][0]["result"]["isComposition"] is False
-
-
-@pytest.mark.parametrize("element_id", ["http://evil.example", "../evil"])
-def test_mcp_call_rejects_malicious_path_parameters(client: TestClient, element_id: str) -> None:
-    response = client.post(
-        "/mcp/call",
-        json={"tool": "updateObjectValue", "arguments": {"elementId": element_id, "body": {"value": 1}}},
-    )
-
-    assert response.status_code == 400
-    payload = response.json()
-    assert payload["error"]["message"] == "Invalid path parameter: elementId"
 
 
 def test_mcp_call_rejects_unknown_tool(client: TestClient) -> None:

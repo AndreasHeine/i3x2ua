@@ -309,18 +309,6 @@ class GetObjectHistoryRequest(BaseModel):
     maxDepth: int | None = Field(default=1, ge=0)
 
 
-class UpdateObjectValueRequest(BaseModel):
-    value: Any | None = None
-    maxDepth: int | None = Field(
-        default=1,
-        ge=0,
-        description=(
-            "Maximum composition depth to apply when updating descendant properties. "
-            "Use 0 for unlimited composition depth."
-        ),
-    )
-
-
 class WriteVQTRequest(BaseModel):
     value: Any
     quality: str | None = None

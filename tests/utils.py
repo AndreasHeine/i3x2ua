@@ -165,8 +165,6 @@ def with_runtime_argument_overrides(
             body_dict.setdefault("startTime", "2026-01-01T00:00:00Z")
             body_dict.setdefault("endTime", "2026-01-02T00:00:00Z")
             body_dict.setdefault("maxDepth", 1)
-        if tool_name == "updateObjectValue":
-            body_dict = {"value": 123}
         if tool_name == "createSubscription":
             body_dict.setdefault("clientId", "mcp-runtime-smoke")
             body_dict.setdefault("displayName", "MCP Runtime Smoke")

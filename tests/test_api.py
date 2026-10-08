@@ -1953,60 +1953,13 @@ def test_v1_404_error_includes_response_detail(client: TestClient) -> None:
 
 
 def test_v1_501_error_includes_response_detail(client: TestClient) -> None:
-    response = client.put("/v1/objects/some-id/value")
+    response = client.put("/v1/objects/value", json={"updates": [{"elementId": "property-abc", "value": 55.25}]})
     assert response.status_code == 501
     payload = response.json()
     assert payload["success"] is False
     assert payload["error"]["code"] == 501
     assert payload["responseDetail"]["status"] == 501
     assert payload["responseDetail"]["title"] == "Not Implemented"
-
-
-def test_v1_update_value_success_when_enabled(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("I3X_ENABLE_WRITES", "1")
-
-    response = client.put("/v1/objects/property-abc/value", json={"value": 55.25})
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["success"] is True
-    assert payload["result"] is None
-    fake_client = _fastapi_app(client).state.opcua_client
-    assert fake_client.values["ns=2;s=Temperature"] == 55.25
-    assert fake_client.last_write_variant_type_by_node_id["ns=2;s=Temperature"] == "Double"
-
-
-def test_v1_update_value_target_not_writable(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("I3X_ENABLE_WRITES", "1")
-    _fastapi_app(client).state.opcua_client.writable_by_node_id["ns=2;s=Temperature"] = False
-
-    response = client.put("/v1/objects/property-abc/value", json={"value": 55.25})
-
-    assert response.status_code == 403
-    payload = response.json()
-    assert payload["error"]["message"] == "target_not_writable"
-
-
-def test_v1_update_value_rejects_type_mismatch(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("I3X_ENABLE_WRITES", "1")
-    _fastapi_app(client).state.opcua_client.variant_type_by_node_id["ns=2;s=Temperature"] = "Double"
-
-    response = client.put("/v1/objects/property-abc/value", json={"value": "bad"})
-
-    assert response.status_code == 400
-    payload = response.json()
-    assert payload["error"]["message"] == "bad_type_or_range"
-
-
-def test_v1_update_value_maps_opcua_denied_error(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("I3X_ENABLE_WRITES", "1")
-    _fastapi_app(client).state.opcua_client.write_failures["ns=2;s=Temperature"] = RuntimeError("BadUserAccessDenied")
-
-    response = client.put("/v1/objects/property-abc/value", json={"value": 55.25})
-
-    assert response.status_code == 403
-    payload = response.json()
-    assert payload["error"]["message"] == "unauthorized_by_opcua_server"
 
 
 def test_v1_bulk_update_values_success_when_enabled(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2611,8 +2564,6 @@ def _with_runtime_argument_overrides(
             body_dict.setdefault("endTime", "2026-01-02T00:00:00Z")
         if "maxDepth" in body_dict:
             body_dict.setdefault("maxDepth", 1)
-        if tool_name == "updateObjectValue":
-            body_dict = {"value": 123}
         if tool_name == "createSubscription":
             body_dict.setdefault("clientId", "mcp-runtime-smoke")
             body_dict.setdefault("displayName", "MCP Runtime Smoke")
@@ -2863,14 +2814,21 @@ def test_mcp_tools_are_generated_from_openapi(client_without_tool_overrides: Tes
 
 def test_mcp_write_tools_hidden(client: TestClient) -> None:
     tools = client.get("/mcp/tools").json()["tools"]
-    update_value_id = _operation_id_for(client, "PUT", "/v1/objects/{element_id}/value")
+    update_value_id = _operation_id_for(client, "PUT", "/v1/objects/value")
     assert update_value_id not in tools
 
 
-def test_mcp_update_history_tool_hidden(client: TestClient) -> None:
-    tools = client.get("/mcp/tools").json()["tools"]
-    update_history_id = _operation_id_for(client, "PUT", "/v1/objects/{element_id}/history")
-    assert update_history_id not in tools
+def test_path_style_value_write_route_is_not_registered(client: TestClient) -> None:
+    paths = client.get("/openapi.json").json()["paths"]
+    assert "/v1/objects/{element_id}/value" not in paths
+    assert client.put("/v1/objects/property-abc/value", json={"value": 19.5}).status_code == 404
+
+
+def test_path_style_history_routes_are_not_registered(client: TestClient) -> None:
+    paths = client.get("/openapi.json").json()["paths"]
+    assert "/v1/objects/{element_id}/history" not in paths
+    assert client.get("/v1/objects/property-abc/history").status_code == 404
+    assert client.put("/v1/objects/property-abc/history", json={}).status_code == 404
 
 
 def test_mcp_tool_overrides_match_live_tools(client: TestClient) -> None:
@@ -3273,19 +3231,6 @@ def test_mcp_call_supports_body_arguments(client: TestClient) -> None:
     assert payload["success"] is True
     assert payload["results"][0]["success"] is True
     assert payload["results"][0]["result"]["isComposition"] is False
-
-
-@pytest.mark.parametrize("element_id", ["http://evil.example", "../evil"])
-def test_mcp_call_rejects_malicious_path_parameters(client: TestClient, element_id: str) -> None:
-    history_tool = _operation_id_for(client, "GET", "/v1/objects/{element_id}/history")
-    response = client.post(
-        "/mcp/call",
-        json={"tool": history_tool, "arguments": {"element_id": element_id}},
-    )
-
-    assert response.status_code == 400
-    payload = response.json()
-    assert payload["error"]["message"] == "Invalid path parameter: element_id"
 
 
 def test_mcp_call_rejects_unknown_tool(client: TestClient) -> None:

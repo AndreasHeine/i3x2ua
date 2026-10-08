@@ -108,16 +108,6 @@
                 "past values"
             ]
         },
-        "getHistoricalValuesV1": {
-            "description": "Return historical values for a single object, optionally filtered by time range. Use when the user asks for history of one object.",
-            "priority": "high",
-            "keywords": [
-                "history",
-                "historical",
-                "single object",
-                "time range"
-            ]
-        },
         "createSubscriptionV1": {
             "description": "Create a new subscription for monitoring values. Use when the user asks to subscribe to updates.",
             "priority": "normal",

@@ -163,8 +163,6 @@ def _with_runtime_argument_overrides(
             body_dict.setdefault("endTime", "2026-01-02T00:00:00Z")
         if "maxDepth" in body_dict:
             body_dict.setdefault("maxDepth", 1)
-        if tool_name == "updateObjectValue":
-            body_dict = {"value": 123}
         if tool_name == "createSubscription":
             body_dict.setdefault("clientId", "mcp-runtime-smoke")
             body_dict.setdefault("displayName", "MCP Runtime Smoke")
@@ -809,19 +807,6 @@ def test_mcp_call_supports_body_arguments(client: TestClient) -> None:
     assert payload["success"] is True
     assert payload["results"][0]["success"] is True
     assert payload["results"][0]["result"]["isComposition"] is False
-
-
-@pytest.mark.parametrize("element_id", ["http://evil.example", "../evil"])
-def test_mcp_call_rejects_malicious_path_parameters(client: TestClient, element_id: str) -> None:
-    history_tool = _operation_id_for(client, "GET", "/v1/objects/{element_id}/history")
-    response = client.post(
-        "/mcp/call",
-        json={"tool": history_tool, "arguments": {"element_id": element_id}},
-    )
-
-    assert response.status_code == 400
-    payload = response.json()
-    assert payload["error"]["message"] == "Invalid path parameter: element_id"
 
 
 def test_mcp_call_rejects_unknown_tool(client: TestClient) -> None:

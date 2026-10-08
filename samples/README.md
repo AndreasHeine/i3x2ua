@@ -25,7 +25,7 @@ python .\samples\client.py --max-nodes 100 --max-depth 3
 Fetch instances of a known type without walking the tree:
 
 ```powershell
-python .\samples\client.py --type-element-id "ns=2;i=1001"
+python .\samples\client.py --type-element-id "urn:sampleserver:objecttype:http-opcfoundation-org-ua:v-1-05-03:servertype:i-2004"
 ```
 
 Replace the example type ID with a `typeElementId` from your server.

@@ -1,6 +1,6 @@
 [project]
 name = "i3x2ua"
-version = "1.9.0"
+version = "1.10.2"
 description = "The i3X API Gateway for OPC UA"
 license = { file = "LICENSE" }
 requires-python = ">=3.12,<3.15"

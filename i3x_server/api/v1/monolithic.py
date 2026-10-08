@@ -60,6 +60,10 @@ from i3x_server.application.ports.opcua import (
     OpcUaObjectTypeInfo,
 )
 from i3x_server.config.settings import Settings, get_settings
+from i3x_server.domain.ports.opcua import (
+    OpcUaWriteMetadataUnsupportedError,
+    OpcUaWriteMetadataVerificationError,
+)
 from i3x_server.domain.utils import server_name_from_openapi
 from i3x_server.errors import i3x_http_error
 from i3x_server.schemas.i3x import ModelNode
@@ -144,10 +148,13 @@ def _server_name_from_openapi(default_name: str = "The i3X API Gateway for OPC U
     return server_name_from_openapi(default_name)
 
 
-def _supported_capabilities() -> ServerCapabilities:
+def _supported_capabilities(history_update_supported: bool | None = None) -> ServerCapabilities:
     return ServerCapabilities(
         query=QueryCapabilities(history=True),
-        update=UpdateCapabilities(current=_writes_enabled(), history=_writes_enabled()),
+        update=UpdateCapabilities(
+            current=_writes_enabled(),
+            history=_writes_enabled() and history_update_supported is not False,
+        ),
         subscribe=SubscribeCapabilities(stream=True),
     )
 
@@ -230,6 +237,8 @@ async def _is_noop_write(
     opcua_client: OpcUaClientProtocol,
     target_node_id: str,
     requested_value: Any,
+    requested_quality: str,
+    requested_timestamp: datetime,
 ) -> bool:
     try:
         current_data_values = await opcua_client.read_data_values([target_node_id])
@@ -237,8 +246,13 @@ async def _is_noop_write(
         return False
     if not current_data_values:
         return False
-    current_vqt = _vqt_from_data_value(current_data_values[0])
-    return _json_equivalent(current_vqt.value, requested_value)
+    current_data_value = current_data_values[0]
+    current_vqt = _vqt_from_data_value(current_data_value)
+    return (
+        _json_equivalent(current_vqt.value, requested_value)
+        and current_vqt.quality == requested_quality
+        and getattr(current_data_value, "SourceTimestamp", None) == requested_timestamp.astimezone(timezone.utc)
+    )
 
 
 async def _write_object_value_by_element_id(
@@ -247,6 +261,8 @@ async def _write_object_value_by_element_id(
     opcua_client: OpcUaClientProtocol,
     element_id: str,
     payload_value: Any,
+    quality: str,
+    timestamp: datetime,
     schema_validator: WriteValueValidator,
 ) -> tuple[bool, int, str, dict[str, Any]]:
     node = _find_model_node(model, element_id)
@@ -284,6 +300,8 @@ async def _write_object_value_by_element_id(
             opcua_client=opcua_client,
             target_node_id=target_node_id,
             requested_value=write_value,
+            requested_quality=quality,
+            requested_timestamp=timestamp,
         ):
             return True, 200, "ok", diagnostics
         return False, 403, "target_not_writable", diagnostics
@@ -300,7 +318,19 @@ async def _write_object_value_by_element_id(
         return False, 400, "bad_type_or_range", diagnostics
 
     try:
-        await opcua_client.write_value(target_node_id, write_value, variant_type=variant_type)
+        await opcua_client.write_value(
+            target_node_id,
+            write_value,
+            variant_type=variant_type,
+            quality=quality,
+            timestamp=timestamp,
+        )
+    except OpcUaWriteMetadataUnsupportedError as exc:
+        diagnostics["exception"] = str(exc)
+        return False, 501, str(exc), diagnostics
+    except OpcUaWriteMetadataVerificationError as exc:
+        diagnostics["exception"] = str(exc)
+        return False, 502, str(exc), diagnostics
     except Exception as exc:
         status_code, error_class = _classify_write_error(exc)
         diagnostics["exception"] = str(exc)

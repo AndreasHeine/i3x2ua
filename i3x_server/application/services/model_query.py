@@ -81,7 +81,11 @@ def _to_namespace(item: OpcUaNamespaceInfo) -> Namespace:
     return Namespace(uri=item.uri, displayName=display_name)
 
 
-def _build_server_info(server_version: str | None = None, server_name: str | None = None) -> ServerInfo:
+def _build_server_info(
+    server_version: str | None = None,
+    server_name: str | None = None,
+    history_update_supported: bool | None = None,
+) -> ServerInfo:
     from i3x_server.domain.utils import server_name_from_openapi
 
     writes_enabled = bool(get_settings().enable_writes)
@@ -92,7 +96,10 @@ def _build_server_info(server_version: str | None = None, server_name: str | Non
         serverName=server_name or server_name_from_openapi(),
         capabilities=ServerCapabilities(
             query={"history": True},
-            update={"current": writes_enabled, "history": writes_enabled},
+            update={
+                "current": writes_enabled,
+                "history": writes_enabled and history_update_supported is not False,
+            },
             subscribe={"stream": True},
         ),
     )
@@ -209,7 +216,10 @@ class ModelQueryService:
         Returns:
             ServerInfo with capabilities
         """
-        return _build_server_info()
+        history_update_supported = getattr(self.opcua_client, "history_update_supported", None)
+        return _build_server_info(
+            history_update_supported=history_update_supported() if callable(history_update_supported) else None,
+        )
 
     async def get_namespaces(self) -> list[Namespace]:
         """Retrieve all OPC UA namespaces.

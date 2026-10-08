@@ -230,16 +230,24 @@ MCP write policy: `PUT` routes are intentionally excluded from MCP tool generati
 
 ## Current Limitations
 
+### i3X contract
+
+- Update methods are optional in i3X. This gateway exposes the standard bulk endpoints `PUT /v1/objects/value` and `PUT /v1/objects/history`; historical reads use `POST /v1/objects/history`.
+- Current-value updates use a VQT: `value` is required and must conform to the ObjectType schema; optional `quality` defaults to `Good` and optional RFC 3339 `timestamp` defaults to server time.
+- Historical updates insert or replace records by source timestamp and require a complete VQT. `Bad` and `GoodNoData` require a null value, and null requires one of those qualities plus schema-declared nullability.
+- The implementation validates writes against the target's published ObjectType JSON Schema. Invalid values fail with 400; missing or invalid schemas fail with 502.
+
+### OPC UA gateway integration constraints
+
 - current-value and historical write support is optional and controlled by `I3X_ENABLE_WRITES`:
 	- `I3X_ENABLE_WRITES=1`: `capabilities.update.current=true`, `capabilities.update.history=true`, both bulk write endpoints enabled
 	- default (`I3X_ENABLE_WRITES` unset/0): write endpoints return `501 Not Implemented`
-- Write operations use the standard bulk endpoints only: `PUT /v1/objects/value` and `PUT /v1/objects/history`. Historical reads use `POST /v1/objects/history`.
-- `PUT /v1/objects/history` inserts or replaces records by source timestamp. It requires a complete VQT and OPC UA `HistoryWrite` access. Capabilities describe gateway support, not write permission for every upstream node.
-- Current-value and historical writes validate values against the target's published ObjectType JSON Schema, including formats and nullability. Invalid values fail with 400; missing or invalid schemas fail with 502. External schema references are not downloaded or accepted.
-- Historical timestamps require UTC with a `Z` suffix; extra fractional digits beyond six are accepted only when zero, without rounding. `Bad` and `GoodNoData` require null, and null requires one of those qualities plus schema-declared nullability. Write element IDs must be printable with no surrounding whitespace.
-- Historical writes support Variable-backed property elements with built-in Boolean, numeric, String, DateTime, Guid, and base64 ByteString values, including rectangular arrays. Composition fan-out and custom structured values are not supported.
-- The upstream server must implement HistoryUpdate. The standard asyncua 2.1.0 server rejects it; gateway responses preserve this failure rather than reporting success. Historical mutations are not automatically retried after a transport failure.
-- Explicit service-wide `BadServiceUnsupported` returns HTTP 501 unless earlier items succeeded, in which case mixed results retain HTTP 200. Node-level unsupported operations and permission denials remain item-level failures and are not assumed to mean the whole service is unavailable.
+- Current-value writes send quality and source timestamp as OPC UA `DataValue` fields and verify them with a read-back. If the upstream server does not preserve both, that item returns `501 Not Implemented`; if verification fails, the outcome is reported as uncertain rather than successful.
+- Historical writes require upstream `HistoryUpdate` support and per-node OPC UA `HistoryWrite` access. When enabled, `capabilities.update.history` is true until the gateway receives service-wide `BadServiceUnsupported`; it then becomes false. Per-node permission differences remain request-time errors. The standard asyncua 2.1.0 server rejects `HistoryUpdate`.
+- This adapter requires historical timestamps in UTC with a `Z` suffix and accepts fractional precision beyond six digits only when the extra digits are zero. The six-digit precision limit is an OPC UA adapter constraint; i3X's RFC 3339 timestamp requirement does not impose that limit.
+- The OPC UA mapping supports historical writes for Variable-backed property elements with built-in Boolean, numeric, String, DateTime, Guid, and base64 ByteString values. Arrays must be rectangular and conform to OPC UA ValueRank and ArrayDimensions. Composition fan-out and custom structured values are not supported.
+- Writes are validated against the published ObjectType schema, including formats and nullability. External schema references are not downloaded or accepted. Write element IDs must be printable with no surrounding whitespace.
+- Historical mutations are not automatically retried after a transport failure. Explicit service-wide `BadServiceUnsupported` returns HTTP 501 unless earlier items succeeded, in which case mixed results retain HTTP 200; after that service-wide result, subsequent history writes return 501 without an upstream attempt. Node-level unsupported operations and permission denials remain item-level failures and do not by themselves disable history updates globally.
 
 ## Docker
 

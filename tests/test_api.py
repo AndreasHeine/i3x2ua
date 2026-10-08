@@ -149,8 +149,10 @@ class FakeOpcUaClient:
         self.writable_by_node_id: dict[str, bool] = {"ns=2;s=Temperature": True}
         self.user_writable_by_node_id: dict[str, bool] = {"ns=2;s=Temperature": True}
         self.variant_type_by_node_id: dict[str, str] = {"ns=2;s=Temperature": "Double"}
+        self.last_write_vqt_by_node_id: dict[str, tuple[str, datetime]] = {}
         self.last_write_variant_type_by_node_id: dict[str, str | None] = {}
         self.write_failures: dict[str, Exception] = {}
+        self.history_update_support: bool | None = None
         self.history_values: dict[str, list[SimpleNamespace]] = {
             "ns=2;s=Temperature": [
                 SimpleNamespace(
@@ -349,12 +351,23 @@ class FakeOpcUaClient:
     async def read_variant_type(self, node_id: str) -> str | None:
         return self.variant_type_by_node_id.get(node_id)
 
-    async def write_value(self, node_id: str, value: Any, variant_type: str | None = None) -> None:
+    def history_update_supported(self) -> bool | None:
+        return self.history_update_support
+
+    async def write_value(
+        self,
+        node_id: str,
+        value: Any,
+        variant_type: str | None,
+        quality: str,
+        timestamp: datetime,
+    ) -> None:
         failure = self.write_failures.get(node_id)
         if failure is not None:
             self._request_metrics.failed_request_count += 1
             raise failure
         self.last_write_variant_type_by_node_id[node_id] = variant_type
+        self.last_write_vqt_by_node_id[node_id] = (quality, timestamp)
         self.values[node_id] = value
         self._request_metrics.write_count += 1
 
@@ -1953,7 +1966,10 @@ def test_v1_404_error_includes_response_detail(client: TestClient) -> None:
 
 
 def test_v1_501_error_includes_response_detail(client: TestClient) -> None:
-    response = client.put("/v1/objects/value", json={"updates": [{"elementId": "property-abc", "value": 55.25}]})
+    response = client.put(
+        "/v1/objects/value",
+        json={"updates": [{"elementId": "property-abc", "value": {"value": 55.25}}]},
+    )
     assert response.status_code == 501
     payload = response.json()
     assert payload["success"] is False
@@ -1987,6 +2003,9 @@ def test_v1_bulk_update_values_success_when_enabled(client: TestClient, monkeypa
     assert payload["results"][0]["success"] is True
     assert payload["results"][0]["result"] is None
     assert _fastapi_app(client).state.opcua_client.values["ns=2;s=Temperature"] == 55.25
+    quality, timestamp = _fastapi_app(client).state.opcua_client.last_write_vqt_by_node_id["ns=2;s=Temperature"]
+    assert quality == "Good"
+    assert timestamp == datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 
 def test_v1_bulk_update_values_supports_partial_failure(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2061,7 +2080,7 @@ def test_v1_bulk_update_values_allows_noop_when_target_not_writable(
                     "value": {
                         "value": 42.5,
                         "quality": "Good",
-                        "timestamp": "2026-01-01T00:00:00Z",
+                        "timestamp": "2026-01-01T12:00:00Z",
                     },
                 }
             ]

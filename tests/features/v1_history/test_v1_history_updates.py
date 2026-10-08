@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 import pytest
@@ -45,6 +46,7 @@ def test_history_upsert_preserves_current_value(client: TestClient, monkeypatch:
     assert len(records) == count
     assert records[0].Value.Value == 19.5
     assert records[0].StatusCode.name == "Uncertain"
+    assert records[0].SourceTimestamp == datetime(2026, 1, 1, 10, tzinfo=timezone.utc)
     update["value"]["timestamp"] = "2026-01-01T10:02:00Z"
     response = client.put("/v1/objects/history", json={"updates": [update]})
     assert response.json()["success"] is True
@@ -180,3 +182,20 @@ def test_history_write_gate_and_capability(client: TestClient, monkeypatch: pyte
         assert response.status_code == (200 if enabled == "1" else 501)
     assert client.put("/v1/objects/history", json={"updates": []}).status_code == 400
     assert "put" in client.get("/openapi.json").json()["paths"]["/v1/objects/history"]
+
+
+def test_known_unsupported_history_service_is_not_advertised_or_called(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("I3X_ENABLE_WRITES", "1")
+    opcua = fastapi_app(client).state.opcua_client
+    opcua.history_update_support = False
+
+    capabilities = client.get("/v1/info").json()["result"]["capabilities"]["update"]
+    response = client.put("/v1/objects/history", json={"updates": [_update()]})
+
+    assert capabilities == {"current": True, "history": False}
+    assert response.status_code == 501
+    assert response.json()["responseDetail"]["status"] == 501
+    assert opcua.snapshot_request_metrics().history_write_count == 0

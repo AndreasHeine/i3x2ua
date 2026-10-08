@@ -12,8 +12,9 @@ from asyncua.server.server import Server
 from asyncua.ua import ua_binary
 from asyncua.ua.attribute_ids import AttributeIds
 from asyncua.ua.status_codes import StatusCodes
-from asyncua.ua.uaerrors import BadNotWritable, UaError
+from asyncua.ua.uaerrors import BadNotWritable, UaError, UaStatusCodeError
 
+from i3x_server.domain.ports.opcua import OpcUaWriteMetadataUnsupportedError
 from i3x_server.infrastructure.opcua.client import OpcUaClient
 from i3x_server.infrastructure.opcua.history import historical_data_value
 
@@ -51,6 +52,67 @@ async def test_adapter_submits_full_vqt(monkeypatch: pytest.MonkeyPatch) -> None
     assert data_value.ServerTimestamp is None
     assert client.snapshot_request_metrics().history_write_count == 1
     assert client.snapshot_request_metrics().write_count == 0
+    assert client.history_update_supported() is True
+
+
+@pytest.mark.asyncio
+async def test_adapter_remembers_service_wide_history_update_unsupported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = OpcUaClient("opc.tcp://localhost:4840")
+    node = _node()
+    with pytest.raises(UaStatusCodeError) as error:
+        ua.StatusCode(ua.UInt32(StatusCodes.BadServiceUnsupported)).check()
+    node.history_update = AsyncMock(side_effect=error.value)
+    monkeypatch.setattr(client, "_client", SimpleNamespace(get_node=lambda _: node))
+
+    assert client.history_update_supported() is None
+    with pytest.raises(UaStatusCodeError):
+        await client.write_history_value("ns=2;s=Temperature", 19, "Good", TIMESTAMP)
+    assert client.history_update_supported() is False
+
+
+@pytest.mark.asyncio
+async def test_current_value_adapter_submits_and_verifies_vqt(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = OpcUaClient("opc.tcp://localhost:4840")
+    node = _node()
+    node.write_value = AsyncMock()
+    node.read_data_value = AsyncMock(
+        side_effect=lambda **_: node.write_value.call_args.args[0],
+    )
+    monkeypatch.setattr(client, "_client", SimpleNamespace(get_node=lambda _: node))
+
+    await client.write_value("ns=2;s=Temperature", 19.5, "Double", "Uncertain", TIMESTAMP)
+
+    data_value = node.write_value.call_args.args[0]
+    assert isinstance(data_value, ua.DataValue)
+    assert data_value.Value is not None
+    assert data_value.Value.VariantType == ua.VariantType.Double
+    assert data_value.Value.Value == 19.5
+    assert data_value.StatusCode is not None
+    assert data_value.StatusCode.value == StatusCodes.Uncertain
+    assert data_value.SourceTimestamp == TIMESTAMP
+    assert client.snapshot_request_metrics().write_count == 1
+
+
+@pytest.mark.asyncio
+async def test_current_value_adapter_rejects_server_that_drops_vqt_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = OpcUaClient("opc.tcp://localhost:4840")
+    node = _node()
+    node.write_value = AsyncMock()
+    node.read_data_value = AsyncMock(
+        return_value=ua.DataValue(
+            Value=ua.Variant(19.5, ua.VariantType.Double),
+            StatusCode=ua.StatusCode(ua.UInt32(StatusCodes.Good)),
+            SourceTimestamp=ua.DateTime.fromisoformat(TIMESTAMP.replace(year=2025).isoformat()),
+        )
+    )
+    monkeypatch.setattr(client, "_client", SimpleNamespace(get_node=lambda _: node))
+
+    with pytest.raises(OpcUaWriteMetadataUnsupportedError, match="did not preserve"):
+        await client.write_value("ns=2;s=Temperature", 19.5, "Double", "Uncertain", TIMESTAMP)
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -10,8 +10,9 @@ from asyncua.ua.status_codes import StatusCodes
 from asyncua.ua.uaerrors import UaStatusCodeError
 from fastapi.testclient import TestClient
 
-from i3x_server.api.v1.contracts import HistoryWriteVQTRequest
+from i3x_server.api.v1.contracts import HistoryWriteVQTRequest, WriteVQTRequest
 from i3x_server.api.v1.object_helpers import _resolved_type_element_id_for_node
+from i3x_server.domain.ports.opcua import OpcUaWriteMetadataUnsupportedError
 from tests.conftest import fastapi_app
 
 
@@ -38,6 +39,172 @@ def _publish_schema(client: TestClient, schema: dict[str, Any]) -> None:
 def _write(client: TestClient, operation: str, value: Any, element_id: str = "property-abc") -> Any:
     vqt = {"value": value, "quality": "Bad" if value is None else "Good", "timestamp": "2026-01-01T10:00:00Z"}
     return client.put(f"/v1/objects/{operation}", json={"updates": [{"elementId": element_id, "value": vqt}]})
+
+
+def test_current_write_vqt_defaults_quality_and_timestamp_to_server_time() -> None:
+    before = datetime.now(timezone.utc)
+    vqt = WriteVQTRequest.model_validate({"value": 19.5})
+    after = datetime.now(timezone.utc)
+
+    assert vqt.quality == "Good"
+    assert before <= vqt.timestamp <= after
+
+
+@pytest.mark.parametrize(
+    "vqt",
+    [
+        {},
+        {"value": 19.5, "quality": "Invalid"},
+        {"value": 19.5, "timestamp": "not-a-timestamp"},
+        {"value": 19.5, "timestamp": "2026-01-01T10:00:00"},
+        {"value": None},
+        {"value": 19.5, "quality": "Bad"},
+    ],
+)
+def test_current_write_vqt_rejects_invalid_fields(vqt: dict[str, Any]) -> None:
+    with pytest.raises(ValueError):
+        WriteVQTRequest.model_validate(vqt)
+
+
+def test_current_write_vqt_accepts_rfc3339_timezone_offset() -> None:
+    vqt = WriteVQTRequest.model_validate(
+        {"value": 19.5, "quality": "Uncertain", "timestamp": "2026-01-01T12:00:00+02:00"}
+    )
+
+    assert vqt.timestamp.astimezone(timezone.utc) == datetime(2026, 1, 1, 10, tzinfo=timezone.utc)
+
+
+def test_current_write_requires_vqt_and_keeps_schema_validation(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("I3X_ENABLE_WRITES", "1")
+    _publish_schema(client, {"type": "number", "maximum": 20})
+    opcua = fastapi_app(client).state.opcua_client
+    write = AsyncMock(wraps=opcua.write_value)
+    monkeypatch.setattr(opcua, "write_value", write)
+
+    accepted = client.put(
+        "/v1/objects/value",
+        json={"updates": [{"elementId": "property-abc", "value": {"value": 19.5}}]},
+    )
+    rejected = client.put(
+        "/v1/objects/value",
+        json={"updates": [{"elementId": "property-abc", "value": {"value": 21}}]},
+    )
+
+    assert accepted.status_code == 200
+    assert accepted.json()["success"] is True
+    assert rejected.status_code == 200
+    assert rejected.json()["results"][0]["responseDetail"]["status"] == 400
+    quality, timestamp = fastapi_app(client).state.opcua_client.last_write_vqt_by_node_id["ns=2;s=Temperature"]
+    assert quality == "Good"
+    assert timedelta(0) <= datetime.now(timezone.utc) - timestamp < timedelta(seconds=5)
+    write.assert_awaited_once()
+
+
+def test_current_write_passes_explicit_vqt_fields_to_adapter(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("I3X_ENABLE_WRITES", "1")
+    _publish_schema(client, {"type": "number"})
+    app = fastapi_app(client)
+    timestamp = "2026-01-01T10:00:00Z"
+    write = AsyncMock(wraps=app.state.opcua_client.write_value)
+    monkeypatch.setattr(app.state.opcua_client, "write_value", write)
+
+    response = client.put(
+        "/v1/objects/value",
+        json={
+            "updates": [
+                {
+                    "elementId": "property-abc",
+                    "value": {"value": 19.5, "quality": "Uncertain", "timestamp": timestamp},
+                }
+            ]
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["success"] is True
+    write.assert_awaited_once_with(
+        "ns=2;s=Temperature",
+        19.5,
+        variant_type="Double",
+        quality="Uncertain",
+        timestamp=datetime(2026, 1, 1, 10, tzinfo=timezone.utc),
+    )
+
+
+@pytest.mark.parametrize(
+    "vqt",
+    [
+        {},
+        {"quality": "Good", "timestamp": "2026-01-01T10:00:00Z"},
+        {"value": 19.5, "quality": "Invalid", "timestamp": "2026-01-01T10:00:00Z"},
+        {"value": 19.5, "quality": "Good", "timestamp": "not-a-timestamp"},
+        {"value": None, "quality": "Good", "timestamp": "2026-01-01T10:00:00Z"},
+        {"value": 19.5, "quality": "Bad", "timestamp": "2026-01-01T10:00:00Z"},
+        {
+            "value": 19.5,
+            "quality": "Good",
+            "timestamp": "2026-01-01T10:00:00Z",
+            "unexpected": True,
+        },
+    ],
+)
+def test_current_write_rejects_malformed_vqt_before_adapter_call(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    vqt: dict[str, Any],
+) -> None:
+    monkeypatch.setenv("I3X_ENABLE_WRITES", "1")
+    app = fastapi_app(client)
+    write = AsyncMock(wraps=app.state.opcua_client.write_value)
+    monkeypatch.setattr(app.state.opcua_client, "write_value", write)
+
+    response = client.put(
+        "/v1/objects/value",
+        json={"updates": [{"elementId": "property-abc", "value": vqt}]},
+    )
+
+    assert response.status_code == 400
+    write.assert_not_awaited()
+
+
+def test_current_write_reports_server_vqt_metadata_unsupported(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("I3X_ENABLE_WRITES", "1")
+    _publish_schema(client, {"type": "number"})
+    app = fastapi_app(client)
+    app.state.opcua_client.write_failures["ns=2;s=Temperature"] = OpcUaWriteMetadataUnsupportedError(
+        "OPC UA server did not preserve the requested VQT"
+    )
+
+    response = client.put(
+        "/v1/objects/value",
+        json={
+            "updates": [
+                {
+                    "elementId": "property-abc",
+                    "value": {
+                        "value": 19.5,
+                        "quality": "Uncertain",
+                        "timestamp": "2026-01-01T10:00:00Z",
+                    },
+                }
+            ]
+        },
+    )
+
+    result = response.json()["results"][0]
+    assert response.status_code == 200
+    assert result["success"] is False
+    assert result["responseDetail"]["status"] == 501
+    assert "did not preserve" in result["responseDetail"]["detail"]
 
 
 @pytest.mark.parametrize("operation", ["value", "history"])

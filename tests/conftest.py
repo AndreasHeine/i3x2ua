@@ -117,10 +117,12 @@ class FakeOpcUaClient:
         self.writable_by_node_id: dict[str, bool] = {"ns=2;s=Temperature": True}
         self.user_writable_by_node_id: dict[str, bool] = {"ns=2;s=Temperature": True}
         self.variant_type_by_node_id: dict[str, str] = {"ns=2;s=Temperature": "Double"}
+        self.last_write_vqt_by_node_id: dict[str, tuple[str, datetime]] = {}
         self.write_failures: dict[str, Exception] = {}
         self.history_writable_by_node_id: dict[str, bool] = {"ns=2;s=Temperature": True}
         self.history_user_writable_by_node_id: dict[str, bool] = {"ns=2;s=Temperature": True}
         self.history_write_failures: dict[str, Exception] = {}
+        self.history_update_support: bool | None = None
         self.history_values: dict[str, list[SimpleNamespace]] = {
             "ns=2;s=Temperature": [
                 SimpleNamespace(
@@ -313,6 +315,9 @@ class FakeOpcUaClient:
             self.history_user_writable_by_node_id.get(node_id, False),
         )
 
+    def history_update_supported(self) -> bool | None:
+        return self.history_update_support
+
     async def write_history_value(self, node_id: str, value: Any, quality: str, timestamp: datetime) -> None:
         failure = self.history_write_failures.get(node_id)
         if failure is not None:
@@ -335,13 +340,21 @@ class FakeOpcUaClient:
         records.sort(key=lambda record: record.SourceTimestamp)
         self._request_metrics.history_write_count += 1
 
-    async def write_value(self, node_id: str, value: Any, variant_type: str | None = None) -> None:
+    async def write_value(
+        self,
+        node_id: str,
+        value: Any,
+        variant_type: str | None,
+        quality: str,
+        timestamp: datetime,
+    ) -> None:
         del variant_type
         failure = self.write_failures.get(node_id)
         if failure is not None:
             self._request_metrics.failed_request_count += 1
             raise failure
         self.values[node_id] = value
+        self.last_write_vqt_by_node_id[node_id] = (quality, timestamp)
         self._request_metrics.write_count += 1
 
     async def read_server_status_data_value(self) -> Any:

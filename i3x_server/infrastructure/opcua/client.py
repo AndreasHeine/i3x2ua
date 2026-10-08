@@ -17,7 +17,7 @@ from asyncua.ua import NodeClass
 from asyncua.ua.attribute_ids import AttributeIds
 from asyncua.ua.object_ids import ObjectIds
 from asyncua.ua.status_codes import StatusCodes
-from asyncua.ua.uaerrors import UaError
+from asyncua.ua.uaerrors import UaError, UaStatusCodeError
 
 from i3x_server.domain.ports.opcua import (
     OpcUaClientProtocol,
@@ -31,8 +31,10 @@ from i3x_server.domain.ports.opcua import (
     OpcUaRequestMetrics,
     OpcUaRuntimeMetrics,
     OpcUaSubscriptionCapabilities,
+    OpcUaWriteMetadataUnsupportedError,
+    OpcUaWriteMetadataVerificationError,
 )
-from i3x_server.infrastructure.opcua.history import historical_data_value
+from i3x_server.infrastructure.opcua.history import historical_data_value, quality_status_code
 
 __all__ = [
     "OpcUaClient",
@@ -137,6 +139,7 @@ class OpcUaClient:
         self._object_types_cache: tuple[float, list[OpcUaObjectTypeInfo]] | None = None
         self._reference_type_supertypes_cache: dict[str, tuple[float, list[str]]] = {}
         self._runtime_metrics = OpcUaRuntimeMetrics()
+        self._history_update_supported: bool | None = None
         self._request_metrics = OpcUaRequestMetrics()
         self._goodish_quality_labels = {"good", "uncertain"}
         self._connection_state = "Disconnected"
@@ -1736,6 +1739,9 @@ class OpcUaClient:
             self._record_failed_request()
             raise
 
+    def history_update_supported(self) -> bool | None:
+        return self._history_update_supported
+
     async def write_history_value(self, node_id: str, value: Any, quality: str, timestamp: datetime) -> None:
         node = self._client.get_node(node_id)
         try:
@@ -1773,9 +1779,12 @@ class OpcUaClient:
             if len(result.OperationResults) != 1:
                 raise UaError("Incomplete OPC UA HistoryUpdate operation results")
             result.OperationResults[0].check()
-        except Exception:
+        except Exception as exc:
+            if isinstance(exc, UaStatusCodeError) and exc.code == StatusCodes.BadServiceUnsupported:
+                self._history_update_supported = False
             self._record_failed_request()
             raise
+        self._history_update_supported = True
         self._request_metrics.history_write_count += 1
         logger.info("OPC UA history update ok node_id=%s timestamp=%s", node_id, timestamp.isoformat())
 
@@ -1801,10 +1810,21 @@ class OpcUaClient:
                 )
             return None
 
-    async def write_value(self, node_id: str, value: Any, variant_type: str | None = None) -> None:
+    async def write_value(
+        self,
+        node_id: str,
+        value: Any,
+        variant_type: str | None,
+        quality: str,
+        timestamp: datetime,
+    ) -> None:
         node = self._client.get_node(node_id)
         explicit_variant = _to_explicit_ua_variant(value, variant_type)
-        payload = explicit_variant if explicit_variant is not None else value
+        payload = ua.DataValue(
+            Value=explicit_variant if explicit_variant is not None else ua.Variant(value),
+            StatusCode=quality_status_code(quality),
+            SourceTimestamp=ua.DateTime.fromisoformat(timestamp.astimezone(timezone.utc).isoformat()),
+        )
         try:
             await node.write_value(payload)
             self._request_metrics.write_count += 1
@@ -1819,9 +1839,28 @@ class OpcUaClient:
                 retry_node = self._client.get_node(node_id)
                 await retry_node.write_value(payload)
                 self._request_metrics.write_count += 1
-                return
+                node = retry_node
+            else:
+                self._record_failed_request()
+                raise
+
+        try:
+            written_data_value = await node.read_data_value(raise_on_bad_status=False)
+        except Exception as exc:
             self._record_failed_request()
-            raise
+            raise OpcUaWriteMetadataVerificationError(
+                "OPC UA server accepted the current-value write, but the requested quality and source timestamp "
+                "could not be verified; write outcome is uncertain"
+            ) from exc
+        actual_quality = _quality_from_status_code(written_data_value.StatusCode)
+        actual_timestamp = written_data_value.SourceTimestamp
+        expected_timestamp = timestamp.astimezone(timezone.utc)
+        if actual_quality != quality or actual_timestamp != expected_timestamp:
+            self._record_failed_request()
+            raise OpcUaWriteMetadataUnsupportedError(
+                "OPC UA server did not preserve the requested quality and source timestamp; "
+                "current-value VQT writes are unsupported by this server"
+            )
 
     async def _read_values_batch_with_fallback(self, node_ids: list[str]) -> list[Any]:
         if not node_ids:
@@ -2293,6 +2332,22 @@ def _to_explicit_ua_variant(value: Any, variant_type: str | None) -> ua.Variant 
     if ua_variant_type is None:
         return None
     return ua.Variant(value, ua_variant_type)
+
+
+def _quality_from_status_code(status_code: ua.StatusCode | None) -> str | None:
+    if status_code is None:
+        return None
+    code = int(status_code.value)
+    if code == int(StatusCodes.GoodNoData):
+        return "GoodNoData"
+    severity = code & 0xC0000000
+    if severity == 0:
+        return "Good"
+    if severity == 0x40000000:
+        return "Uncertain"
+    if severity == 0x80000000:
+        return "Bad"
+    return None
 
 
 def _attribute_scalar_value(data_value: Any) -> Any:

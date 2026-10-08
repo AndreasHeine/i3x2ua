@@ -48,6 +48,14 @@ async def test_fixture_history_upserts_over_opcua(monkeypatch: pytest.MonkeyPatc
             monkeypatch.setattr(adapter, "_client", wire_client)
             node_id = signal.nodeid.to_string()
             current = await signal.read_value()
+            write_timestamp = datetime(2026, 1, 1, 12, 30, tzinfo=timezone.utc)
+            await adapter.write_value(node_id, 26.5, "Double", "Uncertain", write_timestamp)
+            written_value = await signal.read_data_value(raise_on_bad_status=False)
+            assert written_value.Value is not None and written_value.Value.Value == 26.5
+            assert written_value.StatusCode is not None
+            assert written_value.StatusCode.value == StatusCodes.Uncertain
+            assert written_value.SourceTimestamp == write_timestamp
+            current = 26.5
             assert await adapter.read_history_write_access(node_id) == (True, True)
             await adapter.write_history_value(node_id, 19.5, "Good", timestamp)
             remote = wire_client.get_node(node_id)
@@ -61,7 +69,8 @@ async def test_fixture_history_upserts_over_opcua(monkeypatch: pytest.MonkeyPatc
             assert records[0].StatusCode is not None
             assert records[0].StatusCode.value == StatusCodes.Uncertain
             assert records[0].SourceTimestamp == timestamp
-            assert await signal.read_value() == current
+            current_data_value = await signal.read_data_value(raise_on_bad_status=False)
+            assert current_data_value.Value is not None and current_data_value.Value.Value == current
             assert adapter.snapshot_request_metrics().history_write_count == 2
             details = ua.UpdateDataDetails(
                 NodeId=remote.nodeid,
@@ -80,7 +89,8 @@ async def test_fixture_history_upserts_over_opcua(monkeypatch: pytest.MonkeyPatc
             ]
             records = await remote.read_raw_history(timestamp, timestamp + timedelta(seconds=2), 0, False)
             assert len(records) == 2
-            assert await signal.read_value() == current
+            current_data_value = await signal.read_data_value(raise_on_bad_status=False)
+            assert current_data_value.Value is not None and current_data_value.Value.Value == current
 
             monkeypatch.setenv("I3X_ENABLE_WRITES", "1")
             app = FastAPI()
@@ -136,7 +146,8 @@ async def test_fixture_history_upserts_over_opcua(monkeypatch: pytest.MonkeyPatc
                 values = response.json()["results"][0]["result"]["values"]
                 assert len(values) == 2
                 assert values[0]["value"] == 25.0
-                assert await signal.read_value() == current
+                current_data_value = await signal.read_data_value(raise_on_bad_status=False)
+                assert current_data_value.Value is not None and current_data_value.Value.Value == current
 
             details.PerformInsertReplace = ua.PerformUpdateType.Insert
             with pytest.raises(BadHistoryOperationUnsupported):
@@ -157,4 +168,5 @@ async def test_fixture_history_upserts_over_opcua(monkeypatch: pytest.MonkeyPatc
             assert len(records) == 1
             assert records[0].Value is not None and records[0].Value.Value is None
             assert records[0].StatusCode is not None and records[0].StatusCode.is_bad()
-            assert await signal.read_value() == current
+            current_data_value = await signal.read_data_value(raise_on_bad_status=False)
+            assert current_data_value.Value is not None and current_data_value.Value.Value == current

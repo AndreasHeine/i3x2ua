@@ -132,6 +132,14 @@ class OpcUaConnectionSnapshot:
     since: datetime
 
 
+class OpcUaWriteMetadataUnsupportedError(Exception):
+    """Raised when an OPC UA server does not preserve current-value VQT metadata."""
+
+
+class OpcUaWriteMetadataVerificationError(Exception):
+    """Raised when current-value VQT metadata cannot be verified after writing."""
+
+
 class OpcUaClientProtocol(Protocol):
     async def browse_tree(self) -> list[OpcUaNodeInfo]: ...
 
@@ -161,9 +169,18 @@ class OpcUaClientProtocol(Protocol):
 
     async def read_history_write_access(self, node_id: str) -> tuple[bool, bool]: ...
 
+    def history_update_supported(self) -> bool | None: ...
+
     async def read_variant_type(self, node_id: str) -> str | None: ...
 
-    async def write_value(self, node_id: str, value: Any, variant_type: str | None = None) -> None: ...
+    async def write_value(
+        self,
+        node_id: str,
+        value: Any,
+        variant_type: str | None,
+        quality: str,
+        timestamp: datetime,
+    ) -> None: ...
 
     async def read_server_status_data_value(self) -> ua.DataValue: ...
 

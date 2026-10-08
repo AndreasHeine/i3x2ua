@@ -264,7 +264,9 @@ async def update_object_values_v1(
             model=model,
             opcua_client=opcua_client,
             element_id=update.elementId,
-            payload_value=update.value,
+            payload_value=update.value.value,
+            quality=update.value.quality,
+            timestamp=update.value.timestamp,
             schema_validator=schema_validator,
         )
         if ok:
@@ -298,7 +300,7 @@ async def update_historical_values_v1(
 
     results: list[BulkResultItem[None]] = []
     schema_validator = WriteValueValidator(request, model, opcua_client)
-    service_unsupported = False
+    service_unsupported = opcua_client.history_update_supported() is False
     principal = request.headers.get("x-principal") or "anonymous"
     for update in body.updates:
         node = _find_model_node(model, update.elementId)

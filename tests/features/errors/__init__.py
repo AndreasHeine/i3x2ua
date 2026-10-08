@@ -32,7 +32,10 @@ def test_v1_404_error_includes_response_detail(client: TestClient) -> None:
 
 
 def test_v1_501_error_includes_response_detail(client: TestClient) -> None:
-    response = client.put("/v1/objects/value", json={"updates": [{"elementId": "property-abc", "value": 55.25}]})
+    response = client.put(
+        "/v1/objects/value",
+        json={"updates": [{"elementId": "property-abc", "value": {"value": 55.25}}]},
+    )
     assert response.status_code == 501
     payload = response.json()
     assert payload["success"] is False

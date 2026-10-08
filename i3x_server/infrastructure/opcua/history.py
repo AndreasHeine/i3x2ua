@@ -37,6 +37,14 @@ _SUPPORTED_TYPES = set(_INTEGER_BITS) | {
 }
 
 
+def quality_status_code(quality: str) -> ua.StatusCode:
+    try:
+        code = _QUALITY_CODES[quality]
+    except KeyError as exc:
+        raise ValueError(f"Unsupported quality: {quality}") from exc
+    return ua.StatusCode(ua.UInt32(code))
+
+
 def _convert_scalar(value: Any, variant_type: ua.VariantType) -> Any:
     if variant_type in _INTEGER_BITS:
         bits, signed = _INTEGER_BITS[variant_type]
@@ -128,6 +136,6 @@ def historical_data_value(
         variant = ua.Variant(converted, variant_type)
     return ua.DataValue(
         Value=variant,
-        StatusCode=ua.StatusCode(ua.UInt32(_QUALITY_CODES[quality])),
+        StatusCode=quality_status_code(quality),
         SourceTimestamp=ua.DateTime.fromisoformat(timestamp.astimezone(timezone.utc).isoformat()),
     )

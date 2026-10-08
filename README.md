@@ -329,6 +329,9 @@ uv run pytest -q
 uv run pytest -q --cov=i3x_server --cov-report=term-missing
 ```
 
+Mypy uses explicit package bases from the repository root so namespace packages
+such as `samples` have consistent module names during discovery and imports.
+
 ## Production Deployment and i3X Strict Compliance
 
 This application implements the i3X API specification and is designed to run **behind a reverse proxy / api gateway** that is responsible for:

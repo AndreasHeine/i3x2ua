@@ -2,8 +2,8 @@
 i3X subscription client using only the Python standard library.
 
 Usage:
-    python samples/subscription_client.py --mode poll --element-ids "ns=2;i=1" "ns=2;i=2"
-    python samples/subscription_client.py --mode sse --element-ids "ns=2;i=1" "ns=2;i=2"
+    python samples/subscription_client.py --mode poll --element-ids "property-dd1a9a05d251425f" "property-0123456789abcdef"
+    python samples/subscription_client.py --mode sse --element-ids "property-dd1a9a05d251425f" "property-0123456789abcdef"
 
 Notifications are flushed as JSON lines to stdout; status/errors go to stderr.
 Ctrl+C stops reception and deletes the subscription. Transport failures are

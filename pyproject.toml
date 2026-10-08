@@ -70,6 +70,7 @@ ignore = ["B008"]
 python_version = "3.10"
 strict = true
 ignore_missing_imports = true
+explicit_package_bases = true
 files = ["i3x_server", "tests", "run.py", "run_tests.py"]
 exclude = "(^|[\\/])i3X[\\/]demo[\\/]"
 

@@ -62,7 +62,7 @@ _MAX_ERROR_LENGTH = 300
 _ERROR_KEY_LENGTH = 160
 _TOP_ERRORS = 3
 _IS_WINDOWS = sys.platform == "win32"
-_STOP_SIGNAL = signal.CTRL_BREAK_EVENT if _IS_WINDOWS else signal.SIGTERM
+_STOP_SIGNAL: int = getattr(signal, "CTRL_BREAK_EVENT", signal.SIGTERM) if _IS_WINDOWS else signal.SIGTERM
 _CHILD_BOOTSTRAP = (
     "import os, runpy, signal, sys; "
     "signal.signal(getattr(signal, 'SIGBREAK', signal.SIGTERM), signal.default_int_handler); "
@@ -202,7 +202,9 @@ class Supervisor:
 
     def _spawn(self, command: list[str], capture_stdout: bool) -> subprocess.Popen[str]:
         isolation: dict[str, Any] = (
-            {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if _IS_WINDOWS else {"start_new_session": True}
+            {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
+            if _IS_WINDOWS
+            else {"start_new_session": True}
         )
         process = subprocess.Popen(
             [sys.executable, "-c", _CHILD_BOOTSTRAP, *command],

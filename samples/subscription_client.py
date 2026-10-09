@@ -61,7 +61,7 @@ class I3XSubscriptionClient(I3XClient):
     """Reuse the discovery client's REST transport, TLS, and Basic Auth support."""
 
     def create_subscription(self, client_id: str) -> str:
-        payload = self._post("/v1/subscriptions", {"clientId": client_id})
+        payload = self._post("/subscriptions", {"clientId": client_id})
         result = payload.get("result")
         if payload.get("success") is not True or not isinstance(result, dict):
             raise I3XRequestError(f"Create subscription failed: {payload}")
@@ -72,7 +72,7 @@ class I3XSubscriptionClient(I3XClient):
 
     def register(self, client_id: str, subscription_id: str, element_ids: list[str], max_depth: int | None) -> None:
         payload = self._post(
-            "/v1/subscriptions/register",
+            "/subscriptions/register",
             {
                 "clientId": client_id,
                 "subscriptionId": subscription_id,
@@ -83,7 +83,7 @@ class I3XSubscriptionClient(I3XClient):
         _check_bulk_result(payload, "Register monitored items", len(element_ids))
 
     def delete_subscription(self, client_id: str, subscription_id: str) -> None:
-        payload = self._post("/v1/subscriptions/delete", {"clientId": client_id, "subscriptionIds": [subscription_id]})
+        payload = self._post("/subscriptions/delete", {"clientId": client_id, "subscriptionIds": [subscription_id]})
         _check_bulk_result(payload, "Delete subscription", 1)
 
     @staticmethod
@@ -113,7 +113,7 @@ class I3XSubscriptionClient(I3XClient):
             body: dict[str, Any] = {"clientId": client_id, "subscriptionId": subscription_id}
             if last_sequence is not None:
                 body["acknowledgeSequence"] = last_sequence
-            payload = self._post("/v1/subscriptions/sync", body)
+            payload = self._post("/subscriptions/sync", body)
             if payload.get("responseDetail"):
                 print(f"Sync warning: {json.dumps(payload['responseDetail'])}", file=sys.stderr, flush=True)
             batches = payload.get("result")
@@ -128,7 +128,7 @@ class I3XSubscriptionClient(I3XClient):
             time.sleep(interval)
 
     def stream(self, client_id: str, subscription_id: str) -> None:
-        path = "/v1/subscriptions/stream"
+        path = "/subscriptions/stream"
         headers = {"Accept": "text/event-stream", "Content-Type": "application/json"}
         if self._auth_header is not None:
             headers["Authorization"] = self._auth_header
@@ -173,7 +173,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Print i3X subscription notifications as JSON lines")
     parser.add_argument("--element-ids", nargs="+", required=True, help="Element IDs to monitor (quote each ID)")
     parser.add_argument("--mode", choices=("poll", "sse"), default="poll", help="Receive mode (default: poll)")
-    parser.add_argument("--base-url", default="http://127.0.0.1:8000", help="i3X server base URL")
+    parser.add_argument("--base-url", default="http://127.0.0.1:8000/v1", help="i3X server base URL")
     parser.add_argument("--client-id", default=f"sample-subscription-{uuid4()}", help="Subscription owner ID")
     parser.add_argument("--poll-interval", type=_positive_float, default=1.0, help="Seconds between sync calls")
     parser.add_argument(

@@ -4,13 +4,13 @@ Generic i3X discovery client example.
 Demonstrates an efficient discovery pattern against any i3X server (such as
 this project's OPC UA-backed implementation):
 
-  1. GET  /v1/info                   - capability/health check
-  2. GET  /v1/objects?root=true      - seed the tree, metadata inline
-  3. POST /v1/objects/list           - batched breadth-first expansion via
+  1. GET  /info                   - capability/health check
+  2. GET  /objects?root=true      - seed the tree, metadata inline
+  3. POST /objects/list           - batched breadth-first expansion via
                                         metadata.relationships (no per-node
                                         /objects/related round-trips)
-  4. POST /v1/objecttypes/query      - batched, cached type/schema resolution
-  5. POST /v1/objects/value          - batched value read, matched back to
+  4. POST /objecttypes/query      - batched, cached type/schema resolution
+  5. POST /objects/value          - batched value read, matched back to
                                         schema property names via displayName
 
 Usage:
@@ -135,17 +135,17 @@ class I3XClient:
         return self._request("POST", path, body=body)
 
     def get_info(self) -> dict[str, Any]:
-        return self._get("/v1/info")
+        return self._get("/info")
 
     def get_root_objects(self) -> list[dict[str, Any]]:
-        payload = self._get("/v1/objects", params={"root": "true", "includeMetadata": "true"})
+        payload = self._get("/objects", params={"root": "true", "includeMetadata": "true"})
         return cast("list[dict[str, Any]]", payload.get("result", []))
 
     def list_objects(self, element_ids: list[str]) -> list[dict[str, Any]]:
         """Batched lookup of Objects (with metadata) by elementId, chunked to _BATCH_SIZE."""
         results: list[dict[str, Any]] = []
         for chunk in _chunks(element_ids, _BATCH_SIZE):
-            payload = self._post("/v1/objects/list", {"elementIds": chunk, "includeMetadata": True})
+            payload = self._post("/objects/list", {"elementIds": chunk, "includeMetadata": True})
             for item in payload.get("results", []):
                 if item.get("success"):
                     results.append(item["result"])
@@ -155,7 +155,7 @@ class I3XClient:
         """Batched, cache-aware ObjectType/schema resolution."""
         missing = [tid for tid in type_element_ids if tid not in self.object_types_by_id]
         for chunk in _chunks(missing, _BATCH_SIZE):
-            payload = self._post("/v1/objecttypes/query", {"elementIds": chunk})
+            payload = self._post("/objecttypes/query", {"elementIds": chunk})
             for item in payload.get("results", []):
                 if item.get("success"):
                     self.object_types_by_id[item["elementId"]] = item["result"]
@@ -165,7 +165,7 @@ class I3XClient:
         """Batched current-value read; returns elementId -> CurrentValueResult."""
         values: dict[str, dict[str, Any]] = {}
         for chunk in _chunks(element_ids, _BATCH_SIZE):
-            payload = self._post("/v1/objects/value", {"elementIds": chunk, "maxDepth": max_depth})
+            payload = self._post("/objects/value", {"elementIds": chunk, "maxDepth": max_depth})
             for item in payload.get("results", []):
                 if item.get("success"):
                     values[item["elementId"]] = item["result"]
@@ -230,7 +230,7 @@ class I3XClient:
         Skips the tree walk entirely - the most efficient path when the type
         of interest is already known on a large address space.
         """
-        payload = self._get("/v1/objects", params={"typeElementId": type_element_id, "includeMetadata": "true"})
+        payload = self._get("/objects", params={"typeElementId": type_element_id, "includeMetadata": "true"})
         for raw in payload.get("result", []):
             self._cache_object(raw)
         self.query_object_types([type_element_id])
@@ -305,7 +305,7 @@ class I3XClient:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Generic i3X discovery client example")
-    parser.add_argument("--base-url", default="http://127.0.0.1:8000", help="i3X server base URL")
+    parser.add_argument("--base-url", default="http://127.0.0.1:8000/v1", help="i3X server base URL")
     parser.add_argument("--max-nodes", type=int, default=200, help="Cap on discovered objects")
     parser.add_argument("--max-depth", type=int, default=None, help="Cap on BFS levels traversed from the roots")
     parser.add_argument(

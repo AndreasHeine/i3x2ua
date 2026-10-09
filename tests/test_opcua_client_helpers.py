@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -7,6 +8,7 @@ from typing import Any, cast
 
 import pytest
 from asyncua import ua
+from asyncua.ua.attribute_ids import AttributeIds
 
 from i3x_server.infrastructure.opcua.client import (
     OpcUaClient,
@@ -341,6 +343,77 @@ async def test_reconnect_clears_metadata_caches(monkeypatch: pytest.MonkeyPatch)
 
 
 @pytest.mark.asyncio
+async def test_expired_metadata_cache_is_reloaded_once_for_concurrent_callers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
+    cast(Any, client)._object_types_cache = (-1e9, [])
+    calls = 0
+    release = asyncio.Event()
+
+    async def _slow_load() -> list[Any]:
+        nonlocal calls
+        calls += 1
+        await release.wait()
+        return ["fresh"]
+
+    monkeypatch.setattr(client, "_load_object_types", _slow_load)
+
+    waiters = [asyncio.create_task(client.get_object_types()) for _ in range(20)]
+    await asyncio.sleep(0)
+    release.set()
+    results = await asyncio.gather(*waiters)
+
+    assert calls == 1
+    assert all(cast(list[Any], result) == ["fresh"] for result in results)
+    assert cast(Any, client)._metadata_load_tasks == {}
+
+
+@pytest.mark.asyncio
+async def test_metadata_load_failure_is_shared_and_not_cached(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
+    calls = 0
+
+    async def _failing_load() -> list[Any]:
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0)
+        raise RuntimeError("browse failed")
+
+    monkeypatch.setattr(client, "_load_namespace_infos", _failing_load)
+
+    results = await asyncio.gather(*(client.get_namespace_infos() for _ in range(5)), return_exceptions=True)
+
+    assert calls == 1
+    assert all(isinstance(result, RuntimeError) for result in results)
+    with pytest.raises(RuntimeError):
+        await client.get_namespace_infos()
+    assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_cancelled_caller_does_not_cancel_shared_metadata_load(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
+    release = asyncio.Event()
+
+    async def _slow_load() -> list[Any]:
+        await release.wait()
+        return ["fresh"]
+
+    monkeypatch.setattr(client, "_load_object_types", _slow_load)
+
+    cancelled = asyncio.create_task(client.get_object_types())
+    survivor = asyncio.create_task(client.get_object_types())
+    await asyncio.sleep(0)
+    cancelled.cancel()
+    release.set()
+
+    assert cast(list[Any], await survivor) == ["fresh"]
+    with pytest.raises(asyncio.CancelledError):
+        await cancelled
+
+
+@pytest.mark.asyncio
 async def test_reconnect_short_circuits_when_connection_is_healthy() -> None:
     client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
     fake = _FakeClient()
@@ -639,3 +712,68 @@ async def test_resolve_reference_type_supertypes_caches_every_ancestor(
         "References",
     ]
     assert fake_client.browsed == []
+
+
+class _BatchReadNode:
+    def __init__(self, node_id: str) -> None:
+        self.nodeid = node_id
+
+    async def read_data_value(self) -> ua.DataValue:
+        return ua.DataValue(ua.Variant(f"single:{self.nodeid}"))
+
+
+class _BatchReadClient:
+    def __init__(self, error: Exception | None = None) -> None:
+        self.error = error
+        self.batches: list[list[str]] = []
+
+    def get_node(self, node_id: Any) -> _BatchReadNode:
+        return _BatchReadNode(str(node_id))
+
+    async def read_attributes(self, nodes: list[_BatchReadNode], attr: Any = None) -> list[ua.DataValue]:
+        assert attr == AttributeIds.Value
+        self.batches.append([node.nodeid for node in nodes])
+        if self.error is not None:
+            raise self.error
+        return [ua.DataValue(ua.Variant(f"batch:{node.nodeid}")) for node in nodes]
+
+
+def _variant_values(values: list[ua.DataValue]) -> list[Any]:
+    return [value.Value.Value if value.Value is not None else None for value in values]
+
+
+def _batch_read_client(monkeypatch: pytest.MonkeyPatch, fake: _BatchReadClient) -> OpcUaClient:
+    client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
+    cast(Any, client)._client = fake
+
+    async def _limits() -> OpcUaOperationalLimits:
+        return OpcUaOperationalLimits(max_nodes_per_browse=None, max_nodes_per_read=3)
+
+    monkeypatch.setattr(client, "get_operational_limits", _limits)
+    return client
+
+
+@pytest.mark.asyncio
+async def test_read_data_values_uses_one_read_call_per_max_nodes_chunk(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _BatchReadClient()
+    client = _batch_read_client(monkeypatch, fake)
+    node_ids = [f"ns=2;i={idx}" for idx in range(7)]
+
+    values = await client.read_data_values(node_ids)
+
+    assert fake.batches == [node_ids[0:3], node_ids[3:6], node_ids[6:7]]
+    assert _variant_values(values) == [f"batch:{node_id}" for node_id in node_ids]
+
+
+@pytest.mark.asyncio
+async def test_read_data_values_falls_back_to_per_node_reads_when_batch_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _BatchReadClient(error=RuntimeError("batched read failed"))
+    client = _batch_read_client(monkeypatch, fake)
+    node_ids = ["ns=2;i=1", "ns=2;i=2"]
+
+    values = await client.read_data_values(node_ids)
+
+    assert fake.batches == [node_ids]
+    assert _variant_values(values) == [f"single:{node_id}" for node_id in node_ids]

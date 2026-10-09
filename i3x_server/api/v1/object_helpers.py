@@ -307,18 +307,40 @@ def _parent_id_for_node(model: BuildResult, node_id: str) -> str | None:
         if isinstance(indexed_parent, str):
             return indexed_parent
 
-    raw_hierarchy_children_by_id = getattr(model, "hierarchy_children_by_id", None)
-    if isinstance(raw_hierarchy_children_by_id, dict):
-        for parent_id, child_ids in raw_hierarchy_children_by_id.items():
-            if not isinstance(parent_id, str) or not isinstance(child_ids, list):
-                continue
-            if node_id in child_ids:
-                return parent_id
+    return _reverse_parent_index(model).get(node_id)
 
+
+_reverse_parent_index_cache: tuple[BuildResult, tuple[int, int], dict[str, str]] | None = None
+
+
+def _reverse_parent_index(model: BuildResult) -> dict[str, str]:
+    """child id -> first parent listing it (hierarchy children first, then children_by_id).
+
+    Built once per model instead of scanning every parent's child list per lookup. The cache keeps a
+    strong reference to the model, so the identity check cannot be fooled by address reuse.
+    """
+    global _reverse_parent_index_cache
+    raw_hierarchy_children_by_id = getattr(model, "hierarchy_children_by_id", None)
+    hierarchy_children_by_id = raw_hierarchy_children_by_id if isinstance(raw_hierarchy_children_by_id, dict) else {}
+    fingerprint = (len(hierarchy_children_by_id), len(model.children_by_id))
+    cached = _reverse_parent_index_cache
+    if cached is not None and cached[0] is model and cached[1] == fingerprint:
+        return cached[2]
+
+    index: dict[str, str] = {}
+    for parent_id, child_ids in hierarchy_children_by_id.items():
+        if not isinstance(parent_id, str) or not isinstance(child_ids, list):
+            continue
+        for child_id in child_ids:
+            if isinstance(child_id, str):
+                index.setdefault(child_id, parent_id)
     for parent_id, child_ids in model.children_by_id.items():
-        if node_id in child_ids:
-            return parent_id
-    return None
+        for child_id in child_ids:
+            if isinstance(child_id, str):
+                index.setdefault(child_id, parent_id)
+
+    _reverse_parent_index_cache = (model, fingerprint, index)
+    return index
 
 
 def _hierarchy_children_for_node(model: BuildResult, node: ModelNode) -> list[str]:

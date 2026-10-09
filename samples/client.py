@@ -31,6 +31,7 @@ Options:
                               of interest is already known on a huge address space.
     --no-values               Skip the final POST /objects/value pass (useful when
                               you only care about topology/types, not live data).
+    --timeout N               HTTP/socket timeout per request in seconds (default: 10).
     --insecure                Disable TLS certificate verification (self-signed
                               dev certs).
     --username / --password  HTTP Basic Auth credentials, e.g. for an nginx
@@ -44,6 +45,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import http.client
 import json
 import ssl
 import sys
@@ -93,6 +95,7 @@ class I3XClient:
             self._ssl_context.check_hostname = False
             self._ssl_context.verify_mode = ssl.CERT_NONE
         self._auth_header: str | None = None
+        self._connection: http.client.HTTPConnection | None = None
         if username is not None:
             credentials = base64.b64encode(f"{username}:{password or ''}".encode()).decode("ascii")
             self._auth_header = f"Basic {credentials}"
@@ -118,15 +121,51 @@ class I3XClient:
         if self._auth_header is not None:
             headers["Authorization"] = self._auth_header
 
-        request = urllib.request.Request(url, data=data, headers=headers, method=method)
+        target = urllib.parse.urlsplit(url)
+        request_target = urllib.parse.urlunsplit(("", "", target.path or "/", target.query, ""))
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout, context=self._ssl_context) as response:
-                return cast("dict[str, Any]", json.loads(response.read().decode("utf-8")))
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
-            raise I3XRequestError(f"{method} {path} -> HTTP {exc.code}: {detail}") from exc
-        except urllib.error.URLError as exc:
-            raise I3XRequestError(f"{method} {path} -> {exc.reason}") from exc
+            status, raw = self._send(method, request_target, data, headers)
+        except TimeoutError as exc:
+            self._close_connection()
+            raise I3XRequestError(f"{method} {path} -> timed out after {self.timeout:g}s") from exc
+        except (OSError, http.client.HTTPException) as exc:
+            self._close_connection()
+            raise I3XRequestError(f"{method} {path} -> {exc}") from exc
+        if status >= 400:
+            detail = raw.decode("utf-8", errors="replace")
+            raise I3XRequestError(f"{method} {path} -> HTTP {status}: {detail}")
+        return cast("dict[str, Any]", json.loads(raw.decode("utf-8")))
+
+    def _send(self, method: str, target: str, data: bytes | None, headers: dict[str, str]) -> tuple[int, bytes]:
+        # Reuse one keep-alive connection; a fresh socket per request exhausts ephemeral ports under load.
+        for attempt in range(2):
+            connection = self._get_connection()
+            reused = connection.sock is not None
+            try:
+                connection.request(method, target, body=data, headers=headers)
+                response = connection.getresponse()
+                return response.status, response.read()
+            except (http.client.RemoteDisconnected, ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
+                self._close_connection()
+                if not reused or attempt == 1:
+                    raise
+        raise AssertionError("unreachable")
+
+    def _get_connection(self) -> http.client.HTTPConnection:
+        if self._connection is None:
+            parts = urllib.parse.urlsplit(self.base_url)
+            if parts.scheme == "https":
+                self._connection = http.client.HTTPSConnection(
+                    parts.netloc, timeout=self.timeout, context=self._ssl_context
+                )
+            else:
+                self._connection = http.client.HTTPConnection(parts.netloc, timeout=self.timeout)
+        return self._connection
+
+    def _close_connection(self) -> None:
+        if self._connection is not None:
+            self._connection.close()
+            self._connection = None
 
     def _get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         return self._request("GET", path, params=params)
@@ -314,6 +353,7 @@ def main() -> int:
         help="Skip the tree walk; fetch only instances of this typeElementId (fast path for huge address spaces)",
     )
     parser.add_argument("--no-values", action="store_true", help="Skip reading/printing current values")
+    parser.add_argument("--timeout", type=float, default=10.0, help="HTTP/socket timeout in seconds")
     parser.add_argument("--insecure", action="store_true", help="Disable TLS certificate verification")
     parser.add_argument("--username", default=None, help="HTTP Basic Auth username (e.g. nginx proxy auth)")
     parser.add_argument("--password", default=None, help="HTTP Basic Auth password")
@@ -322,6 +362,7 @@ def main() -> int:
     client = I3XClient(
         args.base_url,
         verify_ssl=not args.insecure,
+        timeout=args.timeout,
         username=args.username,
         password=args.password,
     )

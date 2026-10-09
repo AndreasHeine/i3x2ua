@@ -9,7 +9,7 @@ from dataclasses import asdict, fields, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
-from typing import Any
+from typing import Any, TypeVar, cast
 
 from asyncua import ua
 from asyncua.client.client import Client
@@ -52,6 +52,8 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
 
 
 def _normalize_type_definition_id(type_definition_id: str | None) -> str | None:
@@ -137,6 +139,7 @@ class OpcUaClient:
         self._subscription_caps_cache: OpcUaSubscriptionCapabilities | None = None
         self._namespace_infos_cache: tuple[float, list[OpcUaNamespaceInfo]] | None = None
         self._object_types_cache: tuple[float, list[OpcUaObjectTypeInfo]] | None = None
+        self._metadata_load_tasks: dict[str, asyncio.Future[Any]] = {}
         self._reference_type_supertypes_cache: dict[str, tuple[float, list[str]]] = {}
         self._runtime_metrics = OpcUaRuntimeMetrics()
         self._history_update_supported: bool | None = None
@@ -169,6 +172,25 @@ class OpcUaClient:
         if self._metadata_cache_ttl_seconds == 0:
             return True
         return perf_counter() - cached_at <= self._metadata_cache_ttl_seconds
+
+    async def _coalesce_metadata_load(self, key: str, loader: Callable[[], Awaitable[_T]]) -> _T:
+        """Share one in-flight OPC UA metadata load between concurrent callers.
+
+        Without this, every request that sees an expired cache entry starts its own full
+        browse, which overloads the OPC UA server under concurrent load.
+        """
+        task = self._metadata_load_tasks.get(key)
+        if task is None:
+            task = asyncio.ensure_future(loader())
+            self._metadata_load_tasks[key] = task
+            task.add_done_callback(lambda done: self._finish_metadata_load(key, done))
+        return cast(_T, await asyncio.shield(task))
+
+    def _finish_metadata_load(self, key: str, task: asyncio.Future[Any]) -> None:
+        if self._metadata_load_tasks.get(key) is task:
+            del self._metadata_load_tasks[key]
+        if not task.cancelled():
+            task.exception()
 
     async def resolve_reference_type_supertype_browse_names(self, reference_type_id: str) -> list[str]:
         if not isinstance(reference_type_id, str) or not reference_type_id:
@@ -854,6 +876,12 @@ class OpcUaClient:
             raise
 
     async def get_namespace_infos(self) -> list[OpcUaNamespaceInfo]:
+        cached = self._namespace_infos_cache
+        if cached is not None and self._is_metadata_cache_entry_fresh(cached[0]):
+            return cached[1]
+        return await self._coalesce_metadata_load("namespace_infos", self._load_namespace_infos)
+
+    async def _load_namespace_infos(self) -> list[OpcUaNamespaceInfo]:
         now = perf_counter()
         if self._namespace_infos_cache is not None:
             cached_at, cached_value = self._namespace_infos_cache
@@ -1001,6 +1029,12 @@ class OpcUaClient:
         return infos
 
     async def get_object_types(self) -> list[OpcUaObjectTypeInfo]:
+        cached = self._object_types_cache
+        if cached is not None and self._is_metadata_cache_entry_fresh(cached[0]):
+            return cached[1]
+        return await self._coalesce_metadata_load("object_types", self._load_object_types)
+
+    async def _load_object_types(self) -> list[OpcUaObjectTypeInfo]:
         now = perf_counter()
         if self._object_types_cache is not None:
             cached_at, cached_value = self._object_types_cache
@@ -1640,9 +1674,38 @@ class OpcUaClient:
         return values
 
     async def read_data_values(self, node_ids: list[str]) -> list[ua.DataValue]:
+        """Read Value attributes with one OPC UA Read service call per MaxNodesPerRead chunk.
+
+        Per-node status codes are returned as-is. If a batched read fails for a reason other than a
+        recoverable disconnect or an oversized batch, fall back to isolated per-node reads.
+        """
         if not node_ids:
             return []
 
+        started = perf_counter()
+        try:
+            nodes = [self._client.get_node(node_id) for node_id in node_ids]
+            values = await self._read_attribute_batch_limited(nodes, AttributeIds.Value)
+            if len(values) != len(node_ids):
+                raise RuntimeError(f"Read returned {len(values)} results for {len(node_ids)} nodes")
+        except Exception:
+            logger.warning(
+                "OPC UA batched data-value read failed endpoint=%s requested=%d; falling back to per-node reads",
+                self._endpoint,
+                len(node_ids),
+                exc_info=True,
+            )
+            return await self._read_data_values_per_node(node_ids)
+
+        logger.debug(
+            "OPC UA batch data-value read ok endpoint=%s requested=%d duration_s=%.3f",
+            self._endpoint,
+            len(node_ids),
+            perf_counter() - started,
+        )
+        return values
+
+    async def _read_data_values_per_node(self, node_ids: list[str]) -> list[ua.DataValue]:
         started = perf_counter()
         limits = await self.get_operational_limits()
         max_nodes = limits.max_nodes_per_read or len(node_ids)

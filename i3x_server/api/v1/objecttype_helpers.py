@@ -720,6 +720,42 @@ async def _build_object_type_context(
     )
 
 
+def _model_content_token(model: BuildResult) -> tuple[Any, ...]:
+    return (
+        len(model.nodes_by_id),
+        len(model.root_ids),
+        len(model.property_to_node),
+        len(model.action_to_method),
+        tuple(sorted(model.nodes_by_id)),
+        tuple(sorted(model.root_ids)),
+    )
+
+
+def _cached_object_type_context(
+    request: Any,
+    model: BuildResult,
+    model_token: tuple[Any, ...] | None,
+    namespace_token: tuple[Any, ...],
+    object_types_token: tuple[Any, ...],
+) -> _ObjectTypeContext | None:
+    """Return the cached context if it matches; model_token=None allows only an identity match."""
+    cache = getattr(request.app.state, "object_type_context_cache", None)
+    if not isinstance(cache, dict):
+        return None
+    cached_context = cache.get("context")
+    if not isinstance(cached_context, _ObjectTypeContext):
+        return None
+    if cache.get("namespace_token") != namespace_token or cache.get("object_types_token") != object_types_token:
+        return None
+    if cache.get("model") is model:
+        return cached_context
+    if model_token is None or cache.get("model_token") != model_token:
+        return None
+    # Equivalent rebuilt model: remember it so later requests take the identity fast path.
+    cache["model"] = model
+    return cached_context
+
+
 async def _get_object_type_context(
     request: Any,
     model: BuildResult,
@@ -731,41 +767,33 @@ async def _get_object_type_context(
         namespace_infos if namespace_infos is not None else await opcua_client.get_namespace_infos()
     )
     object_types = await opcua_client.get_object_types()
+    namespace_token = tuple(
+        (info.uri, info.display_name, info.namespace_version, info.server_uri) for info in resolved_namespace_infos
+    )
+    object_types_token = tuple(item.node_id for item in object_types)
+
+    # Lock-free fast path: the cache holds a strong reference to the model it was validated
+    # against, so an identity match is safe (no address reuse) and skips the content token.
+    cached_context = _cached_object_type_context(request, model, None, namespace_token, object_types_token)
+    if cached_context is not None:
+        return cached_context
 
     lock = getattr(request.app.state, "object_type_lock", None)
     async with lock if lock else _nullcontext():
-        cache = getattr(request.app.state, "object_type_context_cache", None)
         # Content-derived tokens: id() is unsafe (CPython reuses addresses), and the
         # build timestamp changes on every refresh even when the model data is identical.
         # Use stable model content instead of volatile timestamps so equivalent refreshes
         # hit the cache without missing on harmless rebuild churn.
-        model_token = (
-            len(model.nodes_by_id),
-            len(model.root_ids),
-            len(model.property_to_node),
-            len(model.action_to_method),
-            tuple(sorted(model.nodes_by_id)),
-            tuple(sorted(model.root_ids)),
-        )
-        namespace_token = tuple(
-            (info.uri, info.display_name, info.namespace_version, info.server_uri) for info in resolved_namespace_infos
-        )
-        object_types_token = tuple(item.node_id for item in object_types)
-        if isinstance(cache, dict):
-            if (
-                cache.get("model_token") == model_token
-                and cache.get("namespace_token") == namespace_token
-                and cache.get("object_types_token") == object_types_token
-            ):
-                cached_context = cache.get("context")
-                if isinstance(cached_context, _ObjectTypeContext):
-                    logger.debug(
-                        "Object type context cache hit model_nodes=%d object_types=%d duration_s=%.3f",
-                        len(model.nodes_by_id),
-                        len(object_types),
-                        perf_counter() - started,
-                    )
-                    return cached_context
+        model_token = _model_content_token(model)
+        cached_context = _cached_object_type_context(request, model, model_token, namespace_token, object_types_token)
+        if cached_context is not None:
+            logger.debug(
+                "Object type context cache hit model_nodes=%d object_types=%d duration_s=%.3f",
+                len(model.nodes_by_id),
+                len(object_types),
+                perf_counter() - started,
+            )
+            return cached_context
 
         context = await _build_object_type_context(
             model=model,
@@ -774,6 +802,7 @@ async def _get_object_type_context(
             object_types=object_types,
         )
         request.app.state.object_type_context_cache = {
+            "model": model,
             "model_token": model_token,
             "namespace_token": namespace_token,
             "object_types_token": object_types_token,

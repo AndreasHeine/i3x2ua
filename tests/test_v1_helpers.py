@@ -309,3 +309,108 @@ def test_not_implemented_and_server_info() -> None:
     assert caps.query.history is True
     info = v1._build_server_info()
     assert info.specVersion == "1.0"
+
+
+def _context_model() -> BuildResult:
+    return BuildResult(
+        nodes_by_id={"n1": ModelNode(id="n1", name="n1", kind="asset", source_node_id="n1")},
+        root_ids=["n1"],
+        children_by_id={},
+        instances_by_type_id={},
+        property_to_node={},
+        action_to_method={},
+    )
+
+
+class _EmptyOpcUaClient:
+    async def get_namespace_infos(self) -> list[object]:
+        return []
+
+    async def get_object_types(self) -> list[object]:
+        return []
+
+
+@pytest.mark.asyncio
+async def test_object_type_context_cache_hit_skips_lock_and_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    model = _context_model()
+    builds = 0
+
+    async def _build(**_kwargs: Any) -> objecttype_helpers._ObjectTypeContext:
+        nonlocal builds
+        builds += 1
+        return objecttype_helpers._ObjectTypeContext([], [], {}, [], {})
+
+    monkeypatch.setattr(objecttype_helpers, "_build_object_type_context", _build)
+    lock = asyncio.Lock()
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(object_type_lock=lock)))
+    client = cast(Any, _EmptyOpcUaClient())
+
+    first = await objecttype_helpers._get_object_type_context(request, model, client)
+
+    def _fail_token(_model: BuildResult) -> tuple[Any, ...]:
+        raise AssertionError("identity cache hit must not compute the content token")
+
+    monkeypatch.setattr(objecttype_helpers, "_model_content_token", _fail_token)
+    await lock.acquire()
+    try:
+        second = await asyncio.wait_for(objecttype_helpers._get_object_type_context(request, model, client), 1)
+    finally:
+        lock.release()
+
+    assert second is first
+    assert builds == 1
+
+
+@pytest.mark.asyncio
+async def test_object_type_context_cache_adopts_equivalent_rebuilt_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    builds = 0
+
+    async def _build(**_kwargs: Any) -> objecttype_helpers._ObjectTypeContext:
+        nonlocal builds
+        builds += 1
+        return objecttype_helpers._ObjectTypeContext([], [], {}, [], {})
+
+    monkeypatch.setattr(objecttype_helpers, "_build_object_type_context", _build)
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(object_type_lock=asyncio.Lock())))
+    client = cast(Any, _EmptyOpcUaClient())
+    model_a = _context_model()
+    model_b = _context_model()
+
+    first = await objecttype_helpers._get_object_type_context(request, model_a, client)
+    second = await objecttype_helpers._get_object_type_context(request, model_b, client)
+
+    assert second is first
+    assert builds == 1
+    assert request.app.state.object_type_context_cache["model"] is model_b
+
+    changed = _context_model()
+    changed.nodes_by_id["n2"] = ModelNode(id="n2", name="n2", kind="asset", source_node_id="n2")
+    third = await objecttype_helpers._get_object_type_context(request, changed, client)
+
+    assert third is not first
+    assert builds == 2
+
+
+def test_parent_id_for_node_uses_reverse_index_with_original_precedence() -> None:
+    from i3x_server.api.v1 import object_helpers
+
+    def _model(children_by_id: dict[str, list[str]]) -> BuildResult:
+        return BuildResult(
+            nodes_by_id={},
+            root_ids=["root"],
+            children_by_id=children_by_id,
+            instances_by_type_id={},
+            property_to_node={},
+            action_to_method={},
+            hierarchy_children_by_id={"h-parent": ["shared"], "h-other": ["shared", "only-h"]},
+        )
+
+    model = _model({"c-parent": ["shared", "only-c"], "c-other": ["only-c"]})
+    assert object_helpers._parent_id_for_node(model, "shared") == "h-parent"
+    assert object_helpers._parent_id_for_node(model, "only-h") == "h-other"
+    assert object_helpers._parent_id_for_node(model, "only-c") == "c-parent"
+    assert object_helpers._parent_id_for_node(model, "root") is None
+    assert object_helpers._parent_id_for_node(model, "missing") is None
+
+    replaced = _model({"c-new": ["only-c"]})
+    assert object_helpers._parent_id_for_node(replaced, "only-c") == "c-new"

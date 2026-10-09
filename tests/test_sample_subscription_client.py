@@ -50,9 +50,9 @@ def subscription_server() -> Iterator[tuple[str, ServerState]]:
             status = 200
             content_type = "application/json"
             payload: dict[str, Any]
-            if self.path == "/v1/subscriptions":
+            if self.path == "/subscriptions":
                 payload = {"success": True, "result": {"subscriptionId": "sub-1"}}
-            elif self.path == "/v1/subscriptions/register":
+            elif self.path == "/subscriptions/register":
                 payload = {
                     "success": not state.fail_registration,
                     "results": [
@@ -64,12 +64,12 @@ def subscription_server() -> Iterator[tuple[str, ServerState]]:
                         for element_id in body["elementIds"]
                     ],
                 }
-            elif self.path == "/v1/subscriptions/delete":
+            elif self.path == "/subscriptions/delete":
                 payload = {
                     "success": not state.fail_delete,
                     "results": [{"success": not state.fail_delete, "subscriptionId": "sub-1"}],
                 }
-            elif self.path == "/v1/subscriptions/sync":
+            elif self.path == "/subscriptions/sync":
                 state.sync_calls += 1
                 payload = {
                     "success": True,
@@ -78,7 +78,7 @@ def subscription_server() -> Iterator[tuple[str, ServerState]]:
                 if state.sync_calls == 1:
                     status = 206
                     payload["responseDetail"] = {"status": 206, "detail": "Updates dropped due to queue overflow"}
-            elif self.path == "/v1/subscriptions/stream":
+            elif self.path == "/subscriptions/stream":
                 status = state.stream_status
                 content_type = state.stream_content_type
                 payload = {}
@@ -134,10 +134,10 @@ def test_sse_lifecycle_and_auth(
     assert "Stream closed by server" in captured.err
     assert "Deleted subscription" in captured.err
     assert [path for path, _, _ in state.requests] == [
-        "/v1/subscriptions",
-        "/v1/subscriptions/register",
-        "/v1/subscriptions/stream",
-        "/v1/subscriptions/delete",
+        "/subscriptions",
+        "/subscriptions/register",
+        "/subscriptions/stream",
+        "/subscriptions/delete",
     ]
     assert all(auth == "Basic YWRtaW46cHcx" for _, _, auth in state.requests)
     assert state.requests[1][1] == {
@@ -175,7 +175,7 @@ def test_poll_acknowledges_printed_updates_and_preserves_ack_on_empty_sync(
     assert "acknowledgeSequence" not in sync_bodies[0]
     assert [body["acknowledgeSequence"] for body in sync_bodies[1:]] == [7, 7]
     assert state.requests[1][1]["maxDepth"] is None
-    assert state.requests[-1][0] == "/v1/subscriptions/delete"
+    assert state.requests[-1][0] == "/subscriptions/delete"
 
 
 def test_registration_failure_is_reported_and_subscription_deleted(
@@ -189,9 +189,9 @@ def test_registration_failure_is_reported_and_subscription_deleted(
 
     assert "Unknown element" in capsys.readouterr().err
     assert [path for path, _, _ in state.requests] == [
-        "/v1/subscriptions",
-        "/v1/subscriptions/register",
-        "/v1/subscriptions/delete",
+        "/subscriptions",
+        "/subscriptions/register",
+        "/subscriptions/delete",
     ]
 
 
@@ -220,7 +220,7 @@ def test_stream_errors_are_reported_and_subscription_deleted(
     assert subscription_client.main() == 1
 
     assert error in capsys.readouterr().err
-    assert state.requests[-1][0] == "/v1/subscriptions/delete"
+    assert state.requests[-1][0] == "/subscriptions/delete"
 
 
 def test_cleanup_failure_has_nonzero_exit_code(
@@ -251,7 +251,7 @@ def test_interrupt_during_sse_deletes_subscription(
     captured = capsys.readouterr()
     assert json.loads(captured.out) == UPDATE
     assert "Stopping subscription" in captured.err
-    assert state.requests[-1][0] == "/v1/subscriptions/delete"
+    assert state.requests[-1][0] == "/subscriptions/delete"
 
 
 def test_sse_parser_handles_comments_multiline_data_and_multiple_events() -> None:

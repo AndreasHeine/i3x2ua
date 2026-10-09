@@ -13,7 +13,7 @@ this folder, omit the `.\samples\` prefix.
 object tree, and reads values for composition roots.
 
 ```powershell
-python .\samples\client.py --base-url http://127.0.0.1:8000
+python .\samples\client.py --base-url http://127.0.0.1:8000/v1
 ```
 
 Limit discovery on large address spaces:
@@ -47,13 +47,13 @@ the supplied element IDs, and prints incoming notifications.
 Poll pending updates once per second:
 
 ```powershell
-python .\samples\subscription_client.py --mode poll --element-ids "property-dd1a9a05d251425f" "property-0123456789abcdef"
+python .\samples\subscription_client.py --mode poll --element-ids "property-dd1a9a05d251425f" "property-7fe339112a5b01e4"
 ```
 
 Change the polling interval, for example to half a second:
 
 ```powershell
-python .\samples\subscription_client.py --mode poll --poll-interval 0.5 --element-ids "property-dd1a9a05d251425f" "property-0123456789abcdef"
+python .\samples\subscription_client.py --mode poll --poll-interval 0.5 --element-ids "property-dd1a9a05d251425f" "property-7fe339112a5b01e4"
 ```
 
 Polling acknowledges only updates already printed and reports queue-overflow
@@ -64,7 +64,7 @@ warnings to stderr.
 Receive updates continuously over Server-Sent Events:
 
 ```powershell
-python .\samples\subscription_client.py --mode sse --element-ids "property-dd1a9a05d251425f" "property-0123456789abcdef"
+python .\samples\subscription_client.py --mode sse --element-ids "property-dd1a9a05d251425f" "property-7fe339112a5b01e4"
 ```
 
 SSE ignores connection/keepalive comments and stops on the server's close event.
@@ -73,7 +73,7 @@ SSE ignores connection/keepalive comments and stops on the server's close event.
 
 Use the i3X `elementId` values returned by your server, such as
 `property-dd1a9a05d251425f`, rather than the underlying OPC UA NodeIds.
-Replace the example IDs with your actual IDs; `property-0123456789abcdef` is
+Replace the example IDs with your actual IDs; `property-7fe339112a5b01e4` is
 only a placeholder for a second property. Pass each ID as a separate argument.
 The client sends these IDs unchanged and registers duplicate IDs only once.
 
@@ -107,7 +107,7 @@ Abrupt process termination cannot perform cleanup.
 
 | Option | Description | Default |
 |---|---|---|
-| `--base-url URL` | i3X server base URL | `http://127.0.0.1:8000` |
+| `--base-url URL` | i3X server base URL | `http://127.0.0.1:8000/v1` |
 | `--username USER` | HTTP Basic Auth username | Not set |
 | `--password PASSWORD` | HTTP Basic Auth password | Not set |
 | `--insecure` | Disable TLS certificate verification for development certificates | Verification enabled |
@@ -115,8 +115,8 @@ Abrupt process termination cannot perform cleanup.
 For HTTPS behind a Basic Auth proxy:
 
 ```powershell
-python .\samples\client.py --base-url https://127.0.0.1:8443 --username admin --password pw1 --insecure
-python .\samples\subscription_client.py --base-url https://127.0.0.1:8443 --username admin --password pw1 --insecure --mode sse --element-ids "property-dd1a9a05d251425f"
+python .\samples\client.py --base-url https://127.0.0.1:8443/v1 --username admin --password pw1 --insecure
+python .\samples\subscription_client.py --base-url https://127.0.0.1:8443/v1 --username admin --password pw1 --insecure --mode sse --element-ids "property-dd1a9a05d251425f"
 ```
 
 Use your actual proxy credentials. Omit `--insecure` when the server certificate

@@ -12,14 +12,20 @@ force-killed after --shutdown-grace seconds.
 Usage:
     python run_stresstest.py
     python run_stresstest.py --discovery 20 --subscriptions 50 --duration 600
+    python run_stresstest.py --base-url https://127.0.0.1:8443/v1 --insecure --username admin --password PASSWORD
+
+TLS verification and HTTP Basic Auth options apply to all clients and the latency probe.
+Use --insecure only for trusted test endpoints with self-signed certificates.
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
 import os
 import re
 import signal
+import ssl
 import statistics
 import subprocess
 import sys
@@ -195,6 +201,24 @@ class Supervisor:
         self.processes: set[subprocess.Popen[str]] = set()
         self.processes_lock = threading.Lock()
         self.started_at = time.monotonic()
+        self._ssl_context = ssl.create_default_context()
+        if args.insecure:
+            self._ssl_context.check_hostname = False
+            self._ssl_context.verify_mode = ssl.CERT_NONE
+        self._probe_headers: dict[str, str] = {}
+        if args.username is not None:
+            credentials = base64.b64encode(f"{args.username}:{args.password or ''}".encode()).decode("ascii")
+            self._probe_headers["Authorization"] = f"Basic {credentials}"
+
+    def _client_command(self, command: list[str]) -> list[str]:
+        command = [*command, "--base-url", self.args.base_url, "--timeout", str(self.args.request_timeout)]
+        if self.args.insecure:
+            command.append("--insecure")
+        if self.args.username is not None:
+            command.extend(["--username", self.args.username])
+        if self.args.password is not None:
+            command.extend(["--password", self.args.password])
+        return command
 
     def _log(self, message: str) -> None:
         elapsed = time.monotonic() - self.started_at
@@ -232,7 +256,7 @@ class Supervisor:
             tail.append(line.rstrip())
 
     def discovery_worker(self, index: int) -> None:
-        command = [*DISCOVERY_COMMAND, "--base-url", self.args.base_url, "--timeout", str(self.args.request_timeout)]
+        command = self._client_command(DISCOVERY_COMMAND)
         stats = self.discovery
         while not self.stop_event.is_set():
             stats.record_start()
@@ -265,7 +289,7 @@ class Supervisor:
                 self.stop_event.wait(self.args.discovery_pause)
 
     def subscription_worker(self, index: int) -> None:
-        command = [*SUBSCRIPTION_COMMAND, "--base-url", self.args.base_url, "--timeout", str(self.args.request_timeout)]
+        command = self._client_command(SUBSCRIPTION_COMMAND)
         stats = self.subscription
         backoff = self.args.restart_backoff
         while not self.stop_event.is_set():
@@ -298,11 +322,14 @@ class Supervisor:
 
     def probe_worker(self) -> None:
         url = f"{self.args.base_url.rstrip('/')}/info"
+        request = urllib.request.Request(url, headers=self._probe_headers)
         while not self.stop_event.is_set():
             started = time.monotonic()
             ok = True
             try:
-                with urllib.request.urlopen(url, timeout=self.args.probe_timeout) as response:
+                with urllib.request.urlopen(
+                    request, timeout=self.args.probe_timeout, context=self._ssl_context
+                ) as response:
                     response.read()
             except (urllib.error.URLError, OSError, ValueError):
                 ok = False
@@ -381,6 +408,9 @@ class Supervisor:
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Parallel stress test for the i3X REST API")
     parser.add_argument("--base-url", default=BASE_URL, help="i3X API base URL")
+    parser.add_argument("--insecure", action="store_true", help="Disable TLS certificate verification")
+    parser.add_argument("--username", default=None, help="HTTP Basic Auth username")
+    parser.add_argument("--password", default=None, help="HTTP Basic Auth password")
     parser.add_argument("--discovery", type=int, default=DISCOVERY_CONCURRENT_INSTANCES, help="Discovery instances")
     parser.add_argument(
         "--subscriptions", type=int, default=SUBSCRIPTION_CONCURRENT_INSTANCES, help="Subscription instances"

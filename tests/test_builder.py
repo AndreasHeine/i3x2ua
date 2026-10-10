@@ -150,6 +150,56 @@ class FakeOpcuaWithGraphReference:
         ]
 
 
+class FakeOpcuaWithHasEventSourceAndHasComponent:
+    async def browse_tree(self) -> list[OpcUaNodeInfo]:
+        return [
+            OpcUaNodeInfo(
+                node_id="ns=2;s=Server",
+                parent_node_id=None,
+                browse_name="Server",
+                display_name="Server",
+                node_class="Object",
+                data_type=None,
+                type_definition_id=None,
+                event_notifier=False,
+                outgoing_references=[
+                    OpcUaReferenceInfo(
+                        target_node_id="ns=2;s=JobOrderResults",
+                        reference_type_id="ns=0;i=36",
+                        reference_browse_name="HasEventSource",
+                    ),
+                ],
+            ),
+            OpcUaNodeInfo(
+                node_id="ns=2;s=JobOrderControl",
+                parent_node_id=None,
+                browse_name="JobOrderControl",
+                display_name="JobOrderControl",
+                node_class="Object",
+                data_type=None,
+                type_definition_id=None,
+                event_notifier=False,
+                outgoing_references=[
+                    OpcUaReferenceInfo(
+                        target_node_id="ns=2;s=JobOrderResults",
+                        reference_type_id="ns=0;i=47",
+                        reference_browse_name="HasComponent",
+                    ),
+                ],
+            ),
+            OpcUaNodeInfo(
+                node_id="ns=2;s=JobOrderResults",
+                parent_node_id="ns=2;s=JobOrderControl",
+                browse_name="JobOrderResults",
+                display_name="JobOrderResults",
+                node_class="Object",
+                data_type=None,
+                type_definition_id=None,
+                event_notifier=False,
+            ),
+        ]
+
+
 class FakeOpcuaWithReferenceSubtypeResolution:
     async def browse_tree(self) -> list[OpcUaNodeInfo]:
         return [
@@ -321,6 +371,24 @@ async def test_model_builder_stores_graph_relationships_bidirectionally() -> Non
     assert result.relationships_by_id[machine_id]["Locations"] == [sensor_id]
     assert result.relationships_by_id[sensor_id]["inverseOf_Locations"] == [machine_id]
     assert "Locations" in result.graph_relationship_names
+
+
+@pytest.mark.asyncio
+async def test_model_builder_keeps_has_event_source_as_graph_not_secondary_parent() -> None:
+    builder = ModelBuilder(cast(OpcUaClientProtocol, FakeOpcuaWithHasEventSourceAndHasComponent()))
+    result = await builder.build()
+
+    server_id = result.node_id_by_name["Server"]
+    control_id = result.node_id_by_name["JobOrderControl"]
+    results_id = result.node_id_by_name["JobOrderResults"]
+
+    assert result.hierarchy_parent_by_id[results_id] == control_id
+    assert result.relationships_by_id[control_id]["HasChildren"] == [results_id]
+    assert result.relationships_by_id[results_id]["HasParent"] == [control_id]
+    assert result.relationships_by_id[server_id]["HasEventSource"] == [results_id]
+    assert result.relationships_by_id[results_id]["inverseOf_HasEventSource"] == [server_id]
+    assert "HasEventSource" in result.graph_relationship_names
+    assert "inverseOf_OrganizedBy" not in result.relationships_by_id[results_id]
 
 
 @pytest.mark.asyncio

@@ -64,7 +64,7 @@ _GENERIC_PROFILE = SemanticProfile(
     namespace_uri_fragment="",
     hierarchy_references=("Organizes", "HasChild", "HierarchicalReferences"),
     composition_references=("HasComponent", "HasOrderedComponent", "HasProperty", "PropertyOf"),
-    graph_references=("NonHierarchicalReferences",),
+    graph_references=("NonHierarchicalReferences", "GeneratesEvent", "HasEventSource"),
 )
 
 _MACHINERY_PROFILE = SemanticProfile(

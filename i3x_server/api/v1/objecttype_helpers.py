@@ -756,11 +756,38 @@ def _cached_object_type_context(
     return cached_context
 
 
+def _stale_object_type_context(request: Any) -> _ObjectTypeContext | None:
+    cache = getattr(request.app.state, "object_type_context_cache", None)
+    if not isinstance(cache, dict):
+        return None
+    cached_context = cache.get("context")
+    return cached_context if isinstance(cached_context, _ObjectTypeContext) else None
+
+
+def _schedule_object_type_context_refresh(app: Any, model: BuildResult, opcua_client: OpcUaClientProtocol) -> None:
+    task = getattr(app.state, "object_type_refresh_task", None)
+    if isinstance(task, asyncio.Task) and not task.done():
+        return
+    app.state.object_type_refresh_task = asyncio.create_task(_refresh_object_type_context(app, model, opcua_client))
+
+
+async def _refresh_object_type_context(app: Any, model: BuildResult, opcua_client: OpcUaClientProtocol) -> None:
+    # Rebuild for the newest model: a request may still hold the model from before a refresh.
+    current_model = getattr(app.state, "model_cache", None)
+    target_model = current_model if isinstance(current_model, BuildResult) else model
+    try:
+        await _get_object_type_context(SimpleNamespace(app=app), target_model, opcua_client, allow_stale=False)
+    except Exception:
+        logger.exception("Background object type context refresh failed; serving previous context")
+
+
 async def _get_object_type_context(
     request: Any,
     model: BuildResult,
     opcua_client: OpcUaClientProtocol,
     namespace_infos: list[OpcUaNamespaceInfo] | None = None,
+    *,
+    allow_stale: bool = True,
 ) -> _ObjectTypeContext:
     started = perf_counter()
     resolved_namespace_infos = (
@@ -777,6 +804,13 @@ async def _get_object_type_context(
     cached_context = _cached_object_type_context(request, model, None, namespace_token, object_types_token)
     if cached_context is not None:
         return cached_context
+
+    if allow_stale:
+        stale_context = _stale_object_type_context(request)
+        if stale_context is not None:
+            logger.warning("Serving stale object type context while it is rebuilt in the background")
+            _schedule_object_type_context_refresh(request.app, model, opcua_client)
+            return stale_context
 
     lock = getattr(request.app.state, "object_type_lock", None)
     async with lock if lock else _nullcontext():
@@ -827,7 +861,7 @@ async def warm_object_type_context(
 
     Keeps the ~5s rebuild off the first request after startup and after each model refresh.
     """
-    return await _get_object_type_context(SimpleNamespace(app=app), model, opcua_client)
+    return await _get_object_type_context(SimpleNamespace(app=app), model, opcua_client, allow_stale=False)
 
 
 async def _get_object_endpoint_context(

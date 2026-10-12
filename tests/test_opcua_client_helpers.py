@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -343,11 +344,61 @@ async def test_reconnect_clears_metadata_caches(monkeypatch: pytest.MonkeyPatch)
 
 
 @pytest.mark.asyncio
-async def test_expired_metadata_cache_is_reloaded_once_for_concurrent_callers(
+async def test_expired_metadata_cache_serves_stale_while_one_background_reload_runs(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
+    cast(Any, client)._object_types_cache = (-1e9, ["stale"])
+    calls = 0
+    release = asyncio.Event()
+
+    async def _slow_load() -> list[Any]:
+        nonlocal calls
+        calls += 1
+        await release.wait()
+        fresh: list[Any] = ["fresh"]
+        cast(Any, client)._object_types_cache = (time.perf_counter(), fresh)
+        return fresh
+
+    monkeypatch.setattr(client, "_load_object_types", _slow_load)
+
+    with caplog.at_level("WARNING"):
+        results = await asyncio.wait_for(asyncio.gather(*(client.get_object_types() for _ in range(20))), 1)
+
+    stale_logs = [r for r in caplog.records if "serving stale metadata" in r.getMessage()]
+    assert len(stale_logs) == 20
+    assert all(r.levelname == "WARNING" and "key=object_types" in r.getMessage() for r in stale_logs)
+    assert all(cast(list[Any], result) == ["stale"] for result in results)
+    assert calls == 1
+    release.set()
+    await cast(Any, client)._metadata_load_tasks["object_types"]
+    assert cast(list[Any], await client.get_object_types()) == ["fresh"]
+    assert calls == 1
+    assert cast(Any, client)._metadata_load_tasks == {}
+
+
+@pytest.mark.asyncio
+async def test_failed_background_metadata_reload_keeps_serving_stale_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
+    cast(Any, client)._namespace_infos_cache = (-1e9, ["stale"])
+
+    async def _failing_load() -> list[Any]:
+        raise RuntimeError("browse failed")
+
+    monkeypatch.setattr(client, "_load_namespace_infos", _failing_load)
+
+    assert cast(list[Any], await client.get_namespace_infos()) == ["stale"]
+    with pytest.raises(RuntimeError):
+        await cast(Any, client)._metadata_load_tasks["namespace_infos"]
+    assert cast(list[Any], await client.get_namespace_infos()) == ["stale"]
+
+
+@pytest.mark.asyncio
+async def test_cold_metadata_cache_is_loaded_once_for_concurrent_callers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
-    cast(Any, client)._object_types_cache = (-1e9, [])
     calls = 0
     release = asyncio.Event()
 
@@ -361,6 +412,7 @@ async def test_expired_metadata_cache_is_reloaded_once_for_concurrent_callers(
 
     waiters = [asyncio.create_task(client.get_object_types()) for _ in range(20)]
     await asyncio.sleep(0)
+    assert not any(waiter.done() for waiter in waiters)
     release.set()
     results = await asyncio.gather(*waiters)
 

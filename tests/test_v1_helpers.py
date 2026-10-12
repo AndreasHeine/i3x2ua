@@ -380,15 +380,115 @@ async def test_object_type_context_cache_adopts_equivalent_rebuilt_model(monkeyp
     second = await objecttype_helpers._get_object_type_context(request, model_b, client)
 
     assert second is first
+    await request.app.state.object_type_refresh_task
     assert builds == 1
     assert request.app.state.object_type_context_cache["model"] is model_b
 
     changed = _context_model()
     changed.nodes_by_id["n2"] = ModelNode(id="n2", name="n2", kind="asset", source_node_id="n2")
+    stale = await objecttype_helpers._get_object_type_context(request, changed, client)
+    assert stale is first
+    await request.app.state.object_type_refresh_task
     third = await objecttype_helpers._get_object_type_context(request, changed, client)
 
     assert third is not first
     assert builds == 2
+
+
+@pytest.mark.asyncio
+async def test_object_type_context_serves_stale_while_rebuild_holds_lock(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    builds = 0
+    release = asyncio.Event()
+
+    async def _build(**_kwargs: Any) -> objecttype_helpers._ObjectTypeContext:
+        nonlocal builds
+        builds += 1
+        if builds > 1:
+            await release.wait()
+        return objecttype_helpers._ObjectTypeContext([], [], {}, [], {})
+
+    monkeypatch.setattr(objecttype_helpers, "_build_object_type_context", _build)
+    state = SimpleNamespace(object_type_lock=asyncio.Lock())
+    request = SimpleNamespace(app=SimpleNamespace(state=state))
+    client = cast(Any, _EmptyOpcUaClient())
+    first = await objecttype_helpers._get_object_type_context(request, _context_model(), client)
+
+    newest = _context_model()
+    newest.nodes_by_id["n2"] = ModelNode(id="n2", name="n2", kind="asset", source_node_id="n2")
+    state.model_cache = newest
+    request_model = _context_model()
+    request_model.nodes_by_id["old"] = ModelNode(id="old", name="old", kind="asset", source_node_id="old")
+    with caplog.at_level("WARNING"):
+        results = await asyncio.wait_for(
+            asyncio.gather(
+                *(objecttype_helpers._get_object_type_context(request, request_model, client) for _ in range(10))
+            ),
+            1,
+        )
+
+    stale_logs = [r for r in caplog.records if "stale object type context" in r.getMessage()]
+    assert len(stale_logs) == 10
+    assert all(r.levelname == "WARNING" for r in stale_logs)
+    assert all(result is first for result in results)
+    refresh_task = state.object_type_refresh_task
+    await asyncio.sleep(0)
+    assert state.object_type_lock.locked()
+    release.set()
+    await refresh_task
+    assert builds == 2
+    assert state.object_type_context_cache["model"] is newest
+    assert state.object_type_context_cache["context"] is not first
+
+
+@pytest.mark.asyncio
+async def test_object_type_context_cold_cache_and_warm_up_wait_for_build(monkeypatch: pytest.MonkeyPatch) -> None:
+    builds = 0
+
+    async def _build(**_kwargs: Any) -> objecttype_helpers._ObjectTypeContext:
+        nonlocal builds
+        builds += 1
+        return objecttype_helpers._ObjectTypeContext([], [], {}, [], {})
+
+    monkeypatch.setattr(objecttype_helpers, "_build_object_type_context", _build)
+    app = SimpleNamespace(state=SimpleNamespace(object_type_lock=asyncio.Lock()))
+    client = cast(Any, _EmptyOpcUaClient())
+    model = _context_model()
+    first = await objecttype_helpers._get_object_type_context(SimpleNamespace(app=app), model, client)
+
+    changed = _context_model()
+    changed.nodes_by_id["n2"] = ModelNode(id="n2", name="n2", kind="asset", source_node_id="n2")
+    warmed = await objecttype_helpers.warm_object_type_context(app, changed, client)
+
+    assert builds == 2
+    assert warmed is not first
+    assert app.state.object_type_context_cache["model"] is changed
+    assert getattr(app.state, "object_type_refresh_task", None) is None
+
+
+@pytest.mark.asyncio
+async def test_failed_background_object_type_refresh_keeps_stale_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    builds = 0
+
+    async def _build(**_kwargs: Any) -> objecttype_helpers._ObjectTypeContext:
+        nonlocal builds
+        builds += 1
+        if builds > 1:
+            raise RuntimeError("rebuild failed")
+        return objecttype_helpers._ObjectTypeContext([], [], {}, [], {})
+
+    monkeypatch.setattr(objecttype_helpers, "_build_object_type_context", _build)
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(object_type_lock=asyncio.Lock())))
+    client = cast(Any, _EmptyOpcUaClient())
+    first = await objecttype_helpers._get_object_type_context(request, _context_model(), client)
+    changed = _context_model()
+    changed.nodes_by_id["n2"] = ModelNode(id="n2", name="n2", kind="asset", source_node_id="n2")
+
+    assert await objecttype_helpers._get_object_type_context(request, changed, client) is first
+    await request.app.state.object_type_refresh_task
+    assert request.app.state.object_type_context_cache["context"] is first
+    assert await objecttype_helpers._get_object_type_context(request, changed, client) is first
 
 
 def test_parent_id_for_node_uses_reverse_index_with_original_precedence() -> None:

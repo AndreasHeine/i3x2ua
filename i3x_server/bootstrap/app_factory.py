@@ -359,6 +359,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.model_preload_task = None
     app.state.model_refresh_task = None
     app.state.object_type_warm_task = None
+    app.state.object_type_refresh_task = None
     if mcp_enabled:
         openapi_spec = app.openapi()
         if not isinstance(openapi_spec, dict):
@@ -407,11 +408,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             preload_task.cancel()
             with suppress(asyncio.CancelledError):
                 await preload_task
-        warm_task = getattr(app.state, "object_type_warm_task", None)
-        if warm_task is not None and not warm_task.done():
-            warm_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await warm_task
+        for task_name in ("object_type_warm_task", "object_type_refresh_task"):
+            warm_task = getattr(app.state, task_name, None)
+            if warm_task is not None and not warm_task.done():
+                warm_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await warm_task
         await app.state.subscription_service.close()
         if not skip_connect:
             await opcua_client.disconnect()

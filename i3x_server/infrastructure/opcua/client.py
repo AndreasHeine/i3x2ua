@@ -173,18 +173,45 @@ class OpcUaClient:
             return True
         return perf_counter() - cached_at <= self._metadata_cache_ttl_seconds
 
+    def _start_metadata_load(self, key: str, loader: Callable[[], Awaitable[_T]]) -> asyncio.Future[_T]:
+        task = self._metadata_load_tasks.get(key)
+        if task is None:
+            task = asyncio.ensure_future(loader())
+            self._metadata_load_tasks[key] = task
+            task.add_done_callback(lambda done: self._finish_metadata_load(key, done))
+        return cast("asyncio.Future[_T]", task)
+
     async def _coalesce_metadata_load(self, key: str, loader: Callable[[], Awaitable[_T]]) -> _T:
         """Share one in-flight OPC UA metadata load between concurrent callers.
 
         Without this, every request that sees an expired cache entry starts its own full
         browse, which overloads the OPC UA server under concurrent load.
         """
-        task = self._metadata_load_tasks.get(key)
-        if task is None:
-            task = asyncio.ensure_future(loader())
-            self._metadata_load_tasks[key] = task
-            task.add_done_callback(lambda done: self._finish_metadata_load(key, done))
-        return cast(_T, await asyncio.shield(task))
+        return await asyncio.shield(self._start_metadata_load(key, loader))
+
+    async def _get_cached_metadata(
+        self,
+        key: str,
+        cached: tuple[float, _T] | None,
+        loader: Callable[[], Awaitable[_T]],
+    ) -> _T:
+        """Serve stale metadata while one shared background load refreshes it.
+
+        Only a cold cache waits for OPC UA, so TTL expiry never stalls API requests.
+        """
+        if cached is None:
+            return await self._coalesce_metadata_load(key, loader)
+        cached_at, cached_value = cached
+        if not self._is_metadata_cache_entry_fresh(cached_at):
+            logger.warning(
+                "OPC UA serving stale metadata while refreshing endpoint=%s key=%s age_s=%.3f ttl_s=%s",
+                self._endpoint,
+                key,
+                perf_counter() - cached_at,
+                self._metadata_cache_ttl_seconds,
+            )
+            self._start_metadata_load(key, loader)
+        return cached_value
 
     def _finish_metadata_load(self, key: str, task: asyncio.Future[Any]) -> None:
         if self._metadata_load_tasks.get(key) is task:
@@ -876,10 +903,9 @@ class OpcUaClient:
             raise
 
     async def get_namespace_infos(self) -> list[OpcUaNamespaceInfo]:
-        cached = self._namespace_infos_cache
-        if cached is not None and self._is_metadata_cache_entry_fresh(cached[0]):
-            return cached[1]
-        return await self._coalesce_metadata_load("namespace_infos", self._load_namespace_infos)
+        return await self._get_cached_metadata(
+            "namespace_infos", self._namespace_infos_cache, self._load_namespace_infos
+        )
 
     async def _load_namespace_infos(self) -> list[OpcUaNamespaceInfo]:
         now = perf_counter()
@@ -1029,10 +1055,7 @@ class OpcUaClient:
         return infos
 
     async def get_object_types(self) -> list[OpcUaObjectTypeInfo]:
-        cached = self._object_types_cache
-        if cached is not None and self._is_metadata_cache_entry_fresh(cached[0]):
-            return cached[1]
-        return await self._coalesce_metadata_load("object_types", self._load_object_types)
+        return await self._get_cached_metadata("object_types", self._object_types_cache, self._load_object_types)
 
     async def _load_object_types(self) -> list[OpcUaObjectTypeInfo]:
         now = perf_counter()

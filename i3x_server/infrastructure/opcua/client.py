@@ -13,6 +13,7 @@ from typing import Any, TypeVar, cast
 
 from asyncua import ua
 from asyncua.client.client import Client
+from asyncua.client.ua_client import UaClientState
 from asyncua.ua import NodeClass
 from asyncua.ua.attribute_ids import AttributeIds
 from asyncua.ua.object_ids import ObjectIds
@@ -54,6 +55,50 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 _T = TypeVar("_T")
+_METADATA_INVALIDATED_AT = float("-inf")
+# Status codes meaning the session or secure channel is gone; asyncua's supervisor must
+# re-establish it before the request can succeed.
+_CONNECTION_LOST_STATUS_CODES = frozenset(
+    {
+        StatusCodes.BadSessionClosed,
+        StatusCodes.BadSessionIdInvalid,
+        StatusCodes.BadSessionNotActivated,
+        StatusCodes.BadSecureChannelClosed,
+        StatusCodes.BadSecureChannelIdInvalid,
+        StatusCodes.BadConnectionClosed,
+        StatusCodes.BadNotConnected,
+        StatusCodes.BadServerNotConnected,
+        StatusCodes.BadCommunicationError,
+    }
+)
+_CONNECTION_LOST_MARKERS = (
+    "connection is closed",
+    "connection is not open",
+    "connection reset",
+    "broken pipe",
+    "transport closed",
+    "client is disconnected",
+    "client is disconnecting",
+    "badsessionclosed",
+    "badsessionidinvalid",
+    "badsecurechannelclosed",
+)
+
+
+class _SupervisedAsyncuaClient(Client):
+    """asyncua client that reports when its connection supervisor completed a reconnect.
+
+    asyncua (pinned to 2.1.0) exposes no public "reconnected" hook. `_finalize_reconnect` runs
+    after the session was re-activated or recreated and the tracked subscriptions were restored.
+    """
+
+    reconnected_callback: Callable[[bool], None] | None = None
+
+    async def _finalize_reconnect(self, reused: bool) -> None:
+        await super()._finalize_reconnect(reused)
+        callback = self.reconnected_callback
+        if callback is not None:
+            callback(reused)
 
 
 def _normalize_type_definition_id(type_definition_id: str | None) -> str | None:
@@ -96,6 +141,8 @@ class OpcUaClient:
         browse_concurrency: int = 16,
         metadata_cache_ttl_seconds: int = 300,
         connection_monitor_interval_seconds: int = 5,
+        reconnect_request_timeout_seconds: float = 10.0,
+        reconnect_max_delay_seconds: float = 30.0,
     ) -> None:
         self._endpoint = endpoint
         self._username = username.strip() if isinstance(username, str) and username.strip() else None
@@ -116,7 +163,19 @@ class OpcUaClient:
         )
         self._browse_concurrency = max(1, browse_concurrency)
         self._metadata_cache_ttl_seconds = max(0, metadata_cache_ttl_seconds)
-        self._client = Client(url=endpoint)
+        self._connection_monitor_interval_seconds = max(1, connection_monitor_interval_seconds)
+        self._reconnect_request_timeout_seconds = max(0.1, float(reconnect_request_timeout_seconds))
+        self._reconnect_max_delay_seconds = max(1.0, float(reconnect_max_delay_seconds))
+        # asyncua's connection supervisor is the single owner of reconnects: it probes the
+        # server every watchdog interval, re-activates or recreates the session with backoff,
+        # gates new requests while reconnecting, and restores its tracked subscriptions.
+        self._client = _SupervisedAsyncuaClient(
+            url=endpoint,
+            watchdog_intervall=float(self._connection_monitor_interval_seconds),
+            reconnect_max_delay=self._reconnect_max_delay_seconds,
+            reconnect_request_timeout=self._reconnect_request_timeout_seconds,
+        )
+        self._client.reconnected_callback = self._on_asyncua_reconnected
         self._client.application_uri = "urn:i3x2ua:opcua_client"
         self._client.name = "i3x2ua-opcua-client"
         self._client.description = "The i3X API Gateway for OPC UA"
@@ -133,8 +192,9 @@ class OpcUaClient:
                 "required. Falling back to anonymous session.",
                 self._endpoint,
             )
-        self._reconnect_lock = asyncio.Lock()
         self._reconnect_listeners: list[Callable[[], Awaitable[None]]] = []
+        self._reconnected_event = asyncio.Event()
+        self._reconnect_session_recreated = False
         self._limits_cache: OpcUaOperationalLimits | None = None
         self._subscription_caps_cache: OpcUaSubscriptionCapabilities | None = None
         self._namespace_infos_cache: tuple[float, list[OpcUaNamespaceInfo]] | None = None
@@ -147,8 +207,8 @@ class OpcUaClient:
         self._goodish_quality_labels = {"good", "uncertain"}
         self._connection_state = "Disconnected"
         self._connection_state_since = datetime.now(tz=timezone.utc)
-        self._connection_monitor_interval_seconds = max(1, connection_monitor_interval_seconds)
-        self._connection_monitor_task: asyncio.Task[None] | None = None
+        self._connection_state_task: asyncio.Task[None] | None = None
+        self._reconnect_handler_task: asyncio.Task[None] | None = None
 
     def reset_runtime_metrics(self) -> None:
         self._runtime_metrics = OpcUaRuntimeMetrics()
@@ -168,10 +228,19 @@ class OpcUaClient:
         )
 
     def _is_metadata_cache_entry_fresh(self, cached_at: float) -> bool:
-        """TTL of 0 means entries never expire."""
+        """TTL of 0 means entries never expire, unless explicitly invalidated."""
+        if cached_at == _METADATA_INVALIDATED_AT:
+            return False
         if self._metadata_cache_ttl_seconds == 0:
             return True
         return perf_counter() - cached_at <= self._metadata_cache_ttl_seconds
+
+    @staticmethod
+    def _invalidate_metadata_entry(cached: tuple[float, _T] | None) -> tuple[float, _T] | None:
+        """Keep the value servable as stale, but force the next access to refresh it."""
+        if cached is None:
+            return None
+        return (_METADATA_INVALIDATED_AT, cached[1])
 
     def _start_metadata_load(self, key: str, loader: Callable[[], Awaitable[_T]]) -> asyncio.Future[_T]:
         task = self._metadata_load_tasks.get(key)
@@ -204,10 +273,10 @@ class OpcUaClient:
         cached_at, cached_value = cached
         if not self._is_metadata_cache_entry_fresh(cached_at):
             logger.warning(
-                "OPC UA serving stale metadata while refreshing endpoint=%s key=%s age_s=%.3f ttl_s=%s",
+                "OPC UA serving stale metadata while refreshing endpoint=%s key=%s age_s=%s ttl_s=%s",
                 self._endpoint,
                 key,
-                perf_counter() - cached_at,
+                "invalidated" if cached_at == _METADATA_INVALIDATED_AT else f"{perf_counter() - cached_at:.3f}",
                 self._metadata_cache_ttl_seconds,
             )
             self._start_metadata_load(key, loader)
@@ -302,11 +371,15 @@ class OpcUaClient:
             self._security_mode,
         )
         session_started = perf_counter()
+        # Client.disconnect() clears asyncua's request gate and never restores it on connect().
+        self._client.uaclient.pre_request_hook = self._client._wait_until_ready
         await self._client.connect(
             auto_reconnect=True,
-            reconnect_max_delay=30.0,
+            reconnect_max_delay=self._reconnect_max_delay_seconds,
+            reconnect_request_timeout=self._reconnect_request_timeout_seconds,
         )
         self._set_connection_state("Connected")
+        self._start_connection_tasks()
         session_duration_s = perf_counter() - session_started
         typedef_started = perf_counter()
         await self.load_additional_typedefinitions()
@@ -314,7 +387,6 @@ class OpcUaClient:
         limits_started = perf_counter()
         self._limits_cache = await self.get_operational_limits()
         limits_duration_s = perf_counter() - limits_started
-        self._ensure_connection_monitor_task()
         logger.info(
             "OPC UA limits endpoint=%s max_nodes_per_browse=%s max_nodes_per_read=%s",
             self._endpoint,
@@ -365,7 +437,7 @@ class OpcUaClient:
     async def disconnect(self) -> None:
         started = perf_counter()
         logger.info("OPC UA disconnect started endpoint=%s", self._endpoint)
-        await self._stop_connection_monitor_task()
+        await self._stop_connection_tasks()
         await self._client.disconnect()
         self._set_connection_state("Disconnected")
         self._limits_cache = None
@@ -375,53 +447,81 @@ class OpcUaClient:
         self._reference_type_supertypes_cache = {}
         logger.info("OPC UA disconnect finished endpoint=%s duration_s=%.3f", self._endpoint, perf_counter() - started)
 
-    def _ensure_connection_monitor_task(self) -> None:
-        if self._connection_monitor_interval_seconds <= 0:
-            return
-        if self._connection_monitor_task is not None and not self._connection_monitor_task.done():
-            return
-        self._connection_monitor_task = asyncio.create_task(self._connection_monitor_loop())
+    def _start_connection_tasks(self) -> None:
+        if self._connection_state_task is None or self._connection_state_task.done():
+            self._connection_state_task = asyncio.create_task(self._watch_connection_state())
+        if self._reconnect_handler_task is None or self._reconnect_handler_task.done():
+            self._reconnect_handler_task = asyncio.create_task(self._reconnect_handler_loop())
 
-    async def _stop_connection_monitor_task(self) -> None:
-        task = self._connection_monitor_task
-        self._connection_monitor_task = None
-        if task is None:
-            return
-        task.cancel()
-        with suppress(asyncio.CancelledError):
-            await task
+    async def _stop_connection_tasks(self) -> None:
+        tasks = [self._connection_state_task, self._reconnect_handler_task]
+        self._connection_state_task = None
+        self._reconnect_handler_task = None
+        for task in tasks:
+            if task is None:
+                continue
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
 
-    async def _connection_monitor_loop(self) -> None:
-        try:
+    async def _watch_connection_state(self) -> None:
+        """Mirror asyncua's transport state into the connection snapshot."""
+        uaclient = self._client.uaclient
+        async with uaclient.subscribe_state() as states:
+            self._apply_client_state(uaclient.state)
             while True:
-                await asyncio.sleep(self._connection_monitor_interval_seconds)
-                await self._probe_connection()
-        except asyncio.CancelledError:
-            return
+                self._apply_client_state(await states.next_change())
 
-    async def _is_connection_healthy(self) -> bool:
-        try:
-            data_value = await self._client.get_node("i=2256").read_data_value()
-        except Exception:
-            return False
-
-        status_code = getattr(data_value, "StatusCode", None)
-        return self._is_goodish_status(status_code)
-
-    async def _probe_connection(self) -> None:
-        if self._reconnect_lock.locked():
-            return
-        if await self._is_connection_healthy():
+    def _apply_client_state(self, state: UaClientState) -> None:
+        if state is UaClientState.CONNECTED:
             self._set_connection_state("Connected")
             return
-
-        self._set_connection_state("Reconnecting")
-        logger.warning("OPC UA connection probe failed endpoint=%s", self._endpoint)
-        try:
-            await self._reconnect()
-        except Exception:
+        if self._client.uaclient.is_disconnect_requested:
             self._set_connection_state("Disconnected")
-            logger.warning("OPC UA connection probe reconnect failed endpoint=%s", self._endpoint, exc_info=True)
+            return
+        if self._connection_state == "Connected":
+            logger.warning(
+                "OPC UA connection lost endpoint=%s client_state=%s; waiting for asyncua reconnect",
+                self._endpoint,
+                state.value,
+            )
+        self._set_connection_state("Reconnecting")
+
+    def _on_asyncua_reconnected(self, session_reused: bool) -> None:
+        """Called by the asyncua supervisor once the session and its subscriptions are restored."""
+        self._set_connection_state("Connected")
+        self._limits_cache = None
+        self._subscription_caps_cache = None
+        # Keep the expensive browse results servable as stale so API requests do not
+        # block on a cold rebuild while the server is recovering from the reconnect.
+        self._namespace_infos_cache = self._invalidate_metadata_entry(self._namespace_infos_cache)
+        self._object_types_cache = self._invalidate_metadata_entry(self._object_types_cache)
+        self._reference_type_supertypes_cache = {}
+        self._reconnect_session_recreated = self._reconnect_session_recreated or not session_reused
+        logger.info(
+            "OPC UA reconnect finished endpoint=%s session=%s",
+            self._endpoint,
+            "reused" if session_reused else "recreated",
+        )
+        # The follow-up work runs in our own task: the supervisor must not block on it, and
+        # requests issued from the supervisor's context would bypass asyncua's request gate.
+        self._reconnected_event.set()
+
+    async def _reconnect_handler_loop(self) -> None:
+        while True:
+            await self._reconnected_event.wait()
+            self._reconnected_event.clear()
+            await self._handle_reconnected()
+
+    async def _handle_reconnected(self) -> None:
+        if self._reconnect_session_recreated:
+            self._reconnect_session_recreated = False
+            await self.load_additional_typedefinitions()
+        for listener in list(self._reconnect_listeners):
+            try:
+                await listener()
+            except Exception:
+                logger.exception("OPC UA reconnect listener failed endpoint=%s", self._endpoint)
 
     async def browse_tree(self) -> list[OpcUaNodeInfo]:
         started = perf_counter()
@@ -670,7 +770,7 @@ class OpcUaClient:
                 int(attr),
                 len(nodes),
             )
-            await self._reconnect()
+            await self._wait_for_reconnect(exc)
             retry_nodes = [self._client.get_node(node.nodeid) for node in nodes]
             values = await self._client.read_attributes(retry_nodes, attr=attr)
             self._record_read_data_values(values)
@@ -809,7 +909,9 @@ class OpcUaClient:
     async def get_operational_limits(self) -> OpcUaOperationalLimits:
         if self._limits_cache is not None:
             return self._limits_cache
+        return await self._coalesce_metadata_load("operational_limits", self._load_operational_limits)
 
+    async def _load_operational_limits(self) -> OpcUaOperationalLimits:
         started = perf_counter()
         max_nodes_per_browse: int | None = None
         max_nodes_per_read: int | None = None
@@ -854,7 +956,9 @@ class OpcUaClient:
     async def get_subscription_capabilities(self) -> OpcUaSubscriptionCapabilities:
         if self._subscription_caps_cache is not None:
             return self._subscription_caps_cache
+        return await self._coalesce_metadata_load("subscription_capabilities", self._load_subscription_capabilities)
 
+    async def _load_subscription_capabilities(self) -> OpcUaSubscriptionCapabilities:
         started = perf_counter()
 
         capabilities = OpcUaSubscriptionCapabilities(
@@ -1586,7 +1690,7 @@ class OpcUaClient:
                 self._endpoint,
                 batch_size,
             )
-            await self._reconnect()
+            await self._wait_for_reconnect(exc)
             results = await self._client.uaclient.browse(params)
             self._record_browse_results(results)
             return results
@@ -1609,7 +1713,7 @@ class OpcUaClient:
                 self._endpoint,
                 node_id,
             )
-            await self._reconnect()
+            await self._wait_for_reconnect(exc)
             results = await self._client.uaclient.browse_next(next_params)
             self._record_browse_results(results)
             return results
@@ -1631,7 +1735,7 @@ class OpcUaClient:
                     node_id,
                     self._endpoint,
                 )
-                await self._reconnect()
+                await self._wait_for_reconnect(exc)
                 value = await self._client.get_node(node_id).read_value()
                 self._record_read_success()
                 logger.debug(
@@ -1660,7 +1764,7 @@ class OpcUaClient:
                     node_id,
                     self._endpoint,
                 )
-                await self._reconnect()
+                await self._wait_for_reconnect(exc)
                 retry_name = await self._client.get_node(node_id).read_browse_name()
                 resolved_retry = getattr(retry_name, "Name", None)
                 if isinstance(resolved_retry, str) and resolved_retry:
@@ -1749,7 +1853,7 @@ class OpcUaClient:
                             node_id,
                             self._endpoint,
                         )
-                        await self._reconnect()
+                        await self._wait_for_reconnect(exc)
                         try:
                             retry_value = await self._client.get_node(node_id).read_data_value()
                             self._record_read_data_values([retry_value])
@@ -1795,7 +1899,7 @@ class OpcUaClient:
                     node_id,
                     self._endpoint,
                 )
-                await self._reconnect()
+                await self._wait_for_reconnect(exc)
                 retry_node = self._client.get_node(node_id)
                 retry_values = await retry_node.read_attributes(
                     [AttributeIds.AccessLevel, AttributeIds.UserAccessLevel]
@@ -1886,7 +1990,7 @@ class OpcUaClient:
                     node_id,
                     self._endpoint,
                 )
-                await self._reconnect()
+                await self._wait_for_reconnect(exc)
                 retry_node = self._client.get_node(node_id)
                 retry_variant_type = await retry_node.read_data_type_as_variant_type()
                 return (
@@ -1912,23 +2016,12 @@ class OpcUaClient:
             SourceTimestamp=ua.DateTime.fromisoformat(timestamp.astimezone(timezone.utc).isoformat()),
         )
         try:
+            # Do not replay a write after a connection loss: the server may already have applied it.
             await node.write_value(payload)
             self._request_metrics.write_count += 1
-        except Exception as exc:
-            if self._should_retry_after_disconnect(exc):
-                logger.warning(
-                    "OPC UA write retry after reconnect node_id=%s endpoint=%s",
-                    node_id,
-                    self._endpoint,
-                )
-                await self._reconnect()
-                retry_node = self._client.get_node(node_id)
-                await retry_node.write_value(payload)
-                self._request_metrics.write_count += 1
-                node = retry_node
-            else:
-                self._record_failed_request()
-                raise
+        except Exception:
+            self._record_failed_request()
+            raise
 
         try:
             written_data_value = await node.read_data_value(raise_on_bad_status=False)
@@ -1967,7 +2060,7 @@ class OpcUaClient:
                     self._endpoint,
                     len(node_ids),
                 )
-                await self._reconnect()
+                await self._wait_for_reconnect(exc)
                 retry_nodes = [self._client.get_node(node_id) for node_id in node_ids]
                 try:
                     values = list(await self._client.read_values(retry_nodes))
@@ -2040,7 +2133,7 @@ class OpcUaClient:
                         self._endpoint,
                         node_id,
                     )
-                    await self._reconnect()
+                    await self._wait_for_reconnect(exc)
                     retry_node = self._client.get_node(node_id)
                     values = await retry_node.read_raw_history(
                         starttime=start_time,
@@ -2083,6 +2176,7 @@ class OpcUaClient:
         self._runtime_metrics.method_calls += 1
         object_node = self._client.get_node(object_node_id)
         try:
+            # Do not replay a method call after a connection loss: it may already have run.
             result = await object_node.call_method(method_node_id, *args)
             self._record_method_success()
             logger.info(
@@ -2093,25 +2187,7 @@ class OpcUaClient:
                 perf_counter() - started,
             )
             return result
-        except Exception as exc:
-            if self._should_retry_after_disconnect(exc):
-                logger.warning(
-                    "OPC UA method retry after reconnect object_node_id=%s method_node_id=%s",
-                    object_node_id,
-                    method_node_id,
-                )
-                await self._reconnect()
-                retry_object = self._client.get_node(object_node_id)
-                result = await retry_object.call_method(method_node_id, *args)
-                self._record_method_success()
-                logger.info(
-                    "OPC UA method ok after reconnect object_node_id=%s method_node_id=%s arg_count=%d duration_s=%.3f",
-                    object_node_id,
-                    method_node_id,
-                    len(args),
-                    perf_counter() - started,
-                )
-                return result
+        except Exception:
             self._record_failed_request()
             logger.exception(
                 "OPC UA method failed object_node_id=%s method_node_id=%s arg_count=%d duration_s=%.3f",
@@ -2122,55 +2198,48 @@ class OpcUaClient:
             )
             raise
 
-    async def _reconnect(self) -> None:
-        listeners: list[Callable[[], Awaitable[None]]]
-        async with self._reconnect_lock:
-            if await self._is_connection_healthy():
-                self._set_connection_state("Connected")
-                return
-            self._set_connection_state("Reconnecting")
-            logger.info("OPC UA reconnect started endpoint=%s", self._endpoint)
-            try:
-                await self._client.disconnect()
-            except Exception:
-                logger.debug("OPC UA reconnect disconnect step failed endpoint=%s", self._endpoint, exc_info=True)
-            await self._configure_security_if_needed()
-            await self._client.connect(
-                auto_reconnect=True,
-                reconnect_max_delay=30.0,
-            )
-            await self.load_additional_typedefinitions()
-            self._set_connection_state("Connected")
-            self._limits_cache = None
-            self._subscription_caps_cache = None
-            self._namespace_infos_cache = None
-            self._object_types_cache = None
-            self._reference_type_supertypes_cache = {}
-            logger.info("OPC UA reconnect finished endpoint=%s", self._endpoint)
-            listeners = list(self._reconnect_listeners)
+    async def _wait_for_reconnect(self, exc: Exception) -> None:
+        """Wait until asyncua's supervisor has re-established the session after `exc`.
 
-        for listener in listeners:
+        Raises ConnectionError if the client is not connected again within the reconnect
+        request timeout, so callers fail fast instead of piling up behind a dead connection.
+        """
+        uaclient = self._client.uaclient
+        if (
+            uaclient.state is UaClientState.CONNECTED
+            and isinstance(exc, UaStatusCodeError)
+            and exc.code in _CONNECTION_LOST_STATUS_CODES
+        ):
+            # The transport is up but the server dropped the session/channel; asyncua's
+            # watchdog would only notice on its next tick, so hand the loss over right away.
+            logger.warning(
+                "OPC UA session lost endpoint=%s status=%s; triggering asyncua reconnect",
+                self._endpoint,
+                exc,
+            )
+            uaclient.notify_transport_lost()
+        timeout = self._reconnect_request_timeout_seconds
+        async with uaclient.subscribe_state() as states:
             try:
-                await listener()
-            except Exception:
-                logger.exception("OPC UA reconnect listener failed endpoint=%s", self._endpoint)
+                await states.wait_for_state(UaClientState.CONNECTED, timeout=timeout)
+            except asyncio.TimeoutError:
+                raise ConnectionError(
+                    f"OPC UA client did not reconnect within {timeout:.1f}s (state={uaclient.state.value})"
+                ) from exc
 
     def _should_retry_after_disconnect(self, exc: Exception) -> bool:
+        """True for errors caused by a lost connection or session, never for request timeouts."""
+        if isinstance(exc, UaStatusCodeError):
+            return exc.code in _CONNECTION_LOST_STATUS_CODES
+        if isinstance(exc, TimeoutError):
+            return False
         text = str(exc).lower()
-        reconnect_markers = (
-            "connection is closed",
-            "connection is not open",
-            "connection reset",
-            "broken pipe",
-            "socket",
-            "transport closed",
-            "timed out",
-            "timeout",
-            "badsessionclosed",
-            "badsessionidinvalid",
-            "badsecurechannelclosed",
-        )
-        return any(marker in text for marker in reconnect_markers)
+        if "waiting for client to reconnect" in text:
+            # asyncua's request gate already waited for the reconnect; do not wait twice.
+            return False
+        if isinstance(exc, ConnectionError):
+            return True
+        return any(marker in text for marker in _CONNECTION_LOST_MARKERS)
 
     def _is_too_many_operations_error(self, exc: Exception) -> bool:
         text = str(exc).lower()
@@ -2202,6 +2271,28 @@ class OpcUaClient:
 
     async def delete_subscription(self, subscription: Any) -> None:
         await subscription.delete()
+
+    def get_monitored_item_handles(self, subscription: Any, node_ids: list[str]) -> dict[str, int] | None:
+        """Return the current server handles of `node_ids` in an asyncua-restored subscription.
+
+        asyncua recreates monitored items after a reconnect when the server lost the
+        subscription, which assigns new server handles. Returns None if the subscription itself
+        is gone; node ids missing from the result are no longer monitored.
+        """
+        if getattr(subscription, "is_deleted", False) or getattr(subscription, "subscription_id", None) is None:
+            return None
+        handles_by_node_id: dict[Any, int] = {}
+        for item in list(getattr(subscription, "_monitored_items", {}).values()):
+            node = getattr(item, "node", None)
+            server_handle = getattr(item, "server_handle", None)
+            if node is not None and isinstance(server_handle, int):
+                handles_by_node_id[node.nodeid] = server_handle
+        result: dict[str, int] = {}
+        for node_id in node_ids:
+            handle = handles_by_node_id.get(self._client.get_node(node_id).nodeid)
+            if handle is not None:
+                result[node_id] = handle
+        return result
 
     async def _read_positive_int(self, node_id: str) -> int | None:
         try:

@@ -9,7 +9,11 @@ from typing import Any, cast
 
 import pytest
 from asyncua import ua
+from asyncua.client.client import Client
+from asyncua.client.ua_client import UaClient, UaClientState
 from asyncua.ua.attribute_ids import AttributeIds
+from asyncua.ua.status_codes import StatusCodes
+from asyncua.ua.uaerrors import UaStatusCodeError
 
 from i3x_server.infrastructure.opcua.client import (
     OpcUaClient,
@@ -21,6 +25,10 @@ from i3x_server.infrastructure.opcua.client import (
     _to_explicit_ua_variant,
     _to_json_compatible,
 )
+
+
+def _status_error(code: int) -> UaStatusCodeError:
+    return UaStatusCodeError(code)  # type: ignore[no-untyped-call]
 
 
 class _FakeNode:
@@ -61,8 +69,13 @@ class _FakeClient:
     async def set_security_string(self, value: str) -> None:
         self.security_string = value
 
-    async def connect(self, auto_reconnect: bool, reconnect_max_delay: float) -> None:
-        del auto_reconnect, reconnect_max_delay
+    async def connect(
+        self,
+        auto_reconnect: bool,
+        reconnect_max_delay: float,
+        reconnect_request_timeout: float,
+    ) -> None:
+        del auto_reconnect, reconnect_max_delay, reconnect_request_timeout
         self.connected = True
 
     async def disconnect(self) -> None:
@@ -195,31 +208,74 @@ async def test_read_positive_int_and_retry_detection() -> None:
     assert client._should_retry_after_disconnect(RuntimeError("different error")) is False
 
 
-@pytest.mark.asyncio
-async def test_probe_connection_marks_connected_after_success() -> None:
+def test_retry_detection_distinguishes_connection_loss_from_timeouts() -> None:
     client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
-    cast(Any, client)._client = SimpleNamespace(get_node=lambda _id: _FakeNode(SimpleNamespace()))
-    client._set_connection_state("Reconnecting")
 
-    await client._probe_connection()
+    assert client._should_retry_after_disconnect(_status_error(StatusCodes.BadSessionClosed)) is True
+    assert client._should_retry_after_disconnect(_status_error(StatusCodes.BadNodeIdUnknown)) is False
+    assert client._should_retry_after_disconnect(ConnectionError("client is disconnected")) is True
+    assert client._should_retry_after_disconnect(TimeoutError()) is False
+    assert client._should_retry_after_disconnect(asyncio.TimeoutError()) is False
+    assert (
+        client._should_retry_after_disconnect(ConnectionError("Timed out waiting for client to reconnect after 10s"))
+        is False
+    )
 
+
+def _client_with_real_uaclient() -> tuple[OpcUaClient, UaClient]:
+    client = OpcUaClient(endpoint="opc.tcp://localhost:4840", reconnect_request_timeout_seconds=0.2)
+    uaclient = UaClient()
+    cast(Any, client)._client = SimpleNamespace(uaclient=uaclient)
+    return client, uaclient
+
+
+def test_apply_client_state_maps_asyncua_states() -> None:
+    client, uaclient = _client_with_real_uaclient()
+
+    client._apply_client_state(UaClientState.CONNECTED)
     assert client.get_connection_snapshot().state == "Connected"
 
+    client._apply_client_state(UaClientState.RECONNECTING)
+    assert client.get_connection_snapshot().state == "Reconnecting"
+
+    uaclient._disconnect_requested = True
+    client._apply_client_state(UaClientState.DISCONNECTED)
+    assert client.get_connection_snapshot().state == "Disconnected"
+
 
 @pytest.mark.asyncio
-async def test_probe_connection_marks_disconnected_if_reconnect_fails(monkeypatch: pytest.MonkeyPatch) -> None:
-    client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
-    cast(Any, client)._client = SimpleNamespace(get_node=lambda _id: _FakeNode(error=RuntimeError("socket closed")))
-    client._set_connection_state("Connected")
+async def test_wait_for_reconnect_returns_once_connected() -> None:
+    client, uaclient = _client_with_real_uaclient()
+    uaclient._set_state(UaClientState.RECONNECTING)
 
-    async def _fail_reconnect() -> None:
-        raise RuntimeError("still down")
+    waiter = asyncio.create_task(client._wait_for_reconnect(RuntimeError("connection is closed")))
+    await asyncio.sleep(0.01)
+    assert not waiter.done()
+    uaclient._set_state(UaClientState.CONNECTED)
 
-    monkeypatch.setattr(client, "_reconnect", _fail_reconnect)
+    await asyncio.wait_for(waiter, timeout=1)
 
-    await client._probe_connection()
 
-    assert client.get_connection_snapshot().state == "Disconnected"
+@pytest.mark.asyncio
+async def test_wait_for_reconnect_raises_connection_error_on_timeout() -> None:
+    client, uaclient = _client_with_real_uaclient()
+    uaclient._set_state(UaClientState.RECONNECTING)
+
+    with pytest.raises(ConnectionError, match="did not reconnect"):
+        await client._wait_for_reconnect(RuntimeError("connection is closed"))
+
+
+@pytest.mark.asyncio
+async def test_wait_for_reconnect_reports_lost_session_to_asyncua(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, uaclient = _client_with_real_uaclient()
+    uaclient._set_state(UaClientState.CONNECTED)
+    notified: list[bool] = []
+    monkeypatch.setattr(uaclient, "notify_transport_lost", lambda: notified.append(True))
+
+    await client._wait_for_reconnect(_status_error(StatusCodes.BadSessionIdInvalid))
+    await client._wait_for_reconnect(RuntimeError("connection is closed"))
+
+    assert notified == [True]
 
 
 @pytest.mark.asyncio
@@ -253,6 +309,28 @@ async def test_subscription_wrapper_methods() -> None:
 
     await client.delete_subscription(subscription)
     assert subscription.deleted is True
+
+
+def test_get_monitored_item_handles_maps_node_ids_to_current_server_handles() -> None:
+    client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
+
+    def _item(node_id: str, server_handle: int) -> SimpleNamespace:
+        return SimpleNamespace(node=SimpleNamespace(nodeid=ua.NodeId.from_string(node_id)), server_handle=server_handle)
+
+    subscription = SimpleNamespace(
+        is_deleted=False,
+        subscription_id=7,
+        _monitored_items={1: _item("ns=2;s=a", 101), 2: _item("ns=2;i=5", 102)},
+    )
+
+    handles = client.get_monitored_item_handles(subscription, ["ns=2;s=a", "ns=2;i=5", "ns=2;s=gone"])
+    assert handles == {"ns=2;s=a": 101, "ns=2;i=5": 102}
+
+    subscription.subscription_id = None
+    assert client.get_monitored_item_handles(subscription, ["ns=2;s=a"]) is None
+    subscription.subscription_id = 7
+    subscription.is_deleted = True
+    assert client.get_monitored_item_handles(subscription, ["ns=2;s=a"]) is None
 
 
 @pytest.mark.asyncio
@@ -289,10 +367,8 @@ async def test_configure_security_none_and_missing_config(tmp_path: Path) -> Non
 
 
 @pytest.mark.asyncio
-async def test_reconnect_calls_listeners_even_if_one_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_handle_reconnected_calls_listeners_even_if_one_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
-    fake = _FakeClient(node_error=RuntimeError("connection is closed"))
-    cast(Any, client)._client = fake
 
     called: list[str] = []
 
@@ -306,41 +382,144 @@ async def test_reconnect_calls_listeners_even_if_one_fails(monkeypatch: pytest.M
     client.add_reconnect_listener(failing_listener)
     client.add_reconnect_listener(ok_listener)
 
-    async def _noop() -> None:
-        return None
+    typedef_loads = 0
 
-    monkeypatch.setattr(client, "load_additional_typedefinitions", _noop)
-    monkeypatch.setattr(client, "_configure_security_if_needed", _noop)
-    await client._reconnect()
+    async def _count_typedef_load() -> None:
+        nonlocal typedef_loads
+        typedef_loads += 1
 
-    assert fake.connected is True
-    assert fake.disconnected is True
+    monkeypatch.setattr(client, "load_additional_typedefinitions", _count_typedef_load)
+
+    client._on_asyncua_reconnected(True)
+    await client._handle_reconnected()
     assert called == ["fail", "ok"]
+    assert typedef_loads == 0
+
+    client._on_asyncua_reconnected(False)
+    await client._handle_reconnected()
+    assert typedef_loads == 1
+    await client._handle_reconnected()
+    assert typedef_loads == 1
 
 
 @pytest.mark.asyncio
-async def test_reconnect_clears_metadata_caches(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_reconnect_handler_loop_runs_follow_up_work_outside_supervisor() -> None:
     client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
-    fake = _FakeClient(node_error=RuntimeError("connection is closed"))
-    cast(Any, client)._client = fake
+    handled = asyncio.Event()
+
+    async def listener() -> None:
+        handled.set()
+
+    client.add_reconnect_listener(listener)
+    task = asyncio.create_task(client._reconnect_handler_loop())
+    try:
+        client._on_asyncua_reconnected(True)
+        await asyncio.wait_for(handled.wait(), timeout=1)
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
+def test_supervised_client_reports_finished_reconnect(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
+    asyncua_client = cast(Any, client)._client
+    assert asyncua_client.reconnected_callback == client._on_asyncua_reconnected
+
+    async def _base_finalize(self: Any, reused: bool) -> None:
+        del self, reused
+
+    monkeypatch.setattr(Client, "_finalize_reconnect", _base_finalize)
+    client._set_connection_state("Reconnecting")
+
+    asyncio.run(asyncua_client._finalize_reconnect(False))
+
+    assert client.get_connection_snapshot().state == "Connected"
+    assert client._reconnected_event.is_set()
+
+
+def test_reconnect_keeps_browse_metadata_as_stale_and_clears_limits() -> None:
+    client = OpcUaClient(endpoint="opc.tcp://localhost:4840", metadata_cache_ttl_seconds=0)
 
     cast(Any, client)._limits_cache = object()
     cast(Any, client)._subscription_caps_cache = object()
-    cast(Any, client)._namespace_infos_cache = (1.0, [])
-    cast(Any, client)._object_types_cache = (1.0, [])
+    cast(Any, client)._namespace_infos_cache = (1.0, ["old-ns"])
+    cast(Any, client)._object_types_cache = (1.0, ["old-type"])
 
-    async def _noop() -> None:
-        return None
-
-    monkeypatch.setattr(client, "load_additional_typedefinitions", _noop)
-    monkeypatch.setattr(client, "_configure_security_if_needed", _noop)
-
-    await client._reconnect()
+    client._on_asyncua_reconnected(True)
 
     assert cast(Any, client)._limits_cache is None
     assert cast(Any, client)._subscription_caps_cache is None
-    assert cast(Any, client)._namespace_infos_cache is None
-    assert cast(Any, client)._object_types_cache is None
+    ns_cached_at, ns_value = cast(Any, client)._namespace_infos_cache
+    types_cached_at, types_value = cast(Any, client)._object_types_cache
+    assert ns_value == ["old-ns"]
+    assert types_value == ["old-type"]
+    # Even with TTL 0 (never expire) the reconnect must force a refresh.
+    assert not client._is_metadata_cache_entry_fresh(ns_cached_at)
+    assert not client._is_metadata_cache_entry_fresh(types_cached_at)
+
+
+@pytest.mark.asyncio
+async def test_metadata_invalidated_by_reconnect_is_served_stale_without_blocking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
+    cast(Any, client)._object_types_cache = client._invalidate_metadata_entry((time.perf_counter(), ["stale"]))
+    release = asyncio.Event()
+    calls = 0
+
+    async def _slow_load() -> list[Any]:
+        nonlocal calls
+        calls += 1
+        await release.wait()
+        fresh: list[Any] = ["fresh"]
+        cast(Any, client)._object_types_cache = (time.perf_counter(), fresh)
+        return fresh
+
+    monkeypatch.setattr(client, "_load_object_types", _slow_load)
+
+    results = await asyncio.wait_for(asyncio.gather(*(client.get_object_types() for _ in range(10))), 1)
+
+    assert all(cast(list[Any], result) == ["stale"] for result in results)
+    assert calls == 1
+    release.set()
+    await cast(Any, client)._metadata_load_tasks["object_types"]
+    assert cast(list[Any], await client.get_object_types()) == ["fresh"]
+
+
+@pytest.mark.asyncio
+async def test_operational_limits_and_subscription_caps_are_loaded_once_for_concurrent_callers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
+    release = asyncio.Event()
+    calls = {"limits": 0, "caps": 0}
+    limits = OpcUaOperationalLimits(max_nodes_per_browse=10, max_nodes_per_read=20)
+    caps = object()
+
+    async def _slow_limits() -> OpcUaOperationalLimits:
+        calls["limits"] += 1
+        await release.wait()
+        cast(Any, client)._limits_cache = limits
+        return limits
+
+    async def _slow_caps() -> Any:
+        calls["caps"] += 1
+        await release.wait()
+        cast(Any, client)._subscription_caps_cache = caps
+        return caps
+
+    monkeypatch.setattr(client, "_load_operational_limits", _slow_limits)
+    monkeypatch.setattr(client, "_load_subscription_capabilities", _slow_caps)
+
+    limit_waiters = [asyncio.create_task(client.get_operational_limits()) for _ in range(20)]
+    caps_waiters = [asyncio.create_task(client.get_subscription_capabilities()) for _ in range(20)]
+    await asyncio.sleep(0)
+    release.set()
+
+    assert all(result is limits for result in await asyncio.gather(*limit_waiters))
+    assert all(result is caps for result in await asyncio.gather(*caps_waiters))
+    assert calls == {"limits": 1, "caps": 1}
 
 
 @pytest.mark.asyncio
@@ -466,19 +645,6 @@ async def test_cancelled_caller_does_not_cancel_shared_metadata_load(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_reconnect_short_circuits_when_connection_is_healthy() -> None:
-    client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
-    fake = _FakeClient()
-    cast(Any, client)._client = fake
-
-    await client._reconnect()
-
-    assert fake.connected is False
-    assert fake.disconnected is False
-    assert client.get_connection_snapshot().state == "Connected"
-
-
-@pytest.mark.asyncio
 async def test_browse_retry_after_disconnect(monkeypatch: pytest.MonkeyPatch) -> None:
     client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
     fake_uaclient = _FakeUaClient()
@@ -487,11 +653,12 @@ async def test_browse_retry_after_disconnect(monkeypatch: pytest.MonkeyPatch) ->
 
     reconnect_calls = 0
 
-    async def _fake_reconnect() -> None:
+    async def _fake_wait_for_reconnect(exc: Exception) -> None:
+        del exc
         nonlocal reconnect_calls
         reconnect_calls += 1
 
-    monkeypatch.setattr(client, "_reconnect", _fake_reconnect)
+    monkeypatch.setattr(client, "_wait_for_reconnect", _fake_wait_for_reconnect)
 
     fake_node = _FakeBrowseNode("ns=1;i=100")
     out = await client._browse_references_descriptions(
@@ -515,11 +682,12 @@ async def test_browse_next_retry_after_disconnect(monkeypatch: pytest.MonkeyPatc
 
     reconnect_calls = 0
 
-    async def _fake_reconnect() -> None:
+    async def _fake_wait_for_reconnect(exc: Exception) -> None:
+        del exc
         nonlocal reconnect_calls
         reconnect_calls += 1
 
-    monkeypatch.setattr(client, "_reconnect", _fake_reconnect)
+    monkeypatch.setattr(client, "_wait_for_reconnect", _fake_wait_for_reconnect)
 
     fake_node = _FakeBrowseNode("ns=1;i=200")
     out = await client._browse_references_descriptions(

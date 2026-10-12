@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     opcua_browse_concurrency: int = Field(default=128, ge=1)
     opcua_metadata_cache_ttl_seconds: int = Field(default=300, ge=0)
     opcua_connection_monitor_interval_seconds: int = Field(default=5, ge=0)
+    opcua_reconnect_request_timeout_seconds: float = Field(default=10.0, gt=0)
+    opcua_reconnect_max_delay_seconds: float = Field(default=30.0, ge=1)
     model_refresh_interval_seconds: int = Field(default=0, ge=0)
     model_preload_on_startup: bool = Field(default=True)
     model_preload_blocking: bool = Field(default=False)

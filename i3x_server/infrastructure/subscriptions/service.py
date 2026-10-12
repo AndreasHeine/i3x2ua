@@ -402,32 +402,47 @@ class SubscriptionService:
             return
 
     async def _handle_client_reconnect(self) -> None:
-        async with self._lock:
-            stale_bins = list(self._bins.values())
-            self._bins.clear()
-            affected_node_ids = [node_id for bin_ in stale_bins for node_id in bin_.node_handles]
-            for node_id in affected_node_ids:
-                monitor = self._node_monitors.get(node_id)
-                if monitor is not None:
-                    monitor.bin_id = None
-                    monitor.mode = "idle"
+        """Re-sync native bins after asyncua's supervisor restored its subscriptions.
 
-        for bin_ in stale_bins:
-            logger.info(
-                "Reconfiguring native bin after reconnect bin_id=%s node_count=%d",
-                bin_.bin_id,
-                len(bin_.node_handles),
-            )
-            # The old ua_subscription is presumed dead after reconnect; best-effort cleanup.
+        asyncua transfers or recreates every OPC UA subscription it tracks, keeping our
+        notification handlers. Only items it could not restore are re-admitted here; a bin
+        whose subscription is gone is dropped and its nodes are re-admitted.
+        """
+        dead_bins: list[_ManagedBin] = []
+        lost_node_ids: list[str] = []
+        async with self._lock:
+            for bin_id, bin_ in list(self._bins.items()):
+                handles = self._opcua_client.get_monitored_item_handles(bin_.ua_subscription, list(bin_.node_handles))
+                missing = [node_id for node_id in bin_.node_handles if handles is None or node_id not in handles]
+                if handles:
+                    bin_.node_handles = handles
+                else:
+                    del self._bins[bin_id]
+                    dead_bins.append(bin_)
+                for node_id in missing:
+                    monitor = self._node_monitors.get(node_id)
+                    if monitor is not None and monitor.bin_id == bin_id:
+                        monitor.bin_id = None
+                        monitor.mode = "idle"
+                        lost_node_ids.append(node_id)
+                if missing:
+                    logger.warning(
+                        "Native bin lost monitored items after reconnect bin_id=%s lost=%d kept=%d",
+                        bin_id,
+                        len(missing),
+                        len(handles or {}),
+                    )
+
+        for bin_ in dead_bins:
             with suppress(Exception):
                 await self._opcua_client.delete_subscription(bin_.ua_subscription)
 
-            for node_id in sorted(bin_.node_handles):
-                async with self._lock:
-                    monitor = self._node_monitors.get(node_id)
-                if monitor is None:
-                    continue
-                await self._start_node_monitor_runtime(monitor)
+        for node_id in sorted(lost_node_ids):
+            async with self._lock:
+                monitor = self._node_monitors.get(node_id)
+            if monitor is None or monitor.mode != "idle":
+                continue
+            await self._start_node_monitor_runtime(monitor)
 
         async with self._lock:
             subscription_ids = list(self._subscriptions.keys())

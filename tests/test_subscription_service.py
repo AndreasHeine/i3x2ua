@@ -32,6 +32,8 @@ class FakeOpcUaClient:
         self.create_subscription_calls = 0
         self.subscribe_calls = 0
         self.unsubscribed_calls: list[tuple[Any, list[int]]] = []
+        # id(ua_subscription) -> handles asyncua reports after a reconnect (None = subscription lost).
+        self.restored_handles: dict[int, dict[str, int] | None] = {}
 
     def add_reconnect_listener(self, listener: Any) -> None:
         self.listeners.append(listener)
@@ -68,6 +70,10 @@ class FakeOpcUaClient:
 
     async def delete_subscription(self, subscription: Any) -> None:
         self.deleted_subscriptions.append(subscription)
+
+    def get_monitored_item_handles(self, subscription: Any, node_ids: list[str]) -> dict[str, int] | None:
+        del node_ids
+        return self.restored_handles.get(id(subscription))
 
     async def read_values(self, node_ids: list[str]) -> list[float]:
         self.read_values_calls += 1
@@ -831,6 +837,67 @@ async def test_bin_reclaimed_when_last_node_released_others_kept() -> None:
     async with service._lock:
         assert bin_id not in service._bins
     assert len(client.deleted_subscriptions) == 1
+
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_reconnect_keeps_restored_bin_and_adopts_new_server_handles() -> None:
+    client = FakeOpcUaClient()
+    service = SubscriptionService(cast(OpcUaClientProtocol, client), interval_seconds=1, seed_initial_values=False)
+    created = await service.create_subscription(client_id="c1", display_name=None)
+    model = _model()
+    assert await service.register_items("c1", created.subscription_id, ["asset-root"], max_depth=2, model=model)
+
+    async with service._lock:
+        bin_ = next(iter(service._bins.values()))
+    client.restored_handles[id(bin_.ua_subscription)] = {"ns=2;s=Temperature": 501, "ns=2;s=Pressure": 502}
+
+    await service._handle_client_reconnect()
+
+    async with service._lock:
+        assert list(service._bins) == [bin_.bin_id]
+        assert bin_.node_handles == {"ns=2;s=Temperature": 501, "ns=2;s=Pressure": 502}
+        assert service._node_monitors["ns=2;s=Temperature"].mode == "native"
+    assert client.create_subscription_calls == 1
+    assert not client.deleted_subscriptions
+
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_reconnect_readmits_items_asyncua_could_not_restore() -> None:
+    client = FakeOpcUaClient()
+    service = SubscriptionService(cast(OpcUaClientProtocol, client), interval_seconds=1, seed_initial_values=False)
+    created = await service.create_subscription(client_id="c1", display_name=None)
+    model = _model()
+    assert await service.register_items("c1", created.subscription_id, ["asset-root"], max_depth=2, model=model)
+
+    async with service._lock:
+        old_bin = next(iter(service._bins.values()))
+    # Pressure was dropped by the server during recreate; Temperature survived.
+    client.restored_handles[id(old_bin.ua_subscription)] = {"ns=2;s=Temperature": 601}
+
+    await service._handle_client_reconnect()
+
+    async with service._lock:
+        assert old_bin.node_handles["ns=2;s=Temperature"] == 601
+        assert service._node_monitors["ns=2;s=Temperature"].bin_id == old_bin.bin_id
+        pressure = service._node_monitors["ns=2;s=Pressure"]
+        assert pressure.mode == "native"
+        assert pressure.bin_id == old_bin.bin_id
+        assert "ns=2;s=Pressure" in old_bin.node_handles
+
+    # Whole subscription lost: the bin is dropped and its nodes re-admitted into a new one.
+    client.restored_handles[id(old_bin.ua_subscription)] = None
+    await service._handle_client_reconnect()
+
+    async with service._lock:
+        assert old_bin.bin_id not in service._bins
+        assert len(service._bins) == 1
+        new_bin = next(iter(service._bins.values()))
+        assert set(new_bin.node_handles) == {"ns=2;s=Temperature", "ns=2;s=Pressure"}
+    assert client.deleted_subscriptions == [old_bin.ua_subscription]
 
     await service.close()
 

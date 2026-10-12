@@ -43,17 +43,22 @@ This keeps the connection setup explicit and gives the app server-aware limits b
 
 ## Reconnect
 
-The client handles transient disconnects with retry + reconnect logic:
+asyncua's connection supervisor owns the connection; the gateway never tears down or rebuilds the session itself.
 
-- For common disconnected-session errors (for example: "connection is closed"), it attempts reconnect and retries the operation.
-- Reconnect is protected by a lock, so only one reconnect sequence runs at a time.
-- On reconnect, metadata/limits caches are cleared and rebuilt lazily when needed.
-- After reconnect, registered listeners are notified. The subscription service uses this to reconfigure native subscriptions automatically.
+- The supervisor probes the server every `I3X_OPCUA_CONNECTION_MONITOR_INTERVAL_SECONDS` (asyncua watchdog interval, also the probe timeout). When the transport or the probe fails, it reconnects with exponential backoff up to `I3X_OPCUA_RECONNECT_MAX_DELAY_SECONDS` and never gives up. It first tries to re-activate the existing session and falls back to creating a new one.
+- While a reconnect runs, new requests wait in asyncua's request gate for at most `I3X_OPCUA_RECONNECT_REQUEST_TIMEOUT_SECONDS` and then fail fast instead of piling up.
+- Idempotent operations (read, browse, history) that fail because the connection or session was lost wait once for the supervisor to reach `CONNECTED` (same timeout) and are then retried once. Request timeouts are never retried. If the server reports a lost session (for example `BadSessionIdInvalid`) while the transport still looks healthy, the client hands this over to the supervisor immediately instead of waiting for the next probe.
+- Writes and method calls are never retried: the server may already have applied them before the connection dropped.
+- asyncua restores its subscriptions (TransferSubscriptions, or recreate with new server handles) before it reports the reconnect as finished.
+- After a finished reconnect, operational limits and subscription capabilities are cleared and re-read lazily, with one shared OPC UA load for all concurrent callers. Namespace info and object types are marked stale: requests keep getting the previous values while one background load refreshes them, so a reconnect does not block API requests on a cold browse. Additional type definitions are reloaded only if the session had to be recreated.
+- Registered reconnect listeners are then notified from a gateway task. The subscription service adopts the restored server handles of every native bin and re-admits only the monitored items asyncua could not restore; a bin whose OPC UA subscription is gone is dropped and its nodes are re-admitted.
+- The connection state reported by the API mirrors asyncua's client state (`Connected`, `Reconnecting`, `Disconnected`).
 
 Practical effect for users:
 
 - Temporary OPC UA outages usually cause short delays, not full API restart requirements.
-- Native subscriptions are re-established after reconnect when possible.
+- Native subscriptions survive reconnects without being recreated by the gateway when the server still has them.
+- Reconnect activity is logged by `asyncua.client.client` (`Supervisor detected connection issue`, `Reconnected successfully`) and by the gateway (`OPC UA connection lost`, `OPC UA reconnect finished`).
 
 ## Operational Limits And How They Are Used
 
@@ -110,7 +115,7 @@ To reduce repeated expensive metadata calls:
 
 - namespace info and object type information are cached with TTL,
 - operational limits and subscription capabilities are cached,
-- caches are invalidated on reconnect.
+- caches are invalidated on reconnect (namespace info and object types are served stale until the background refresh completes, even with a TTL of 0).
 
 Relevant setting:
 
@@ -217,17 +222,18 @@ sequenceDiagram
     end
 
     rect rgb(255, 245, 245)
-        Note over OPC,UAS: Connection drop and recovery
-        UAS-xOPC: connection lost
-        API->>OPC: next read/browse call
-        OPC->>OPC: detect disconnect error
-        OPC->>OPC: _reconnect() (lock-protected)
-        OPC->>UAS: reconnect session
+        Note over OPC,UAS: Connection drop and recovery (asyncua supervisor)
+        UAS-xOPC: connection lost / health probe fails
+        OPC->>OPC: state RECONNECTING, requests wait in request gate
+        API->>OPC: read/browse fails with connection error
+        OPC->>OPC: wait for CONNECTED (bounded by reconnect request timeout)
+        OPC->>UAS: supervisor re-activates or recreates session (backoff)
         UAS-->>OPC: session restored
-        OPC->>OPC: clear metadata/limits caches
+        OPC->>UAS: restore subscriptions (transfer or recreate)
+        OPC->>OPC: mark metadata stale, clear limits caches
         OPC-->>SUB: reconnect listener callback
-        SUB->>OPC: reconfigure subscriptions
-        OPC-->>API: retry operation result
+        SUB->>OPC: adopt restored handles, re-admit lost items
+        OPC-->>API: retried read/browse result
     end
 ```
 
@@ -244,11 +250,15 @@ sequenceDiagram
 - `I3X_OPCUA_SERVER_CERT_PATH`
 - `I3X_OPCUA_BROWSE_CONCURRENCY`
 - `I3X_OPCUA_METADATA_CACHE_TTL_SECONDS`
+- `I3X_OPCUA_CONNECTION_MONITOR_INTERVAL_SECONDS`
+- `I3X_OPCUA_RECONNECT_REQUEST_TIMEOUT_SECONDS`
+- `I3X_OPCUA_RECONNECT_MAX_DELAY_SECONDS`
 - `I3X_SUBSCRIPTION_INTERVAL_SECONDS`
 
 ## Operational Guidance (Simple)
 
 - Start with default concurrency and observe latency/error logs.
 - If OPC UA server is small/embedded: reduce browse concurrency.
+- asyncua allows at most 100 concurrent requests per client, and the supervisor's health probe queues behind them. With a browse concurrency close to or above 100, heavy load can delay the probe beyond its timeout and cause unneeded reconnects; prefer 64 or less in that case.
 - If metadata calls are frequent: increase metadata cache TTL.
 - If native subscriptions are frequently downgraded to polling: check server subscription capability limits.

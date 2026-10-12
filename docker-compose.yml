@@ -32,7 +32,9 @@ services:
       # I3X_OPCUA_SERVER_CERT_PATH: ""  # Optional pinned server certificate path.
       I3X_OPCUA_BROWSE_CONCURRENCY: 128  # Max concurrent browse operations.
       I3X_OPCUA_METADATA_CACHE_TTL_SECONDS: 300  # Metadata cache lifetime in seconds.
-      I3X_OPCUA_CONNECTION_MONITOR_INTERVAL_SECONDS: 5  # Reconnect monitor interval in seconds.
+      I3X_OPCUA_CONNECTION_MONITOR_INTERVAL_SECONDS: 5  # asyncua connection watchdog interval in seconds.
+      I3X_OPCUA_RECONNECT_REQUEST_TIMEOUT_SECONDS: 10  # Max wait of a request for a running reconnect.
+      I3X_OPCUA_RECONNECT_MAX_DELAY_SECONDS: 30  # Max backoff between reconnect attempts.
       I3X_MODEL_REFRESH_INTERVAL_SECONDS: 60  # Model refresh cadence in seconds.
       I3X_MODEL_PRELOAD_ON_STARTUP: 1  # Preload model during startup.
       I3X_MODEL_PRELOAD_BLOCKING: 0  # Block startup until preload finishes.

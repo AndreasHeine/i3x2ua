@@ -139,6 +139,8 @@ def _configure_logging() -> None:
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
     logging.getLogger("asyncua").setLevel(logging.WARNING)
+    # Keep the connection supervisor's reconnect lifecycle messages visible.
+    logging.getLogger("asyncua.client.client").setLevel(max(level, logging.INFO))
 
 
 def _prepare_otel_environment() -> None:
@@ -283,11 +285,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         browse_concurrency=settings.opcua_browse_concurrency,
         metadata_cache_ttl_seconds=settings.opcua_metadata_cache_ttl_seconds,
         connection_monitor_interval_seconds=settings.opcua_connection_monitor_interval_seconds,
+        reconnect_request_timeout_seconds=settings.opcua_reconnect_request_timeout_seconds,
+        reconnect_max_delay_seconds=settings.opcua_reconnect_max_delay_seconds,
     )
     skip_connect = runtime_toggle_settings.skip_opcua_connect
     logger.info(
         "App startup opcua_endpoint=%s skip_connect=%s log_level=%s "
         "browse_concurrency=%d metadata_cache_ttl_seconds=%d connection_monitor_interval_seconds=%d "
+        "reconnect_request_timeout_seconds=%.1f reconnect_max_delay_seconds=%.1f "
         "auth_configured=%s security_mode=%s mcp_enabled=%s",
         settings.opcua_endpoint,
         skip_connect,
@@ -295,6 +300,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         settings.opcua_browse_concurrency,
         settings.opcua_metadata_cache_ttl_seconds,
         settings.opcua_connection_monitor_interval_seconds,
+        settings.opcua_reconnect_request_timeout_seconds,
+        settings.opcua_reconnect_max_delay_seconds,
         bool(settings.opcua_username and settings.opcua_password),
         settings.opcua_security_mode,
         mcp_enabled,

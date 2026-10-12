@@ -10,7 +10,9 @@ from fastapi import Request
 from i3x_server.application.ports.subscription import SubscriptionServicePort
 from i3x_server.domain.ports.opcua import OpcUaClientProtocol
 from i3x_server.errors import i3x_http_error
+from i3x_server.http_caching import MODEL_PART, record_revision
 from i3x_server.model.builder import ModelBuilder
+from i3x_server.model.revision import model_revision
 from i3x_server.schemas.state import BuildResult
 
 logger = logging.getLogger(__name__)
@@ -38,6 +40,13 @@ def get_subscription_service(request: Request) -> SubscriptionServicePort:
 
 
 async def get_or_build_model(request: Request) -> BuildResult:
+    model = await _get_or_build_model(request)
+    if isinstance(model, BuildResult):
+        record_revision(request, MODEL_PART, model_revision(model))
+    return model
+
+
+async def _get_or_build_model(request: Request) -> BuildResult:
     preload_task = cast(asyncio.Task[None] | None, getattr(request.app.state, "model_preload_task", None))
     if preload_task is not None and not preload_task.done():
         logger.info("Model preload in progress; waiting for completion")

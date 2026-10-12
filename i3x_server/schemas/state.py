@@ -30,6 +30,7 @@ class BuildResult:
     map_duration_s: float = 0.0
     total_duration_s: float = 0.0
     build_completed_at_utc: str | None = None
+    revision: str = ""
 
 
 @dataclass(slots=True)

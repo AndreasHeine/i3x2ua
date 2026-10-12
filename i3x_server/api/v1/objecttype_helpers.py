@@ -30,6 +30,14 @@ from i3x_server.api.v1.object_helpers import (
 from i3x_server.application.ports.opcua import OpcUaClientProtocol, OpcUaNamespaceInfo, OpcUaObjectTypeInfo
 from i3x_server.config.settings import Settings, get_settings
 from i3x_server.errors import i3x_http_error
+from i3x_server.http_caching import (
+    NAMESPACES_PART,
+    OBJECT_TYPES_PART,
+    content_revision,
+    mark_not_cacheable,
+    record_revision,
+)
+from i3x_server.model.revision import model_revision
 from i3x_server.schemas.objecttype_schema import (
     build_data_type_schema,
     json_schema_for_opcua_type,
@@ -199,6 +207,72 @@ class _ObjectTypeContext:
     element_ids_by_node_id: dict[str, str]
     items: list[ObjectTypeResponse]
     source_type_to_element_id: dict[str, str]
+    # Revision of the served content, so equal tags always mean equal representations.
+    revision: str = ""
+
+
+_OBJECT_TYPE_KEY_FIELDS = ("node_id", "parent_node_id", "browse_name", "display_name", "description", "is_abstract")
+# Member values are arbitrary OPC UA objects whose repr may not be stable, so only
+# structural attributes identify a definition; value changes still reach the served revision.
+_OBJECT_TYPE_MEMBER_KEY_FIELDS = (
+    "node_id",
+    "browse_name",
+    "display_name",
+    "description",
+    "node_class",
+    "data_type",
+    "modelling_rule",
+    "variant_type",
+    "is_array",
+    "value_rank",
+    "array_dimensions",
+    "parent_node_id",
+    "type_definition_id",
+    "reference_type_id",
+    "reference_type",
+    "reference_order",
+)
+
+
+def _object_types_token(object_types: list[OpcUaObjectTypeInfo]) -> str:
+    return content_revision(
+        (
+            tuple(getattr(item, name, None) for name in _OBJECT_TYPE_KEY_FIELDS),
+            tuple(sorted((getattr(item, "properties", None) or {}).items())),
+            tuple(
+                tuple(getattr(member, name, None) for name in _OBJECT_TYPE_MEMBER_KEY_FIELDS)
+                for member in getattr(item, "members", None) or []
+            ),
+        )
+        for item in object_types
+    )
+
+
+def _memoized_object_types_token(request: Any, object_types: list[OpcUaObjectTypeInfo]) -> str:
+    # The OPC UA client serves the same cached list until its metadata reload replaces it,
+    # so hashing every definition once per list keeps this off the per-request path.
+    # Holding the list in the memo keeps its id from being reused by another object.
+    state = request.app.state
+    memo = getattr(state, "object_types_token_memo", None)
+    if isinstance(memo, tuple) and len(memo) == 2 and memo[0] is object_types:
+        return str(memo[1])
+    token = _object_types_token(object_types)
+    state.object_types_token_memo = (object_types, token)
+    return token
+
+
+def _object_type_context_revision(context: _ObjectTypeContext) -> str:
+    return content_revision(
+        (
+            tuple(
+                (info.uri, info.display_name, info.namespace_version, info.server_uri)
+                for info in context.namespace_infos
+            ),
+            tuple(item.model_dump_json() for item in context.items),
+            tuple(sorted(context.element_ids_by_node_id.items())),
+            tuple(sorted(context.source_type_to_element_id.items())),
+        )
+    )
 
 
 def _virtual_element_id(
@@ -720,39 +794,24 @@ async def _build_object_type_context(
     )
 
 
-def _model_content_token(model: BuildResult) -> tuple[Any, ...]:
-    return (
-        len(model.nodes_by_id),
-        len(model.root_ids),
-        len(model.property_to_node),
-        len(model.action_to_method),
-        tuple(sorted(model.nodes_by_id)),
-        tuple(sorted(model.root_ids)),
-    )
-
-
 def _cached_object_type_context(
     request: Any,
-    model: BuildResult,
-    model_token: tuple[Any, ...] | None,
+    model_token: str,
     namespace_token: tuple[Any, ...],
-    object_types_token: tuple[Any, ...],
+    object_types_token: str,
 ) -> _ObjectTypeContext | None:
-    """Return the cached context if it matches; model_token=None allows only an identity match."""
     cache = getattr(request.app.state, "object_type_context_cache", None)
     if not isinstance(cache, dict):
         return None
     cached_context = cache.get("context")
     if not isinstance(cached_context, _ObjectTypeContext):
         return None
-    if cache.get("namespace_token") != namespace_token or cache.get("object_types_token") != object_types_token:
+    if (
+        cache.get("model_token") != model_token
+        or cache.get("namespace_token") != namespace_token
+        or cache.get("object_types_token") != object_types_token
+    ):
         return None
-    if cache.get("model") is model:
-        return cached_context
-    if model_token is None or cache.get("model_token") != model_token:
-        return None
-    # Equivalent rebuilt model: remember it so later requests take the identity fast path.
-    cache["model"] = model
     return cached_context
 
 
@@ -789,6 +848,20 @@ async def _get_object_type_context(
     *,
     allow_stale: bool = True,
 ) -> _ObjectTypeContext:
+    context = await _resolve_object_type_context(request, model, opcua_client, namespace_infos, allow_stale=allow_stale)
+    # Record the context's own revision: a stale context must not be tagged as current.
+    record_revision(request, OBJECT_TYPES_PART, context.revision)
+    return context
+
+
+async def _resolve_object_type_context(
+    request: Any,
+    model: BuildResult,
+    opcua_client: OpcUaClientProtocol,
+    namespace_infos: list[OpcUaNamespaceInfo] | None,
+    *,
+    allow_stale: bool,
+) -> _ObjectTypeContext:
     started = perf_counter()
     resolved_namespace_infos = (
         namespace_infos if namespace_infos is not None else await opcua_client.get_namespace_infos()
@@ -797,11 +870,12 @@ async def _get_object_type_context(
     namespace_token = tuple(
         (info.uri, info.display_name, info.namespace_version, info.server_uri) for info in resolved_namespace_infos
     )
-    object_types_token = tuple(item.node_id for item in object_types)
+    # Full definitions, not just node ids: a changed type (same node id) must rebuild the context.
+    object_types_token = _memoized_object_types_token(request, object_types)
+    # Content revision, hashed once per build: equivalent rebuilds still hit the cache.
+    model_token = model_revision(model)
 
-    # Lock-free fast path: the cache holds a strong reference to the model it was validated
-    # against, so an identity match is safe (no address reuse) and skips the content token.
-    cached_context = _cached_object_type_context(request, model, None, namespace_token, object_types_token)
+    cached_context = _cached_object_type_context(request, model_token, namespace_token, object_types_token)
     if cached_context is not None:
         return cached_context
 
@@ -814,12 +888,7 @@ async def _get_object_type_context(
 
     lock = getattr(request.app.state, "object_type_lock", None)
     async with lock if lock else _nullcontext():
-        # Content-derived tokens: id() is unsafe (CPython reuses addresses), and the
-        # build timestamp changes on every refresh even when the model data is identical.
-        # Use stable model content instead of volatile timestamps so equivalent refreshes
-        # hit the cache without missing on harmless rebuild churn.
-        model_token = _model_content_token(model)
-        cached_context = _cached_object_type_context(request, model, model_token, namespace_token, object_types_token)
+        cached_context = _cached_object_type_context(request, model_token, namespace_token, object_types_token)
         if cached_context is not None:
             logger.debug(
                 "Object type context cache hit model_nodes=%d object_types=%d duration_s=%.3f",
@@ -835,8 +904,9 @@ async def _get_object_type_context(
             opcua_client=opcua_client,
             object_types=object_types,
         )
+        # Hash the built output: it also covers live browse-name lookups that are not inputs.
+        context.revision = _object_type_context_revision(context)
         request.app.state.object_type_context_cache = {
-            "model": model,
             "model_token": model_token,
             "namespace_token": namespace_token,
             "object_types_token": object_types_token,
@@ -893,5 +963,13 @@ async def _get_object_endpoint_context(
     except Exception:
         object_type_element_ids_by_node_id = {}
         object_type_element_ids_by_source_type = {}
+        mark_not_cacheable(request)
 
+    record_revision(
+        request,
+        NAMESPACES_PART,
+        content_revision(
+            (info.uri, info.display_name, info.namespace_version, info.server_uri) for info in namespace_infos
+        ),
+    )
     return namespace_infos, object_type_element_ids_by_node_id, object_type_element_ids_by_source_type

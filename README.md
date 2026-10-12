@@ -211,6 +211,16 @@ Active endpoints are exposed under `/v1` for:
 
 Current scope emphasis: this implementation prioritizes read/query/subscribe operations and includes optional current-value and historical write support.
 
+### Model revisions and conditional GET
+
+Every response built from the address-space model carries `I3X-Model-Revision`, a content hash of the model. It changes only when the model content changes, not on every periodic rebuild. Model-derived `GET` endpoints (`/objects`, `/objecttypes`, `/namespaces`, `/relationshiptypes`, `/model/namespace-gaps`) also return a weak `ETag` and `Cache-Control: no-cache`. Send it back in `If-None-Match` to get `304 Not Modified` with an empty body while the representation is unchanged:
+
+```bash
+curl -i https://localhost:8443/v1/objects -H 'If-None-Match: W/"<etag>"'
+```
+
+A response served from a stale cache keeps the older ETag, so clients pick up the refreshed data on their next revalidation.
+
 Optional OPC UA diagnostic endpoints are exposed under `/ua`:
 
 - client state and connectivity (`/ua/state`, `/ua/connection`)

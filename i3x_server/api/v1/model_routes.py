@@ -10,6 +10,7 @@ from i3x_server.api.v1.contracts import (
 )
 from i3x_server.api.v1.monolithic import _build_model_metrics, _namespace_index_from_node_id
 from i3x_server.application.dependencies import get_or_build_model
+from i3x_server.http_caching import enable_etag
 from i3x_server.schemas.state import BuildResult
 
 router = APIRouter(prefix="/v1", tags=["v1"])
@@ -33,8 +34,9 @@ async def get_model_metrics_v1(
     summary="List namespace gaps",
     description=(
         "Return model nodes that are missing resolved namespace URIs, "
-        "including counts grouped by node kind and namespace index."
+        "including counts grouped by node kind and namespace index. Supports conditional GET via ETag."
     ),
+    dependencies=[Depends(enable_etag)],
 )
 async def get_model_namespace_gaps_v1(
     limit: int = Query(default=50, ge=1, le=500),

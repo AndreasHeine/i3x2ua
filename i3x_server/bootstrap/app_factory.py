@@ -30,6 +30,7 @@ from i3x_server.api.v1 import router as v1_router
 from i3x_server.api.v1.objecttype_helpers import warm_object_type_context
 from i3x_server.application.errors import ApplicationServiceError
 from i3x_server.config.settings import Settings, settings
+from i3x_server.http_caching import MODEL_REVISION_HEADER, ModelRevisionMiddleware, NotModifiedError
 from i3x_server.infrastructure.opcua.client import OpcUaClient
 from i3x_server.infrastructure.subscriptions.service import SubscriptionService
 from i3x_server.mcp import build_mcp_tools, get_api_prefix, init_mcp_metrics, load_prompt_overrides
@@ -441,6 +442,8 @@ def create_app() -> FastAPI:
             "auto_configure": settings.otel_enabled,
         },
     )
+    # Added first so it is the innermost middleware and sees uncompressed responses.
+    app.add_middleware(ModelRevisionMiddleware)
     app.add_middleware(GZipMiddleware, minimum_size=1)
     cors_origins = settings.cors_allowed_origins
     if cors_origins:
@@ -448,7 +451,8 @@ def create_app() -> FastAPI:
             CORSMiddleware,
             allow_origins=cors_origins,
             allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-            allow_headers=["Content-Type", "Accept", "Authorization"],
+            allow_headers=["Content-Type", "Accept", "Authorization", "If-None-Match"],
+            expose_headers=["ETag", MODEL_REVISION_HEADER],
             allow_credentials=False,
         )
 
@@ -463,6 +467,12 @@ def create_app() -> FastAPI:
         static_dir = project_root / "img"
     if static_dir.exists():
         app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
+    @app.exception_handler(NotModifiedError)
+    async def handle_not_modified(request: Request, exc: NotModifiedError) -> Response:
+        del request, exc
+        # ModelRevisionMiddleware adds the ETag and Cache-Control headers.
+        return Response(status_code=304)
 
     @app.exception_handler(RequestValidationError)
     async def handle_request_validation_error(

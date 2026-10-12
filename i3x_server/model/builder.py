@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 from time import perf_counter
@@ -7,6 +8,7 @@ from time import perf_counter
 from i3x_server.domain.ports.opcua import OpcUaClientProtocol, OpcUaNamespaceInfo, OpcUaNodeInfo
 from i3x_server.domain.utils import expanded_node_id
 from i3x_server.model.mapper import classify_opcua_reference_with_confidence, map_node, stable_i3x_id
+from i3x_server.model.revision import compute_model_revision
 from i3x_server.model.semantic_profiles import (
     ResolvedProfileSet,
     active_profiles_for_node,
@@ -357,6 +359,8 @@ class ModelBuilder:
             total_duration_s=total_duration_s,
             build_completed_at_utc=build_completed_at_utc,
         )
+        # Hash off the event loop; large models take noticeable CPU time to serialize.
+        result.revision = await asyncio.to_thread(compute_model_revision, result)
         logger.info(
             "Model build phases browse_s=%.3f map_s=%.3f total_s=%.3f source_nodes=%d model_nodes=%d",
             browse_duration_s,

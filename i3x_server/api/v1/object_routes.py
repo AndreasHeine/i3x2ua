@@ -22,6 +22,7 @@ from i3x_server.api.v1.object_helpers import (
 from i3x_server.api.v1.objecttype_helpers import _get_object_endpoint_context
 from i3x_server.application.ports.opcua import OpcUaClientProtocol
 from i3x_server.bootstrap.dependencies import get_opcua_client, get_or_build_model
+from i3x_server.http_caching import enable_etag, raise_if_not_modified
 from i3x_server.schemas.state import BuildResult
 
 router = APIRouter(prefix="/v1", tags=["v1"])
@@ -37,8 +38,10 @@ _RESPONSE_CHUNK_SIZE = 50
     summary="List objects",
     description=(
         "Return object instances from the current model. "
-        "Supports optional filters for typeElementId, metadata inclusion, and root-only listing."
+        "Supports optional filters for typeElementId, metadata inclusion, and root-only listing. "
+        "Supports conditional GET via ETag / If-None-Match (304 Not Modified)."
     ),
+    dependencies=[Depends(enable_etag)],
 )
 async def get_objects_v1(
     request: Request,
@@ -53,6 +56,7 @@ async def get_objects_v1(
         object_type_element_ids_by_node_id,
         object_type_element_ids_by_source_type,
     ) = await _get_object_endpoint_context(request, model, opcua_client)
+    raise_if_not_modified(request)
 
     if root is True:
         hierarchy_parent_ids = set()

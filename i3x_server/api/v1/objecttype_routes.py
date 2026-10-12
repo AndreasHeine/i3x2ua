@@ -15,6 +15,7 @@ from i3x_server.api.v1.object_helpers import _canonical_namespace_uri
 from i3x_server.api.v1.objecttype_helpers import _get_object_type_context
 from i3x_server.application.ports.opcua import OpcUaClientProtocol
 from i3x_server.bootstrap.dependencies import get_opcua_client, get_or_build_model
+from i3x_server.http_caching import enable_etag, raise_if_not_modified
 from i3x_server.schemas.state import BuildResult
 
 router = APIRouter(prefix="/v1", tags=["v1"])
@@ -26,8 +27,10 @@ router = APIRouter(prefix="/v1", tags=["v1"])
     summary="List object types",
     description=(
         "Return object type definitions discovered from OPC UA and synthesized model types. "
-        "Optionally filter by namespaceUri."
+        "Optionally filter by namespaceUri. "
+        "Supports conditional GET via ETag / If-None-Match (304 Not Modified)."
     ),
+    dependencies=[Depends(enable_etag)],
 )
 async def get_object_types_v1(
     request: Request,
@@ -39,6 +42,7 @@ async def get_object_types_v1(
         context = await _get_object_type_context(request, model, opcua_client)
     except Exception as exc:
         _raise_opcua_error("read object types", exc)
+    raise_if_not_modified(request)
     namespace_infos = context.namespace_infos
     items = list(context.items)
 

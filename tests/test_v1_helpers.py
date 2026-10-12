@@ -12,6 +12,7 @@ from jsonschema import Draft202012Validator
 import i3x_server.api.v1.monolithic as v1
 from i3x_server.api.v1 import objecttype_helpers
 from i3x_server.infrastructure.opcua.client import OpcUaNamespaceInfo
+from i3x_server.model.revision import model_revision
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
 
@@ -331,7 +332,7 @@ class _EmptyOpcUaClient:
 
 
 @pytest.mark.asyncio
-async def test_object_type_context_cache_hit_skips_lock_and_token(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_object_type_context_cache_hit_skips_lock(monkeypatch: pytest.MonkeyPatch) -> None:
     model = _context_model()
     builds = 0
 
@@ -347,10 +348,6 @@ async def test_object_type_context_cache_hit_skips_lock_and_token(monkeypatch: p
 
     first = await objecttype_helpers._get_object_type_context(request, model, client)
 
-    def _fail_token(_model: BuildResult) -> tuple[Any, ...]:
-        raise AssertionError("identity cache hit must not compute the content token")
-
-    monkeypatch.setattr(objecttype_helpers, "_model_content_token", _fail_token)
     await lock.acquire()
     try:
         second = await asyncio.wait_for(objecttype_helpers._get_object_type_context(request, model, client), 1)
@@ -362,7 +359,7 @@ async def test_object_type_context_cache_hit_skips_lock_and_token(monkeypatch: p
 
 
 @pytest.mark.asyncio
-async def test_object_type_context_cache_adopts_equivalent_rebuilt_model(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_object_type_context_cache_hits_for_equivalent_rebuilt_model(monkeypatch: pytest.MonkeyPatch) -> None:
     builds = 0
 
     async def _build(**_kwargs: Any) -> objecttype_helpers._ObjectTypeContext:
@@ -380,9 +377,8 @@ async def test_object_type_context_cache_adopts_equivalent_rebuilt_model(monkeyp
     second = await objecttype_helpers._get_object_type_context(request, model_b, client)
 
     assert second is first
-    await request.app.state.object_type_refresh_task
     assert builds == 1
-    assert request.app.state.object_type_context_cache["model"] is model_b
+    assert getattr(request.app.state, "object_type_refresh_task", None) is None
 
     changed = _context_model()
     changed.nodes_by_id["n2"] = ModelNode(id="n2", name="n2", kind="asset", source_node_id="n2")
@@ -438,7 +434,7 @@ async def test_object_type_context_serves_stale_while_rebuild_holds_lock(
     release.set()
     await refresh_task
     assert builds == 2
-    assert state.object_type_context_cache["model"] is newest
+    assert state.object_type_context_cache["model_token"] == model_revision(newest)
     assert state.object_type_context_cache["context"] is not first
 
 
@@ -463,7 +459,7 @@ async def test_object_type_context_cold_cache_and_warm_up_wait_for_build(monkeyp
 
     assert builds == 2
     assert warmed is not first
-    assert app.state.object_type_context_cache["model"] is changed
+    assert app.state.object_type_context_cache["model_token"] == model_revision(changed)
     assert getattr(app.state, "object_type_refresh_task", None) is None
 
 
@@ -489,6 +485,82 @@ async def test_failed_background_object_type_refresh_keeps_stale_context(monkeyp
     await request.app.state.object_type_refresh_task
     assert request.app.state.object_type_context_cache["context"] is first
     assert await objecttype_helpers._get_object_type_context(request, changed, client) is first
+
+
+@pytest.mark.asyncio
+async def test_object_type_definition_change_with_same_node_id_rebuilds_and_changes_revision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    builds = 0
+
+    async def _build(**kwargs: Any) -> objecttype_helpers._ObjectTypeContext:
+        nonlocal builds
+        builds += 1
+        served = {item.node_id: item.display_name for item in kwargs["object_types"]}
+        return objecttype_helpers._ObjectTypeContext([], [], served, [], {})
+
+    monkeypatch.setattr(objecttype_helpers, "_build_object_type_context", _build)
+
+    class _TypesClient(_EmptyOpcUaClient):
+        def __init__(self) -> None:
+            self.types = [SimpleNamespace(node_id="ns=1;i=1", display_name="Pump")]
+
+        async def get_object_types(self) -> list[object]:
+            return list(self.types)
+
+    client = _TypesClient()
+    app = SimpleNamespace(state=SimpleNamespace(object_type_lock=asyncio.Lock()))
+    model = _context_model()
+    first = await objecttype_helpers.warm_object_type_context(app, model, cast(Any, client))
+
+    client.types = [SimpleNamespace(node_id="ns=1;i=1", display_name="Pump v2")]
+    changed = await objecttype_helpers.warm_object_type_context(app, model, cast(Any, client))
+
+    assert builds == 2
+    assert changed.revision != first.revision
+
+    # A fresh process rebuilding from the same inputs serves the same revision.
+    other_app = SimpleNamespace(state=SimpleNamespace(object_type_lock=asyncio.Lock()))
+    rebuilt = await objecttype_helpers.warm_object_type_context(other_app, model, cast(Any, client))
+    assert rebuilt.revision == changed.revision
+
+
+def test_object_types_token_is_memoized_per_object_types_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = 0
+    original = objecttype_helpers._object_types_token
+
+    def _counting(object_types: list[Any]) -> str:
+        nonlocal calls
+        calls += 1
+        return original(object_types)
+
+    monkeypatch.setattr(objecttype_helpers, "_object_types_token", _counting)
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace()))
+    cached_list: list[Any] = [SimpleNamespace(node_id="ns=1;i=1", display_name="Pump")]
+
+    first = objecttype_helpers._memoized_object_types_token(request, cached_list)
+    assert objecttype_helpers._memoized_object_types_token(request, cached_list) == first
+    assert calls == 1
+
+    # An equal but distinct list (a metadata reload) is hashed again and yields the same token.
+    reloaded: list[Any] = [SimpleNamespace(node_id="ns=1;i=1", display_name="Pump")]
+    assert objecttype_helpers._memoized_object_types_token(request, reloaded) == first
+    changed: list[Any] = [SimpleNamespace(node_id="ns=1;i=1", display_name="Pump v2")]
+    assert objecttype_helpers._memoized_object_types_token(request, changed) != first
+    assert calls == 3
+
+
+def test_object_types_token_is_stable_for_unrepresentable_member_values() -> None:
+    def _types(value: object, display_name: str = "Pump") -> list[Any]:
+        member = SimpleNamespace(node_id="ns=1;i=2", browse_name="m", display_name="M", value=value)
+        return [SimpleNamespace(node_id="ns=1;i=1", display_name=display_name, properties={}, members=[member])]
+
+    assert objecttype_helpers._object_types_token(_types(object())) == objecttype_helpers._object_types_token(
+        _types(object())
+    )
+    assert objecttype_helpers._object_types_token(_types(None)) != objecttype_helpers._object_types_token(
+        _types(None, display_name="Pump v2")
+    )
 
 
 def test_parent_id_for_node_uses_reverse_index_with_original_precedence() -> None:

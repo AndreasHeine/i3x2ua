@@ -60,6 +60,7 @@ services:
       I3X_OPCUA_CERTS_DIR: ./certs  # Host cert directory reference for documentation parity.
     volumes:
       - ./certs:/app/certs:ro
+      - ./overrides:/app/overrides:ro
     expose:
       - "8000"
     read_only: true

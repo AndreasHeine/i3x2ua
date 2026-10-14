@@ -11,7 +11,7 @@ from i3x_server.application.ports.opcua import OpcUaClientProtocol
 from i3x_server.bootstrap.dependencies import get_opcua_client
 from i3x_server.errors import i3x_http_error
 
-router = APIRouter(prefix="/ua", tags=["ua"])
+router = APIRouter(prefix="/ua", tags=["Diagnostics"])
 
 
 class UaSuccessResponse(BaseModel):

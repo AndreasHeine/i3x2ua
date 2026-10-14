@@ -71,7 +71,7 @@ from i3x_server.schemas.objecttype_schema import build_object_type_schema, remov
 from i3x_server.schemas.state import BuildResult
 from i3x_server.version import get_server_version
 
-router = APIRouter(prefix="/v1", tags=["v1"])
+router = APIRouter(prefix="/v1")
 logger = logging.getLogger(__name__)
 
 __all__ = [

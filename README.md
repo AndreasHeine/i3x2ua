@@ -198,6 +198,10 @@ OpenAPI/Swagger:
 - http://127.0.0.1:8000/openapi.json
 - http://127.0.0.1:8000/docs
 
+Operations are grouped in workflow order: **Exploratory** (address-space
+discovery), **Query** (current and historical reads), **Update** (writes), and
+**Subscribe** (data-change subscriptions), followed by **Diagnostics** and **MCP**.
+
 When running the nginx reverse proxy from `docker compose up -d`, use `http://localhost:8080/` for the HTTP entrypoint or `https://localhost:8443/` for the HTTPS entrypoint. `8443` is mapped to nginx's TLS port, so `http://localhost:8443/` will return a 400 error by design.
 
 ## API Surface

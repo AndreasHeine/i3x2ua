@@ -2435,6 +2435,30 @@ def test_openapi_json_is_source_of_truth(client: TestClient) -> None:
     assert isinstance(generated.get("paths"), dict)
 
 
+def test_openapi_operations_are_grouped_by_workflow(client: TestClient) -> None:
+    generated = client.get("/openapi.json").json()
+    assert [tag["name"] for tag in generated["tags"]] == [
+        "Exploratory", "Query", "Update", "Subscribe", "Diagnostics", "MCP"
+    ]
+    for path, methods in generated["paths"].items():
+        for method, operation in methods.items():
+            if method not in {"get", "post", "put", "delete", "patch", "options", "head"}:
+                continue
+            if path.startswith("/mcp"):
+                expected_tag = "MCP"
+            elif path.startswith("/ua") or path.startswith("/v1/model/"):
+                expected_tag = "Diagnostics"
+            elif path.startswith("/v1/subscriptions"):
+                expected_tag = "Subscribe"
+            elif path in {"/v1/objects/value", "/v1/objects/history"}:
+                expected_tag = "Update" if method == "put" else "Query"
+            else:
+                expected_tag = "Exploratory"
+            assert operation["tags"] == [expected_tag], (method, path)
+    assert generated["paths"]["/v1/objects/value"]["post"]["operationId"] == "queryLastKnownValuesV1"
+    assert generated["paths"]["/v1/namespaces"]["get"]["operationId"] == "getNamespacesV1"
+
+
 def _resolve_openapi_schema(schema: Any, components: Mapping[str, Any]) -> Any:
     if not isinstance(schema, Mapping):
         return schema

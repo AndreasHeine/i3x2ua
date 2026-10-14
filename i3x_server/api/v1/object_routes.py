@@ -25,7 +25,7 @@ from i3x_server.bootstrap.dependencies import get_opcua_client, get_or_build_mod
 from i3x_server.http_caching import enable_etag, raise_if_not_modified
 from i3x_server.schemas.state import BuildResult
 
-router = APIRouter(prefix="/v1", tags=["v1"])
+router = APIRouter(prefix="/v1", tags=["Exploratory"])
 
 # Serializing the full model can take ~1s; yield often enough to keep the event loop
 # responsive for other requests, SSE streams, and OPC UA keep-alives.

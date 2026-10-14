@@ -54,11 +54,12 @@ from i3x_server.bootstrap.dependencies import get_opcua_client, get_or_build_mod
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
 
-router = APIRouter(prefix="/v1", tags=["v1"])
+router = APIRouter(prefix="/v1")
 
 
 @router.post(
     "/objects/related",
+    tags=["Exploratory"],
     response_model=BulkResponse[list[RelatedObjectResult]],
     summary="Query related objects",
     description=(
@@ -101,6 +102,7 @@ async def query_related_objects_v1(
 
 @router.post(
     "/objects/value",
+    tags=["Query"],
     response_model=BulkResponse[CurrentValueResult],
     summary="Query last known values",
     description=(
@@ -171,6 +173,7 @@ async def query_last_known_values_v1(
 
 @router.post(
     "/objects/history",
+    tags=["Query"],
     response_model=BulkResponse[HistoricalValueResult],
     summary="Query historical values",
     description=(
@@ -241,6 +244,7 @@ async def query_historical_values_v1(
 
 @router.put(
     "/objects/value",
+    tags=["Update"],
     response_model=BulkResponse[None],
     summary="Update current values",
     description=(
@@ -279,6 +283,7 @@ async def update_object_values_v1(
 
 @router.put(
     "/objects/history",
+    tags=["Update"],
     response_model=BulkResponse[None],
     responses={501: {"description": "Writes disabled or upstream HistoryUpdate service unavailable"}},
     summary="Update historical values",

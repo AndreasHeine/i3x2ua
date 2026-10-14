@@ -13,7 +13,7 @@ from i3x_server.application.dependencies import get_or_build_model
 from i3x_server.http_caching import enable_etag
 from i3x_server.schemas.state import BuildResult
 
-router = APIRouter(prefix="/v1", tags=["v1"])
+router = APIRouter(prefix="/v1", tags=["Diagnostics"])
 
 
 @router.get(

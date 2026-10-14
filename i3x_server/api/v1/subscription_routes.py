@@ -40,7 +40,7 @@ from i3x_server.application.services.subscription_mapper import map_public_subsc
 from i3x_server.bootstrap.dependencies import get_opcua_client, get_or_build_model
 from i3x_server.schemas.state import BuildResult
 
-router = APIRouter(prefix="/v1", tags=["v1"])
+router = APIRouter(prefix="/v1", tags=["Subscribe"])
 
 
 @router.post(

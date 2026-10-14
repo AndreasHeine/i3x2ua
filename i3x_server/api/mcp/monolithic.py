@@ -16,7 +16,7 @@ from i3x_server.mcp import call_mcp_tool, invoke_mcp_tool
 from i3x_server.prompts.api import execute_prompt, get_prompt, list_prompt_metadata
 from i3x_server.prompts.registry import PromptRegistry
 
-router = APIRouter(prefix="/mcp", tags=["mcp"])
+router = APIRouter(prefix="/mcp", tags=["MCP"])
 _SSE_KEEPALIVE_INTERVAL_SECONDS = 15
 
 

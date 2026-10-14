@@ -16,7 +16,7 @@ from i3x_server.application.dependencies import get_model_query_service
 from i3x_server.application.services.model_query import ModelQueryService
 from i3x_server.http_caching import NAMESPACES_PART, content_revision, enable_etag, record_revision
 
-router = APIRouter(prefix="/v1", tags=["v1"])
+router = APIRouter(prefix="/v1", tags=["Exploratory"])
 
 
 @router.get(

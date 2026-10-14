@@ -439,6 +439,14 @@ def create_app() -> FastAPI:
         title="The i3X API Gateway for OPC UA",
         version=get_server_version(),
         description=description,
+        openapi_tags=[
+            {"name": "Exploratory", "description": "Browse and discover the address space."},
+            {"name": "Query", "description": "Read current or historical values of Objects."},
+            {"name": "Update", "description": "Write current or historical data to Objects."},
+            {"name": "Subscribe", "description": "Subscribe to data changes for Objects."},
+            {"name": "Diagnostics", "description": "Inspect model metrics and OPC UA connectivity."},
+            {"name": "MCP", "description": "Access Model Context Protocol tools and resources."},
+        ],
         lifespan=lifespan,
         generate_unique_id_function=_readable_operation_id,
         telemetry={

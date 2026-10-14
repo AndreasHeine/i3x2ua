@@ -96,6 +96,12 @@ BrowseNames and namespace URIs; matching considers the direct type and its
 supertypes, allowing an instance in an application namespace to inherit
 semantics from a normative companion-model type.
 
+Type hierarchy discovery batches BrowseName reads and inverse `HasSubtype`
+browses within the server's operational limits. Shared ancestors are discovered
+once and cached under the metadata TTL; reconnect invalidates this cache.
+Warm builds reuse cached chains. Logs report type-resolution duration, cache
+hits, and the number of newly resolved types separately from overall mapping.
+
 ## Why this profile exists
 
 Different servers may choose different i3X `elementId` values for the same OPC UA source model.

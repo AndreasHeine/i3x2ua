@@ -304,70 +304,90 @@ class OpcUaClient:
     ) -> list[OpcUaTypeDefinitionInfo]:
         if not isinstance(type_definition_id, str) or not type_definition_id:
             return []
-        return await self._resolve_type_definition_chain(type_definition_id, set())
+        hierarchies = await self.resolve_type_definition_hierarchies([type_definition_id])
+        return hierarchies[type_definition_id]
 
-    async def _resolve_type_definition_chain(
+    async def resolve_type_definition_hierarchies(
         self,
-        type_id: str,
-        in_progress: set[str],
-    ) -> list[OpcUaTypeDefinitionInfo]:
-        cached = self._type_definition_hierarchy_cache.get(type_id)
-        if cached is not None:
-            cached_at, cached_hierarchy = cached
-            if self._is_metadata_cache_entry_fresh(cached_at):
-                return list(cached_hierarchy)
-            del self._type_definition_hierarchy_cache[type_id]
+        type_definition_ids: list[str],
+    ) -> dict[str, list[OpcUaTypeDefinitionInfo]]:
+        started = perf_counter()
+        requested_ids = list(dict.fromkeys(type_definition_ids))
+        pending = requested_ids
+        cached_chains: dict[str, list[OpcUaTypeDefinitionInfo]] = {}
+        type_infos: dict[str, OpcUaTypeDefinitionInfo] = {}
+        parents_by_id: dict[str, list[str]] = {}
+        cache_hits = 0
+        if not requested_ids:
+            return {}
 
-        if type_id in in_progress:
-            return []
-        in_progress.add(type_id)
-
-        type_node = self._client.get_node(type_id)
-        hierarchy: list[OpcUaTypeDefinitionInfo] = []
-        try:
-            browse_name_obj = await type_node.read_browse_name()
-            browse_name = getattr(browse_name_obj, "Name", None)
-            if isinstance(browse_name, str) and browse_name:
-                hierarchy.append(OpcUaTypeDefinitionInfo(node_id=type_id, browse_name=browse_name))
-        except Exception:
-            logger.warning(
-                "OPC UA type definition browse name read failed endpoint=%s type_id=%s",
-                self._endpoint,
-                type_id,
-                exc_info=True,
-            )
-
-        try:
-            supertype_refs_by_node = await self._browse_references_descriptions(
-                [type_node],
-                max_nodes_per_browse=1,
+        limits: OpcUaOperationalLimits | None = None
+        while pending:
+            unresolved: list[str] = []
+            for type_id in dict.fromkeys(pending):
+                if type_id in parents_by_id or type_id in cached_chains:
+                    continue
+                cached = self._type_definition_hierarchy_cache.get(type_id)
+                if cached is not None and self._is_metadata_cache_entry_fresh(cached[0]):
+                    cached_chains[type_id] = list(cached[1])
+                    cache_hits += 1
+                else:
+                    unresolved.append(type_id)
+            if not unresolved:
+                break
+            if limits is None:
+                limits = await self.get_operational_limits()
+            nodes = [self._client.get_node(type_id) for type_id in unresolved]
+            for node_batch in _chunked_nodes(nodes, limits.max_nodes_per_read or 128):
+                values = await self._read_attribute_batch(node_batch, AttributeIds.BrowseName)
+                for node, value in zip(node_batch, values, strict=True):
+                    type_id = node.nodeid.to_string()
+                    qualified_name = self._extract_attribute_value(value)
+                    if not isinstance(qualified_name, ua.QualifiedName) or not qualified_name.Name:
+                        raise ValueError(f"Cannot resolve type BrowseName for {type_id}: {value.StatusCode}")
+                    type_infos[type_id] = OpcUaTypeDefinitionInfo(type_id, qualified_name.Name)
+            browsed = await self._browse_references_descriptions(
+                nodes,
+                max_nodes_per_browse=limits.max_nodes_per_browse or 128,
                 reference_type_id=ObjectIds.HasSubtype,
                 browse_direction=ua.BrowseDirection.Inverse,
                 include_subtypes=False,
             )
-        except Exception:
-            logger.warning(
-                "OPC UA type definition supertype browse failed endpoint=%s type_id=%s",
-                self._endpoint,
-                type_id,
-                exc_info=True,
-            )
-            supertype_refs_by_node = []
+            pending = []
+            for node, refs in browsed:
+                parents = list(dict.fromkeys(ref.NodeId.to_string() for ref in refs))
+                parents_by_id[node.nodeid.to_string()] = parents
+                pending.extend(parents)
 
-        seen_ids = {item.node_id for item in hierarchy}
-        for _, refs in supertype_refs_by_node:
-            for ref in refs:
-                supertype_id = ref.NodeId.to_string()
-                if not isinstance(supertype_id, str) or not supertype_id or supertype_id in seen_ids:
+        hierarchies = dict(cached_chains)
+        for root_id in parents_by_id:
+            hierarchy: list[OpcUaTypeDefinitionInfo] = []
+            seen_ids: set[str] = set()
+            stack = [root_id]
+            while stack:
+                type_id = stack.pop()
+                if type_id in seen_ids:
                     continue
-                for supertype in await self._resolve_type_definition_chain(supertype_id, in_progress):
-                    if supertype.node_id not in seen_ids:
-                        seen_ids.add(supertype.node_id)
-                        hierarchy.append(supertype)
-
-        in_progress.discard(type_id)
-        self._type_definition_hierarchy_cache[type_id] = (perf_counter(), list(hierarchy))
-        return list(hierarchy)
+                if type_id in cached_chains:
+                    for info in cached_chains[type_id]:
+                        if info.node_id not in seen_ids:
+                            seen_ids.add(info.node_id)
+                            hierarchy.append(info)
+                else:
+                    seen_ids.add(type_id)
+                    hierarchy.append(type_infos[type_id])
+                    stack.extend(reversed(parents_by_id[type_id]))
+            hierarchies[root_id] = hierarchy
+            self._type_definition_hierarchy_cache[root_id] = (perf_counter(), list(hierarchy))
+        logger.info(
+            "OPC UA type hierarchy resolution endpoint=%s requested=%d cache_hits=%d resolved_types=%d duration_s=%.3f",
+            self._endpoint,
+            len(requested_ids),
+            cache_hits,
+            len(type_infos),
+            perf_counter() - started,
+        )
+        return {type_id: list(hierarchies[type_id]) for type_id in requested_ids}
 
     async def _resolve_reference_type_chain(self, type_id: str, in_progress: set[str]) -> list[str]:
         """Browse names of ``type_id`` followed by its supertypes, nearest ancestor first.

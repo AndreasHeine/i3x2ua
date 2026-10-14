@@ -90,14 +90,34 @@ class ModelBuilder:
                     )
 
         type_definition_hierarchy_by_id: dict[str, tuple[OpcUaTypeDefinitionInfo, ...]] = {}
+        type_resolution_started = perf_counter()
+        resolve_type_definition_hierarchies = getattr(self._opcua_client, "resolve_type_definition_hierarchies", None)
         resolve_type_definition_hierarchy = getattr(self._opcua_client, "resolve_type_definition_hierarchy", None)
-        if callable(resolve_type_definition_hierarchy):
+        if callable(resolve_type_definition_hierarchies) or callable(resolve_type_definition_hierarchy):
             unique_type_definition_ids = {
                 node.type_definition_id for node in opc_nodes if node.type_definition_id
             }
+            resolved_hierarchies: dict[str, list[OpcUaTypeDefinitionInfo]] | None = None
+            if callable(resolve_type_definition_hierarchies):
+                try:
+                    resolved_hierarchies = await resolve_type_definition_hierarchies(
+                        sorted(unique_type_definition_ids)
+                    )
+                except Exception:
+                    logger.warning(
+                        "Batch type definition hierarchy resolution failed; retrying individual types",
+                        exc_info=True,
+                    )
             for type_definition_id in unique_type_definition_ids:
                 try:
-                    resolved_hierarchy = await resolve_type_definition_hierarchy(type_definition_id)
+                    if resolved_hierarchies is not None:
+                        if type_definition_id not in resolved_hierarchies:
+                            continue
+                        resolved_hierarchy = resolved_hierarchies[type_definition_id]
+                    elif callable(resolve_type_definition_hierarchy):
+                        resolved_hierarchy = await resolve_type_definition_hierarchy(type_definition_id)
+                    else:
+                        continue
                     if isinstance(resolved_hierarchy, list):
                         type_definition_hierarchy_by_id[type_definition_id] = tuple(
                             OpcUaTypeDefinitionInfo(
@@ -115,6 +135,11 @@ class ModelBuilder:
                         type_definition_id,
                         exc_info=True,
                     )
+        logger.info(
+            "Model type hierarchy resolution duration_s=%.3f resolved_instance_types=%d",
+            perf_counter() - type_resolution_started,
+            len(type_definition_hierarchy_by_id),
+        )
 
         child_ids_by_source: dict[str, list[str]] = {}
         mapped_id_by_source: dict[str, str] = {}

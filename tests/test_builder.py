@@ -416,7 +416,8 @@ async def test_model_builder_nonhierarchical_supertype_takes_precedence() -> Non
 
 
 @pytest.mark.asyncio
-async def test_model_builder_applies_profile_from_type_definition_ancestor() -> None:
+@pytest.mark.parametrize("batch_fails", [False, True])
+async def test_model_builder_applies_profile_from_type_definition_ancestor(batch_fails: bool) -> None:
     class FakeOpcuaWithTypeDefinitionHierarchy:
         async def browse_tree(self) -> list[OpcUaNodeInfo]:
             return [
@@ -460,6 +461,15 @@ async def test_model_builder_applies_profile_from_type_definition_ancestor() -> 
                     browse_name="FunctionalGroupType",
                 ),
             ]
+
+        async def resolve_type_definition_hierarchies(
+            self,
+            type_definition_ids: list[str],
+        ) -> dict[str, list[OpcUaTypeDefinitionInfo]]:
+            assert type_definition_ids == ["ns=2;i=26"]
+            if batch_fails:
+                raise RuntimeError("Batch request failed")
+            return {"ns=2;i=26": await self.resolve_type_definition_hierarchy("ns=2;i=26")}
 
     builder = ModelBuilder(cast(OpcUaClientProtocol, FakeOpcuaWithTypeDefinitionHierarchy()))
     result = await builder.build()

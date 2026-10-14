@@ -29,6 +29,9 @@ MCP_INSTRUCTIONS = (
     "Inspect per-item failures even when HTTP succeeds. PUT/write operations are REST-only. "
     "Subscription tools change monitoring state; acknowledge only updates already processed. "
     "Plant roots are available using getObjectsV1(root=true), not MCP filesystem roots."
+    " Use findAssets for explicit candidates, discoverAssetContext for bounded graph context, "
+    "getAssetSnapshot for non-atomic VQT evidence, and startAssetMonitoring for create/register with rollback. "
+    "summarizeSignalHistory reads bounded pages; diagnoseDataAvailability reports evidence, not health verdicts."
 )
 
 

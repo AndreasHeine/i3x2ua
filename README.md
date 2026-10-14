@@ -275,6 +275,16 @@ the deployment's responsibility; use HTTPS and an authenticated proxy remotely.
 
 MCP write policy: `PUT` routes are intentionally excluded from MCP tool generation. Object writes are available via REST only.
 
+Six curated composite tools complement the atomic tools: `discoverAssetContext`,
+`findAssets`, `getAssetSnapshot`, `startAssetMonitoring`, `summarizeSignalHistory`,
+and `diagnoseDataAvailability`. They use bounded graph traversal and the canonical
+i3X handlers/services; snapshots are explicitly non-atomic and preserve VQT.
+Monitoring rolls back incomplete registration, returning cleanup evidence and
+the real subscription handle. History reads are bounded at the OPC UA source,
+with explicit page truncation and no unbounded fallback. See the
+[composite tool reference](docs/QUICK_REFERENCE.md#composite-mcp-tools) for
+arguments, limits, failure semantics, and examples.
+
 ## Current Limitations
 
 ### i3X contract

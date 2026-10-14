@@ -205,6 +205,131 @@ versions negotiate to `2025-06-18`; unsupported `MCP-Protocol-Version` headers
 return HTTP `400`. Origin-bearing requests require a same-origin loopback URL or an
 explicit `I3X_CORS_ALLOWED_ORIGINS` entry; `*` does not authorize MCP origins.
 
+### Composite MCP Tools
+
+These ordinary MCP tools complement, rather than replace, the atomic i3X tools.
+They perform deterministic server-side workflows without internal LLM calls.
+MCP arguments are **flat**: do not wrap them in `body`.
+
+| Tool | Purpose | Required arguments |
+|------|---------|--------------------|
+| `discoverAssetContext` | Bounded graph, canonical metadata, deduplicated type schemas, optional VQT | `elementIds` |
+| `findAssets` | Explicit candidates filtered by name substring, exact `typeElementId`, exact `namespaceUri`, optional scope | None |
+| `getAssetSnapshot` | Selected signal VQT, identity/types/provenance, collection interval; never an atomic read or health verdict | `elementIds` |
+| `startAssetMonitoring` | Resolve signals, create subscription, register, roll back incomplete registration | `elementIds`, `clientId` |
+| `summarizeSignalHistory` | Bounded history pages with deterministic numeric statistics and sample quality coverage | `elementIds`, `startTime`, `endTime` |
+| `diagnoseDataAvailability` | UA status/connection/capabilities, model/schema/read failures, quality and timestamp findings | `elementIds` |
+
+Example discovery:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "discoverAssetContext",
+    "arguments": {
+      "elementIds": ["<discovered-element-id>"],
+      "maxDepth": 2,
+      "maxNodes": 100,
+      "includeSchemas": true,
+      "includeValues": false
+    }
+  }
+}
+```
+
+Common budgets: `maxNodes` defaults to 100 (maximum 500), `maxDepth` to 2
+(maximum 10), `maxEdges` to 500 (maximum 2000), and `timeoutSeconds` to 10
+(maximum 60). Explicit seed IDs are deduplicated and must fit `maxNodes`.
+Depth is **graph hops**: zero selects only the seeds, not unlimited recursion.
+Composition is followed outward by default; `includeHierarchy` defaults to true,
+and optional `includeGraph` defaults to false. Reverse edges and shared/multiple
+parents are preserved in output, but are not automatically traversed. Cycles
+are visited once. Edges may reference nodes outside the selected/truncated set.
+No upstream value recursion is used: selected property nodes are explicitly
+batched (50 IDs per read). Type schemas are resolved once per distinct type.
+
+Results include `objects` keyed by `elementId`, `edges` with source, target,
+relationship type and plane, `types` keyed by `typeElementId`, optional `values`,
+`errors`, `coverage`, model revision and collection timestamps. Units and OPC UA
+provenance are included only where canonical metadata/schemas provide them;
+missing signal context is reported, not invented. A latest-known value may be
+old without the connection being broken.
+Current-value VQT preserves canonical i3X timestamps, whose source/server/fallback
+origin is not exposed by that API; this limitation is listed in `missingInformation`.
+Historical first/last samples additionally identify `timestampKind` as `source`,
+`server`, or `unavailable` (with a null timestamp rather than an invented one).
+
+**Partial results:** successful read-only collection can be incomplete.
+Traversal, search, and history-page limits preserve `success: true` and MCP
+`isError: false`, while reporting `coverage.truncated: true`; success does not
+imply complete coverage. Per-item errors, timeouts, and output-budget failures
+still set `success: false` and MCP `isError: true`. Monitoring rejects incomplete
+target expansion before creating a subscription. Inspect
+`coverage.limitReasons`; graph continuation is not supported, so narrow the
+scope or increase a budget explicitly. A 1 MiB serialized-output ceiling returns
+an explicit output-budget error rather than silently dropping fields. This ceiling
+limits returned content; it does not limit the size of individual upstream values
+or the initial model/type-catalog build. The deadline includes model resolution;
+timed-out operations return errors rather than complete-looking results.
+
+**Search:** `name` is a case-insensitive display-name substring; names are never
+assumed unique. Search covers mapped objects, including signals. `maxScan`
+defaults to 1000 (maximum 10000). Global searches return `coverage.nextOffset`
+and a model revision; pass them as `offset` and `modelRevision` to continue.
+Changed revisions reject continuation. `scopeElementIds` restricts search to a
+bounded hierarchy/composition subgraph; scoped continuation is not supported.
+
+**Monitoring:** defaults to composition-only expansion
+(`includeHierarchy: false`); graph expansion is rejected. Truncated, missing,
+or empty signal targets are rejected **before** creating a subscription.
+Expanded properties are registered with i3X `maxDepth: 1`, preventing hidden
+unlimited expansion. Any incomplete/failed registration rolls back the newly
+created subscription. Inspect `registration`, `cleanup`, `errors`, and
+`monitoringActive`: `null` means the handle may still be active after an uncertain
+failure. The actual `subscriptionId` remains available for manual cleanup.
+Cancellation/timeouts allow up to five seconds to recover an in-flight creation
+handle and up to five seconds for compensating deletion; creation can still have
+an explicitly unknown outcome if its result never arrives. `clientId` scopes
+subscriptions but is **not authentication**.
+
+```json
+{
+  "tool": "startAssetMonitoring",
+  "arguments": {
+    "elementIds": ["<discovered-asset-id>"],
+    "clientId": "maintenance-assistant",
+    "maxDepth": 2,
+    "maxNodes": 100
+  }
+}
+```
+
+Send that example to `POST /mcp/call`; all composites are also callable through
+standard `tools/call`. Direct helper POSTs under `/mcp/composites/` accept the same
+flat JSON argument objects. Existing sync/remove/delete tools accept the returned
+subscription handle. Composites never acknowledge/discard updates, start an
+infinite polling loop, or turn REST SSE into MCP notifications.
+
+**History:** times require explicit timezones, an ordered interval of at most
+24 hours, and `maxPointsPerSignal` (default 100, maximum 1000).
+`maxNodes * maxPointsPerSignal` must not exceed 10000. The OPC UA adapter requests
+one bounded raw-history page per signal and releases continuation points. A page
+or point cap is reported as truncated; statistics describe returned samples only.
+Adapters without bounded-history support return an explicit unsupported error,
+never an unbounded fallback. Empty history proves neither downtime nor historian
+support. `qualityCounts` and `goodSampleFraction` describe sample coverage, not
+time coverage. Numeric min/max/arithmetic mean use only Good, finite numeric
+samples (excluding booleans), without interpolation or time weighting.
+
+**Availability:** `staleAfterSeconds` defaults to 300; this is a caller-selected
+age threshold, not a universal freshness guarantee. Findings distinguish poor
+quality, null values, old/future timestamps and invalid timestamps. Raw UA evidence
+and per-stage errors remain available. No failure-risk score, causal conclusion,
+unit conversion or process-control action is inferred.
+
 ### With Authentication (BasicAuth + HTTPS)
 
 When `NGINX_BASIC_AUTH_ENABLED=1`, MCP clients must include credentials in requests:

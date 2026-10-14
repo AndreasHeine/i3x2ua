@@ -2862,7 +2862,7 @@ def test_mcp_non_subscription_tools_runtime_smoke(client: TestClient) -> None:
     }
 
     for tool_name, tool in tools.items():
-        if tool_name in skipped_tools:
+        if tool_name in skipped_tools or tool["path"].startswith("/mcp/composites/"):
             continue
 
         input_schema = tool.get("inputSchema", {})

@@ -21,6 +21,7 @@ from asyncua.ua.status_codes import StatusCodes
 from asyncua.ua.uaerrors import UaError, UaStatusCodeError
 
 from i3x_server.domain.ports.opcua import (
+    BoundedHistoryResult,
     OpcUaClientProtocol,
     OpcUaConnectionSnapshot,
     OpcUaNamespaceInfo,
@@ -2272,6 +2273,43 @@ class OpcUaClient:
             perf_counter() - started,
         )
         return values_by_node_id
+
+    async def read_bounded_history(
+        self, node_id: str, start_time: datetime, end_time: datetime, max_points: int
+    ) -> BoundedHistoryResult:
+        if not 1 <= max_points <= 1000:
+            raise ValueError("max_points must be between 1 and 1000")
+        details = ua.ReadRawModifiedDetails()
+        details.StartTime = start_time
+        details.EndTime = end_time
+        details.NumValuesPerNode = max_points
+        details.ReturnBounds = False
+        node = self._client.get_node(node_id)
+        self._runtime_metrics.history_read_calls += 1
+        self._runtime_metrics.history_read_nodes += 1
+        result = await node.history_read(details)
+        result.StatusCode.check()
+        continuation = result.ContinuationPoint
+        try:
+            history = result.HistoryData
+            if not isinstance(history, ua.HistoryData):
+                raise TypeError("Unexpected OPC UA history data")
+            values = history.DataValues
+            self._record_history_read_success()
+            return BoundedHistoryResult(
+                values=list(values[:max_points]),
+                truncated=bool(continuation) or len(values) >= max_points,
+            )
+        finally:
+            if continuation:
+                value_id = ua.HistoryReadValueId(NodeId=node.nodeid, ContinuationPoint=continuation)
+                parameters = ua.HistoryReadParameters()
+                parameters.HistoryReadDetails = details
+                parameters.ReleaseContinuationPoints = True
+                parameters.NodesToRead = [value_id]
+                released = await node.session.history_read(parameters)
+                for item in released:
+                    item.StatusCode.check()
 
     def _is_history_missing_or_unsupported(self, exc: Exception) -> bool:
         lowered = str(exc).lower()

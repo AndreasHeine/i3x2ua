@@ -5,13 +5,19 @@ import logging
 from datetime import datetime, timezone
 from time import perf_counter
 
-from i3x_server.domain.ports.opcua import OpcUaClientProtocol, OpcUaNamespaceInfo, OpcUaNodeInfo
+from i3x_server.domain.ports.opcua import (
+    OpcUaClientProtocol,
+    OpcUaNamespaceInfo,
+    OpcUaNodeInfo,
+    OpcUaTypeDefinitionInfo,
+)
 from i3x_server.domain.utils import expanded_node_id
 from i3x_server.model.mapper import classify_opcua_reference_with_confidence, map_node, stable_i3x_id
 from i3x_server.model.revision import compute_model_revision
 from i3x_server.model.semantic_profiles import (
     ResolvedProfileSet,
     active_profiles_for_node,
+    forced_relationship_class_for_node,
     has_profile_override_for_node,
     resolve_mapping_confidence,
     resolve_namespace_uri,
@@ -83,6 +89,33 @@ class ModelBuilder:
                         exc_info=True,
                     )
 
+        type_definition_hierarchy_by_id: dict[str, tuple[OpcUaTypeDefinitionInfo, ...]] = {}
+        resolve_type_definition_hierarchy = getattr(self._opcua_client, "resolve_type_definition_hierarchy", None)
+        if callable(resolve_type_definition_hierarchy):
+            unique_type_definition_ids = {
+                node.type_definition_id for node in opc_nodes if node.type_definition_id
+            }
+            for type_definition_id in unique_type_definition_ids:
+                try:
+                    resolved_hierarchy = await resolve_type_definition_hierarchy(type_definition_id)
+                    if isinstance(resolved_hierarchy, list):
+                        type_definition_hierarchy_by_id[type_definition_id] = tuple(
+                            OpcUaTypeDefinitionInfo(
+                                node_id=type_info.node_id,
+                                browse_name=type_info.browse_name,
+                                namespace_uri=type_info.namespace_uri
+                                or resolve_namespace_uri(type_info.node_id, namespace_uri_by_index),
+                            )
+                            for type_info in resolved_hierarchy
+                            if isinstance(type_info, OpcUaTypeDefinitionInfo)
+                        )
+                except Exception:
+                    logger.warning(
+                        "Type definition hierarchy resolution failed for type_definition_id=%s",
+                        type_definition_id,
+                        exc_info=True,
+                    )
+
         child_ids_by_source: dict[str, list[str]] = {}
         mapped_id_by_source: dict[str, str] = {}
         identity_node_id_by_source = {
@@ -96,14 +129,27 @@ class ModelBuilder:
         parent_id_by_source: dict[str, str | None] = {}
         active_profiles_by_source: dict[str, ResolvedProfileSet] = {}
         namespace_uri_by_source: dict[str, str | None] = {}
+        for source_id, opc_node in by_source_node.items():
+            namespace_uri = resolve_namespace_uri(opc_node.node_id, namespace_uri_by_index)
+            namespace_uri_by_source[source_id] = namespace_uri
+            type_definition_hierarchy = type_definition_hierarchy_by_id.get(
+                opc_node.type_definition_id or "",
+                (),
+            )
+            active_profiles_by_source[source_id] = active_profiles_for_node(
+                opc_node,
+                type_definition_hierarchy,
+            )
 
         for source_id, opc_node in by_source_node.items():
             mapped_id = stable_i3x_id(identity_node_id_by_source[source_id], _kind_for_node(opc_node))
             mapped_id_by_source[source_id] = mapped_id
-            namespace_uri = resolve_namespace_uri(opc_node.node_id, namespace_uri_by_index)
-            namespace_uri_by_source[source_id] = namespace_uri
-            active_profiles = active_profiles_for_node(opc_node, namespace_uri)
-            active_profiles_by_source[source_id] = active_profiles
+            namespace_uri = namespace_uri_by_source[source_id]
+            type_definition_hierarchy = type_definition_hierarchy_by_id.get(
+                opc_node.type_definition_id or "",
+                (),
+            )
+            active_profiles = active_profiles_by_source[source_id]
 
             child_sources = child_sources_by_parent.get(source_id, [])
             child_ids = [
@@ -154,6 +200,13 @@ class ModelBuilder:
                     target_node_class=child_node.node_class,
                     profiles=active_profiles.profiles,
                 )
+                forced_relationship_class = forced_relationship_class_for_node(
+                    child_node,
+                    active_profiles_by_source.get(target_source_id),
+                    type_definition_hierarchy_by_id.get(child_node.type_definition_id or "", ()),
+                )
+                if forced_relationship_class is not None:
+                    relationship_class = forced_relationship_class
 
                 relationship_name = reference_browse_name or (
                     "HasProperty" if child_node.node_class == "Variable" else "Organizes"
@@ -269,6 +322,10 @@ class ModelBuilder:
                 opc_node,
                 active_profiles_resolved,
                 relationship_class="composition" if composition_children else None,
+                type_definition_hierarchy=type_definition_hierarchy_by_id.get(
+                    opc_node.type_definition_id or "",
+                    (),
+                ),
             )
             mapping_confidence = resolve_mapping_confidence(
                 opc_node,
@@ -276,7 +333,14 @@ class ModelBuilder:
                 relationship_class="composition"
                 if composition_children
                 else ("hierarchy" if hierarchy_children else ("graph" if graph_relations else None)),
-                has_profile_override=has_profile_override_for_node(opc_node, active_profiles_resolved),
+                has_profile_override=has_profile_override_for_node(
+                    opc_node,
+                    active_profiles_resolved,
+                    type_definition_hierarchy_by_id.get(
+                        opc_node.type_definition_id or "",
+                        (),
+                    ),
+                ),
             )
 
             mapped = map_node(

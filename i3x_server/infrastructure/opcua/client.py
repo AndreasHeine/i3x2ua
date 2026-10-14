@@ -32,6 +32,7 @@ from i3x_server.domain.ports.opcua import (
     OpcUaRequestMetrics,
     OpcUaRuntimeMetrics,
     OpcUaSubscriptionCapabilities,
+    OpcUaTypeDefinitionInfo,
     OpcUaWriteMetadataUnsupportedError,
     OpcUaWriteMetadataVerificationError,
 )
@@ -50,6 +51,7 @@ __all__ = [
     "OpcUaRequestMetrics",
     "OpcUaRuntimeMetrics",
     "OpcUaSubscriptionCapabilities",
+    "OpcUaTypeDefinitionInfo",
 ]
 
 logger = logging.getLogger(__name__)
@@ -201,6 +203,9 @@ class OpcUaClient:
         self._object_types_cache: tuple[float, list[OpcUaObjectTypeInfo]] | None = None
         self._metadata_load_tasks: dict[str, asyncio.Future[Any]] = {}
         self._reference_type_supertypes_cache: dict[str, tuple[float, list[str]]] = {}
+        self._type_definition_hierarchy_cache: dict[
+            str, tuple[float, list[OpcUaTypeDefinitionInfo]]
+        ] = {}
         self._runtime_metrics = OpcUaRuntimeMetrics()
         self._history_update_supported: bool | None = None
         self._request_metrics = OpcUaRequestMetrics()
@@ -292,6 +297,77 @@ class OpcUaClient:
         if not isinstance(reference_type_id, str) or not reference_type_id:
             return []
         return await self._resolve_reference_type_chain(reference_type_id, set())
+
+    async def resolve_type_definition_hierarchy(
+        self,
+        type_definition_id: str,
+    ) -> list[OpcUaTypeDefinitionInfo]:
+        if not isinstance(type_definition_id, str) or not type_definition_id:
+            return []
+        return await self._resolve_type_definition_chain(type_definition_id, set())
+
+    async def _resolve_type_definition_chain(
+        self,
+        type_id: str,
+        in_progress: set[str],
+    ) -> list[OpcUaTypeDefinitionInfo]:
+        cached = self._type_definition_hierarchy_cache.get(type_id)
+        if cached is not None:
+            cached_at, cached_hierarchy = cached
+            if self._is_metadata_cache_entry_fresh(cached_at):
+                return list(cached_hierarchy)
+            del self._type_definition_hierarchy_cache[type_id]
+
+        if type_id in in_progress:
+            return []
+        in_progress.add(type_id)
+
+        type_node = self._client.get_node(type_id)
+        hierarchy: list[OpcUaTypeDefinitionInfo] = []
+        try:
+            browse_name_obj = await type_node.read_browse_name()
+            browse_name = getattr(browse_name_obj, "Name", None)
+            if isinstance(browse_name, str) and browse_name:
+                hierarchy.append(OpcUaTypeDefinitionInfo(node_id=type_id, browse_name=browse_name))
+        except Exception:
+            logger.warning(
+                "OPC UA type definition browse name read failed endpoint=%s type_id=%s",
+                self._endpoint,
+                type_id,
+                exc_info=True,
+            )
+
+        try:
+            supertype_refs_by_node = await self._browse_references_descriptions(
+                [type_node],
+                max_nodes_per_browse=1,
+                reference_type_id=ObjectIds.HasSubtype,
+                browse_direction=ua.BrowseDirection.Inverse,
+                include_subtypes=False,
+            )
+        except Exception:
+            logger.warning(
+                "OPC UA type definition supertype browse failed endpoint=%s type_id=%s",
+                self._endpoint,
+                type_id,
+                exc_info=True,
+            )
+            supertype_refs_by_node = []
+
+        seen_ids = {item.node_id for item in hierarchy}
+        for _, refs in supertype_refs_by_node:
+            for ref in refs:
+                supertype_id = ref.NodeId.to_string()
+                if not isinstance(supertype_id, str) or not supertype_id or supertype_id in seen_ids:
+                    continue
+                for supertype in await self._resolve_type_definition_chain(supertype_id, in_progress):
+                    if supertype.node_id not in seen_ids:
+                        seen_ids.add(supertype.node_id)
+                        hierarchy.append(supertype)
+
+        in_progress.discard(type_id)
+        self._type_definition_hierarchy_cache[type_id] = (perf_counter(), list(hierarchy))
+        return list(hierarchy)
 
     async def _resolve_reference_type_chain(self, type_id: str, in_progress: set[str]) -> list[str]:
         """Browse names of ``type_id`` followed by its supertypes, nearest ancestor first.
@@ -445,6 +521,7 @@ class OpcUaClient:
         self._object_types_cache = None
         self._subscription_caps_cache = None
         self._reference_type_supertypes_cache = {}
+        self._type_definition_hierarchy_cache = {}
         logger.info("OPC UA disconnect finished endpoint=%s duration_s=%.3f", self._endpoint, perf_counter() - started)
 
     def _start_connection_tasks(self) -> None:
@@ -497,6 +574,7 @@ class OpcUaClient:
         self._namespace_infos_cache = self._invalidate_metadata_entry(self._namespace_infos_cache)
         self._object_types_cache = self._invalidate_metadata_entry(self._object_types_cache)
         self._reference_type_supertypes_cache = {}
+        self._type_definition_hierarchy_cache = {}
         self._reconnect_session_recreated = self._reconnect_session_recreated or not session_reused
         logger.info(
             "OPC UA reconnect finished endpoint=%s session=%s",

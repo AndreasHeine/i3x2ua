@@ -27,6 +27,13 @@ class OpcUaNodeInfo:
     outgoing_references: list[OpcUaReferenceInfo] = field(default_factory=list)
 
 
+@dataclass(frozen=True, slots=True)
+class OpcUaTypeDefinitionInfo:
+    node_id: str
+    browse_name: str
+    namespace_uri: str | None = None
+
+
 @dataclass(slots=True)
 class OpcUaReferenceInfo:
     target_node_id: str
@@ -143,6 +150,8 @@ class OpcUaWriteMetadataVerificationError(Exception):
 class OpcUaClientProtocol(Protocol):
     async def browse_tree(self) -> list[OpcUaNodeInfo]: ...
 
+    async def resolve_type_definition_hierarchy(self, type_definition_id: str) -> list[OpcUaTypeDefinitionInfo]: ...
+
     async def get_namespaces(self) -> list[str]: ...
 
     async def get_namespace_infos(self) -> list[OpcUaNamespaceInfo]: ...
@@ -222,4 +231,5 @@ __all__ = [
     "OpcUaRequestMetrics",
     "OpcUaRuntimeMetrics",
     "OpcUaSubscriptionCapabilities",
+    "OpcUaTypeDefinitionInfo",
 ]

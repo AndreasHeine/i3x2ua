@@ -1,6 +1,13 @@
+from i3x_server.domain.ports.opcua import OpcUaTypeDefinitionInfo
 from i3x_server.infrastructure.opcua.client import OpcUaNodeInfo
 from i3x_server.model.mapper import classify_opcua_reference, classify_opcua_reference_with_confidence, map_node
-from i3x_server.model.semantic_profiles import SemanticProfile, resolve_namespace_uri
+from i3x_server.model.semantic_profiles import (
+    SemanticProfile,
+    active_profiles_for_node,
+    load_default_profiles,
+    resolve_namespace_uri,
+    resolve_semantic_role,
+)
 
 
 def test_map_variable_to_property() -> None:
@@ -152,3 +159,59 @@ def test_resolve_namespace_uri_prefers_explicit_namespace_index() -> None:
     namespace_map = {0: "http://opcfoundation.org/UA/", 2: "urn:vendor:test"}
 
     assert resolve_namespace_uri("ns=2;s=Temperature", namespace_map) == "urn:vendor:test"
+
+
+def test_machinery_profile_matches_type_ancestor_namespace_not_instance_namespace() -> None:
+    node = OpcUaNodeInfo(
+        node_id="ns=1;s=Machine",
+        parent_node_id=None,
+        browse_name="Machine",
+        display_name="Machine",
+        node_class="Object",
+        data_type=None,
+        type_definition_id="ns=2;i=26",
+    )
+    type_hierarchy = (
+        OpcUaTypeDefinitionInfo(
+            node_id="ns=2;i=26",
+            browse_name="MachineToolType",
+            namespace_uri="http://opcfoundation.org/UA/MachineTool/",
+        ),
+        OpcUaTypeDefinitionInfo(
+            node_id="ns=3;i=1001",
+            browse_name="FunctionalGroupType",
+            namespace_uri="http://opcfoundation.org/UA/Machinery/",
+        ),
+    )
+
+    active_profiles = active_profiles_for_node(node, type_hierarchy, load_default_profiles())
+
+    assert active_profiles.profile_ids == ("machinery", "generic")
+    assert resolve_semantic_role(
+        node,
+        active_profiles,
+        type_definition_hierarchy=type_hierarchy,
+    ) == "group"
+
+
+def test_machinery_profile_does_not_match_same_type_name_in_other_namespace() -> None:
+    node = OpcUaNodeInfo(
+        node_id="ns=1;s=Machine",
+        parent_node_id=None,
+        browse_name="Machine",
+        display_name="Machine",
+        node_class="Object",
+        data_type=None,
+        type_definition_id="ns=2;i=26",
+    )
+    type_hierarchy = (
+        OpcUaTypeDefinitionInfo(
+            node_id="ns=2;i=26",
+            browse_name="FunctionalGroupType",
+            namespace_uri="urn:unrelated:types",
+        ),
+    )
+
+    active_profiles = active_profiles_for_node(node, type_hierarchy, load_default_profiles())
+
+    assert active_profiles.profile_ids == ("generic",)

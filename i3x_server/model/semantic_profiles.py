@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from i3x_server.domain.ports.opcua import OpcUaNodeInfo
+from i3x_server.domain.ports.opcua import OpcUaNodeInfo, OpcUaTypeDefinitionInfo
 
 SemanticRole = Literal["asset", "group", "component", "datapoint", "property", "unknown"]
 MappingConfidence = Literal["high", "medium", "low"]
@@ -17,11 +17,16 @@ class ProfileOverride:
     force_composition: bool = False
     confidence: MappingConfidence | None = None
 
+    def __post_init__(self) -> None:
+        if self.force_hierarchy and self.force_composition:
+            raise ValueError("A profile override cannot force both hierarchy and composition")
+
 
 @dataclass(frozen=True, slots=True)
 class SemanticProfile:
     profile_id: str
     priority: int
+    # Matches the namespace of a node in the instance type's inheritance chain.
     namespace_uri_fragment: str
     known_types: tuple[str, ...] = ()
     hierarchy_references: tuple[str, ...] = ()
@@ -29,24 +34,24 @@ class SemanticProfile:
     graph_references: tuple[str, ...] = ()
     overrides: tuple[ProfileOverride, ...] = ()
 
-    def matches_namespace(self, namespace_uri: str | None) -> bool:
-        if not self.namespace_uri_fragment:
+    def matches_node(
+        self,
+        node: OpcUaNodeInfo,
+        type_definition_hierarchy: tuple[OpcUaTypeDefinitionInfo, ...] = (),
+    ) -> bool:
+        if not self.namespace_uri_fragment and not self.known_types:
             return True
-        if not namespace_uri:
-            return False
-        return self.namespace_uri_fragment.lower() in namespace_uri.lower()
-
-    def matches_node(self, node: OpcUaNodeInfo, namespace_uri: str | None) -> bool:
-        if not self.matches_namespace(namespace_uri):
-            return False
-        if not self.known_types:
+        known_type_tokens = {_normalize_token(item) for item in self.known_types}
+        for type_info in type_definition_hierarchy:
+            if self.namespace_uri_fragment and (
+                not type_info.namespace_uri
+                or self.namespace_uri_fragment.lower() not in type_info.namespace_uri.lower()
+            ):
+                continue
+            if known_type_tokens and _normalize_token(type_info.browse_name) not in known_type_tokens:
+                continue
             return True
-        tokens = {
-            _normalize_token(node.node_id),
-            _normalize_token(node.browse_name),
-            _normalize_token(node.type_definition_id),
-        }
-        return bool(tokens & {_normalize_token(item) for item in self.known_types})
+        return False
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,11 +137,11 @@ def resolve_namespace_uri(node_id: str, namespace_uri_by_index: dict[int, str] |
 
 def active_profiles_for_node(
     node: OpcUaNodeInfo,
-    namespace_uri: str | None,
+    type_definition_hierarchy: tuple[OpcUaTypeDefinitionInfo, ...] = (),
     available_profiles: tuple[SemanticProfile, ...] | None = None,
 ) -> ResolvedProfileSet:
     profiles = available_profiles or load_default_profiles()
-    matched = [profile for profile in profiles if profile.matches_node(node, namespace_uri)]
+    matched = [profile for profile in profiles if profile.matches_node(node, type_definition_hierarchy)]
     matched.sort(key=lambda profile: profile.priority, reverse=True)
     return ResolvedProfileSet(profiles=tuple(matched))
 
@@ -146,6 +151,7 @@ def resolve_semantic_role(
     active_profiles: ResolvedProfileSet | None = None,
     *,
     relationship_class: str | None = None,
+    type_definition_hierarchy: tuple[OpcUaTypeDefinitionInfo, ...] = (),
 ) -> SemanticRole:
     profiles = active_profiles.profiles if active_profiles else load_default_profiles()
     type_tokens = {
@@ -153,6 +159,7 @@ def resolve_semantic_role(
         _normalize_token(node.browse_name),
         _normalize_token(node.node_id),
     }
+    type_tokens.update(_normalize_token(item.browse_name) for item in type_definition_hierarchy)
     for profile in profiles:
         for override in profile.overrides:
             if _normalize_token(override.type_name) in type_tokens:
@@ -193,6 +200,7 @@ def resolve_mapping_confidence(
 def has_profile_override_for_node(
     node: OpcUaNodeInfo,
     active_profiles: ResolvedProfileSet | None = None,
+    type_definition_hierarchy: tuple[OpcUaTypeDefinitionInfo, ...] = (),
 ) -> bool:
     profiles = active_profiles.profiles if active_profiles else load_default_profiles()
     type_tokens = {
@@ -200,11 +208,38 @@ def has_profile_override_for_node(
         _normalize_token(node.browse_name),
         _normalize_token(node.node_id),
     }
+    type_tokens.update(_normalize_token(item.browse_name) for item in type_definition_hierarchy)
     for profile in profiles:
         for override in profile.overrides:
             if _normalize_token(override.type_name) in type_tokens:
                 return True
     return False
+
+
+def forced_relationship_class_for_node(
+    node: OpcUaNodeInfo,
+    active_profiles: ResolvedProfileSet | None = None,
+    type_definition_hierarchy: tuple[OpcUaTypeDefinitionInfo, ...] = (),
+) -> Literal["hierarchy", "composition"] | None:
+    profiles = active_profiles.profiles if active_profiles else load_default_profiles()
+    type_names = [_normalize_token(item.browse_name) for item in type_definition_hierarchy]
+    type_names.extend(
+        (
+            _normalize_token(node.type_definition_id),
+            _normalize_token(node.browse_name),
+            _normalize_token(node.node_id),
+        )
+    )
+    for profile in profiles:
+        for type_name in type_names:
+            for override in profile.overrides:
+                if _normalize_token(override.type_name) != type_name:
+                    continue
+                if override.force_hierarchy:
+                    return "hierarchy"
+                if override.force_composition:
+                    return "composition"
+    return None
 
 
 def reference_classification_overrides(active_profiles: ResolvedProfileSet | None = None) -> dict[str, str]:

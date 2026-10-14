@@ -9,8 +9,10 @@ objects while keeping implementations interoperable and provenance explicit.
 - Keep i3X identifiers stable and queryable.
 - Keep OPC UA provenance explicit and lossless.
 - Ensure i3X conformance checks can validate namespace and type relationships.
-- Keep the model valid even when no semantic profile matches a namespace.
-- Prefer generic fallback mapping first, then apply semantic profile overrides.
+- Keep the model valid even when no specialized semantic profile matches an
+  instance type.
+- Select specialized profiles from resolved instance type definitions and
+  their supertypes, then retain generic mapping as a fallback.
 
 ## Implementation Status
 
@@ -20,7 +22,8 @@ The current implementation already applies the following behavior:
 - `parent_id`, `is_composition`, `semantic_role`, and `mapping_confidence` on
   mapped i3X nodes
 - bidirectional relationships in the `relationships` map
-- namespace-aware profile matching with built-in generic and machinery profiles
+- type-namespace-aware profile matching with built-in generic and machinery
+  profiles
 - hierarchy-first parent selection with graph fallback for non-structural edges
 
 The code currently ships with built-in profiles. External profile loading can be
@@ -78,8 +81,20 @@ added later without changing the mapping contract described here.
 - Used as an explainability hint for profile-driven and generic mappings.
 
 11. Object instance `appliedProfileIds`
-- Ordered list of profile ids that matched the source node.
+- Ordered list of profile ids matched against the resolved instance type and
+  its `HasSubtype` ancestry.
+- A specialized profile must match its configured type namespace fragment and,
+  when configured, a type BrowseName on the same type or ancestor.
+- `force_hierarchy` and `force_composition` on a matching type override control
+  the incoming relationship for that instance, taking precedence over the
+  relationship-reference classification.
 - The built-in `generic` profile is always available as a fallback.
+
+Profile selection does not use the namespace of the instance NodeId or a
+`RequiredModel` declaration. Type-definition NodeIds are resolved to their
+BrowseNames and namespace URIs; matching considers the direct type and its
+supertypes, allowing an instance in an application namespace to inherit
+semantics from a normative companion-model type.
 
 ## Why this profile exists
 

@@ -4,7 +4,7 @@ import asyncio
 import json
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -32,6 +32,24 @@ class McpPromptExecuteRequest(BaseModel):
 
 class McpResourceReadRequest(BaseModel):
     uri: str
+
+
+class McpJsonRpcErrorDetail(BaseModel):
+    code: int
+    message: str
+    data: Any = None
+
+
+class McpJsonRpcSuccess(BaseModel):
+    jsonrpc: Literal["2.0"]
+    id: Any
+    result: Any
+
+
+class McpJsonRpcError(BaseModel):
+    jsonrpc: Literal["2.0"]
+    id: Any
+    error: McpJsonRpcErrorDetail
 
 
 def _jsonrpc_response(result_id: Any, result: Any) -> dict[str, Any]:
@@ -391,12 +409,72 @@ async def list_roots(request: Request) -> dict[str, Any]:
     return {"roots": _roots_catalog(request)}
 
 
-@router.get("")
+@router.get(
+    "",
+    response_class=StreamingResponse,
+    responses={
+        200: {
+            "description": "MCP discovery SSE stream, advertising the JSON-RPC POST endpoint.",
+            "content": {
+                "text/event-stream": {
+                    "schema": {"type": "string"},
+                    "example": "event: endpoint\ndata: https://gateway.example/mcp\n\n: keep-alive\n\n",
+                }
+            },
+        },
+    },
+)
 async def mcp_sse(request: Request) -> StreamingResponse:
     return await _sse_endpoint(request)
 
 
-@router.post("")
+@router.post(
+    "",
+    response_class=JSONResponse,
+    responses={
+        200: {
+            "model": McpJsonRpcSuccess | McpJsonRpcError | list[McpJsonRpcSuccess | McpJsonRpcError],
+            "description": "JSON-RPC 2.0 response object or batch array. Protocol errors are JSON-RPC error "
+            "objects, not i3X error envelopes.",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": {"tools": []},
+                    },
+                }
+            },
+        },
+        202: {
+            "description": "Notification accepted; there is no JSON-RPC response (the HTTP body is JSON null).",
+            "content": {"application/json": {"schema": {"type": "null"}, "example": None}},
+        },
+    },
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "content": {
+                "application/json": {
+                    "schema": {"anyOf": [{"type": "object"}, {"type": "array", "items": {"type": "object"}}]},
+                    "examples": {
+                        "request": {
+                            "summary": "List tools",
+                            "value": {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+                        },
+                        "notification": {
+                            "summary": "Initialized notification (HTTP 202)",
+                            "value": {
+                                "jsonrpc": "2.0",
+                                "method": "notifications/initialized",
+                            },
+                        },
+                    },
+                }
+            },
+        },
+    },
+)
 async def mcp_post(request: Request) -> JSONResponse:
     message = await request.json()
     if isinstance(message, list):

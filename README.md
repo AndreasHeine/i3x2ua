@@ -202,6 +202,22 @@ Operations are grouped in workflow order: **Exploratory** (address-space
 discovery), **Query** (current and historical reads), **Update** (writes), and
 **Subscribe** (data-change subscriptions), followed by **Diagnostics** and **MCP**.
 
+The generated document includes request examples, i3X HTTP error envelopes,
+subscription SSE wire format, sync overflow (`206`), optional-write failures
+(`501`), and conditional-GET headers and bodyless `304` responses. Validation
+errors return `400`, not FastAPI's default `422`. Bulk responses can use HTTP
+`200` while individual items fail: always inspect each item's `success`,
+`error`, and `responseDetail`. Example element and subscription IDs are
+placeholders; replace them with IDs returned by discovery or creation.
+
+For production, configure HTTPS and authentication/authorization at the reverse
+proxy; keep `/v1/info` public as required by i3X. The application does not enforce
+an HTTP authentication scheme, and the OpenAPI document deliberately does not
+claim otherwise. Subscription `clientId` is a scope identifier, not a credential.
+Diagnostics and MCP are gateway extensions; restrict their exposure according
+to your deployment policy. HTTP caching headers are not generated as MCP tool
+arguments.
+
 When running the nginx reverse proxy from `docker compose up -d`, use `http://localhost:8080/` for the HTTP entrypoint or `https://localhost:8443/` for the HTTPS entrypoint. `8443` is mapped to nginx's TLS port, so `http://localhost:8443/` will return a 400 error by design.
 
 ## API Surface

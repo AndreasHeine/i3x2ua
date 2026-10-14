@@ -4,11 +4,13 @@ import asyncio
 
 from fastapi import APIRouter, Depends, Query, Request
 
+from i3x_server.api.openapi import CONDITIONAL_GET_OPENAPI
 from i3x_server.api.v1.common_helpers import _resolve_model_nodes
 from i3x_server.api.v1.contracts import (
     BulkResponse,
     BulkResultItem,
     GetObjectsRequest,
+    HttpErrorResponse,
     ObjectInstanceResponse,
     SuccessResponse,
     _bulk_response,
@@ -25,7 +27,13 @@ from i3x_server.bootstrap.dependencies import get_opcua_client, get_or_build_mod
 from i3x_server.http_caching import enable_etag, raise_if_not_modified
 from i3x_server.schemas.state import BuildResult
 
-router = APIRouter(prefix="/v1", tags=["Exploratory"])
+router = APIRouter(
+    prefix="/v1",
+    tags=["Exploratory"],
+    responses={
+        502: {"model": HttpErrorResponse, "description": "Failed to read upstream OPC UA namespace metadata."},
+    },
+)
 
 # Serializing the full model can take ~1s; yield often enough to keep the event loop
 # responsive for other requests, SSE streams, and OPC UA keep-alives.
@@ -42,6 +50,7 @@ _RESPONSE_CHUNK_SIZE = 50
         "Supports conditional GET via ETag / If-None-Match (304 Not Modified)."
     ),
     dependencies=[Depends(enable_etag)],
+    openapi_extra=CONDITIONAL_GET_OPENAPI,
 )
 async def get_objects_v1(
     request: Request,

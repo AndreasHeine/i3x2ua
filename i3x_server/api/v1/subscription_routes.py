@@ -21,7 +21,9 @@ from i3x_server.api.v1.contracts import (
     CreateSubscriptionRequest,
     CreateSubscriptionResponse,
     DeleteSubscriptionsRequest,
+    HttpErrorResponse,
     ListSubscriptionsRequest,
+    PartialSyncResponse,
     RegisterMonitoredItemsRequest,
     StreamRequest,
     SubscriptionDetail,
@@ -45,6 +47,7 @@ router = APIRouter(prefix="/v1", tags=["Subscribe"])
 
 @router.post(
     "/subscriptions",
+    responses={502: {"model": HttpErrorResponse, "description": "Upstream subscription creation failed."}},
     summary="Create subscription",
     description=(
         "Create a subscription for a client and return its subscription ID. "
@@ -70,6 +73,10 @@ async def create_subscription_v1(
 
 @router.post(
     "/subscriptions/register",
+    responses={
+        404: {"model": HttpErrorResponse, "description": "Subscription not found in this client's scope."},
+        502: {"model": HttpErrorResponse, "description": "Upstream monitored-item registration failed."},
+    },
     summary="Register monitored objects",
     description=(
         "Register element IDs to a subscription. Each requested ID receives a per-item success or error result."
@@ -94,6 +101,10 @@ async def register_monitored_items_v1(
 
 @router.post(
     "/subscriptions/unregister",
+    responses={
+        404: {"model": HttpErrorResponse, "description": "Subscription not found in this client's scope."},
+        502: {"model": HttpErrorResponse, "description": "Upstream monitored-item removal failed."},
+    },
     summary="Unregister monitored objects",
     description=(
         "Remove element IDs from a subscription. Each requested ID receives a per-item success or error result."
@@ -116,6 +127,28 @@ async def remove_monitored_items_v1(
 
 @router.post(
     "/subscriptions/stream",
+    response_class=StreamingResponse,
+    responses={
+        200: {
+            "description": "SSE stream. Each data event contains a JSON array of updates; "
+            "comments provide connection and keepalive signals. Errors after headers are sent "
+            "cannot become HTTP error responses. Reconnect by POSTing this endpoint again.",
+            "content": {
+                "text/event-stream": {
+                    "schema": {"type": "string"},
+                    "example": ': connected\n\ndata: [{"sequenceNumber": 43, "elementId": "property-0123456789abcdef", '
+                    '"value": 23.5, "quality": "Good", "timestamp": "2026-10-14T06:00:00Z"}]\n\n'
+                    ": keepalive\n\nevent: close\ndata: {}\n\n",
+                }
+            },
+            "headers": {
+                "Cache-Control": {"schema": {"type": "string"}, "description": "no-cache"},
+                "X-Accel-Buffering": {"schema": {"type": "string"}, "description": "no"},
+                "Content-Encoding": {"schema": {"type": "string"}, "description": "identity"},
+            },
+        },
+        404: {"model": HttpErrorResponse, "description": "Subscription not found before streaming starts."},
+    },
     summary="Stream subscription updates via SSE",
     description=(
         "Open a Server-Sent Events (SSE) stream for a subscription. "
@@ -244,6 +277,31 @@ async def stream_subscription_v1(
 
 @router.post(
     "/subscriptions/sync",
+    response_model=None,
+    responses={
+        200: {"model": SuccessResponse[list[SyncBatch]], "description": "Pending updates, grouped in a batch."},
+        206: {
+            "model": PartialSyncResponse,
+            "description": "Queue overflow dropped updates; available updates and loss details are returned.",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "success": True,
+                        "result": [],
+                        "responseDetail": {
+                            "title": "Updates dropped due to queue overflow",
+                            "status": 206,
+                            "detail": (
+                                "Updates were dropped from the subscription queue. "
+                                "Dropped sequence numbers 1 through 42."
+                            ),
+                        },
+                    }
+                }
+            },
+        },
+        404: {"model": HttpErrorResponse, "description": "Subscription not found in this client's scope."},
+    },
     summary="Sync subscription updates",
     description=(
         "Return all pending updates for a subscription and acknowledge previously received ones. "

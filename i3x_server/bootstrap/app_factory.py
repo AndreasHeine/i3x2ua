@@ -13,7 +13,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from time import perf_counter
-from typing import cast
+from typing import Any, cast
 
 from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
@@ -25,8 +25,10 @@ from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipMiddleware
 
 from i3x_server.api.mcp import router as mcp_router
+from i3x_server.api.openapi import DocumentedFastAPI
 from i3x_server.api.ua import router as ua_router
 from i3x_server.api.v1 import router as v1_router
+from i3x_server.api.v1.contracts import HttpErrorResponse
 from i3x_server.api.v1.objecttype_helpers import warm_object_type_context
 from i3x_server.application.errors import ApplicationServiceError
 from i3x_server.config.settings import Settings, settings
@@ -433,12 +435,33 @@ def create_app() -> FastAPI:
     _prepare_otel_environment()
     description = (
         "Turn any OPC UA server into an i3X-compliant REST and MCP Enabled API with OpenAPI docs, "
-        "JSON, and live SSE streams. No OPC UA expertise required."
+        "JSON, and live SSE streams. No OPC UA expertise required.\n\n"
+        "**Workflow:** discover namespaces, types, and objects; use returned element IDs to read or write values. "
+        "For changes, create a subscription, register objects, then sync or stream updates, and delete it when done. "
+        "Example IDs are placeholders and must be replaced with IDs returned by this server.\n\n"
+        "**Errors:** request validation returns HTTP 400, not 422. HTTP errors use the i3X JSON envelope with "
+        "`success=false`, `error`, and `responseDetail`. Bulk operations can return HTTP 200 with failed items; "
+        "inspect every item's `success` and `responseDetail` rather than relying only on the HTTP status.\n\n"
+        "**Production deployment:** terminate HTTPS and enforce authentication/authorization at the configured "
+        "reverse proxy. `/v1/info` must remain available without authentication. No HTTP authentication scheme "
+        "is enforced by this application itself, so no deployment-specific security scheme is advertised here. "
+        "A subscription `clientId` scopes subscriptions; it does not authenticate a caller.\n\n"
+        "**Capabilities:** writes require `I3X_ENABLE_WRITES` and upstream permissions. Historical writes also "
+        "require upstream HistoryUpdate support. Diagnostics and MCP are gateway extensions, not i3X core routes."
     )
-    app = FastAPI(
+    app = DocumentedFastAPI(
         title="The i3X API Gateway for OPC UA",
         version=get_server_version(),
         description=description,
+        contact={"name": "i3x2ua project", "url": "https://github.com/AndreasHeine/i3x2ua"},
+        license_info={
+            "name": "AGPL-3.0 or commercial license",
+            "url": "https://github.com/AndreasHeine/i3x2ua/blob/master/LICENSE",
+        },
+        openapi_external_docs={
+            "description": "Deployment, usage, and OPC UA mapping documentation",
+            "url": "https://github.com/AndreasHeine/i3x2ua#readme",
+        },
         openapi_tags=[
             {"name": "Exploratory", "description": "Browse and discover the address space."},
             {"name": "Query", "description": "Read current or historical values of Objects."},
@@ -470,8 +493,6 @@ def create_app() -> FastAPI:
             expose_headers=["ETag", MODEL_REVISION_HEADER],
             allow_credentials=False,
         )
-
-    # Keep FastAPI's native OpenAPI generator as the single source of truth.
 
     project_root = PROJECT_ROOT
     frontend_dist = project_root / "dist"
@@ -636,10 +657,17 @@ def create_app() -> FastAPI:
         )
         return response
 
-    app.include_router(v1_router)
-    app.include_router(ua_router)
+    error_responses: dict[int | str, dict[str, Any]] = {
+        400: {
+            "model": HttpErrorResponse,
+            "description": "Invalid request, including body or parameter validation errors.",
+        },
+        500: {"model": HttpErrorResponse, "description": "Internal server error."},
+    }
+    app.include_router(v1_router, responses=error_responses)
+    app.include_router(ua_router, responses=error_responses)
     if mcp_enabled:
-        app.include_router(mcp_router)
+        app.include_router(mcp_router, responses=error_responses)
 
     if frontend_dist.exists():
         app.frontend("/", directory=str(frontend_dist), fallback=None)

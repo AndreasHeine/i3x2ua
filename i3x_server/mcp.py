@@ -297,6 +297,8 @@ def build_mcp_tools(
                 parameter_location = parameter.get("in")
                 if not isinstance(parameter_name, str) or not isinstance(parameter_location, str):
                     continue
+                if parameter_location not in {"path", "query"}:
+                    continue
                 parameter_schema = _resolve_schema(parameter.get("schema", {"type": "string"}), components)
                 input_properties[parameter_name] = parameter_schema
                 if parameter.get("required"):

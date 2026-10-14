@@ -13,6 +13,7 @@ import pytest
 from asyncua import ua
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
+from jsonschema import Draft202012Validator
 from starlette.requests import Request
 
 from i3x_server.api.mcp import monolithic as mcp_api
@@ -2402,6 +2403,7 @@ def test_v1_subscription_sync_returns_206_on_overflow(client: TestClient) -> Non
     assert isinstance(payload["result"], list)
     assert payload["responseDetail"]["status"] == 206
     assert "Dropped sequence numbers" in payload["responseDetail"]["detail"]
+    _assert_documented_response(client, "post", "/v1/subscriptions/sync", 206, payload)
 
 
 def test_v1_subscription_stream_not_found(client: TestClient) -> None:
@@ -2457,6 +2459,144 @@ def test_openapi_operations_are_grouped_by_workflow(client: TestClient) -> None:
             assert operation["tags"] == [expected_tag], (method, path)
     assert generated["paths"]["/v1/objects/value"]["post"]["operationId"] == "queryLastKnownValuesV1"
     assert generated["paths"]["/v1/namespaces"]["get"]["operationId"] == "getNamespacesV1"
+
+
+def _assert_documented_response(client: TestClient, method: str, path: str, status: int, payload: Any) -> None:
+    document = client.get("/openapi.json").json()
+    schema = document["paths"][path][method]["responses"][str(status)]["content"]["application/json"]["schema"]
+    Draft202012Validator(
+        {**schema, "components": document["components"]},
+        format_checker=Draft202012Validator.FORMAT_CHECKER,
+    ).validate(payload)
+
+
+def test_openapi_errors_match_runtime(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    validation = client.post("/v1/objects/value", json={"maxDepth": 1})
+    assert validation.status_code == 400
+    _assert_documented_response(client, "post", "/v1/objects/value", 400, validation.json())
+
+    missing = client.post("/v1/subscriptions/sync", json={"clientId": "example-client", "subscriptionId": "missing"})
+    assert missing.status_code == 404
+    _assert_documented_response(client, "post", "/v1/subscriptions/sync", 404, missing.json())
+
+    body = {
+        "updates": [
+            {
+                "elementId": "property-abc",
+                "value": {
+                    "value": 23.5,
+                    "quality": "Good",
+                    "timestamp": "2026-10-14T06:00:00Z",
+                },
+            }
+        ]
+    }
+    for path in ("/v1/objects/value", "/v1/objects/history"):
+        disabled = client.put(path, json=body)
+        assert disabled.status_code == 501
+        _assert_documented_response(client, "put", path, 501, disabled.json())
+
+    monkeypatch.setenv("I3X_ENABLE_WRITES", "1")
+    _fastapi_app(client).state.opcua_client.history_update_support = False
+    unsupported = client.put("/v1/objects/history", json=body)
+    assert unsupported.status_code == 501
+    assert "results" in unsupported.json()
+    _assert_documented_response(client, "put", "/v1/objects/history", 501, unsupported.json())
+
+
+def test_openapi_validation_and_streaming_contracts(client: TestClient) -> None:
+    document = client.get("/openapi.json").json()
+    for methods in document["paths"].values():
+        for operation in methods.values():
+            if "responses" not in operation:
+                continue
+            assert "422" not in operation["responses"]
+            assert "400" in operation["responses"]
+            assert "500" in operation["responses"]
+    for path, method in (("/v1/subscriptions/stream", "post"), ("/mcp", "get")):
+        content = document["paths"][path][method]["responses"]["200"]["content"]
+        assert set(content) == {"text/event-stream"}
+        assert content["text/event-stream"]["schema"] == {"type": "string"}
+        assert "\n\n" in content["text/event-stream"]["example"]
+    sync = document["paths"]["/v1/subscriptions/sync"]["post"]["responses"]
+    assert sync["200"]["content"]["application/json"]["schema"]["$ref"]
+    partial_schema = document["components"]["schemas"]["PartialSyncResponse"]
+    assert set(partial_schema["required"]) == {"success", "result", "responseDetail"}
+    assert document["paths"]["/mcp"]["post"]["responses"]["202"]["content"]["application/json"]["schema"] == {
+        "type": "null"
+    }
+    assert "securitySchemes" not in document["components"]
+    assert document["info"]["contact"]["url"].startswith("https://")
+    assert document["externalDocs"]["url"].startswith("https://")
+    assert "304" not in document["paths"]["/v1/model/metrics"]["get"]["responses"]
+
+
+def test_openapi_mcp_jsonrpc_responses_match_runtime(client: TestClient) -> None:
+    for message in (
+        {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+        {"jsonrpc": "2.0", "id": 2, "method": "unknown-method"},
+        [{"jsonrpc": "2.0", "id": 3, "method": "tools/list"}],
+    ):
+        response = client.post("/mcp", json=message)
+        assert response.status_code == 200
+        _assert_documented_response(client, "post", "/mcp", 200, response.json())
+    notification = client.post("/mcp", json={"jsonrpc": "2.0", "method": "notifications/initialized"})
+    assert notification.status_code == 202
+    _assert_documented_response(client, "post", "/mcp", 202, notification.json())
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/v1/objects",
+        "/v1/objecttypes",
+        "/v1/namespaces",
+        "/v1/relationshiptypes",
+        "/v1/model/namespace-gaps",
+    ],
+)
+def test_openapi_conditional_get_matches_runtime(client: TestClient, path: str) -> None:
+    document = client.get("/openapi.json").json()
+    operation = document["paths"][path]["get"]
+    parameter = next(item for item in operation["parameters"] if item["name"] == "If-None-Match")
+    assert parameter["in"] == "header"
+    assert parameter["required"] is False
+    assert "content" not in operation["responses"]["304"]
+    for status in ("200", "304"):
+        assert {"ETag", "I3X-Model-Revision"} <= set(operation["responses"][status]["headers"])
+    response = client.get(path)
+    assert response.status_code == 200
+    _assert_documented_response(client, "get", path, 200, response.json())
+    conditional = client.get(path, headers={"If-None-Match": response.headers["etag"]})
+    assert conditional.status_code == 304
+    assert conditional.content == b""
+    assert conditional.headers["etag"] == response.headers["etag"]
+    tools = client.get("/mcp/tools").json()["tools"]
+    assert "If-None-Match" not in tools[operation["operationId"]]["inputSchema"]["properties"]
+
+
+def test_openapi_examples_match_schemas(client: TestClient) -> None:
+    document = client.get("/openapi.json").json()
+
+    def validate_example(schema: dict[str, Any], example: Any) -> None:
+        Draft202012Validator(
+            {**schema, "components": document["components"]},
+            format_checker=Draft202012Validator.FORMAT_CHECKER,
+        ).validate(example)
+
+    schemas = document["components"]["schemas"]
+    for schema in schemas.values():
+        for example in schema.get("examples", []):
+            validate_example(schema, example)
+    for methods in document["paths"].values():
+        for operation in methods.values():
+            containers = [operation.get("requestBody", {}), *operation.get("responses", {}).values()]
+            for container in containers:
+                for content in container.get("content", {}).values():
+                    if "example" in content:
+                        validate_example(content["schema"], content["example"])
+                    for example in content.get("examples", {}).values():
+                        validate_example(content["schema"], example["value"])
 
 
 def _resolve_openapi_schema(schema: Any, components: Mapping[str, Any]) -> Any:
@@ -2678,6 +2818,8 @@ def test_mcp_tool_input_schemas_match_openapi_contract(client: TestClient) -> No
 
             for parameter in details.get("parameters", []):
                 if not isinstance(parameter, Mapping):
+                    continue
+                if parameter.get("in") not in {"path", "query"}:
                     continue
                 parameter_name = parameter.get("name")
                 if not isinstance(parameter_name, str):

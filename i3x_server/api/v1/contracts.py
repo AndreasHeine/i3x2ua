@@ -44,6 +44,12 @@ class ResponseDetail(BaseModel):
     detail: str
 
 
+class HttpErrorResponse(BaseModel):
+    success: Literal[False]
+    error: ErrorDetail
+    responseDetail: ResponseDetail
+
+
 class BulkResultItem(BaseModel, Generic[T]):
     success: bool = True
     elementId: str | None = None
@@ -255,9 +261,9 @@ class RelationshipType(BaseModel):
 
 
 class VQT(BaseModel):
-    value: Any
-    quality: str
-    timestamp: str
+    value: Any = Field(description="Source value; may be null when no valid data is available.")
+    quality: str = Field(description="Source quality: Good, Uncertain, Bad, or GoodNoData.")
+    timestamp: str = Field(description="Source timestamp encoded as an RFC 3339 date-time.")
 
 
 class CurrentValueResult(BaseModel):
@@ -288,6 +294,10 @@ class GetRelationshipTypesRequest(BaseModel):
 
 
 class GetObjectsRequest(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={"examples": [{"elementIds": ["property-0123456789abcdef"], "includeMetadata": True}]}
+    )
+
     elementIds: list[str]
     includeMetadata: bool = False
 
@@ -299,23 +309,58 @@ class GetRelatedObjectsRequest(BaseModel):
 
 
 class GetObjectValueRequest(BaseModel):
-    elementIds: list[str]
-    maxDepth: int | None = 1
+    model_config = ConfigDict(
+        json_schema_extra={"examples": [{"elementIds": ["property-0123456789abcdef"], "maxDepth": 1}]}
+    )
+
+    elementIds: list[str] = Field(description="Object element IDs returned by discovery; examples are placeholders.")
+    maxDepth: int | None = Field(
+        default=1,
+        description="Composition depth: 1 reads only the object, 2 includes direct components, 0 is unlimited. "
+        "Null uses 1. Hierarchy-only children are not traversed.",
+    )
 
 
 class GetObjectHistoryRequest(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "elementIds": ["property-0123456789abcdef"],
+                    "startTime": "2026-10-14T06:00:00Z",
+                    "endTime": "2026-10-14T07:00:00Z",
+                    "maxDepth": 1,
+                }
+            ]
+        }
+    )
+
     elementIds: list[str]
-    startTime: str
-    endTime: str
-    maxDepth: int | None = Field(default=1, ge=0)
+    startTime: str = Field(description="Start of the history interval; ISO 8601 date-time. Missing timezone uses UTC.")
+    endTime: str = Field(description="End of the history interval; must be greater than or equal to startTime.")
+    maxDepth: int | None = Field(
+        default=1,
+        ge=0,
+        description="Composition depth: 1 reads only the object, 0 is unlimited. Null uses 1.",
+    )
 
 
 class WriteVQTRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    value: Any
-    quality: Literal["Good", "GoodNoData", "Bad", "Uncertain"] = "Good"
-    timestamp: AwareDatetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    value: Any = Field(
+        description="Value matching the discovered object's schema. Null requires Bad or GoodNoData quality."
+    )
+    quality: Literal["Good", "GoodNoData", "Bad", "Uncertain"] = Field(
+        default="Good", description="Bad and GoodNoData require a null value."
+    )
+    timestamp: AwareDatetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        description=(
+            "RFC 3339 timestamp with a timezone (Z or numeric offset). "
+            "Omission uses the current server UTC time."
+        ),
+    )
 
     @field_validator("timestamp", mode="before")
     @classmethod
@@ -352,7 +397,25 @@ class ValueUpdateItemRequest(BaseModel):
 
 
 class UpdateObjectValuesRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={
+            "examples": [
+                {
+                    "updates": [
+                        {
+                            "elementId": "property-0123456789abcdef",
+                            "value": {
+                                "value": 23.5,
+                                "quality": "Good",
+                                "timestamp": "2026-10-14T06:00:00Z",
+                            },
+                        }
+                    ]
+                }
+            ]
+        },
+    )
 
     updates: list[ValueUpdateItemRequest]
 
@@ -360,9 +423,16 @@ class UpdateObjectValuesRequest(BaseModel):
 class HistoryWriteVQTRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    value: Any
-    quality: Literal["Good", "Uncertain", "Bad", "GoodNoData"]
-    timestamp: AwareDatetime
+    value: Any = Field(
+        description="Value matching the discovered object's schema. Null requires Bad or GoodNoData quality."
+    )
+    quality: Literal["Good", "Uncertain", "Bad", "GoodNoData"] = Field(
+        description="Required historical quality. Bad and GoodNoData require a null value."
+    )
+    timestamp: AwareDatetime = Field(
+        description="Required RFC 3339 UTC timestamp with a Z suffix, exactly representable at microsecond precision. "
+        "Numeric timezone offsets and nonzero sub-microsecond digits are rejected."
+    )
 
     @field_validator("timestamp", mode="before")
     @classmethod
@@ -396,12 +466,43 @@ class HistoryUpdateItemRequest(BaseModel):
 
 
 class UpdateObjectHistoryRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={
+            "examples": [
+                {
+                    "updates": [
+                        {
+                            "elementId": "property-0123456789abcdef",
+                            "value": {
+                                "value": 23.5,
+                                "quality": "Good",
+                                "timestamp": "2026-10-14T06:00:00Z",
+                            },
+                        }
+                    ]
+                }
+            ]
+        },
+    )
 
     updates: list[HistoryUpdateItemRequest] = Field(min_length=1)
 
 
 class RegisterMonitoredItemsRequest(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "clientId": "example-client",
+                    "subscriptionId": "subscription-from-create",
+                    "elementIds": ["property-0123456789abcdef"],
+                    "maxDepth": 1,
+                }
+            ]
+        }
+    )
+
     clientId: str | None = None
     subscriptionId: str
     elementIds: list[str]
@@ -416,6 +517,18 @@ class RegisterMonitoredItemsRequest(BaseModel):
 
 
 class SyncRequest(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "clientId": "example-client",
+                    "subscriptionId": "subscription-from-create",
+                    "acknowledgeSequence": 42,
+                }
+            ]
+        }
+    )
+
     clientId: str | None = None
     subscriptionId: str
     acknowledgeSequence: int | None = Field(
@@ -441,6 +554,17 @@ class DeleteSubscriptionsRequest(BaseModel):
 
 
 class StreamRequest(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "clientId": "example-client",
+                    "subscriptionId": "subscription-from-create",
+                }
+            ]
+        }
+    )
+
     clientId: str | None = None
     subscriptionId: str
     acknowledgeSequence: int | None = Field(
@@ -456,7 +580,11 @@ class StreamRequest(BaseModel):
 
 
 class CreateSubscriptionRequest(BaseModel):
-    clientId: str
+    model_config = ConfigDict(
+        json_schema_extra={"examples": [{"clientId": "example-client", "displayName": "Machine telemetry"}]}
+    )
+
+    clientId: str = Field(description="Unique client scope identifier. This is not an authentication credential.")
     displayName: str | None = None
 
 
@@ -485,3 +613,14 @@ class SyncUpdate(BaseModel):
 class SyncBatch(BaseModel):
     sequenceNumber: int
     updates: list[SyncUpdate] = Field(default_factory=list)
+
+
+class PartialSyncResponse(BaseModel):
+    success: Literal[True]
+    result: list[SyncBatch]
+    responseDetail: ResponseDetail
+
+
+class HistoryWriteUnavailableResponse(BulkResponse[None]):
+    success: Literal[False]
+    responseDetail: ResponseDetail

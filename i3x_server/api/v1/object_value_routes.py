@@ -23,6 +23,8 @@ from i3x_server.api.v1.contracts import (
     GetObjectValueRequest,
     GetRelatedObjectsRequest,
     HistoricalValueResult,
+    HistoryWriteUnavailableResponse,
+    HttpErrorResponse,
     RelatedObjectResult,
     UpdateObjectHistoryRequest,
     UpdateObjectValuesRequest,
@@ -61,6 +63,7 @@ router = APIRouter(prefix="/v1")
     "/objects/related",
     tags=["Exploratory"],
     response_model=BulkResponse[list[RelatedObjectResult]],
+    responses={502: {"model": HttpErrorResponse, "description": "Failed to read upstream OPC UA namespace metadata."}},
     summary="Query related objects",
     description=(
         "Return all objects related to the requested elements across all relationship planes: "
@@ -104,6 +107,48 @@ async def query_related_objects_v1(
     "/objects/value",
     tags=["Query"],
     response_model=BulkResponse[CurrentValueResult],
+    responses={
+        502: {"model": HttpErrorResponse, "description": "Upstream OPC UA value read failed."},
+        200: {
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "mixedResults": {
+                            "summary": "A successful read and an unknown element (HTTP 200)",
+                            "value": {
+                                "success": False,
+                                "results": [
+                                    {
+                                        "success": True,
+                                        "elementId": "property-0123456789abcdef",
+                                        "result": {
+                                            "isComposition": False,
+                                            "value": 23.5,
+                                            "quality": "Good",
+                                            "timestamp": "2026-10-14T06:00:00Z",
+                                        },
+                                    },
+                                    {
+                                        "success": False,
+                                        "elementId": "unknown",
+                                        "error": {
+                                            "code": 404,
+                                            "message": "Object not found",
+                                        },
+                                        "responseDetail": {
+                                            "title": "Not Found",
+                                            "status": 404,
+                                            "detail": "Object not found",
+                                        },
+                                    },
+                                ],
+                            },
+                        },
+                    }
+                }
+            }
+        },
+    },
     summary="Query last known values",
     description=(
         "Return the last known value, quality, and timestamp for one or more objects. "
@@ -175,6 +220,7 @@ async def query_last_known_values_v1(
     "/objects/history",
     tags=["Query"],
     response_model=BulkResponse[HistoricalValueResult],
+    responses={502: {"model": HttpErrorResponse, "description": "Upstream OPC UA history read failed."}},
     summary="Query historical values",
     description=(
         "Return historical values for one or more objects within the specified time range. "
@@ -246,6 +292,7 @@ async def query_historical_values_v1(
     "/objects/value",
     tags=["Update"],
     response_model=BulkResponse[None],
+    responses={501: {"model": HttpErrorResponse, "description": "Current value writes are disabled."}},
     summary="Update current values",
     description=(
         "Write current values for one or more objects using a bulk request. "
@@ -285,7 +332,13 @@ async def update_object_values_v1(
     "/objects/history",
     tags=["Update"],
     response_model=BulkResponse[None],
-    responses={501: {"description": "Writes disabled or upstream HistoryUpdate service unavailable"}},
+    responses={
+        501: {
+            "model": HttpErrorResponse | HistoryWriteUnavailableResponse,
+            "description": "Writes disabled (error envelope), or upstream HistoryUpdate unsupported "
+            "(bulk results with responseDetail).",
+        }
+    },
     summary="Update historical values",
     description=(
         "Insert or replace historical records by source timestamp for Variable-backed property elements. "

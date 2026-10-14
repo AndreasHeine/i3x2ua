@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query
 
+from i3x_server.api.openapi import CONDITIONAL_GET_OPENAPI
 from i3x_server.api.v1.contracts import (
     ModelMetricsResponse,
     ModelNamespaceGapItem,
@@ -37,6 +38,7 @@ async def get_model_metrics_v1(
         "including counts grouped by node kind and namespace index. Supports conditional GET via ETag."
     ),
     dependencies=[Depends(enable_etag)],
+    openapi_extra=CONDITIONAL_GET_OPENAPI,
 )
 async def get_model_namespace_gaps_v1(
     limit: int = Query(default=50, ge=1, le=500),

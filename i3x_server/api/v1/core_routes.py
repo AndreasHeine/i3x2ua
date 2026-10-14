@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query, Request
 
+from i3x_server.api.openapi import CONDITIONAL_GET_OPENAPI
 from i3x_server.api.v1.contracts import (
     BulkResponse,
     GetRelationshipTypesRequest,
+    HttpErrorResponse,
     Namespace,
     RelationshipType,
     ServerInfo,
@@ -35,9 +37,11 @@ async def get_info_v1(
 @router.get(
     "/namespaces",
     response_model=SuccessResponse[list[Namespace]],
+    responses={502: {"model": HttpErrorResponse, "description": "Failed to read upstream OPC UA namespaces."}},
     summary="List namespaces",
     description="Return all namespaces available in the current model. Supports conditional GET via ETag.",
     dependencies=[Depends(enable_etag)],
+    openapi_extra=CONDITIONAL_GET_OPENAPI,
 )
 async def get_namespaces_v1(
     request: Request,
@@ -58,6 +62,7 @@ async def get_namespaces_v1(
         "Supports conditional GET via ETag."
     ),
     dependencies=[Depends(enable_etag)],
+    openapi_extra=CONDITIONAL_GET_OPENAPI,
 )
 async def get_relationship_types_v1(
     namespace_uri: str | None = Query(default=None, alias="namespaceUri"),

@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
+from i3x_server.api.v1.contracts import HttpErrorResponse
 from i3x_server.application.ports.opcua import OpcUaClientProtocol
 from i3x_server.bootstrap.dependencies import get_opcua_client
 from i3x_server.errors import i3x_http_error
@@ -81,7 +82,13 @@ def _to_json_safe(value: Any) -> Any:
     return str(value)
 
 
-@router.get("/status", response_model=UaSuccessResponse)
+@router.get(
+    "/status",
+    response_model=UaSuccessResponse,
+    responses={
+        502: {"model": HttpErrorResponse, "description": "Failed to read upstream OPC UA ServerStatus."},
+    },
+)
 async def get_ua_status(opcua_client: OpcUaClientProtocol = Depends(get_opcua_client)) -> UaSuccessResponse:
     try:
         data_value = await opcua_client.read_server_status_data_value()
@@ -118,7 +125,13 @@ async def get_ua_connection(opcua_client: OpcUaClientProtocol = Depends(get_opcu
     return UaSuccessResponse(result=result)
 
 
-@router.get("/limits", response_model=UaSuccessResponse)
+@router.get(
+    "/limits",
+    response_model=UaSuccessResponse,
+    responses={
+        502: {"model": HttpErrorResponse, "description": "Failed to read upstream OPC UA limits and capabilities."},
+    },
+)
 async def get_ua_limits(opcua_client: OpcUaClientProtocol = Depends(get_opcua_client)) -> UaSuccessResponse:
     try:
         operational_limits = await opcua_client.get_operational_limits()

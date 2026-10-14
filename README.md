@@ -248,13 +248,30 @@ Optional OPC UA diagnostic endpoints are exposed under `/ua`:
 
 Optional MCP endpoints are exposed only when `I3X_ENABLE_MCP=1`:
 
-- SSE discovery and JSON-RPC 2.0 entry point (`GET /mcp`, `POST /mcp`)
+- Streamable HTTP JSON-RPC entry point (`POST /mcp`; `GET /mcp` returns `405`)
 - tool catalog and REST tool call (`/mcp/tools`, `/mcp/call`)
 - prompt listing, definition, and execution (`/mcp/prompts`, `/mcp/prompts/{name}`, `/mcp/prompts/execute`)
 - resource listing and reading (`/mcp/resources`, `/mcp/resources/read`)
-- root listing (`/mcp/roots`)
+- plant root listing (custom REST helper `/mcp/roots`, not MCP filesystem roots)
 
-MCP scope emphasis: the MCP bridge supports `initialize`, `tools/list`, `tools/call`, `prompts/list`, `prompts/get`, `resources/list`, `resources/read`, `roots/list`, and JSON-RPC 2.0 batch requests.
+MCP targets protocol revision `2025-06-18`. It supports `initialize`, `ping`,
+`tools/list`, `tools/call`, `prompts/list`, `prompts/get`, `resources/list`,
+`resources/read`, and `resources/templates/list` (currently empty). Unsupported
+versions negotiate back to `2025-06-18`; subsequent requests may specify
+`MCP-Protocol-Version: 2025-06-18`. Explicit unsupported HTTP version headers
+are rejected with `400`. JSON-RPC batch arrays are not supported by this revision.
+
+Tool catalogs include annotations and an `outputSchema`. Calls return legacy JSON
+text alongside `structuredContent: {"statusCode": ..., "body": ...}` and `isError`,
+including per-item failures. Invalid tool arguments use JSON-RPC `-32602`;
+execution failures use tool results. Notifications return `202` with no body.
+Standard `prompts/get` accepts string `arguments` and returns rendered `messages`;
+custom REST prompt helpers and `prompts/execute` retain their existing formats.
+
+MCP requests with an `Origin` must match a loopback request origin or an explicit origin
+in `I3X_CORS_ALLOWED_ORIGINS` (wildcards do not authorize MCP origins). Configure
+the external origin when deploying behind a reverse proxy. Authentication remains
+the deployment's responsibility; use HTTPS and an authenticated proxy remotely.
 
 MCP write policy: `PUT` routes are intentionally excluded from MCP tool generation. Object writes are available via REST only.
 

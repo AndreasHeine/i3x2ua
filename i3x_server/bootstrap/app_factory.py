@@ -484,12 +484,13 @@ def create_app() -> FastAPI:
     app.add_middleware(ModelRevisionMiddleware)
     app.add_middleware(GZipMiddleware, minimum_size=1)
     cors_origins = settings.cors_allowed_origins
+    app.state.mcp_allowed_origins = [origin for origin in cors_origins if origin != "*"]
     if cors_origins:
         app.add_middleware(
             CORSMiddleware,
             allow_origins=cors_origins,
             allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-            allow_headers=["Content-Type", "Accept", "Authorization", "If-None-Match"],
+            allow_headers=["Content-Type", "Accept", "Authorization", "If-None-Match", "MCP-Protocol-Version"],
             expose_headers=["ETag", MODEL_REVISION_HEADER],
             allow_credentials=False,
         )

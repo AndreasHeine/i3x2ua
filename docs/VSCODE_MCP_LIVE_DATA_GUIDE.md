@@ -20,12 +20,15 @@ $env:I3X_ENABLE_MCP="1"
 uv run uvicorn i3x_server.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Verify both endpoints:
+Verify the OpenAPI endpoint and MCP tool catalog:
 
 - `http://127.0.0.1:8000/openapi.json`
-- `http://127.0.0.1:8000/mcp`
+- `http://127.0.0.1:8000/mcp/tools`
 
 If `/mcp` returns `404`, MCP is not enabled in the server process.
+An enabled `/mcp` returns `405` to a browser GET; this is expected. Configure
+VS Code with the `/mcp` URL below: it uses POST-based Streamable HTTP with
+protocol revision `2025-06-18`, not legacy SSE discovery.
 
 ## 2. Add the MCP Server in VS Code
 

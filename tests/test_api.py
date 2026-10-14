@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import os
 import time
-from collections.abc import AsyncGenerator, Generator, Mapping
+from collections.abc import Generator, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -14,9 +14,7 @@ from asyncua import ua
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from jsonschema import Draft202012Validator
-from starlette.requests import Request
 
-from i3x_server.api.mcp import monolithic as mcp_api
 from i3x_server.api.v1.monolithic import _expanded_node_id, _to_json_safe_value
 from i3x_server.bootstrap.app_factory import create_app
 from i3x_server.infrastructure.opcua.client import (
@@ -2518,7 +2516,7 @@ def test_openapi_validation_and_streaming_contracts(client: TestClient) -> None:
             assert "422" not in operation["responses"]
             assert "400" in operation["responses"]
             assert "500" in operation["responses"]
-    for path, method in (("/v1/subscriptions/stream", "post"), ("/mcp", "get")):
+    for path, method in (("/v1/subscriptions/stream", "post"),):
         content = document["paths"][path][method]["responses"]["200"]["content"]
         assert set(content) == {"text/event-stream"}
         assert content["text/event-stream"]["schema"] == {"type": "string"}
@@ -2527,9 +2525,7 @@ def test_openapi_validation_and_streaming_contracts(client: TestClient) -> None:
     assert sync["200"]["content"]["application/json"]["schema"]["$ref"]
     partial_schema = document["components"]["schemas"]["PartialSyncResponse"]
     assert set(partial_schema["required"]) == {"success", "result", "responseDetail"}
-    assert document["paths"]["/mcp"]["post"]["responses"]["202"]["content"]["application/json"]["schema"] == {
-        "type": "null"
-    }
+    assert document["paths"]["/mcp"]["post"]["responses"]["202"]["content"] == {}
     assert "securitySchemes" not in document["components"]
     assert document["info"]["contact"]["url"].startswith("https://")
     assert document["externalDocs"]["url"].startswith("https://")
@@ -2540,14 +2536,14 @@ def test_openapi_mcp_jsonrpc_responses_match_runtime(client: TestClient) -> None
     for message in (
         {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
         {"jsonrpc": "2.0", "id": 2, "method": "unknown-method"},
-        [{"jsonrpc": "2.0", "id": 3, "method": "tools/list"}],
+        {"jsonrpc": "2.0", "id": 3, "method": "ping"},
     ):
         response = client.post("/mcp", json=message)
         assert response.status_code == 200
         _assert_documented_response(client, "post", "/mcp", 200, response.json())
     notification = client.post("/mcp", json={"jsonrpc": "2.0", "method": "notifications/initialized"})
     assert notification.status_code == 202
-    _assert_documented_response(client, "post", "/mcp", 202, notification.json())
+    assert notification.content == b""
 
 
 @pytest.mark.parametrize(
@@ -3046,29 +3042,8 @@ def test_mcp_support_is_disabled_by_default(client_without_mcp: TestClient) -> N
     assert not any(path.startswith("/mcp") for path in openapi["paths"])
 
 
-async def test_mcp_endpoint_exposes_sse_discovery(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(mcp_api, "_SSE_KEEPALIVE_INTERVAL_SECONDS", 0)
-    request = Request(
-        {
-            "type": "http",
-            "http_version": "1.1",
-            "method": "GET",
-            "scheme": "http",
-            "path": "/mcp",
-            "raw_path": b"/mcp",
-            "query_string": b"",
-            "root_path": "",
-            "headers": [],
-            "server": ("testserver", 80),
-            "client": ("testclient", 50000),
-        }
-    )
-    response = await mcp_api._sse_endpoint(request)
-    stream = cast(AsyncGenerator[str, None], response.body_iterator)
-    assert await anext(stream) == "event: endpoint\n"
-    assert await anext(stream) == "data: http://testserver/mcp\n\n"
-    assert await anext(stream) == ": keep-alive\n\n"
-    await stream.aclose()
+def test_mcp_endpoint_rejects_get_stream(client: TestClient) -> None:
+    assert client.get("/mcp").status_code == 405
 
 
 def test_mcp_initialize_request(client: TestClient) -> None:
@@ -3089,7 +3064,7 @@ def test_mcp_initialize_request(client: TestClient) -> None:
     assert payload["result"]["capabilities"]["tools"]["listChanged"] is False
     assert payload["result"]["capabilities"]["prompts"]["listChanged"] is False
     assert payload["result"]["capabilities"]["resources"]["listChanged"] is False
-    assert payload["result"]["capabilities"]["roots"]["listChanged"] is False
+    assert "roots" not in payload["result"]["capabilities"]
 
 
 def test_mcp_tools_list_request(client: TestClient) -> None:
@@ -3209,11 +3184,10 @@ def test_mcp_roots_list_request(client: TestClient) -> None:
     )
     assert response.status_code == 200
     payload = response.json()
-    roots = payload["result"]["roots"]
-    assert any(item["uri"] == "i3x://roots/asset-root" for item in roots)
+    assert payload["error"]["code"] == -32601
 
 
-def test_mcp_batch_request_returns_multiple_results(client: TestClient) -> None:
+def test_mcp_batch_request_is_rejected(client: TestClient) -> None:
     response = client.post(
         "/mcp",
         json=[
@@ -3223,10 +3197,7 @@ def test_mcp_batch_request_returns_multiple_results(client: TestClient) -> None:
     )
     assert response.status_code == 200
     payload = response.json()
-    assert isinstance(payload, list)
-    assert len(payload) == 2
-    ids = {item["id"] for item in payload}
-    assert ids == {27, 28}
+    assert payload["error"]["code"] == -32600
 
 
 def test_mcp_empty_batch_returns_invalid_request(client: TestClient) -> None:
@@ -3254,14 +3225,17 @@ def test_mcp_prompts_get_request(client: TestClient) -> None:
             "jsonrpc": "2.0",
             "id": 22,
             "method": "prompts/get",
-            "params": {"name": "machine_health_snapshot"},
+            "params": {
+                "name": "machine_health_snapshot",
+                "arguments": {"asset_id": "Press-01", "lookback_minutes": "60"},
+            },
         },
     )
     assert response.status_code == 200
     payload = response.json()
     prompt = payload["result"]
-    assert prompt["name"] == "machine_health_snapshot"
-    assert prompt["inputs"] == ["asset_id", "lookback_minutes"]
+    assert prompt["messages"][0]["role"] == "user"
+    assert "Press-01" in prompt["messages"][0]["content"]["text"]
 
 
 def test_mcp_prompts_execute_request(client: TestClient) -> None:
@@ -3313,7 +3287,7 @@ def test_mcp_initialize_notification_returns_no_response(client: TestClient) -> 
     )
 
     assert response.status_code == 202
-    assert response.text == "null"
+    assert response.content == b""
 
 
 def test_mcp_tools_list_notification_returns_no_response(client: TestClient) -> None:
@@ -3326,7 +3300,7 @@ def test_mcp_tools_list_notification_returns_no_response(client: TestClient) -> 
     )
 
     assert response.status_code == 202
-    assert response.text == "null"
+    assert response.content == b""
 
 
 def test_mcp_tools_call_notification_returns_no_response(client: TestClient) -> None:
@@ -3341,7 +3315,7 @@ def test_mcp_tools_call_notification_returns_no_response(client: TestClient) -> 
     )
 
     assert response.status_code == 202
-    assert response.text == "null"
+    assert response.content == b""
 
 
 def test_mcp_call_allows_omitting_optional_query_parameters(client: TestClient) -> None:
@@ -3387,9 +3361,8 @@ def test_mcp_jsonrpc_tools_call_returns_jsonrpc_error_for_http_exception(client:
     payload = response.json()
     assert payload["jsonrpc"] == "2.0"
     assert payload["id"] == 301
-    assert payload["error"]["code"] == 400
-    assert payload["error"]["code"] in {400, -32602}
-    assert "Missing required" in payload["error"]["message"]
+    assert payload["error"]["code"] == -32602
+    assert "required" in payload["error"]["message"]
 
 
 def test_mcp_call_dispatches_to_existing_api(client: TestClient) -> None:

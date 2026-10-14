@@ -20,6 +20,7 @@ from i3x_server.api.mcp.monolithic import (
     _roots_catalog,
     _tool_catalog,
 )
+from i3x_server.mcp import McpToolDefinition
 from i3x_server.prompts.registry import PromptDefinition, PromptRegistry
 
 
@@ -39,6 +40,9 @@ class _Tool:
         self.name = name
         self.description = f"Tool {name}"
         self.input_schema = {"type": "object"}
+        definition = McpToolDefinition(name, self.description, "GET", "/test", self.input_schema, (), (), False)
+        self.output_schema = definition.output_schema
+        self.annotations = definition.annotations
 
     def to_dict(self) -> dict[str, Any]:
         return {"name": self.name, "description": self.description, "input_schema": self.input_schema}
@@ -53,7 +57,10 @@ def test_jsonrpc_payload_helpers() -> None:
 def test_tool_and_resource_and_roots_catalogs(monkeypatch: pytest.MonkeyPatch) -> None:
     request = _request({"mcp_tools": {"a": _Tool("a")}})
     tools = _tool_catalog(request)
-    assert tools == [{"name": "a", "description": "Tool a", "inputSchema": {"type": "object"}}]
+    assert tools[0]["name"] == "a"
+    assert tools[0]["inputSchema"] == {"type": "object"}
+    assert tools[0]["outputSchema"]["type"] == "object"
+    assert tools[0]["annotations"]["readOnlyHint"] is True
 
     request_bad_tools = _request({"mcp_tools": []})
     assert _tool_catalog(request_bad_tools) == []
@@ -134,9 +141,12 @@ async def test_handle_jsonrpc_core_branches(monkeypatch: pytest.MonkeyPatch) -> 
         {"jsonrpc": "2.0", "id": 2, "method": "initialize", "params": {"protocolVersion": "v"}},
     )
     assert initialized is not None
-    assert initialized["result"]["protocolVersion"] == "v"
+    assert initialized["result"]["protocolVersion"] == "2025-06-18"
 
-    assert await _handle_jsonrpc(request, {"jsonrpc": "2.0", "id": 3, "method": "notifications/initialized"}) is None
+    unexpected_request = await _handle_jsonrpc(
+        request, {"jsonrpc": "2.0", "id": 3, "method": "notifications/initialized"}
+    )
+    assert unexpected_request == _jsonrpc_error(3, -32601, "Method not found: notifications/initialized")
     assert await _handle_jsonrpc(request, {"jsonrpc": "2.0", "id": 4, "method": "tools/list"}) == _jsonrpc_response(
         4, {"tools": _tool_catalog(request)}
     )
@@ -171,7 +181,9 @@ async def test_handle_jsonrpc_core_branches(monkeypatch: pytest.MonkeyPatch) -> 
         request,
         {"jsonrpc": "2.0", "id": 8, "method": "tools/call", "params": {"name": "tool-a", "arguments": {}}},
     )
-    assert tool_bad == _jsonrpc_error(8, 500, json.dumps({"error": "bad"}, ensure_ascii=False))
+    assert tool_bad is not None
+    assert tool_bad["result"]["isError"] is True
+    assert tool_bad["result"]["structuredContent"] == {"statusCode": 500, "body": {"error": "bad"}}
 
     unknown_method = await _handle_jsonrpc(request, {"jsonrpc": "2.0", "id": 9, "method": "x/unknown"})
     assert unknown_method == _jsonrpc_error(9, -32601, "Method not found: x/unknown")

@@ -236,7 +236,45 @@ class McpToolDefinition:
     server_url_override: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        result = asdict(self)
+        result["outputSchema"] = self.output_schema
+        result["annotations"] = self.annotations
+        return result
+
+    @property
+    def output_schema(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {"statusCode": {"type": "integer"}, "body": {}},
+            "required": ["statusCode", "body"],
+            "additionalProperties": False,
+        }
+
+    @property
+    def annotations(self) -> dict[str, bool]:
+        read_only = (
+            self.method == "GET"
+            or self.path.endswith(
+                (
+                    "/objects/list",
+                    "/objects/related",
+                    "/objects/value",
+                    "/objects/history",
+                    "/objecttypes/query",
+                    "/relationshiptypes/query",
+                    "/subscriptions/list",
+                )
+            )
+            and self.method == "POST"
+        )
+        subscription_mutation = "/subscriptions" in self.path and not read_only
+        return {
+            "readOnlyHint": read_only,
+            "destructiveHint": not read_only
+            and not (subscription_mutation and self.path.endswith(("/subscriptions", "/register"))),
+            "idempotentHint": read_only,
+            "openWorldHint": True,
+        }
 
 
 @dataclass(frozen=True, slots=True)

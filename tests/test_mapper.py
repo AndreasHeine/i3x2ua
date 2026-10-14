@@ -187,11 +187,14 @@ def test_machinery_profile_matches_type_ancestor_namespace_not_instance_namespac
     active_profiles = active_profiles_for_node(node, type_hierarchy, load_default_profiles())
 
     assert active_profiles.profile_ids == ("machinery", "generic")
-    assert resolve_semantic_role(
-        node,
-        active_profiles,
-        type_definition_hierarchy=type_hierarchy,
-    ) == "group"
+    assert (
+        resolve_semantic_role(
+            node,
+            active_profiles,
+            type_definition_hierarchy=type_hierarchy,
+        )
+        == "group"
+    )
 
 
 def test_machinery_profile_does_not_match_same_type_name_in_other_namespace() -> None:

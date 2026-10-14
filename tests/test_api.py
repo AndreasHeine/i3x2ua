@@ -2440,7 +2440,12 @@ def test_openapi_json_is_source_of_truth(client: TestClient) -> None:
 def test_openapi_operations_are_grouped_by_workflow(client: TestClient) -> None:
     generated = client.get("/openapi.json").json()
     assert [tag["name"] for tag in generated["tags"]] == [
-        "Exploratory", "Query", "Update", "Subscribe", "Diagnostics", "MCP"
+        "Exploratory",
+        "Query",
+        "Update",
+        "Subscribe",
+        "Diagnostics",
+        "MCP",
     ]
     for path, methods in generated["paths"].items():
         for method, operation in methods.items():

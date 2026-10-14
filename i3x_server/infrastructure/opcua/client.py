@@ -203,9 +203,7 @@ class OpcUaClient:
         self._object_types_cache: tuple[float, list[OpcUaObjectTypeInfo]] | None = None
         self._metadata_load_tasks: dict[str, asyncio.Future[Any]] = {}
         self._reference_type_supertypes_cache: dict[str, tuple[float, list[str]]] = {}
-        self._type_definition_hierarchy_cache: dict[
-            str, tuple[float, list[OpcUaTypeDefinitionInfo]]
-        ] = {}
+        self._type_definition_hierarchy_cache: dict[str, tuple[float, list[OpcUaTypeDefinitionInfo]]] = {}
         self._runtime_metrics = OpcUaRuntimeMetrics()
         self._history_update_supported: bool | None = None
         self._request_metrics = OpcUaRequestMetrics()

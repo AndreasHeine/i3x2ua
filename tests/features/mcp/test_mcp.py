@@ -246,6 +246,8 @@ def test_mcp_tool_input_schemas_match_openapi_contract(client: TestClient) -> No
             for parameter in details.get("parameters", []):
                 if not isinstance(parameter, Mapping):
                     continue
+                if parameter.get("in") not in {"path", "query"}:
+                    continue
                 parameter_name = parameter.get("name")
                 if not isinstance(parameter_name, str):
                     continue

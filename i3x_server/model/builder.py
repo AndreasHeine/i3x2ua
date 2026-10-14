@@ -94,15 +94,11 @@ class ModelBuilder:
         resolve_type_definition_hierarchies = getattr(self._opcua_client, "resolve_type_definition_hierarchies", None)
         resolve_type_definition_hierarchy = getattr(self._opcua_client, "resolve_type_definition_hierarchy", None)
         if callable(resolve_type_definition_hierarchies) or callable(resolve_type_definition_hierarchy):
-            unique_type_definition_ids = {
-                node.type_definition_id for node in opc_nodes if node.type_definition_id
-            }
+            unique_type_definition_ids = {node.type_definition_id for node in opc_nodes if node.type_definition_id}
             resolved_hierarchies: dict[str, list[OpcUaTypeDefinitionInfo]] | None = None
             if callable(resolve_type_definition_hierarchies):
                 try:
-                    resolved_hierarchies = await resolve_type_definition_hierarchies(
-                        sorted(unique_type_definition_ids)
-                    )
+                    resolved_hierarchies = await resolve_type_definition_hierarchies(sorted(unique_type_definition_ids))
                 except Exception:
                     logger.warning(
                         "Batch type definition hierarchy resolution failed; retrying individual types",

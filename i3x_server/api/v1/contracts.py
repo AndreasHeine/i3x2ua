@@ -357,8 +357,7 @@ class WriteVQTRequest(BaseModel):
     timestamp: AwareDatetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
         description=(
-            "RFC 3339 timestamp with a timezone (Z or numeric offset). "
-            "Omission uses the current server UTC time."
+            "RFC 3339 timestamp with a timezone (Z or numeric offset). Omission uses the current server UTC time."
         ),
     )
 

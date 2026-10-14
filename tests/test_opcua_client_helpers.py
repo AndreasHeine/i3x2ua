@@ -15,6 +15,8 @@ from asyncua.ua.attribute_ids import AttributeIds
 from asyncua.ua.status_codes import StatusCodes
 from asyncua.ua.uaerrors import UaStatusCodeError
 
+from i3x_server.application.services.model_query import ModelQueryService
+from i3x_server.domain.ports.opcua import OpcUaNodeInfo
 from i3x_server.infrastructure.opcua.client import (
     OpcUaClient,
     OpcUaNamespaceInfo,
@@ -25,10 +27,142 @@ from i3x_server.infrastructure.opcua.client import (
     _to_explicit_ua_variant,
     _to_json_compatible,
 )
+from i3x_server.model.builder import ModelBuilder
 
 
 def _status_error(code: int) -> UaStatusCodeError:
     return UaStatusCodeError(code)  # type: ignore[no-untyped-call]
+
+
+@pytest.mark.asyncio
+async def test_reference_names_come_from_reference_types_not_targets(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
+    refs = [
+        ua.ReferenceDescription(
+            NodeId=ua.ExpandedNodeId(ua.Int32(index), ua.Int16(2)),
+            ReferenceTypeId=ua.NodeId(ua.Int32(type_id), ua.Int16(namespace)),
+            BrowseName=ua.QualifiedName(target_name, 2),
+        )
+        for index, type_id, namespace, target_name in [
+            (1001, 36, 0, "JobOrderResults"),
+            (1002, 36, 0, "MyVar"),
+            (1003, 5001, 2, "AckedState"),
+        ]
+    ]
+    reads: list[str] = []
+
+    async def read_names(nodes: list[Any], attr: AttributeIds, batch_size: int | None = None) -> list[ua.DataValue]:
+        del batch_size
+        assert attr == AttributeIds.BrowseName
+        reads.extend(node.nodeid.to_string() for node in nodes)
+        names = {"i=36": "HasEventSource", "ns=2;i=5001": "Monitors"}
+        return [ua.DataValue(ua.Variant(ua.QualifiedName(names[node.nodeid.to_string()]))) for node in nodes]
+
+    monkeypatch.setattr(client, "_read_attribute_batch_limited", read_names)
+    cache: dict[str, str] = {}
+    await client._read_reference_type_browse_names(refs, cache)
+    converted = client._to_reference_infos(refs, cache)
+    assert [ref.reference_browse_name for ref in converted] == ["HasEventSource", "HasEventSource", "Monitors"]
+    assert [ref.target_node_id for ref in converted] == [ref.NodeId.to_string() for ref in refs]
+    assert [ref.reference_type_id for ref in converted] == [ref.ReferenceTypeId.to_string() for ref in refs]
+    assert reads == ["i=36", "ns=2;i=5001"]
+    await client._read_reference_type_browse_names(refs, cache)
+    assert reads == ["i=36", "ns=2;i=5001"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_name", [None, ua.QualifiedName(""), ua.QualifiedName(None)])
+async def test_reference_type_name_failure_does_not_use_target_name(
+    monkeypatch: pytest.MonkeyPatch, invalid_name: Any
+) -> None:
+    client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
+    refs = [
+        ua.ReferenceDescription(
+            NodeId=ua.ExpandedNodeId(ua.Int32(1001), ua.Int16(2)),
+            ReferenceTypeId=ua.NodeId(ua.Int32(36)),
+            BrowseName=ua.QualifiedName("JobOrderResults", 2),
+        )
+    ]
+
+    async def read_names(nodes: list[Any], attr: AttributeIds, batch_size: int | None = None) -> list[ua.DataValue]:
+        del nodes, attr, batch_size
+        return [ua.DataValue(ua.Variant(invalid_name))]
+
+    monkeypatch.setattr(client, "_read_attribute_batch_limited", read_names)
+    with pytest.raises(ValueError, match="Cannot read BrowseName for reference type"):
+        await client._read_reference_type_browse_names(refs, {})
+
+
+@pytest.mark.asyncio
+async def test_browse_tree_to_relationship_types_uses_type_names(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
+    client._limits_cache = OpcUaOperationalLimits(max_nodes_per_browse=1, max_nodes_per_read=1)
+    reads: list[str] = []
+
+    async def read_infos(entries: list[tuple[Any, str | None]]) -> list[OpcUaNodeInfo]:
+        return [
+            OpcUaNodeInfo(
+                node_id=node.nodeid.to_string(),
+                parent_node_id=parent_id,
+                browse_name="MyVar" if parent_id else "Objects",
+                display_name="MyVar" if parent_id else "Objects",
+                node_class="Object",
+                data_type=None,
+            )
+            for node, parent_id in entries
+        ]
+
+    async def browse_refs(
+        nodes: list[Any], max_nodes_per_browse: int, reference_type_id: int = 0
+    ) -> list[tuple[Any, list[ua.ReferenceDescription]]]:
+        del max_nodes_per_browse, reference_type_id
+        output: list[tuple[Any, list[ua.ReferenceDescription]]] = []
+        for node in nodes:
+            source_id = node.nodeid.to_string()
+            target_id = {"i=85": 1001, "ns=2;i=1001": 1002}.get(source_id)
+            refs = (
+                [
+                    ua.ReferenceDescription(
+                        NodeId=ua.ExpandedNodeId(ua.Int32(target_id), ua.Int16(2)),
+                        ReferenceTypeId=ua.NodeId(ua.Int32(36)),
+                        BrowseName=ua.QualifiedName("MyVar", 2),
+                    )
+                ]
+                if target_id is not None
+                else []
+            )
+            output.append((node, refs))
+        return output
+
+    async def read_names(nodes: list[Any], attr: AttributeIds, batch_size: int | None = None) -> list[ua.DataValue]:
+        del batch_size
+        assert attr == AttributeIds.BrowseName
+        reads.extend(node.nodeid.to_string() for node in nodes)
+        return [ua.DataValue(ua.Variant(ua.QualifiedName("HasEventSource"))) for _ in nodes]
+
+    async def namespaces() -> list[OpcUaNamespaceInfo]:
+        return [
+            OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/", display_name="OPC UA"),
+            OpcUaNamespaceInfo(uri="urn:server", display_name="Server"),
+            OpcUaNamespaceInfo(uri="urn:instances", display_name="Instances"),
+        ]
+
+    async def supertypes(reference_type_id: str) -> list[str]:
+        assert reference_type_id == "i=36"
+        return ["HasEventSource", "NonHierarchicalReferences"]
+
+    monkeypatch.setattr(client, "_read_node_infos_limited", read_infos)
+    monkeypatch.setattr(client, "_browse_references_descriptions", browse_refs)
+    monkeypatch.setattr(client, "_browse_children_descriptions", browse_refs)
+    monkeypatch.setattr(client, "_read_attribute_batch_limited", read_names)
+    monkeypatch.setattr(client, "get_namespace_infos", namespaces)
+    monkeypatch.setattr(client, "resolve_reference_type_supertype_browse_names", supertypes)
+    model = await ModelBuilder(client).build()
+    items = await ModelQueryService(client, model).get_relationship_types("http://opcfoundation.org/UA/")
+    assert {item["elementId"] for item in items} == {"HasEventSource", "inverseOf_HasEventSource"}
+    assert reads == ["i=36"]
+    assert model.graph_relationship_names == {"HasEventSource"}
+    assert sum("HasEventSource" in relationships for relationships in model.relationships_by_id.values()) == 2
 
 
 class _FakeNode:

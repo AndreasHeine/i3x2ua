@@ -21,6 +21,8 @@ class BuildResult:
     hierarchy_parent_by_id: dict[str, str] = field(default_factory=dict)
     composition_parent_by_id: dict[str, str] = field(default_factory=dict)
     graph_relationship_names: set[str] = field(default_factory=set)
+    graph_relationship_namespace_by_id: dict[str, str] = field(default_factory=dict)
+    graph_relationship_display_name_by_id: dict[str, str] = field(default_factory=dict)
     semantic_role_by_id: dict[str, str] = field(default_factory=dict)
     mapping_confidence_by_id: dict[str, str] = field(default_factory=dict)
     parent_id_by_id: dict[str, str | None] = field(default_factory=dict)

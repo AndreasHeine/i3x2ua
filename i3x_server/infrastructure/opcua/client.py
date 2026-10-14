@@ -633,6 +633,7 @@ class OpcUaClient:
         root = self._client.nodes.objects
         output: list[OpcUaNodeInfo] = []
         visited: set[str] = set()
+        reference_type_names: dict[str, str] = {}
         stack: list[tuple[Any, str | None]] = [(root, None)]
 
         while stack:
@@ -662,12 +663,15 @@ class OpcUaClient:
             )
             output.extend(node_infos)
 
+            await self._read_reference_type_browse_names(
+                [ref for _, refs in all_refs for ref in refs], reference_type_names
+            )
             node_info_by_id = {item.node_id: item for item in node_infos}
             for parent_node, refs in all_refs:
                 info = node_info_by_id.get(parent_node.nodeid.to_string())
                 if info is None:
                     continue
-                info.outgoing_references = self._to_reference_infos(refs)
+                info.outgoing_references = self._to_reference_infos(refs, reference_type_names)
             for parent_node, refs in browsed:
                 parent_node_id = parent_node.nodeid.to_string()
                 for ref in refs:
@@ -682,12 +686,29 @@ class OpcUaClient:
         self._runtime_metrics.browse_tree_nodes_last = len(output)
         return output
 
-    def _to_reference_infos(self, refs: list[ua.ReferenceDescription]) -> list[OpcUaReferenceInfo]:
+    async def _read_reference_type_browse_names(
+        self, refs: list[ua.ReferenceDescription], names: dict[str, str]
+    ) -> None:
+        type_ids = sorted({ref.ReferenceTypeId.to_string() for ref in refs} - names.keys())
+        if not type_ids:
+            return
+        nodes = [self._client.get_node(type_id) for type_id in type_ids]
+        values = await self._read_attribute_batch_limited(nodes, AttributeIds.BrowseName)
+        for type_id, value in zip(type_ids, values, strict=True):
+            qualified_name = self._extract_attribute_value(value)
+            browse_name = getattr(qualified_name, "Name", None)
+            if not isinstance(browse_name, str) or not browse_name:
+                raise ValueError(f"Cannot read BrowseName for reference type {type_id!r}")
+            names[type_id] = browse_name
+
+    def _to_reference_infos(
+        self, refs: list[ua.ReferenceDescription], reference_type_names: dict[str, str]
+    ) -> list[OpcUaReferenceInfo]:
         output: list[OpcUaReferenceInfo] = []
         for ref in refs:
             target_node_id = ref.NodeId.to_string()
             reference_type_id = ref.ReferenceTypeId.to_string()
-            reference_browse_name = ref.BrowseName.Name
+            reference_browse_name = reference_type_names[reference_type_id]
             output.append(
                 OpcUaReferenceInfo(
                     target_node_id=target_node_id,

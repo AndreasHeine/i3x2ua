@@ -58,7 +58,9 @@ async def get_namespaces_v1(
     response_model=SuccessResponse[list[RelationshipType]],
     summary="List relationship types",
     description=(
-        "Return all relationship types known to the server. Optionally filter by namespace URI. "
+        "Return the built-in i3X relationships and graph relationship types discovered in the mapped model, "
+        "not all OPC UA ReferenceTypes. Optionally filter by exact namespace URI. "
+        "Graph types retain their source namespace; colliding names use namespace-qualified IDs. "
         "Supports conditional GET via ETag."
     ),
     dependencies=[Depends(enable_etag)],

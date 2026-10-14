@@ -4,6 +4,7 @@ from typing import cast
 
 import pytest
 
+from i3x_server.application.services.model_query import ModelQueryService
 from i3x_server.domain.ports.opcua import OpcUaNamespaceInfo, OpcUaTypeDefinitionInfo
 from i3x_server.infrastructure.opcua.client import OpcUaClientProtocol, OpcUaNodeInfo, OpcUaReferenceInfo
 from i3x_server.model.builder import ModelBuilder, _kind_for_node
@@ -239,6 +240,13 @@ class FakeOpcuaWithReferenceSubtypeResolution:
 
 
 class FakeOpcuaWithAmbiguousReferenceSubtypeResolution:
+    async def get_namespace_infos(self) -> list[OpcUaNamespaceInfo]:
+        return [
+            OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/", display_name="OPC UA"),
+            OpcUaNamespaceInfo(uri="urn:example:server", display_name="Server"),
+            OpcUaNamespaceInfo(uri="urn:example:vendor", display_name="Vendor"),
+        ]
+
     async def browse_tree(self) -> list[OpcUaNodeInfo]:
         return [
             OpcUaNodeInfo(
@@ -371,6 +379,180 @@ async def test_model_builder_stores_graph_relationships_bidirectionally() -> Non
     assert result.relationships_by_id[machine_id]["Locations"] == [sensor_id]
     assert result.relationships_by_id[sensor_id]["inverseOf_Locations"] == [machine_id]
     assert "Locations" in result.graph_relationship_names
+    assert result.graph_relationship_namespace_by_id == {"Locations": "http://opcfoundation.org/UA/"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("reference_type_id", "expected_namespace"),
+    [
+        ("i=32", "http://opcfoundation.org/UA/"),
+        ("ns=0;i=32", "http://opcfoundation.org/UA/"),
+        ("ns=1;i=5001", "urn:example:references"),
+        ("nsu=urn:example:expanded;i=5001", "urn:example:expanded"),
+    ],
+)
+async def test_graph_relationship_namespace_flows_from_reference_type_to_query(
+    reference_type_id: str, expected_namespace: str
+) -> None:
+    class Client(FakeOpcuaWithGraphReference):
+        async def browse_tree(self) -> list[OpcUaNodeInfo]:
+            nodes = await super().browse_tree()
+            nodes[0].outgoing_references[0].reference_type_id = reference_type_id
+            return nodes
+
+        async def get_namespace_infos(self) -> list[OpcUaNamespaceInfo]:
+            return [
+                OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/", display_name="OPC UA"),
+                OpcUaNamespaceInfo(uri="urn:example:references", display_name="Reference types"),
+                OpcUaNamespaceInfo(uri="urn:example:instances", display_name="Instances"),
+            ]
+
+    client = cast(OpcUaClientProtocol, Client())
+    result = await ModelBuilder(client).build()
+    assert result.graph_relationship_namespace_by_id == {"Locations": expected_namespace}
+    service = ModelQueryService(client, result)
+    items = await service.get_relationship_types(expected_namespace)
+    assert {item["elementId"] for item in items} == {"Locations", "inverseOf_Locations"}
+    assert all(item["namespaceUri"] == expected_namespace for item in items)
+    assert await service.get_relationship_types("https://opcfoundation.org/UA/") == []
+
+
+@pytest.mark.asyncio
+async def test_graph_relationship_with_unresolved_namespace_fails_explicitly() -> None:
+    class Client(FakeOpcuaWithGraphReference):
+        async def browse_tree(self) -> list[OpcUaNodeInfo]:
+            nodes = await super().browse_tree()
+            nodes[0].outgoing_references[0].reference_type_id = "ns=9;i=5001"
+            return nodes
+
+    with pytest.raises(ValueError, match="Cannot resolve namespace for reference type"):
+        await ModelBuilder(cast(OpcUaClientProtocol, Client())).build()
+
+
+@pytest.mark.asyncio
+async def test_graph_relationship_name_collision_qualifies_ids_and_edges() -> None:
+    class Client(FakeOpcuaWithGraphReference):
+        async def browse_tree(self) -> list[OpcUaNodeInfo]:
+            nodes = await super().browse_tree()
+            nodes[0].outgoing_references.append(
+                OpcUaReferenceInfo(
+                    target_node_id="ns=2;s=Sensor",
+                    reference_type_id="nsu=urn:example:custom;i=5001",
+                    reference_browse_name="Locations",
+                )
+            )
+            return nodes
+
+    client = cast(OpcUaClientProtocol, Client())
+    result = await ModelBuilder(client).build()
+    expected = {
+        "http://opcfoundation.org/UA/:Locations": "http://opcfoundation.org/UA/",
+        "urn:example:custom:Locations": "urn:example:custom",
+    }
+    assert result.graph_relationship_namespace_by_id == expected
+    machine_id = result.node_id_by_name["Machine"]
+    sensor_id = result.node_id_by_name["Sensor"]
+    service = ModelQueryService(client, result)
+    for relationship_id, namespace_uri in expected.items():
+        assert result.relationships_by_id[machine_id][relationship_id] == [sensor_id]
+        assert result.relationships_by_id[sensor_id][f"inverseOf_{relationship_id}"] == [machine_id]
+        assert (relationship_id, sensor_id) in result.graph_related_by_id[machine_id]
+        items = await service.get_relationship_types(namespace_uri)
+        assert {item["elementId"] for item in items} == {relationship_id, f"inverseOf_{relationship_id}"}
+        assert [item["displayName"] for item in items] == ["Locations", "inverseOf_Locations"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["HasParent", "HasComponent", "inverseOf_Locations", "urn:reserved", "Has:Space %"])
+async def test_graph_relationship_reserved_name_keeps_unique_ids(name: str) -> None:
+    class Client(FakeOpcuaWithGraphReference):
+        async def resolve_reference_type_supertype_browse_names(self, reference_type_id: str) -> list[str]:
+            return ["NonHierarchicalReferences"]
+
+        async def browse_tree(self) -> list[OpcUaNodeInfo]:
+            nodes = await super().browse_tree()
+            nodes[0].outgoing_references[0].reference_browse_name = name
+            return nodes
+
+    client = cast(OpcUaClientProtocol, Client())
+    result = await ModelBuilder(client).build()
+    items = await ModelQueryService(client, result).get_relationship_types()
+    ids = [item["elementId"] for item in items]
+    assert len(ids) == len(set(ids)) == 6
+    graph_id = next(iter(result.graph_relationship_names))
+    assert graph_id == f"http://opcfoundation.org/UA/:{name}"
+    assert result.graph_relationship_display_name_by_id[graph_id] == name
+    machine_id = result.node_id_by_name["Machine"]
+    sensor_id = result.node_id_by_name["Sensor"]
+    assert result.relationships_by_id[machine_id][graph_id] == [sensor_id]
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_expanded_qualified_relationship_ids_fail_explicitly() -> None:
+    class Client(FakeOpcuaWithGraphReference):
+        async def browse_tree(self) -> list[OpcUaNodeInfo]:
+            nodes = await super().browse_tree()
+            nodes[0].outgoing_references = [
+                OpcUaReferenceInfo(
+                    target_node_id="ns=2;s=Sensor",
+                    reference_type_id=f"nsu={namespace_uri};i={index}",
+                    reference_browse_name=name,
+                )
+                for index, (namespace_uri, name) in enumerate(
+                    [
+                        ("urn:example", "part:Locations"),
+                        ("urn:example:part", "Locations"),
+                        ("urn:other", "Locations"),
+                    ],
+                    start=5001,
+                )
+            ]
+            return nodes
+
+    with pytest.raises(ValueError, match="Expanded qualified relationship ID .* is ambiguous"):
+        await ModelBuilder(cast(OpcUaClientProtocol, Client())).build()
+
+
+@pytest.mark.asyncio
+async def test_synthetic_secondary_parent_relationship_uses_i3x_namespace() -> None:
+    class Client(FakeOpcuaWithGraphReference):
+        async def browse_tree(self) -> list[OpcUaNodeInfo]:
+            nodes = await super().browse_tree()
+            ref = nodes[0].outgoing_references[0]
+            ref.reference_type_id = "i=35"
+            ref.reference_browse_name = "Organizes"
+            nodes.append(
+                OpcUaNodeInfo(
+                    node_id="ns=2;s=Other",
+                    parent_node_id=None,
+                    browse_name="Other",
+                    display_name="Other",
+                    node_class="Object",
+                    data_type=None,
+                    outgoing_references=[
+                        OpcUaReferenceInfo(
+                            target_node_id="ns=2;s=Sensor",
+                            reference_type_id="i=35",
+                            reference_browse_name="Organizes",
+                        )
+                    ],
+                )
+            )
+            return nodes
+
+    client = cast(OpcUaClientProtocol, Client())
+    result = await ModelBuilder(client).build()
+    assert result.graph_relationship_namespace_by_id == {"OrganizedBy": "https://cesmii.org/i3x"}
+    items = await ModelQueryService(client, result).get_relationship_types("https://cesmii.org/i3x")
+    assert {item["elementId"] for item in items} == {
+        "HasParent",
+        "HasChildren",
+        "HasComponent",
+        "ComponentOf",
+        "OrganizedBy",
+        "inverseOf_OrganizedBy",
+    }
 
 
 @pytest.mark.asyncio

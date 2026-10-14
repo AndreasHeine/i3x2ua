@@ -10,11 +10,21 @@ from fastapi import HTTPException
 from jsonschema import Draft202012Validator
 
 import i3x_server.api.v1.monolithic as v1
-from i3x_server.api.v1 import objecttype_helpers
+from i3x_server.api.v1 import object_helpers, objecttype_helpers
+from i3x_server.application.services.model_query import _relationship_type_items
 from i3x_server.infrastructure.opcua.client import OpcUaNamespaceInfo
 from i3x_server.model.revision import model_revision
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
+
+
+def test_relationship_type_helpers_use_model_namespaces() -> None:
+    model = _sample_model()
+    model.graph_relationship_names = {"ConnectedTo"}
+    model.graph_relationship_namespace_by_id = {"ConnectedTo": "urn:example:custom"}
+    expected = _relationship_type_items(model)
+    for helper in (v1._relationship_type_items, object_helpers._relationship_type_items):
+        assert [item.model_dump() for item in helper(model)] == expected
 
 
 def _sample_model() -> BuildResult:

@@ -22,7 +22,6 @@ from i3x_server.version import get_server_version
 logger = logging.getLogger(__name__)
 
 _I3X_NAMESPACE = "https://cesmii.org/i3x"
-_OPCUA_NAMESPACE = "https://opcfoundation.org/UA/"
 
 
 class Namespace:
@@ -150,11 +149,13 @@ def _relationship_type_items(model: BuildResult | None = None) -> list[dict[str,
         if name in existing:
             continue
         reverse_name = f"inverseOf_{name}"
+        namespace_uri = model.graph_relationship_namespace_by_id[name]
+        display_name = model.graph_relationship_display_name_by_id.get(name, name)
         items.append(
             {
                 "elementId": name,
-                "displayName": name,
-                "namespaceUri": _OPCUA_NAMESPACE,
+                "displayName": display_name,
+                "namespaceUri": namespace_uri,
                 "relationshipId": name,
                 "reverseOf": reverse_name,
             }
@@ -162,8 +163,8 @@ def _relationship_type_items(model: BuildResult | None = None) -> list[dict[str,
         items.append(
             {
                 "elementId": reverse_name,
-                "displayName": reverse_name,
-                "namespaceUri": _OPCUA_NAMESPACE,
+                "displayName": f"inverseOf_{display_name}",
+                "namespaceUri": namespace_uri,
                 "relationshipId": reverse_name,
                 "reverseOf": name,
             }

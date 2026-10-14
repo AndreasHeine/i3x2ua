@@ -63,6 +63,10 @@ def test_model_revision_covers_fields_not_carried_by_nodes() -> None:
     assert compute_model_revision(_model(root_ids=["b"])) != base
     assert compute_model_revision(_model(action_to_method={"a": ("p", "m")})) != base
     assert compute_model_revision(_model(graph_relationship_names={"OrganizedBy"})) != base
+    assert compute_model_revision(_model(graph_relationship_display_name_by_id={"qualified": "ConnectedTo"})) != base
+    assert compute_model_revision(
+        _model(graph_relationship_namespace_by_id={"ConnectedTo": "urn:example:first"})
+    ) != compute_model_revision(_model(graph_relationship_namespace_by_id={"ConnectedTo": "urn:example:second"}))
 
 
 def test_model_revision_is_cached_on_model() -> None:

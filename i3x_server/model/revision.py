@@ -26,6 +26,8 @@ def compute_model_revision(model: BuildResult) -> str:
         "node_id_by_name": model.node_id_by_name,
         "node_id_by_type": model.node_id_by_type,
         "graph_relationship_names": sorted(model.graph_relationship_names),
+        "graph_relationship_namespace_by_id": model.graph_relationship_namespace_by_id,
+        "graph_relationship_display_name_by_id": model.graph_relationship_display_name_by_id,
     }
     digest.update(json.dumps(extra, sort_keys=True, separators=(",", ":")).encode())
     return digest.hexdigest()[:32]

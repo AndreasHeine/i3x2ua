@@ -143,6 +143,38 @@ Current implementation detail:
 - hierarchy selection remains deterministic and uses priority order
   `Organizes > HasComponent > HasOrderedComponent`
 
+`GET /v1/relationshiptypes` lists the mapped relationship vocabulary, not every
+ReferenceType declared by the upstream server. The four built-in relationships
+(`HasParent`, `HasChildren`, `HasComponent`, and `ComponentOf`) belong to
+`https://cesmii.org/i3x`. Discovered graph relationships retain the namespace of
+their OPC UA ReferenceType, resolved from its NodeId and the namespace table
+(or directly from an expanded NodeId). Namespace zero is
+`http://opcfoundation.org/UA/`, not its HTTPS variant. Generated inverse
+relationships inherit the forward relationship's namespace; the synthetic
+secondary-parent relationship `OrganizedBy` belongs to the i3X namespace.
+Relationship names come from the ReferenceType node's `BrowseName`, read using
+`ReferenceDescription.ReferenceTypeId`, not from `ReferenceDescription.BrowseName`
+(which names the target object). ReferenceType names are batch-read once per
+distinct type during each model browse; failed or empty names abort the browse
+rather than exposing target-object names as relationship types.
+
+The `namespaceUri` filter uses exact namespace identifiers, including scheme and
+trailing slash. An empty result is valid when no mapped relationships belong to
+the requested namespace. Unambiguous relationship IDs remain browse-name based.
+If a name occurs in multiple namespaces or conflicts with a reserved ID (the
+four built-ins or `inverseOf_...`), its ID becomes
+`<namespace-uri>:<BrowseName.Text>` (expanded QualifiedName style, not a NodeId).
+Names containing `:` are also qualified to avoid collisions with qualified IDs.
+Components are not percent-encoded in JSON. Treat IDs as opaque strings: namespace
+URIs and browse names can both contain colons, so do not split IDs on `:`.
+URL-encode the complete value only when placing it in a URL.
+Generated inverse IDs prefix the forward ID with `inverseOf_`; display names
+retain the original browse name. These IDs are used consistently in relationship
+type queries and related-object responses. An unresolvable ReferenceType namespace
+fails model construction explicitly rather than publishing an incorrect namespace.
+If distinct namespace/name pairs produce the same expanded qualified string,
+model construction also fails explicitly rather than merging their relationships.
+
 Precedence rule for ambiguous or malformed lineages:
 
 - If both `NonHierarchicalReferences` and `HierarchicalReferences` appear, `NonHierarchicalReferences` wins and the edge is mapped to Graph.

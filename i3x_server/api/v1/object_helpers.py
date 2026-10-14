@@ -12,12 +12,12 @@ from i3x_server.api.v1.contracts import (
     RelationshipType,
 )
 from i3x_server.application.ports.opcua import OpcUaNamespaceInfo, OpcUaObjectTypeInfo
+from i3x_server.application.services.model_query import _relationship_type_items as _model_relationship_type_items
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.objecttype_schema import build_object_type_schema
 from i3x_server.schemas.state import BuildResult
 
 _I3X_NAMESPACE = "https://cesmii.org/i3x"
-_OPCUA_NAMESPACE = "https://opcfoundation.org/UA/"
 
 
 def _normalize_namespace_uri(uri: str) -> str:
@@ -195,62 +195,7 @@ def _object_type_element_ids_by_node_id(
 
 
 def _relationship_type_items(model: BuildResult | None = None) -> list[RelationshipType]:
-    items = [
-        RelationshipType(
-            elementId="HasParent",
-            displayName="HasParent",
-            namespaceUri=_I3X_NAMESPACE,
-            relationshipId="HasParent",
-            reverseOf="HasChildren",
-        ),
-        RelationshipType(
-            elementId="HasChildren",
-            displayName="HasChildren",
-            namespaceUri=_I3X_NAMESPACE,
-            relationshipId="HasChildren",
-            reverseOf="HasParent",
-        ),
-        RelationshipType(
-            elementId="HasComponent",
-            displayName="HasComponent",
-            namespaceUri=_I3X_NAMESPACE,
-            relationshipId="HasComponent",
-            reverseOf="ComponentOf",
-        ),
-        RelationshipType(
-            elementId="ComponentOf",
-            displayName="ComponentOf",
-            namespaceUri=_I3X_NAMESPACE,
-            relationshipId="ComponentOf",
-            reverseOf="HasComponent",
-        ),
-    ]
-    if model is not None:
-        graph_names = getattr(model, "graph_relationship_names", None) or set()
-        existing = {item.elementId for item in items}
-        for name in sorted(graph_names):
-            if name in existing:
-                continue
-            reverse_name = f"inverseOf_{name}"
-            items.append(
-                RelationshipType(
-                    elementId=name,
-                    displayName=name,
-                    namespaceUri=_OPCUA_NAMESPACE,
-                    relationshipId=name,
-                    reverseOf=reverse_name,
-                )
-            )
-            items.append(
-                RelationshipType(
-                    elementId=reverse_name,
-                    displayName=reverse_name,
-                    namespaceUri=_OPCUA_NAMESPACE,
-                    relationshipId=reverse_name,
-                    reverseOf=name,
-                )
-            )
-    return items
+    return [RelationshipType.model_validate(item) for item in _model_relationship_type_items(model)]
 
 
 def _find_model_node(model: BuildResult, element_id: str) -> ModelNode | None:

@@ -200,6 +200,7 @@ async def test_get_object_types_wraps_client_errors() -> None:
 async def test_get_relationship_types_contains_defaults_and_model_graph_items() -> None:
     model = _model()
     model.graph_relationship_names = {"ConnectedTo"}
+    model.graph_relationship_namespace_by_id = {"ConnectedTo": "http://example.com/custom"}
     service = ModelQueryService(cast(OpcUaClientProtocol, _FakeOpcUaClient([])), model)
 
     items = await service.get_relationship_types()
@@ -207,9 +208,15 @@ async def test_get_relationship_types_contains_defaults_and_model_graph_items() 
     assert "HasParent" in element_ids
     assert "ConnectedTo" in element_ids
     assert "inverseOf_ConnectedTo" in element_ids
+    graph_items = [item for item in items if item["elementId"] in {"ConnectedTo", "inverseOf_ConnectedTo"}]
+    assert len(graph_items) == 2
+    assert all(item["namespaceUri"] == "http://example.com/custom" for item in graph_items)
 
     filtered = await service.get_relationship_types(namespace_uri="https://cesmii.org/i3x")
     assert all(item["namespaceUri"] == "https://cesmii.org/i3x" for item in filtered)
+    assert len(filtered) == 4
+    assert await service.get_relationship_types("http://example.com/custom") == graph_items
+    assert await service.get_relationship_types("https://example.com/custom") == []
 
 
 @pytest.mark.asyncio

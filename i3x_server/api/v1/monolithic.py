@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
 import logging
 import re
@@ -181,6 +183,15 @@ def _is_valid_write_type(value: Any, variant_type: str | None) -> bool:
     return True
 
 
+def _decode_bytestring_write_value(value: Any, variant_type: str | None) -> Any:
+    if variant_type is None or variant_type.strip().lower() != "bytestring" or not isinstance(value, str):
+        return value
+    try:
+        return base64.b64decode(value, validate=True)
+    except (ValueError, binascii.Error) as exc:
+        raise ValueError("Invalid base64 ByteString") from exc
+
+
 def _classify_write_error(exc: Exception) -> tuple[int, str]:
     text = str(exc).lower()
     if "baduseraccessdenied" in text or "access denied" in text or "permission" in text:
@@ -314,6 +325,11 @@ async def _write_object_value_by_element_id(
         status_code, error_class = _classify_write_error(exc)
         diagnostics["exception"] = str(exc)
         return False, status_code, error_class, diagnostics
+
+    try:
+        write_value = _decode_bytestring_write_value(write_value, variant_type)
+    except ValueError:
+        return False, 400, "bad_type_or_range", diagnostics
 
     if write_value is not None and not _is_valid_write_type(write_value, variant_type):
         return False, 400, "bad_type_or_range", diagnostics

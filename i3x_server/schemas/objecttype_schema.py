@@ -98,7 +98,9 @@ def json_schema_for_opcua_type(data_type: str | None) -> dict[str, Any]:
         # Identifiers in other namespaces are not OPC UA built-in type identifiers.
         return {}
 
-    if normalized in {"string", "guid", "bytestring", "xmlelement"}:
+    if normalized == "bytestring":
+        return {"type": "string", "contentEncoding": "base64"}
+    if normalized in {"string", "guid", "xmlelement"}:
         return {"type": "string"}
     if "boolean" in normalized:
         return {"type": "boolean"}

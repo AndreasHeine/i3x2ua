@@ -396,7 +396,7 @@ class ObjectValueService:
         if isinstance(value, datetime):
             return self._normalize_timestamp(value)
         if isinstance(value, (bytes, bytearray, memoryview)):
-            return {"encoding": "base64", "data": b64encode(bytes(value)).decode("ascii")}
+            return b64encode(bytes(value)).decode("ascii")
         if hasattr(value, "TypeId") and hasattr(value, "Body"):
             body = value.Body
             if body is None:

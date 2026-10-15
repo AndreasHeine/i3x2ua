@@ -103,10 +103,7 @@ def test_v1_history_query_serializes_binary_values(client: TestClient) -> None:
     payload = response.json()
     assert payload["success"] is True
     assert payload["results"][0]["success"] is True
-    assert payload["results"][0]["result"]["values"][0]["value"] == {
-        "encoding": "base64",
-        "data": base64.b64encode(b"\xff\x00").decode("ascii"),
-    }
+    assert payload["results"][0]["result"]["values"][0]["value"] == base64.b64encode(b"\xff\x00").decode("ascii")
 
 
 def test_expanded_node_id_does_not_rewrite_non_node_ids() -> None:

@@ -297,8 +297,9 @@ With `I3X_ENABLE_WRITES=1`, each Variable-backed property is mapped to
 `UpdateDataDetails(NodeId=..., PerformInsertReplace=Update)`. The typed value,
 quality StatusCode, and source timestamp are written to the historian only;
 the current Value attribute is not modified. No composition traversal is performed.
-Built-in Boolean, numeric, String, DateTime, Guid, and base64 ByteString values
-are supported. Arrays must match ValueRank and not exceed declared ArrayDimensions
+Built-in Boolean, numeric, String, DateTime, Guid, and ByteString values are
+supported. ByteStrings use the OPC UA JSON encoding: a Base64-encoded JSON string,
+with `contentEncoding: base64` in the JSON Schema. Arrays must match ValueRank and not exceed declared ArrayDimensions
 maximum lengths; zero means an unknown maximum. The optional ArrayDimensions
 attribute may be absent.
 Custom structured values are rejected explicitly.

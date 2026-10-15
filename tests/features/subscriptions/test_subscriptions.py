@@ -147,10 +147,7 @@ def test_v1_subscription_sync_serializes_binary_values(client: TestClient) -> No
     assert synced.status_code == 200
     payload = synced.json()
     assert payload["success"] is True
-    assert payload["result"][0]["updates"][0]["value"] == {
-        "encoding": "base64",
-        "data": base64.b64encode(b"\xff\x00").decode("ascii"),
-    }
+    assert payload["result"][0]["updates"][0]["value"] == base64.b64encode(b"\xff\x00").decode("ascii")
 
 
 def test_v1_subscription_register_accepts_source_node_id(client: TestClient) -> None:

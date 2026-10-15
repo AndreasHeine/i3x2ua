@@ -228,7 +228,7 @@ async def test_read_history_values_maps_data_values_and_binary() -> None:
     )
     assert len(values) == 1
     assert values[0].quality == "Good"
-    assert values[0].value == {"encoding": "base64", "data": "/wA="}
+    assert values[0].value == "/wA="
 
 
 def test_collect_composition_components_honors_depth_1() -> None:

@@ -15,7 +15,11 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from jsonschema import Draft202012Validator
 
-from i3x_server.api.v1.monolithic import _expanded_node_id, _to_json_safe_value
+from i3x_server.api.v1.monolithic import (
+    _decode_bytestring_write_value,
+    _expanded_node_id,
+    _to_json_safe_value,
+)
 from i3x_server.bootstrap.app_factory import create_app
 from i3x_server.infrastructure.opcua.client import (
     OpcUaConnectionSnapshot,
@@ -84,6 +88,19 @@ def test_to_json_safe_value_filters_structure_encoding_field() -> None:
 def test_to_json_safe_value_extension_object_with_null_body_returns_null() -> None:
     serialized = _to_json_safe_value(FakeExtensionObject("ns=1;i=3001", None))
     assert serialized is None
+
+
+def test_to_json_safe_value_encodes_bytestring_as_base64_string() -> None:
+    assert _to_json_safe_value(b"\xff\x00") == "/wA="
+
+
+def test_decode_bytestring_write_value_accepts_base64_string() -> None:
+    assert _decode_bytestring_write_value("/wA=", "ByteString") == b"\xff\x00"
+
+
+def test_decode_bytestring_write_value_rejects_invalid_base64_string() -> None:
+    with pytest.raises(ValueError, match="Invalid base64 ByteString"):
+        _decode_bytestring_write_value("!", "ByteString")
 
 
 def _fastapi_app(client: TestClient) -> FastAPI:
@@ -1696,10 +1713,7 @@ def test_v1_value_query_serializes_binary_values(client: TestClient) -> None:
     payload = response.json()
     assert payload["success"] is True
     assert payload["results"][0]["success"] is True
-    assert payload["results"][0]["result"]["value"] == {
-        "encoding": "base64",
-        "data": base64.b64encode(b"\xff\x00").decode("ascii"),
-    }
+    assert payload["results"][0]["result"]["value"] == base64.b64encode(b"\xff\x00").decode("ascii")
 
 
 def test_v1_value_query_serializes_structured_object_arrays(client: TestClient) -> None:
@@ -1812,10 +1826,7 @@ def test_v1_history_query_serializes_binary_values(client: TestClient) -> None:
     payload = response.json()
     assert payload["success"] is True
     assert payload["results"][0]["success"] is True
-    assert payload["results"][0]["result"]["values"][0]["value"] == {
-        "encoding": "base64",
-        "data": base64.b64encode(b"\xff\x00").decode("ascii"),
-    }
+    assert payload["results"][0]["result"]["values"][0]["value"] == base64.b64encode(b"\xff\x00").decode("ascii")
 
 
 def test_expanded_node_id_does_not_rewrite_non_node_ids() -> None:
@@ -2304,10 +2315,7 @@ def test_v1_subscription_sync_serializes_binary_values(client: TestClient) -> No
     assert synced.status_code == 200
     payload = synced.json()
     assert payload["success"] is True
-    assert payload["result"][0]["updates"][0]["value"] == {
-        "encoding": "base64",
-        "data": base64.b64encode(b"\xff\x00").decode("ascii"),
-    }
+    assert payload["result"][0]["updates"][0]["value"] == base64.b64encode(b"\xff\x00").decode("ascii")
 
 
 def test_v1_subscription_sync_null_value_uses_goodnodata(client: TestClient) -> None:

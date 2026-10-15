@@ -76,12 +76,11 @@ def _convert_scalar(value: Any, variant_type: ua.VariantType) -> Any:
         if isinstance(value, str):
             return UUID(value)
     elif variant_type == ua.VariantType.ByteString:
-        if isinstance(value, dict) and set(value) == {"encoding", "data"} and value["encoding"] == "base64":
-            if isinstance(value["data"], str):
-                try:
-                    return base64.b64decode(value["data"], validate=True)
-                except (ValueError, binascii.Error) as exc:
-                    raise ValueError("Invalid base64 ByteString") from exc
+        if isinstance(value, str):
+            try:
+                return base64.b64decode(value, validate=True)
+            except (ValueError, binascii.Error) as exc:
+                raise ValueError("Invalid base64 ByteString") from exc
     else:
         raise ValueError(f"Historical writes for {variant_type.name} values are not supported")
     raise ValueError(f"Value does not conform to OPC UA {variant_type.name}")

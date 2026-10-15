@@ -141,10 +141,7 @@ def test_v1_value_query_serializes_binary_values(client: TestClient) -> None:
     payload = response.json()
     assert payload["success"] is True
     assert payload["results"][0]["success"] is True
-    assert payload["results"][0]["result"]["value"] == {
-        "encoding": "base64",
-        "data": base64.b64encode(b"\xff\x00").decode("ascii"),
-    }
+    assert payload["results"][0]["result"]["value"] == base64.b64encode(b"\xff\x00").decode("ascii")
 
 
 def test_v1_value_query_serializes_structured_object_arrays(client: TestClient) -> None:

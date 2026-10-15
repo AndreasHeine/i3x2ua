@@ -33,7 +33,7 @@ from i3x_server.schemas.objecttype_schema import build_object_type_schema
         ("Double", {"type": "number"}),
         ("String", {"type": "string"}),
         ("Guid", {"type": "string"}),
-        ("ByteString", {"type": "string"}),
+        ("ByteString", {"type": "string", "contentEncoding": "base64"}),
         ("XmlElement", {"type": "string"}),
         ("DateTime", {"type": "string", "format": "date-time"}),
         ("Number", {"type": "number"}),

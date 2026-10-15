@@ -176,8 +176,7 @@ def _to_json_safe_value(value: Any) -> Any:
     if isinstance(value, datetime):
         return _format_utc_timestamp(value)
     if isinstance(value, (bytes, bytearray, memoryview)):
-        encoded = base64.b64encode(bytes(value)).decode("ascii")
-        return {"encoding": "base64", "data": encoded}
+        return base64.b64encode(bytes(value)).decode("ascii")
     if hasattr(value, "TypeId") and hasattr(value, "Body"):
         body = value.Body
         if body is None:

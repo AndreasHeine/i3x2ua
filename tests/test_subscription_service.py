@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import gc
+import weakref
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any, cast
@@ -14,6 +16,7 @@ from i3x_server.infrastructure.opcua.client import (
 )
 from i3x_server.infrastructure.subscriptions.service import (
     SubscriptionService,
+    SubscriptionUpdate,
     _DataChangeHandler,
     _ManagedBin,
     _min_positive,
@@ -679,12 +682,57 @@ async def test_subscription_ttl_expires_inactive_subscription() -> None:
     service = SubscriptionService(cast(OpcUaClientProtocol, FakeOpcUaClient()), interval_seconds=1, ttl_seconds=1)
     created = await service.create_subscription(client_id="c1", display_name="s1")
     subscription_id = created.subscription_id
+    assert await service.register_items("c1", subscription_id, ["asset-root"], max_depth=0, model=_model())
 
     await asyncio.sleep(2.2)
 
     synced = await service.sync("c1", subscription_id, acknowledge_sequence=0)
     assert synced is None
+    assert not service._node_monitors
+    assert not service._bins
     await service.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("subscription_count", [1, 3])
+@pytest.mark.parametrize("keep_active_subscription", [False, True])
+async def test_subscription_ttl_releases_expired_payloads(
+    subscription_count: int, keep_active_subscription: bool
+) -> None:
+    class Payload:
+        pass
+
+    service = SubscriptionService(cast(OpcUaClientProtocol, FakeOpcUaClient()), interval_seconds=0.1, ttl_seconds=1)
+    payload_refs: list[weakref.ReferenceType[Payload]] = []
+    expired_ids: list[str] = []
+    expiry_events: list[asyncio.Event] = []
+    try:
+        for _ in range(subscription_count):
+            created = await service.create_subscription(client_id="c1", display_name="expired")
+            expired_ids.append(created.subscription_id)
+            state = service._subscriptions[created.subscription_id]
+            expiry_events.append(state.update_event)
+            payload = Payload()
+            payload_refs.append(weakref.ref(payload))
+            state.last_values_by_node_id["node1"] = payload
+            state.updates.append(SubscriptionUpdate(1, "prop1", "node1", payload, "Good", ""))
+            state.last_activity_monotonic -= 2
+            del payload, state
+
+        if keep_active_subscription:
+            await service.create_subscription(client_id="c1", display_name="active")
+
+        await asyncio.wait_for(asyncio.gather(*(event.wait() for event in expiry_events)), timeout=2)
+
+        await asyncio.sleep(0.25)
+        gc.collect()
+        assert service._cleanup_task is not None
+        assert not service._cleanup_task.done()
+        assert all(subscription_id not in service._subscriptions for subscription_id in expired_ids)
+        assert len(service._subscriptions) == int(keep_active_subscription)
+        assert all(payload_ref() is None for payload_ref in payload_refs)
+    finally:
+        await service.close()
 
 
 @pytest.mark.asyncio

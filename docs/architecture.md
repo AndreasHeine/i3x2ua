@@ -80,6 +80,17 @@ The project follows a layered architecture inside i3x_server:
 - Responsibility: app assembly, startup/shutdown lifecycle, middleware composition.
 - Current primary modules: i3x_server/bootstrap.
 
+### Subscription expiry and memory
+
+The subscription cleanup loop checks for inactivity at the configured subscription
+interval. Each expiry pass runs in a separate coroutine so references to removed
+subscription states, queued updates, and cached values are released when that pass
+completes, rather than being retained across sleeps by the background loop.
+Shared OPC UA monitors remain until their last subscriber is removed.
+
+Releasing Python objects does not guarantee an immediate reduction in container
+memory usage: Python and system allocators may retain freed memory for reuse.
+
 ## Dependency Direction
 
 Allowed direction:

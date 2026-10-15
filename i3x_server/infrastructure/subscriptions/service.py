@@ -381,26 +381,30 @@ class SubscriptionService:
         try:
             while True:
                 await asyncio.sleep(max(0.1, self._interval_seconds))
-                stale_ids: list[str] = []
-                now = self._now_monotonic()
-                async with self._lock:
-                    for state in self._subscriptions.values():
-                        if now - state.last_activity_monotonic >= self._ttl_seconds:
-                            stale_ids.append(state.subscription_id)
-
-                    removed: list[_SubscriptionState] = []
-                    for subscription_id in stale_ids:
-                        if subscription_id not in self._subscriptions:
-                            continue
-                        state = self._subscriptions.pop(subscription_id)
-                        state.update_event.set()
-                        removed.append(state)
-
-                for state in removed:
-                    logger.warning("Subscription expired by TTL subscription_id=%s", state.subscription_id)
-                    await self._release_all_nodes(state)
+                await self._expire_subscriptions()
         except asyncio.CancelledError:
             return
+
+    async def _expire_subscriptions(self) -> None:
+        # Keep subscription references out of the long-lived cleanup loop's frame.
+        stale_ids: list[str] = []
+        now = self._now_monotonic()
+        async with self._lock:
+            for state in self._subscriptions.values():
+                if now - state.last_activity_monotonic >= self._ttl_seconds:
+                    stale_ids.append(state.subscription_id)
+
+            removed: list[_SubscriptionState] = []
+            for subscription_id in stale_ids:
+                if subscription_id not in self._subscriptions:
+                    continue
+                state = self._subscriptions.pop(subscription_id)
+                state.update_event.set()
+                removed.append(state)
+
+        for state in removed:
+            logger.warning("Subscription expired by TTL subscription_id=%s", state.subscription_id)
+            await self._release_all_nodes(state)
 
     async def _handle_client_reconnect(self) -> None:
         """Re-sync native bins after asyncua's supervisor restored its subscriptions.

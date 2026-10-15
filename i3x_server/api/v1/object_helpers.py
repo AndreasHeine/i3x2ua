@@ -255,22 +255,17 @@ def _parent_id_for_node(model: BuildResult, node_id: str) -> str | None:
     return _reverse_parent_index(model).get(node_id)
 
 
-_reverse_parent_index_cache: tuple[BuildResult, tuple[int, int], dict[str, str]] | None = None
-
-
 def _reverse_parent_index(model: BuildResult) -> dict[str, str]:
     """child id -> first parent listing it (hierarchy children first, then children_by_id).
 
-    Built once per model instead of scanning every parent's child list per lookup. The cache keeps a
-    strong reference to the model, so the identity check cannot be fooled by address reuse.
+    The model owns its cached index so discarded models are not retained by a global cache.
     """
-    global _reverse_parent_index_cache
     raw_hierarchy_children_by_id = getattr(model, "hierarchy_children_by_id", None)
     hierarchy_children_by_id = raw_hierarchy_children_by_id if isinstance(raw_hierarchy_children_by_id, dict) else {}
     fingerprint = (len(hierarchy_children_by_id), len(model.children_by_id))
-    cached = _reverse_parent_index_cache
-    if cached is not None and cached[0] is model and cached[1] == fingerprint:
-        return cached[2]
+    cached = model._reverse_parent_index_cache
+    if cached is not None and cached[0] == fingerprint:
+        return cached[1]
 
     index: dict[str, str] = {}
     for parent_id, child_ids in hierarchy_children_by_id.items():
@@ -284,7 +279,7 @@ def _reverse_parent_index(model: BuildResult) -> dict[str, str]:
             if isinstance(child_id, str):
                 index.setdefault(child_id, parent_id)
 
-    _reverse_parent_index_cache = (model, fingerprint, index)
+    model._reverse_parent_index_cache = (fingerprint, index)
     return index
 
 

@@ -40,6 +40,7 @@ from i3x_server.http_caching import (
 from i3x_server.model.revision import model_revision
 from i3x_server.schemas.objecttype_schema import (
     build_data_type_schema,
+    deduplicate_schema_fragments,
     json_schema_for_opcua_type,
     remove_opcua_schema_fields,
 )
@@ -777,6 +778,9 @@ async def _build_object_type_context(
         canonical_items = [
             item.model_copy(update={"schema_": remove_opcua_schema_fields(item.schema_)}) for item in canonical_items
         ]
+    schemas = deduplicate_schema_fragments(item.schema_ for item in canonical_items)
+    for item, schema in zip(canonical_items, schemas, strict=True):
+        item.schema_ = schema
     source_type_to_element_id = {key: item.elementId for key, item in by_source_type_id.items()}
     logger.debug(
         "Object type context built model_nodes=%d object_types=%d items=%d duration_s=%.3f",

@@ -33,6 +33,9 @@ class BuildResult:
     total_duration_s: float = 0.0
     build_completed_at_utc: str | None = None
     revision: str = ""
+    _reverse_parent_index_cache: tuple[tuple[int, int], dict[str, str]] | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
 
 
 @dataclass(slots=True)

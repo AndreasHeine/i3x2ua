@@ -70,7 +70,11 @@ from i3x_server.domain.ports.opcua import (
 from i3x_server.domain.utils import server_name_from_openapi
 from i3x_server.errors import i3x_http_error
 from i3x_server.schemas.i3x import ModelNode
-from i3x_server.schemas.objecttype_schema import build_object_type_schema, remove_opcua_schema_fields
+from i3x_server.schemas.objecttype_schema import (
+    build_object_type_schema,
+    deduplicate_schema_fragments,
+    remove_opcua_schema_fields,
+)
 from i3x_server.schemas.state import BuildResult
 from i3x_server.version import get_server_version
 
@@ -1342,6 +1346,9 @@ async def _build_object_type_context(
         canonical_items = [
             item.model_copy(update={"schema_": remove_opcua_schema_fields(item.schema_)}) for item in canonical_items
         ]
+    schemas = deduplicate_schema_fragments(item.schema_ for item in canonical_items)
+    for item, schema in zip(canonical_items, schemas, strict=True):
+        item.schema_ = schema
     source_type_to_element_id = {key: item.elementId for key, item in by_source_type_id.items()}
     logger.debug(
         "Object type context built model_nodes=%d object_types=%d items=%d duration_s=%.3f",

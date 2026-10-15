@@ -627,6 +627,27 @@ def build_data_type_schema(
     return None
 
 
+def deduplicate_schema_fragments(schemas: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Share equal JSON containers within one read-only schema collection."""
+    pool: dict[str, Any] = {}
+
+    def intern(value: Any) -> Any:
+        candidate: dict[str, Any] | list[Any]
+        if isinstance(value, dict):
+            candidate = {key: intern(item) for key, item in value.items()}
+        elif isinstance(value, list):
+            candidate = [intern(item) for item in value]
+        else:
+            return value
+        # Preserve object order and distinguish JSON scalar types in the key.
+        key = json.dumps(candidate, separators=(",", ":"), ensure_ascii=True)
+        if key not in pool:
+            pool[key] = candidate
+        return pool[key]
+
+    return [intern(schema) for schema in schemas]
+
+
 def remove_opcua_schema_fields(schema: Any) -> Any:
     if isinstance(schema, Mapping):
         return {

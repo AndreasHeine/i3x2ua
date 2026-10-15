@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import gc
+import json
+import weakref
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any, cast
@@ -12,7 +15,7 @@ from jsonschema import Draft202012Validator
 import i3x_server.api.v1.monolithic as v1
 from i3x_server.api.v1 import object_helpers, objecttype_helpers
 from i3x_server.application.services.model_query import _relationship_type_items
-from i3x_server.infrastructure.opcua.client import OpcUaNamespaceInfo
+from i3x_server.infrastructure.opcua.client import OpcUaClientProtocol, OpcUaNamespaceInfo, OpcUaObjectTypeInfo
 from i3x_server.model.revision import model_revision
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
@@ -342,6 +345,41 @@ class _EmptyOpcUaClient:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("module", [objecttype_helpers, v1])
+async def test_type_context_shares_schemas_without_changing_responses(
+    monkeypatch: pytest.MonkeyPatch, module: Any
+) -> None:
+    types = [
+        OpcUaObjectTypeInfo(f"i={index}", None, f"Type{index}", f"Type{index}", {"Name": "i=12"})
+        for index in (10001, 10002)
+    ]
+    model = _context_model()
+    client = cast(OpcUaClientProtocol, _EmptyOpcUaClient())
+    with monkeypatch.context() as patch:
+        patch.setattr(module, "deduplicate_schema_fragments", list)
+        original = await module._build_object_type_context(model, [], client, types)
+    compact = await module._build_object_type_context(model, [], client, types)
+    assert [item.model_dump_json() for item in compact.items] == [item.model_dump_json() for item in original.items]
+    seen: dict[str, object] = {}
+    duplicates = 0
+
+    def check(value: Any) -> None:
+        nonlocal duplicates
+        if isinstance(value, (dict, list)):
+            key = json.dumps(value, separators=(",", ":"), ensure_ascii=True)
+            if key in seen:
+                assert seen[key] is value
+                duplicates += 1
+            seen[key] = value
+            for child in value.values() if isinstance(value, dict) else value:
+                check(child)
+
+    for item in compact.items:
+        check(item.schema_)
+    assert duplicates > 0
+
+
+@pytest.mark.asyncio
 async def test_object_type_context_cache_hit_skips_lock(monkeypatch: pytest.MonkeyPatch) -> None:
     model = _context_model()
     builds = 0
@@ -596,3 +634,29 @@ def test_parent_id_for_node_uses_reverse_index_with_original_precedence() -> Non
 
     replaced = _model({"c-new": ["only-c"]})
     assert object_helpers._parent_id_for_node(replaced, "only-c") == "c-new"
+
+
+def test_reverse_parent_cache_does_not_retain_discarded_model() -> None:
+    model = _sample_model()
+    node_ref = weakref.ref(model.nodes_by_id["asset-root"])
+    assert object_helpers._reverse_parent_index(model)
+
+    del model
+    gc.collect()
+
+    assert node_ref() is None
+
+
+def test_reverse_parent_cache_is_reused_per_model_and_invalidated_on_size_change() -> None:
+    model = _sample_model()
+    original_index = object_helpers._reverse_parent_index(model)
+    assert object_helpers._reverse_parent_index(model) is original_index
+
+    other_model = _sample_model()
+    assert object_helpers._reverse_parent_index(other_model) is not original_index
+    assert object_helpers._reverse_parent_index(model) is original_index
+
+    model.children_by_id["new-parent"] = ["new-child"]
+    updated_index = object_helpers._reverse_parent_index(model)
+    assert updated_index is not original_index
+    assert updated_index["new-child"] == "new-parent"

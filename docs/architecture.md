@@ -91,6 +91,40 @@ Shared OPC UA monitors remain until their last subscriber is removed.
 Releasing Python objects does not guarantee an immediate reduction in container
 memory usage: Python and system allocators may retain freed memory for reuse.
 
+### Model cache ownership
+
+Each `BuildResult` owns its lazily built reverse-parent index. There is no
+module-global reverse-parent cache retaining a model after it is replaced.
+Once other users release the old model, its nodes and derived index can be
+collected without requiring another parent lookup. Parent lookup precedence
+and index invalidation based on child-index sizes are unchanged.
+
+Models built by `ModelBuilder` use each node's validated `relationships`
+dictionary as the canonical container. The `relationships_by_id` index references
+those same dictionaries and target lists rather than retaining duplicate copies.
+Similarly, `children_by_id` references each node's validated `children` list,
+including empty lists on leaf nodes. Hierarchy and composition child indexes
+remain separate because they represent different relationships.
+Each node's metadata and `applied_profile_ids_by_id` also share one profile-ID
+list per node, without sharing mutable lists between different nodes.
+Builder-produced models also share one dictionary between `parent_by_id` and
+`hierarchy_parent_by_id`. Composition and fallback parent mappings remain
+separate, and manually constructed models can still supply independent indexes.
+Consumers should treat these shared model containers as read-only; response
+helpers normalize relationships into separate response containers.
+
+### Object-type schema sharing
+
+After object-type schemas are finalized, context construction shares identical
+JSON dictionary and list fragments within that context. The temporary lookup
+pool is discarded after construction; there is no global schema pool retaining
+previous contexts. Sharing preserves dictionary order, list order, and JSON
+scalar types.
+
+Cached schemas are read-only. Code that needs to modify a schema for a particular
+response must copy it first, as the object-type alias helper already does.
+Independent context builds do not share mutable schema containers.
+
 ## Dependency Direction
 
 Allowed direction:

@@ -402,6 +402,7 @@ class ModelBuilder:
                 ),
             )
 
+            applied_profile_ids = list(active_profiles_resolved.profile_ids) if active_profiles_resolved else []
             mapped = map_node(
                 opc_node,
                 child_ids,
@@ -415,15 +416,14 @@ class ModelBuilder:
                     "uaNodeId": opc_node.node_id,
                     "uaTypeNodeId": opc_node.type_definition_id,
                     "namespaceUri": namespace_uri,
-                    "appliedProfileIds": list(active_profiles_resolved.profile_ids) if active_profiles_resolved else [],
+                    "appliedProfileIds": applied_profile_ids,
                 },
             )
             nodes_by_id[mapped.id] = mapped
+            relationships_by_id[mapped.id] = mapped.relationships
             semantic_role_by_id[mapped.id] = semantic_role
             mapping_confidence_by_id[mapped.id] = mapping_confidence
-            applied_profile_ids_by_id[mapped.id] = (
-                list(active_profiles_resolved.profile_ids) if active_profiles_resolved else []
-            )
+            applied_profile_ids_by_id[mapped.id] = applied_profile_ids
             namespace_uri_by_id[mapped.id] = namespace_uri
 
             node_id_by_name.setdefault(mapped.name, mapped.id)
@@ -448,13 +448,11 @@ class ModelBuilder:
         result = BuildResult(
             nodes_by_id=nodes_by_id,
             root_ids=root_ids,
-            children_by_id={
-                mapped_id_by_source[source_id]: list(child_ids) for source_id, child_ids in child_ids_by_source.items()
-            },
+            children_by_id={node_id: node.children for node_id, node in nodes_by_id.items()},
             instances_by_type_id=instances_by_type_id,
             property_to_node=property_to_node,
             action_to_method=action_to_method,
-            parent_by_id={node_id: parent_id for node_id, parent_id in hierarchy_parent_by_id.items()},
+            parent_by_id=hierarchy_parent_by_id,
             node_id_by_name=node_id_by_name,
             node_id_by_type=node_id_by_type,
             hierarchy_children_by_id=hierarchy_children_by_id,

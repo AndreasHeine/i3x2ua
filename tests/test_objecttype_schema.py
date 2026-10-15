@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import types
+from copy import deepcopy
 from dataclasses import dataclass, field, make_dataclass
 from types import SimpleNamespace
 from typing import Any, cast
@@ -16,6 +17,47 @@ from i3x_server.infrastructure.opcua.client import OpcUaNamespaceInfo, OpcUaObje
 from i3x_server.schemas import objecttype_schema
 from i3x_server.schemas.objecttype_schema import build_object_type_schema
 from i3x_server.schemas.opcua_value import normalize_opcua_value
+
+
+def test_schema_fragment_deduplication_preserves_content_and_shares_containers() -> None:
+    original = [
+        {"properties": {"a": {"type": "string"}, "b": {"type": "string"}}, "required": ["a"]},
+        {"properties": {"a": {"type": "string"}}, "required": ["a"]},
+    ]
+    before = deepcopy(original)
+    result = objecttype_schema.deduplicate_schema_fragments(original)
+    assert result == before
+    assert original == before
+    assert result[0] is not original[0]
+    assert result[0]["properties"]["a"] is result[0]["properties"]["b"]
+    assert result[0]["properties"]["a"] is result[1]["properties"]["a"]
+    assert result[0]["required"] is result[1]["required"]
+    separate = objecttype_schema.deduplicate_schema_fragments(original)
+    assert separate[0]["properties"]["a"] is not result[0]["properties"]["a"]
+    response = deepcopy(result[0])
+    response["properties"]["a"]["type"] = "number"
+    assert result[1]["properties"]["a"]["type"] == "string"
+    assert original == before
+
+
+def test_schema_fragment_deduplication_preserves_order_and_scalar_types() -> None:
+    schemas: list[dict[str, Any]] = [
+        {"const": True},
+        {"const": 1},
+        {"const": 1.0},
+        {"enum": [True]},
+        {"enum": [1]},
+        {"a": {}, "b": []},
+        {"b": [], "a": {}},
+    ]
+    result = objecttype_schema.deduplicate_schema_fragments(schemas)
+    assert len({id(schema) for schema in result}) == len(schemas)
+    assert type(result[0]["const"]) is bool
+    assert type(result[1]["const"]) is int
+    assert type(result[2]["const"]) is float
+    assert list(result[-2]) == ["a", "b"]
+    assert list(result[-1]) == ["b", "a"]
+    assert objecttype_schema.deduplicate_schema_fragments([]) == []
 
 
 def test_argument_schema_accepts_canonical_dimensions() -> None:

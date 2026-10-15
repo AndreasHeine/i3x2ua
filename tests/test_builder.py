@@ -9,6 +9,7 @@ from i3x_server.domain.ports.opcua import OpcUaNamespaceInfo, OpcUaTypeDefinitio
 from i3x_server.infrastructure.opcua.client import OpcUaClientProtocol, OpcUaNodeInfo, OpcUaReferenceInfo
 from i3x_server.model.builder import ModelBuilder, _kind_for_node
 from i3x_server.model.mapper import infer_kind, map_type, stable_i3x_id
+from i3x_server.schemas.state import BuildResult
 
 
 class FakeOpcuaForBuilder:
@@ -45,6 +46,75 @@ class FakeOpcuaForBuilder:
                 event_notifier=False,
             ),
         ]
+
+
+@pytest.mark.asyncio
+async def test_model_builder_shares_validated_relationship_containers() -> None:
+    for client in (FakeOpcuaForBuilder(), FakeOpcuaWithOutgoingReferences(), FakeOpcuaWithGraphReference()):
+        model = await ModelBuilder(cast(OpcUaClientProtocol, client)).build()
+        for node_id, node in model.nodes_by_id.items():
+            assert model.relationships_by_id[node_id] is node.relationships
+            for name, targets in node.relationships.items():
+                assert model.relationships_by_id[node_id][name] is targets
+
+    isolated = await ModelBuilder(cast(OpcUaClientProtocol, FakeOpcuaWithNamespaceInfo("i=85", []))).build()
+    node = next(iter(isolated.nodes_by_id.values()))
+    assert node.relationships == {}
+    assert isolated.relationships_by_id[node.id] is node.relationships
+
+
+@pytest.mark.asyncio
+async def test_model_builder_shares_validated_child_lists() -> None:
+    for client in (FakeOpcuaForBuilder(), FakeOpcuaWithOutgoingReferences(), FakeOpcuaWithGraphReference()):
+        model = await ModelBuilder(cast(OpcUaClientProtocol, client)).build()
+        assert model.children_by_id.keys() == model.nodes_by_id.keys()
+        for node_id, node in model.nodes_by_id.items():
+            assert model.children_by_id[node_id] is node.children
+            assert model.hierarchy_children_by_id[node_id] is not node.children
+            assert model.composition_children_by_id[node_id] is not node.children
+
+    isolated = await ModelBuilder(cast(OpcUaClientProtocol, FakeOpcuaWithNamespaceInfo("i=85", []))).build()
+    node = next(iter(isolated.nodes_by_id.values()))
+    assert node.children == []
+    assert isolated.children_by_id[node.id] is node.children
+
+
+@pytest.mark.asyncio
+async def test_model_builder_shares_applied_profile_lists() -> None:
+    model = await ModelBuilder(cast(OpcUaClientProtocol, FakeOpcuaForBuilder())).build()
+    for node_id, node in model.nodes_by_id.items():
+        assert node.metadata["appliedProfileIds"] == ["generic"]
+        assert model.applied_profile_ids_by_id[node_id] is node.metadata["appliedProfileIds"]
+
+    profile_lists = list(model.applied_profile_ids_by_id.values())
+    assert len({id(profile_ids) for profile_ids in profile_lists}) == len(profile_lists)
+
+
+@pytest.mark.asyncio
+async def test_model_builder_shares_hierarchy_parent_index() -> None:
+    for client in (FakeOpcuaForBuilder(), FakeOpcuaWithOutgoingReferences(), FakeOpcuaWithGraphReference()):
+        model = await ModelBuilder(cast(OpcUaClientProtocol, client)).build()
+        assert model.parent_by_id is model.hierarchy_parent_by_id
+        assert model.composition_parent_by_id is not model.parent_by_id
+        assert model.parent_id_by_id is not model.parent_by_id
+
+
+def test_manually_constructed_model_preserves_independent_parent_indexes() -> None:
+    parents = {"child": "fallback-parent"}
+    hierarchy_parents = {"child": "hierarchy-parent"}
+    model = BuildResult(
+        nodes_by_id={},
+        root_ids=[],
+        children_by_id={},
+        instances_by_type_id={},
+        property_to_node={},
+        action_to_method={},
+        parent_by_id=parents,
+        hierarchy_parent_by_id=hierarchy_parents,
+    )
+    assert model.parent_by_id is parents
+    assert model.hierarchy_parent_by_id is hierarchy_parents
+    assert model.parent_by_id is not model.hierarchy_parent_by_id
 
 
 class FakeOpcuaWithNamespaceInfo:

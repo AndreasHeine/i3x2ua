@@ -48,7 +48,7 @@ from i3x_server.application.services.asset_context import (
 from i3x_server.domain.ports.opcua import BoundedHistoryReader
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/mcp/composites", tags=["MCP"])
+router = APIRouter(prefix="/mcp/composites", tags=["MCP Helpers"])
 
 
 async def _run(request: Request, options: WorkflowOptions, name: str) -> dict[str, Any]:

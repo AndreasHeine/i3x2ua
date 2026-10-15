@@ -13,6 +13,35 @@ from i3x_server.mcp import build_mcp_tools
 from i3x_server.prompts.registry import PromptDefinition, PromptRegistry
 
 
+def test_openapi_separates_protocol_and_custom_mcp_routes(client: TestClient) -> None:
+    schema = client.get("/openapi.json").json()
+    paths = schema["paths"]
+    assert paths["/mcp"]["post"]["tags"] == ["MCP"]
+    custom_paths = {
+        "/mcp/tools",
+        "/mcp/call",
+        "/mcp/prompts",
+        "/mcp/prompts/{name}",
+        "/mcp/prompts/execute",
+        "/mcp/resources",
+        "/mcp/resources/read",
+        "/mcp/roots",
+        "/mcp/composites/discover",
+        "/mcp/composites/find",
+        "/mcp/composites/snapshot",
+        "/mcp/composites/monitor",
+        "/mcp/composites/history",
+        "/mcp/composites/diagnose",
+    }
+    assert {path for path in paths if path.startswith("/mcp/")} == custom_paths
+    for path in custom_paths:
+        for operation in paths[path].values():
+            assert operation["tags"] == ["MCP Helpers"]
+    tags = {tag["name"]: tag["description"] for tag in schema["tags"]}
+    assert "JSON-RPC" in tags["MCP"]
+    assert "not MCP specification routes" in tags["MCP Helpers"]
+
+
 @pytest.fixture
 def protocol_client() -> TestClient:
     app = FastAPI()

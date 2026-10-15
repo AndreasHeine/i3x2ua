@@ -181,6 +181,11 @@ I3X_ENABLE_MCP=1 uv run uvicorn i3x_server.main:app --host 0.0.0.0 --port 8000
 
 ### MCP Endpoints
 
+OpenAPI/Swagger groups the protocol transport (`POST /mcp`) under **MCP**.
+All custom REST helpers below, including `/mcp/composites/*`, are grouped under
+**MCP Helpers**; those HTTP routes are not defined by the MCP specification.
+Standard MCP clients invoke tools through `tools/call` on the transport endpoint.
+
 - **Transport**: `POST /mcp` uses Streamable HTTP with JSON responses and revision `2025-06-18`. `GET /mcp` returns `405`; legacy SSE discovery is not supported. List-changed notifications are not supported; prompt overrides load at startup.
 - **Tool listing**: `GET /mcp/tools` — Returns tool catalog in REST format.
 - **Tool calling**: `POST /mcp/call` — REST-style tool invocation.

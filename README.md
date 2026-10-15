@@ -180,6 +180,29 @@ sequenceDiagram
 		C->>R: PUT /v1/objects/value
 		R-->>C: 501 Not Implemented
 	end
+
+	alt Optional historical write enabled (I3X_ENABLE_WRITES=1)
+		C->>R: PUT /v1/objects/history
+		R->>D: get_or_build_model()
+		D-->>R: BuildResult
+		R->>R: Validate each VQT against ObjectType schema
+		R->>O: Check HistoryWrite access
+		O->>U: Read AccessLevel and UserAccessLevel
+		U-->>O: HistoryWrite permissions
+		O-->>R: Access result
+		alt HistoryUpdate supported and permitted
+			R->>O: write_history_value(node,value,quality,timestamp)
+			O->>U: HistoryUpdate (insert or replace by source timestamp)
+			U-->>O: Per-operation status
+			O-->>R: Per-item historical write outcome
+			R-->>C: Bulk success/error envelope
+		else Unsupported service or denied/invalid item
+			R-->>C: Error result (501 unsupported, or per-item failure)
+		end
+	else Optional historical write disabled
+		C->>R: PUT /v1/objects/history
+		R-->>C: 501 Not Implemented
+	end
 ```
 
 ## Quick Start

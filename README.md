@@ -133,7 +133,7 @@ sequenceDiagram
 
 Requirements:
 
-- Python 3.10 to 3.12
+- Python 3.14 to 3.15
 - uv
 - Optional: running OPC UA server
 

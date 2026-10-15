@@ -27,9 +27,9 @@ flowchart LR
 		Nginx[nginx]
 	end
 
-	subgraph Security[Security Control Plane]
-		Auth[(External AuthN/AuthZ)]
-		Certbot[Certbot / ACME Client]
+	subgraph Security[Optional Deployment Security and TLS]
+		Auth[Reverse-proxy authentication<br/>configured by deployment]
+		Certbot[Optional Certbot / ACME Client]
 		CertStore[(Certificate Store)]
 		AcmeCA[(ACME CA)]
 	end
@@ -39,33 +39,39 @@ flowchart LR
 	Client <--> Nginx
 	Agent <--> Nginx
 	Nginx --> API
-	Nginx -. enforces auth .-> Auth
+	Nginx -. authentication policy .-> Auth
 	Certbot -. ACME .-> AcmeCA
 	Certbot --> CertStore
-	Nginx --> CertStore
-	Certbot -. renews certs .-> Nginx
+	CertStore -. TLS certificate configured at proxy .-> Nginx
 
 	subgraph Core[i3x2ua-instance]
-		Routers[Router-Layer /v1 /ua optional /mcp]
-		Deps[Dependency Layer]
-		Services[Application Services]
-		Model[Model Layer]
-		SubSvc[Subscription Service]
-		McpRuntime[MCP Runtime]
+		Routers["REST routers: /v1 and /ua<br/>always mounted"]
+		McpRuntime["MCP router and runtime<br/>mounted only when I3X_ENABLE_MCP=1"]
+		Deps[Request dependencies]
+		Model[Model cache and builder]
+		Services[Application services]
+		SubSvc["Subscription runtime<br/>native monitored items or shared polling"]
 		OpcClient[OPC UA Client]
 
 		API --> Routers
+		API -. if enabled .-> McpRuntime
 		Routers --> Deps
-		Deps --> Services
 		Deps --> Model
+		Routers --> Services
+		Routers --> OpcClient
+		McpRuntime -. internally dispatches REST tools .-> Routers
 		Services --> SubSvc
-		Services --> McpRuntime
 		Model --> OpcClient
 		SubSvc --> OpcClient
 	end
 
 	OpcClient <-->|OPC UA Binary| UaServer[(External OPC UA Server)]
 ```
+
+The proxy authentication and certificate-provisioning components are deployment
+concerns, not application services. The app does not enforce HTTP authentication;
+the Docker Compose example configures Basic Auth at nginx, while Certbot/ACME
+provisioning and renewal are handled separately.
 
 ```mermaid
 sequenceDiagram
@@ -75,53 +81,100 @@ sequenceDiagram
 	participant M as Model Cache/Builder
 	participant O as OPC UA Client
 	participant U as OPC UA Server
-	participant S as i3X Subscription Service
+	participant A as Subscription App Service
+	participant S as Subscription Runtime
 
 	Note over C,R: Read current values
 	C->>R: POST /v1/objects/value
 	R->>D: get_or_build_model()
-	D->>M: cache hit? else build()
+	D->>M: Check model cache
+	opt Cache miss
+		M->>O: Browse/build address-space model
+		O->>U: Browse requests
+		U-->>O: Address-space metadata
+		O-->>M: Browse results
+	end
 	M-->>D: BuildResult
-	R->>O: read_values(node_ids)
-	O->>U: Read/Browse requests
-	U-->>O: values + metadata
-	O-->>R: values
+	D-->>R: BuildResult
+	R->>O: read_data_values(node_ids)
+	O->>U: Read Value attributes
+	U-->>O: DataValues (value, quality, timestamp)
+	O-->>R: Per-node read results
 	R-->>C: bulk success/error envelope
 
 	Note over C,R: Streaming subscription
 	C->>R: POST /v1/subscriptions
-	R->>S: create_subscription()
-	S-->>R: subscriptionId
+	R->>A: create_subscription()
+	A->>S: Create subscription state
+	S-->>A: subscriptionId
+	A-->>R: subscriptionId
 	R-->>C: success
 
 	C->>R: POST /v1/subscriptions/register
-	R->>S: register_items(elementIds,maxDepth)
-	S->>O: native subscribe OR polling loop
-	O->>U: MonitoredItems or periodic reads
-	U-->>O: data changes
-	O-->>S: normalized updates
+	R->>D: get_or_build_model()
+	D-->>R: BuildResult
+	R->>A: register_monitored_items(elementIds,maxDepth)
+	A->>S: Resolve model elements and register nodes
+	opt Initial values enabled
+		S->>O: Read initial values
+		O->>U: Read Value attributes
+		U-->>O: Initial DataValues
+		O-->>S: Seed update queue
+	end
+	alt Native monitored items available
+		S->>O: Create/reuse native OPC UA subscription
+		O->>U: Create MonitoredItems
+		U-->>O: Data-change notifications
+		O-->>S: Normalized updates
+	else Native monitoring unavailable or admission fails
+		loop Shared polling interval
+			S->>O: read_values(monitored_node_ids)
+			O->>U: Batched Read
+			U-->>O: Current values
+			O-->>S: Normalized updates
+		end
+	end
+	A-->>R: Per-item registration results
+	R-->>C: Bulk success/error envelope
 
 	alt SSE stream (push)
 		C->>R: POST /v1/subscriptions/stream
-		R->>S: wait_for_updates(afterSequence)
-		S-->>R: sequence updates
-		R-->>C: SSE data events + keepalive
-	else Polling sync (pull)
+		R->>A: begin_stream_session()
+		A->>S: Activate stream generation
+		S-->>A: Acknowledge sequence and queued updates
+		A-->>R: Stream session
+		R-->>C: SSE connected comment
+		loop Until stream closes
+			R->>A: wait for updates
+			A->>S: wait_for_updates(afterSequence)
+			S-->>A: Updates or timeout
+			A-->>R: Updates or keepalive
+			R-->>C: SSE data event or keepalive comment
+		end
+	else Sync endpoint (client pull)
 		C->>R: POST /v1/subscriptions/sync
-		R->>S: sync(acknowledgeSequence)
-		S-->>R: pending updates
-		R-->>C: batch of updates
+		R->>A: get_pending_updates(acknowledgeSequence)
+		A->>S: sync and acknowledge queue
+		S-->>A: Pending updates
+		A-->>R: Pending updates
+		R-->>C: Update batch (206 if queue overflow)
 	end
 
 	alt Optional current-value write enabled (I3X_ENABLE_WRITES=1)
 		C->>R: PUT /v1/objects/value
 		R->>D: get_or_build_model()
-		D->>M: cache hit? else build()
-		M-->>D: BuildResult
-		R->>O: read/write checks + write_value()
-		O->>U: OPC UA write request
-		U-->>O: write status
-		O-->>R: per-item write outcomes
+		D-->>R: BuildResult
+		R->>R: Check feature flag and validate each item
+		R->>O: Check write access and resolve OPC UA value type
+		O->>U: Read access and value-type attributes
+		U-->>O: Access and value-type metadata
+		O-->>R: Validation inputs
+		R->>O: write_value()
+		O->>U: Write value, quality, and source timestamp
+		U-->>O: Write status
+		O->>U: Read back value, quality, and source timestamp
+		U-->>O: Read-back DataValue
+		O-->>R: Per-item write and verification outcome
 		R-->>C: bulk success/error envelope
 	else Optional current-value write disabled
 		C->>R: PUT /v1/objects/value

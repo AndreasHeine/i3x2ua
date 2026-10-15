@@ -14,6 +14,7 @@ from i3x_server.api.v1.object_helpers import _expanded_node_id, _find_model_node
 from i3x_server.application.ports.opcua import OpcUaClientProtocol, OpcUaNamespaceInfo
 from i3x_server.application.services.subscription_mapper import SubscriptionBulkItemDto
 from i3x_server.errors import i3x_http_error
+from i3x_server.schemas.opcua_value import normalize_opcua_value
 from i3x_server.schemas.state import BuildResult
 
 
@@ -188,6 +189,7 @@ def _to_json_safe_value(value: Any) -> Any:
     if isinstance(value, BaseModel):
         return _to_json_safe_value(value.model_dump(mode="json", by_alias=True))
     if is_dataclass(value):
+        value = normalize_opcua_value(value)
         return {
             item.name: _to_json_safe_value(getattr(value, item.name))
             for item in fields(value)

@@ -14,6 +14,7 @@ from types import ModuleType
 from typing import Any, cast, get_args, get_origin
 
 from asyncua import ua
+from asyncua.ua.uaprotocol_auto import Argument
 
 from i3x_server.domain.ports.opcua import OpcUaNamespaceInfo, OpcUaObjectTypeInfo, OpcUaObjectTypeMemberInfo
 
@@ -447,6 +448,8 @@ def _reference_or_register_structure(
 
 
 def _structure_object_schema(value: Any, registry: _SchemaRegistry) -> dict[str, Any]:
+    if isinstance(value, Argument):
+        return _structure_schema_for_type(type(value), registry)
     fields = _structure_fields(value)
     properties: dict[str, Any] = {}
 
@@ -775,6 +778,9 @@ def _structure_schema_for_type(structure_type: type[Any], registry: _SchemaRegis
                 if _is_filtered_structure_field(str(name)):
                     continue
                 properties[str(name)] = _schema_for_annotation(annotation, registry)
+
+    if issubclass(structure_type, Argument):
+        properties["ArrayDimensions"]["type"] = ["array", "null"]
 
     return {
         "type": "object",

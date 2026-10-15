@@ -5,12 +5,21 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
+from asyncua import ua
 from fastapi import HTTPException
 
 from i3x_server.application.services.object_value import VQT, ObjectValueService
 from i3x_server.domain.ports.opcua import OpcUaClientProtocol
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
+
+
+def test_argument_serialization_uses_null_dimensions() -> None:
+    service = ObjectValueService(cast(OpcUaClientProtocol, object()), _model())
+    argument = ua.Argument(ValueRank=-1, ArrayDimensions=[])
+    value = service._to_json_safe_value([argument])
+    assert value[0]["ArrayDimensions"] is None
+    assert argument.ArrayDimensions == []
 
 
 def _model() -> BuildResult:

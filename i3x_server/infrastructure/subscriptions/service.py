@@ -12,6 +12,7 @@ from uuid import uuid4
 from i3x_server.config.settings import get_settings
 from i3x_server.domain.ports.opcua import OpcUaClientProtocol, OpcUaSubscriptionCapabilities
 from i3x_server.schemas.i3x import ModelNode
+from i3x_server.schemas.opcua_value import normalize_opcua_value
 from i3x_server.schemas.state import BuildResult
 
 logger = logging.getLogger(__name__)
@@ -1315,6 +1316,7 @@ class SubscriptionService:
             self._touch(state)
 
     def _append_update(self, state: _SubscriptionState, node_id: str, value: Any) -> None:
+        value = normalize_opcua_value(value)
         has_current = node_id in state.last_values_by_node_id
         current = state.last_values_by_node_id.get(node_id)
         if has_current and current == value:

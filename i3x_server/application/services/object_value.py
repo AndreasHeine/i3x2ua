@@ -19,6 +19,7 @@ from pydantic import BaseModel
 from i3x_server.domain.ports.opcua import OpcUaClientProtocol
 from i3x_server.errors import i3x_http_error
 from i3x_server.schemas.i3x import ModelNode
+from i3x_server.schemas.opcua_value import normalize_opcua_value
 from i3x_server.schemas.state import BuildResult
 
 logger = logging.getLogger(__name__)
@@ -408,6 +409,7 @@ class ObjectValueService:
         if isinstance(value, BaseModel):
             return self._to_json_safe_value(value.model_dump(mode="json", by_alias=True))
         if is_dataclass(value):
+            value = normalize_opcua_value(value)
             return {item.name: self._to_json_safe_value(getattr(value, item.name)) for item in fields(value)}
         if isinstance(value, (list, tuple, set)):
             return [self._to_json_safe_value(item) for item in value]

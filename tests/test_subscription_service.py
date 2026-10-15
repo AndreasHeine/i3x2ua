@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
+from asyncua import ua
 
 from i3x_server.infrastructure.opcua.client import (
     OpcUaClientProtocol,
@@ -78,6 +79,32 @@ class FakeOpcUaClient:
     async def read_values(self, node_ids: list[str]) -> list[float]:
         self.read_values_calls += 1
         return [float(i + self.read_values_calls) for i, _ in enumerate(node_ids)]
+
+
+@pytest.mark.parametrize("empty_first", [False, True])
+def test_argument_dimensions_do_not_create_spurious_updates(empty_first: bool) -> None:
+    service = SubscriptionService(cast(OpcUaClientProtocol, FakeOpcUaClient()), interval_seconds=1.0)
+    state = _SubscriptionState(
+        subscription_id="sub-argument",
+        client_id="client",
+        display_name=None,
+        monitored_objects={},
+    )
+    null_argument = ua.Argument(Name="EventId", ValueRank=-1, ArrayDimensions=None)  # type: ignore[arg-type]
+    empty_argument = ua.Argument(Name="EventId", ValueRank=-1, ArrayDimensions=[])
+    first, second = (empty_argument, null_argument) if empty_first else (null_argument, empty_argument)
+
+    service._append_update(state, "ns=2;s=InputArguments", [first])
+    service._append_update(state, "ns=2;s=InputArguments", [second])
+
+    assert state.sequence_number == 1
+    assert len(state.updates) == 1
+    assert state.updates[0].value[0].ArrayDimensions is None
+    assert empty_argument.ArrayDimensions == []
+
+    changed = ua.Argument(Name="Comment", ValueRank=-1, ArrayDimensions=[])
+    service._append_update(state, "ns=2;s=InputArguments", [changed])
+    assert state.sequence_number == 2
 
 
 def _model() -> BuildResult:

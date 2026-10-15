@@ -31,6 +31,12 @@ added later without changing the mapping contract described here.
 
 ## Canonical Rules
 
+OPC UA `Argument` values use `ArrayDimensions: null` when `ValueRank <= 0`,
+as required by OPC UA Part 3, section 8.6. This normalization is applied before
+subscription change detection and when serializing current and historical values.
+It does not mutate upstream values or change dimensions for `ValueRank > 0`.
+Argument JSON Schemas permit both arrays and null for `ArrayDimensions`.
+
 1. Object instance `elementId`
 - Implementation-owned stable identifier.
 - Must be unique within the i3X address space.

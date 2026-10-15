@@ -15,6 +15,20 @@ from i3x_server.api.v1.object_helpers import _object_type_element_id
 from i3x_server.infrastructure.opcua.client import OpcUaNamespaceInfo, OpcUaObjectTypeInfo, OpcUaObjectTypeMemberInfo
 from i3x_server.schemas import objecttype_schema
 from i3x_server.schemas.objecttype_schema import build_object_type_schema
+from i3x_server.schemas.opcua_value import normalize_opcua_value
+
+
+def test_argument_schema_accepts_canonical_dimensions() -> None:
+    from i3x_server.api.v1.common_helpers import _to_json_safe_value
+
+    schema = objecttype_schema.build_data_type_schema("ns=0;i=296", [])
+    assert schema is not None
+    validator = Draft202012Validator(schema)
+    for rank, dimensions in [(-1, []), (0, []), (1, [10])]:
+        argument = ua.Argument(Name="Input", ValueRank=rank, ArrayDimensions=dimensions)
+        serialized = _to_json_safe_value(normalize_opcua_value(argument))
+        validator.validate(serialized)
+        assert serialized["ArrayDimensions"] == (None if rank <= 0 else dimensions)
 
 
 @pytest.mark.parametrize(

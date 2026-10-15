@@ -806,6 +806,79 @@ async def test_distinct_nodes_are_packed_into_one_bin() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("per_call", "per_subscription", "node_count", "expected_capacity"),
+    [
+        (1, 2, 2, 2),
+        (1000, 100000, 1001, 100000),
+        (1, None, 2, 1000),
+        (None, 2, 2, 2),
+    ],
+)
+async def test_bin_capacity_is_independent_of_per_call_limit(
+    per_call: int | None,
+    per_subscription: int | None,
+    node_count: int,
+    expected_capacity: int,
+) -> None:
+    class _CapacityClient(FakeOpcUaClient):
+        async def get_subscription_capabilities(self) -> OpcUaSubscriptionCapabilities:
+            return OpcUaSubscriptionCapabilities(
+                max_monitored_items_per_call=per_call,
+                max_subscriptions=100,
+                max_monitored_items=1000000,
+                max_subscriptions_per_session=10,
+                max_monitored_items_per_subscription=per_subscription,
+            )
+
+        async def subscribe_data_changes(self, subscription: Any, node_ids: list[str]) -> int | list[int]:
+            if per_call is not None:
+                assert len(node_ids) <= per_call
+            return await super().subscribe_data_changes(subscription, node_ids)
+
+    client = _CapacityClient()
+    service = SubscriptionService(cast(OpcUaClientProtocol, client), interval_seconds=1, seed_initial_values=False)
+    try:
+        for index in range(node_count):
+            await service._acquire_node_monitor(f"ns=1;i={index}", "sub-test")
+
+        assert client.create_subscription_calls == 1
+        assert len(service._bins) == 1
+        bin_ = next(iter(service._bins.values()))
+        assert bin_.capacity == expected_capacity
+        assert len(bin_.node_handles) == node_count
+    finally:
+        await service.close()
+
+
+@pytest.mark.asyncio
+async def test_total_monitored_item_limit_applies_to_existing_bin() -> None:
+    class _LimitedClient(FakeOpcUaClient):
+        async def get_subscription_capabilities(self) -> OpcUaSubscriptionCapabilities:
+            return OpcUaSubscriptionCapabilities(
+                max_monitored_items_per_call=1,
+                max_subscriptions=100,
+                max_monitored_items=2,
+                max_subscriptions_per_session=10,
+                max_monitored_items_per_subscription=100000,
+            )
+
+    client = _LimitedClient()
+    service = SubscriptionService(cast(OpcUaClientProtocol, client), interval_seconds=1, seed_initial_values=False)
+    try:
+        for index in range(3):
+            await service._acquire_node_monitor(f"ns=1;i={index}", "sub-test")
+
+        assert client.create_subscription_calls == 1
+        assert client.subscribe_calls == 2
+        assert len(next(iter(service._bins.values())).node_handles) == 2
+        assert service._node_monitors["ns=1;i=2"].mode == "polling"
+        assert service._node_monitors["ns=1;i=2"].bin_id is None
+    finally:
+        await service.close()
+
+
+@pytest.mark.asyncio
 async def test_bin_overflow_opens_second_bin() -> None:
     """Phase 2: once a bin is full, the next node opens a new bin instead of failing."""
 

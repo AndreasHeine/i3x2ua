@@ -1116,15 +1116,14 @@ class SubscriptionService:
 
     async def _acquire_native_bin_slot(self, monitor: _NodeMonitor, caps: OpcUaSubscriptionCapabilities) -> bool:
         """Pack monitor.node_id into an existing bin with spare capacity, or open a new one."""
-        capacity = _min_positive(
-            caps.max_monitored_items_per_call,
-            caps.max_monitored_items_per_subscription,
-        )
-        if capacity is not None and capacity < 1:
-            return False
+        capacity = _min_positive(caps.max_monitored_items_per_subscription)
         effective_capacity = capacity or _DEFAULT_BIN_CAPACITY
 
         async with self._lock:
+            if caps.max_monitored_items is not None:
+                total_monitored = sum(len(bin_.node_handles) for bin_ in self._bins.values())
+                if total_monitored + 1 > caps.max_monitored_items:
+                    return False
             target_bin = next((b for b in self._bins.values() if len(b.node_handles) < b.capacity), None)
 
         if target_bin is not None:

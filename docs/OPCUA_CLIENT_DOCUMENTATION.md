@@ -104,6 +104,11 @@ Capability checks include:
 
 Decision logic:
 
+- Native monitored nodes share OPC UA subscriptions ("bins"). Bin capacity uses the server's
+  maximum monitored items per subscription, or a fallback of 1000 if no positive limit is advertised.
+- The maximum monitored items per call limits a single creation request, not bin capacity.
+  Registration currently creates one monitored item per request, so a bin can grow beyond the per-call limit.
+- The maximum monitored items total is checked before adding a node to either an existing or a new bin.
 - If limits allow: use native monitored items (push from OPC UA server).
 - If limits do not allow (or native setup fails): use polling mode at configured interval.
 

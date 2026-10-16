@@ -121,7 +121,7 @@ async def get_objects_v1(
             for node in nodes[offset : offset + _RESPONSE_CHUNK_SIZE]
         )
         await asyncio.sleep(0)
-    return SuccessResponse(result=instances)
+    return SuccessResponse(success=True, result=instances)
 
 
 @router.post(

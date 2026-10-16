@@ -18,7 +18,7 @@ from i3x_server.application.dependencies import get_model_query_service
 from i3x_server.application.services.model_query import ModelQueryService
 from i3x_server.http_caching import NAMESPACES_PART, content_revision, enable_etag, record_revision
 
-router = APIRouter(prefix="/v1", tags=["Exploratory"])
+router = APIRouter(prefix="/v1")
 
 
 @router.get(
@@ -26,12 +26,13 @@ router = APIRouter(prefix="/v1", tags=["Exploratory"])
     response_model=SuccessResponse[ServerInfo],
     summary="Get server info",
     description=("Return i3X server metadata including supported capabilities, server version, and spec version."),
+    tags=["Info"],
 )
 async def get_info_v1(
     model_query_service: ModelQueryService = Depends(get_model_query_service),
 ) -> SuccessResponse[ServerInfo]:
     info = await model_query_service.get_server_info()
-    return SuccessResponse(result=ServerInfo.model_validate(info.model_dump()))
+    return SuccessResponse(success=True, result=ServerInfo.model_validate(info.model_dump()))
 
 
 @router.get(
@@ -42,6 +43,7 @@ async def get_info_v1(
     description="Return all namespaces available in the current model. Supports conditional GET via ETag.",
     dependencies=[Depends(enable_etag)],
     openapi_extra=CONDITIONAL_GET_OPENAPI,
+    tags=["Exploratory"],
 )
 async def get_namespaces_v1(
     request: Request,
@@ -50,7 +52,7 @@ async def get_namespaces_v1(
     namespaces = await model_query_service.get_namespaces()
     payload = [Namespace(uri=item.uri, displayName=item.displayName) for item in namespaces]
     record_revision(request, NAMESPACES_PART, content_revision((item.uri, item.displayName) for item in payload))
-    return SuccessResponse(result=payload)
+    return SuccessResponse(success=True, result=payload)
 
 
 @router.get(
@@ -65,13 +67,14 @@ async def get_namespaces_v1(
     ),
     dependencies=[Depends(enable_etag)],
     openapi_extra=CONDITIONAL_GET_OPENAPI,
+    tags=["Exploratory"],
 )
 async def get_relationship_types_v1(
     namespace_uri: str | None = Query(default=None, alias="namespaceUri"),
     model_query_service: ModelQueryService = Depends(get_model_query_service),
 ) -> SuccessResponse[list[RelationshipType]]:
     items = await model_query_service.get_relationship_types(namespace_uri)
-    return SuccessResponse(result=[RelationshipType.model_validate(item) for item in items])
+    return SuccessResponse(success=True, result=[RelationshipType.model_validate(item) for item in items])
 
 
 @router.post(
@@ -82,6 +85,7 @@ async def get_relationship_types_v1(
         "Resolve one or more relationship type element IDs using a bulk request. "
         "Unknown IDs return per-item not-found errors."
     ),
+    tags=["Exploratory"],
 )
 async def query_relationship_types_v1(
     body: GetRelationshipTypesRequest,

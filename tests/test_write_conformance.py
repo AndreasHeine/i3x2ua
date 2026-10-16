@@ -371,26 +371,13 @@ def test_history_timestamp_preserves_exact_precision(
 @pytest.mark.parametrize(
     "timestamp",
     [
-        "2026-01-01T00:00:00+01:00",
-        "2026-01-01T00:00:00+00:00",
-        "2026-01-01T00:00:00-00:00",
         "2026-01-01T00:00:00.1234567Z",
         "2026-01-01T00:00:00.000000001Z",
     ],
 )
-def test_history_timestamp_rejects_offsets_and_precision_loss(client: TestClient, timestamp: str) -> None:
-    response = client.put(
-        "/v1/objects/history",
-        json={
-            "updates": [
-                {
-                    "elementId": "property-abc",
-                    "value": {"value": 19.5, "quality": "Good", "timestamp": timestamp},
-                }
-            ]
-        },
-    )
-    assert response.status_code == 400
+def test_history_timestamp_rejects_precision_loss(timestamp: str) -> None:
+    with pytest.raises(ValueError, match="microsecond precision"):
+        HistoryWriteVQTRequest.model_validate({"value": 19.5, "quality": "Good", "timestamp": timestamp})
 
 
 def _status_error(code: int) -> UaStatusCodeError:

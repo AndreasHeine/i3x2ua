@@ -14,7 +14,7 @@ from i3x_server.application.dependencies import get_or_build_model
 from i3x_server.http_caching import enable_etag
 from i3x_server.schemas.state import BuildResult
 
-router = APIRouter(prefix="/v1", tags=["Diagnostics"])
+router = APIRouter(prefix="", tags=["Diagnostics"])
 
 
 @router.get(
@@ -26,7 +26,7 @@ router = APIRouter(prefix="/v1", tags=["Diagnostics"])
 async def get_model_metrics_v1(
     model: BuildResult = Depends(get_or_build_model),
 ) -> SuccessResponse[ModelMetricsResponse]:
-    return SuccessResponse(result=_build_model_metrics(model))
+    return SuccessResponse(success=True, result=_build_model_metrics(model))
 
 
 @router.get(
@@ -69,10 +69,11 @@ async def get_model_namespace_gaps_v1(
 
     missing.sort(key=lambda item: (item.kind, item.displayName, item.elementId))
     return SuccessResponse(
+        success=True,
         result=ModelNamespaceGapResponse(
             totalMissing=len(missing),
             byKind=by_kind,
             byNamespaceIndex=by_namespace_index,
             items=missing[:limit],
-        )
+        ),
     )

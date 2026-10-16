@@ -148,3 +148,29 @@ def test_v1_history_query_invalid_time_range(client: TestClient) -> None:
     assert response.status_code == 400
     payload = response.json()
     assert payload["error"]["code"] == 400
+
+
+def test_v1_history_query_requires_timezone(client: TestClient) -> None:
+    response = client.post(
+        "/v1/objects/history",
+        json={
+            "elementIds": ["property-abc"],
+            "startTime": "2026-01-01T00:00:00",
+            "endTime": "2026-01-02T00:00:00Z",
+        },
+    )
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == 400
+
+
+def test_v1_history_query_accepts_rfc3339_offset(client: TestClient) -> None:
+    response = client.post(
+        "/v1/objects/history",
+        json={
+            "elementIds": ["property-abc"],
+            "startTime": "2026-01-01T02:00:00+02:00",
+            "endTime": "2026-01-02T02:00:00+02:00",
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["results"][0]["success"] is True

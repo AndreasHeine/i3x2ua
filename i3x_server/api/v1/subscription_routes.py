@@ -31,6 +31,7 @@ from i3x_server.api.v1.contracts import (
     SyncBatch,
     SyncRequest,
     SyncUpdate,
+    UnregisterMonitoredItemsRequest,
     _bulk_response,
 )
 from i3x_server.api.v1.monolithic import _stream_debug_enabled, logger
@@ -63,11 +64,12 @@ async def create_subscription_v1(
         display_name=body.displayName,
     )
     return SuccessResponse(
+        success=True,
         result=CreateSubscriptionResponse(
             subscriptionId=created["subscriptionId"],
             clientId=created["clientId"],
             displayName=created["displayName"],
-        )
+        ),
     )
 
 
@@ -87,14 +89,13 @@ async def register_monitored_items_v1(
     model: BuildResult = Depends(get_or_build_model),
     subscription_app_service: SubscriptionAppService = Depends(get_subscription_app_service),
 ) -> BulkResponse[None]:
-    max_depth = 0 if body.maxDepth is None else body.maxDepth
     known_ids, results = _validate_subscription_element_ids(model, body.elementIds)
 
     await subscription_app_service.register_monitored_items(
         subscription_id=body.subscriptionId,
         client_id=body.clientId,
         element_ids=known_ids,
-        max_depth=max_depth,
+        max_depth=body.maxDepth,
     )
     return _bulk_response(results)
 
@@ -111,7 +112,7 @@ async def register_monitored_items_v1(
     ),
 )
 async def remove_monitored_items_v1(
-    body: RegisterMonitoredItemsRequest,
+    body: UnregisterMonitoredItemsRequest,
     model: BuildResult = Depends(get_or_build_model),
     subscription_app_service: SubscriptionAppService = Depends(get_subscription_app_service),
 ) -> BulkResponse[None]:
@@ -171,7 +172,7 @@ async def stream_subscription_v1(
     stream_session = await subscription_app_service.begin_stream_session(
         subscription_id=body.subscriptionId,
         client_id=body.clientId,
-        acknowledge_sequence=body.acknowledgeSequence,
+        acknowledge_sequence=None,
     )
     client_id = stream_session["clientId"]
     stream_generation = stream_session["streamGeneration"]
@@ -183,7 +184,7 @@ async def stream_subscription_v1(
             "Subscription stream open request client_id=%s subscription_id=%s acknowledge_sequence=%s",
             client_id,
             body.subscriptionId,
-            body.acknowledgeSequence,
+            None,
         )
         if scope_relaxed:
             logger.warning(
@@ -205,7 +206,7 @@ async def stream_subscription_v1(
             client_id=client_id,
             stream_generation=stream_generation,
             acknowledged_updates=acknowledged.updates,
-            acknowledge_sequence=body.acknowledgeSequence,
+            acknowledge_sequence=None,
             timeout_seconds=2,
         ):
             kind = event["kind"]
@@ -305,9 +306,9 @@ async def stream_subscription_v1(
     summary="Sync subscription updates",
     description=(
         "Return all pending updates for a subscription and acknowledge previously received ones. "
-        "Set `acknowledgeSequence` to the last sequence number the client processed to discard "
+        "Set `lastSequenceNumber` to the last sequence number the client processed to discard "
         "older entries from the queue. "
-        "Pass `acknowledgeSequence=-1` to acknowledge and discard **all** pending updates. "
+        "Pass `lastSequenceNumber=-1` to acknowledge and discard **all** pending updates. "
         "Returns HTTP 206 with a `responseDetail` if updates were dropped due to queue overflow since the last sync. "
         "Returns HTTP 400 if the subscription has an active SSE stream; close the stream before calling sync."
     ),
@@ -322,7 +323,7 @@ async def sync_subscription_v1(
     synced = await subscription_app_service.get_pending_updates(
         subscription_id=body.subscriptionId,
         client_id=body.clientId,
-        acknowledge_sequence=body.acknowledgeSequence,
+        acknowledge_sequence=body.lastSequenceNumber,
     )
 
     public_updates = [
@@ -363,7 +364,7 @@ async def sync_subscription_v1(
             },
         )
 
-    return SuccessResponse(result=result_payload)
+    return SuccessResponse(success=True, result=result_payload)
 
 
 @router.post(

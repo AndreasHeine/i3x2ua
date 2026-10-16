@@ -464,6 +464,7 @@ def create_app() -> FastAPI:
             "url": "https://github.com/AndreasHeine/i3x2ua#readme",
         },
         openapi_tags=[
+            {"name": "Info", "description": "Retrieve general information about the server and its capabilities."},
             {"name": "Exploratory", "description": "Browse and discover the address space."},
             {"name": "Query", "description": "Read current or historical values of Objects."},
             {"name": "Update", "description": "Write current or historical data to Objects."},

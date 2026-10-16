@@ -58,7 +58,7 @@ async def get_object_types_v1(
     if namespace_uri:
         canonical_filter = _canonical_namespace_uri(namespace_uri, namespace_infos)
         items = [item for item in items if item.namespaceUri == canonical_filter]
-    return SuccessResponse(result=items)
+    return SuccessResponse(success=True, result=items)
 
 
 @router.post(

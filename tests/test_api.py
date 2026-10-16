@@ -2227,7 +2227,7 @@ def test_v1_subscription_unregister_missing_subscription_returns_404(client: Tes
     assert payload["error"]["code"] == 404
 
 
-def test_v1_subscription_register_omitted_maxdepth_monitors_descendant_properties(client: TestClient) -> None:
+def test_v1_subscription_register_defaults_to_one_composition_level(client: TestClient) -> None:
     client_id = "my-app-instance-001"
     app = _fastapi_app(client)
     model = app.state.model_cache
@@ -2281,7 +2281,26 @@ def test_v1_subscription_register_omitted_maxdepth_monitors_descendant_propertie
     assert len(payload["result"]) == 1
     updates = payload["result"][0]["updates"]
     element_ids = {item["elementId"] for item in updates}
-    assert {"property-abc", "property-def"}.issubset(element_ids)
+    assert "property-abc" in element_ids
+    assert "property-def" not in element_ids
+
+    register_all = client.post(
+        "/v1/subscriptions/register",
+        json={
+            "clientId": client_id,
+            "subscriptionId": subscription_id,
+            "elementIds": ["asset-root"],
+            "maxDepth": 0,
+        },
+    )
+    assert register_all.status_code == 200
+    sync_all = client.post(
+        "/v1/subscriptions/sync",
+        json={"clientId": client_id, "subscriptionId": subscription_id},
+    )
+    assert sync_all.status_code == 200
+    all_element_ids = {item["elementId"] for batch in sync_all.json()["result"] for item in batch["updates"]}
+    assert {"property-abc", "property-def"}.issubset(all_element_ids)
 
     deleted = client.post(
         "/v1/subscriptions/delete",
@@ -2420,18 +2439,18 @@ def test_v1_subscription_stream_not_found(client: TestClient) -> None:
     assert response.status_code == 404
 
 
-def test_v1_subscription_stream_not_found_with_ack_fields(client: TestClient) -> None:
+def test_v1_subscription_stream_rejects_acknowledgement_fields(client: TestClient) -> None:
     response_ack = client.post(
         "/v1/subscriptions/stream",
         json={"clientId": "my-app-instance-001", "subscriptionId": "missing", "acknowledgeSequence": 4},
     )
-    assert response_ack.status_code == 404
+    assert response_ack.status_code == 400
 
     response_legacy = client.post(
         "/v1/subscriptions/stream",
         json={"clientId": "my-app-instance-001", "subscriptionId": "missing", "lastSequenceNumber": 4},
     )
-    assert response_legacy.status_code == 404
+    assert response_legacy.status_code == 400
 
 
 def test_openapi_json_is_source_of_truth(client: TestClient) -> None:
@@ -2446,6 +2465,7 @@ def test_openapi_json_is_source_of_truth(client: TestClient) -> None:
 def test_openapi_operations_are_grouped_by_workflow(client: TestClient) -> None:
     generated = client.get("/openapi.json").json()
     assert [tag["name"] for tag in generated["tags"]] == [
+        "Info",
         "Exploratory",
         "Query",
         "Update",
@@ -2457,7 +2477,9 @@ def test_openapi_operations_are_grouped_by_workflow(client: TestClient) -> None:
         for method, operation in methods.items():
             if method not in {"get", "post", "put", "delete", "patch", "options", "head"}:
                 continue
-            if path.startswith("/mcp"):
+            if path == "/v1/info":
+                expected_tag = "Info"
+            elif path.startswith("/mcp"):
                 expected_tag = "MCP"
             elif path.startswith("/ua") or path.startswith("/v1/model/"):
                 expected_tag = "Diagnostics"
@@ -2606,6 +2628,32 @@ def test_openapi_examples_match_schemas(client: TestClient) -> None:
                         validate_example(content["schema"], content["example"])
                     for example in content.get("examples", {}).values():
                         validate_example(content["schema"], example["value"])
+
+
+def test_i3x_openapi_contract_marks_required_fields(client: TestClient) -> None:
+    document = client.get("/openapi.json").json()
+    schemas = document["components"]["schemas"]
+
+    assert {"success", "result"} <= set(schemas["SuccessResponse_ServerInfo_"]["required"])
+    assert "schema" in schemas["ObjectTypeResponse"]["required"]
+    assert "values" in schemas["HistoricalValueResult"]["required"]
+
+    register_schema = schemas["RegisterMonitoredItemsRequest"]
+    assert {"clientId", "subscriptionId", "elementIds"} <= set(register_schema["required"])
+    assert register_schema["properties"]["maxDepth"]["default"] == 1
+
+    unregister_schema = schemas["UnregisterMonitoredItemsRequest"]
+    assert {"clientId", "subscriptionId", "elementIds"} <= set(unregister_schema["required"])
+    assert "maxDepth" not in unregister_schema["properties"]
+
+    sync_schema = schemas["SyncRequest"]
+    assert {"clientId", "subscriptionId"} <= set(sync_schema["required"])
+    assert "lastSequenceNumber" in sync_schema["properties"]
+    assert "acknowledgeSequence" not in sync_schema["properties"]
+
+    stream_schema = schemas["StreamRequest"]
+    assert {"clientId", "subscriptionId"} <= set(stream_schema["required"])
+    assert "acknowledgeSequence" not in stream_schema["properties"]
 
 
 def _resolve_openapi_schema(schema: Any, components: Mapping[str, Any]) -> Any:

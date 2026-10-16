@@ -29,8 +29,8 @@ WriteElementId = Annotated[str, AfterValidator(validate_write_element_id)]
 
 
 class SuccessResponse(BaseModel, Generic[T]):
-    success: bool = True
-    result: T | None = None
+    success: bool
+    result: T
 
 
 class ErrorDetail(BaseModel):
@@ -51,7 +51,7 @@ class HttpErrorResponse(BaseModel):
 
 
 class BulkResultItem(BaseModel, Generic[T]):
-    success: bool = True
+    success: bool
     elementId: str | None = None
     subscriptionId: str | None = None
     result: T | None = None
@@ -60,8 +60,8 @@ class BulkResultItem(BaseModel, Generic[T]):
 
 
 class BulkResponse(BaseModel, Generic[T]):
-    success: bool = True
-    results: list[BulkResultItem[T]] = Field(default_factory=list)
+    success: bool
+    results: list[BulkResultItem[T]]
 
 
 def _status_title(status_code: int) -> str:
@@ -228,7 +228,7 @@ class ObjectTypeResponse(BaseModel):
     namespaceUri: str
     sourceTypeId: str
     version: str | None = None
-    schema_: dict[str, Any] = Field(default_factory=dict, alias="schema")
+    schema_: dict[str, Any] = Field(alias="schema")
     related: dict[str, Any] | None = None
 
 
@@ -246,9 +246,9 @@ class ObjectInstanceResponse(BaseModel):
     elementId: str
     displayName: str
     typeElementId: str
-    parentId: str | None = None
+    parentId: str | None
     isComposition: bool
-    isExtended: bool = False
+    isExtended: bool
     metadata: ObjectInstanceMetadata | None = None
 
 
@@ -276,7 +276,7 @@ class CurrentValueResult(BaseModel):
 
 class HistoricalValueResult(BaseModel):
     isComposition: bool
-    values: list[VQT] = Field(default_factory=list)
+    values: list[VQT]
     components: dict[str, HistoricalValueResult] | None = None
 
 
@@ -286,11 +286,11 @@ class RelatedObjectResult(BaseModel):
 
 
 class GetObjectTypesRequest(BaseModel):
-    elementIds: list[str]
+    elementIds: list[str] = Field(min_length=1)
 
 
 class GetRelationshipTypesRequest(BaseModel):
-    elementIds: list[str]
+    elementIds: list[str] = Field(min_length=1)
 
 
 class GetObjectsRequest(BaseModel):
@@ -298,12 +298,12 @@ class GetObjectsRequest(BaseModel):
         json_schema_extra={"examples": [{"elementIds": ["property-0123456789abcdef"], "includeMetadata": True}]}
     )
 
-    elementIds: list[str]
+    elementIds: list[str] = Field(min_length=1)
     includeMetadata: bool = False
 
 
 class GetRelatedObjectsRequest(BaseModel):
-    elementIds: list[str]
+    elementIds: list[str] = Field(min_length=1)
     relationshipType: str | None = None
     includeMetadata: bool = False
 
@@ -313,11 +313,15 @@ class GetObjectValueRequest(BaseModel):
         json_schema_extra={"examples": [{"elementIds": ["property-0123456789abcdef"], "maxDepth": 1}]}
     )
 
-    elementIds: list[str] = Field(description="Object element IDs returned by discovery; examples are placeholders.")
-    maxDepth: int | None = Field(
+    elementIds: list[str] = Field(
+        min_length=1,
+        description="Object element IDs returned by discovery; examples are placeholders.",
+    )
+    maxDepth: int = Field(
         default=1,
+        ge=0,
         description="Composition depth: 1 reads only the object, 2 includes direct components, 0 is unlimited. "
-        "Null uses 1. Hierarchy-only children are not traversed.",
+        "Hierarchy-only children are not traversed.",
     )
 
 
@@ -335,14 +339,31 @@ class GetObjectHistoryRequest(BaseModel):
         }
     )
 
-    elementIds: list[str]
-    startTime: str = Field(description="Start of the history interval; ISO 8601 date-time. Missing timezone uses UTC.")
-    endTime: str = Field(description="End of the history interval; must be greater than or equal to startTime.")
-    maxDepth: int | None = Field(
+    elementIds: list[str] = Field(min_length=1)
+    startTime: str = Field(description="Start of the history interval; RFC 3339 date-time with timezone.")
+    endTime: str = Field(description="End of the history interval; RFC 3339 date-time with timezone.")
+    maxDepth: int = Field(
         default=1,
         ge=0,
-        description="Composition depth: 1 reads only the object, 0 is unlimited. Null uses 1.",
+        description="Composition depth: 1 reads only the object, 0 is unlimited.",
     )
+
+    @field_validator("startTime", "endTime")
+    @classmethod
+    def _require_rfc3339_timestamp(cls, value: str) -> str:
+        if (
+            re.fullmatch(
+                r"\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]\d{2}:\d{2})",
+                value,
+            )
+            is None
+        ):
+            raise ValueError("timestamp must be an RFC 3339 date-time with a timezone")
+        try:
+            datetime.fromisoformat(value[:-1] + "+00:00" if value[-1:] in {"Z", "z"} else value)
+        except ValueError as exc:
+            raise ValueError("timestamp must be a valid RFC 3339 date-time") from exc
+        return value
 
 
 class WriteVQTRequest(BaseModel):
@@ -416,7 +437,7 @@ class UpdateObjectValuesRequest(BaseModel):
         },
     )
 
-    updates: list[ValueUpdateItemRequest]
+    updates: list[ValueUpdateItemRequest] = Field(min_length=1)
 
 
 class HistoryWriteVQTRequest(BaseModel):
@@ -429,8 +450,7 @@ class HistoryWriteVQTRequest(BaseModel):
         description="Required historical quality. Bad and GoodNoData require a null value."
     )
     timestamp: AwareDatetime = Field(
-        description="Required RFC 3339 UTC timestamp with a Z suffix, exactly representable at microsecond precision. "
-        "Numeric timezone offsets and nonzero sub-microsecond digits are rejected."
+        description="Required RFC 3339 timestamp with a timezone, exactly representable at microsecond precision."
     )
 
     @field_validator("timestamp", mode="before")
@@ -439,14 +459,27 @@ class HistoryWriteVQTRequest(BaseModel):
         if not isinstance(value, str):
             raise ValueError("timestamp must be a UTC RFC 3339 string")
         normalized = value
-        if re.fullmatch(r"\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d+)?[Zz]", normalized) is None:
-            raise ValueError("timestamp must be RFC 3339 UTC with a Z suffix and no timezone offset")
-        fractional = normalized.split(".", 1)[1][:-1] if "." in normalized else ""
-        if any(digit != "0" for digit in fractional[6:]):
+        if (
+            re.fullmatch(
+                r"\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]\d{2}:\d{2})",
+                normalized,
+            )
+            is None
+        ):
+            raise ValueError("timestamp must be an RFC 3339 date-time with a timezone")
+        fractional = re.search(r"\.(\d+)", normalized)
+        fractional_digits = fractional.group(1) if fractional is not None else ""
+        if any(digit != "0" for digit in fractional_digits[6:]):
             raise ValueError("timestamp cannot be represented exactly at microsecond precision")
-        if len(fractional) > 6:
-            normalized = normalized.split(".", 1)[0] + "." + fractional[:6] + "Z"
-        return normalized[:-1] + "Z"
+        if len(fractional_digits) > 6:
+            normalized = normalized.replace(f".{fractional_digits}", f".{fractional_digits[:6]}", 1)
+        if normalized[-1:] in {"Z", "z"}:
+            normalized = normalized[:-1] + "+00:00"
+        try:
+            datetime.fromisoformat(normalized)
+        except ValueError as exc:
+            raise ValueError("timestamp must be a valid RFC 3339 date-time") from exc
+        return normalized
 
     @model_validator(mode="after")
     def _validate_null_quality(self) -> HistoryWriteVQTRequest:
@@ -502,17 +535,23 @@ class RegisterMonitoredItemsRequest(BaseModel):
         }
     )
 
-    clientId: str | None = None
+    clientId: str
     subscriptionId: str
-    elementIds: list[str]
-    maxDepth: int | None = Field(
-        default=None,
+    elementIds: list[str] = Field(min_length=1)
+    maxDepth: int = Field(
+        default=1,
         ge=0,
         description=(
             "Maximum composition depth to monitor beneath each registered object. "
-            "Omit or pass null to monitor all descendant properties."
+            "Use 0 to monitor all descendant properties."
         ),
     )
+
+
+class UnregisterMonitoredItemsRequest(BaseModel):
+    clientId: str
+    subscriptionId: str
+    elementIds: list[str] = Field(min_length=1)
 
 
 class SyncRequest(BaseModel):
@@ -522,15 +561,15 @@ class SyncRequest(BaseModel):
                 {
                     "clientId": "example-client",
                     "subscriptionId": "subscription-from-create",
-                    "acknowledgeSequence": 42,
+                    "lastSequenceNumber": 42,
                 }
             ]
         }
     )
 
-    clientId: str | None = None
+    clientId: str
     subscriptionId: str
-    acknowledgeSequence: int | None = Field(
+    lastSequenceNumber: int | None = Field(
         default=None,
         description=(
             "Last sequence number the client has processed. All updates with a sequence number "
@@ -538,22 +577,23 @@ class SyncRequest(BaseModel):
             "Pass -1 to acknowledge and discard all pending updates. "
             "Omit or pass null on the first call to receive all buffered updates without discarding any."
         ),
-        validation_alias=AliasChoices("acknowledgeSequence", "lastSequenceNumber"),
+        validation_alias=AliasChoices("lastSequenceNumber", "acknowledgeSequence"),
     )
 
 
 class ListSubscriptionsRequest(BaseModel):
-    clientId: str | None = None
-    subscriptionIds: list[str] = Field(default_factory=list)
+    clientId: str
+    subscriptionIds: list[str] = Field(min_length=1)
 
 
 class DeleteSubscriptionsRequest(BaseModel):
-    clientId: str | None = None
-    subscriptionIds: list[str]
+    clientId: str
+    subscriptionIds: list[str] = Field(min_length=1)
 
 
 class StreamRequest(BaseModel):
     model_config = ConfigDict(
+        extra="forbid",
         json_schema_extra={
             "examples": [
                 {
@@ -561,21 +601,11 @@ class StreamRequest(BaseModel):
                     "subscriptionId": "subscription-from-create",
                 }
             ]
-        }
+        },
     )
 
-    clientId: str | None = None
+    clientId: str
     subscriptionId: str
-    acknowledgeSequence: int | None = Field(
-        default=None,
-        ge=0,
-        description=(
-            "Last sequence number the client has already processed. Updates with a sequence number "
-            "<= this value are discarded before the stream starts. "
-            "Omit to start streaming from the next unacknowledged update."
-        ),
-        validation_alias=AliasChoices("acknowledgeSequence", "lastSequenceNumber"),
-    )
 
 
 class CreateSubscriptionRequest(BaseModel):
@@ -611,7 +641,7 @@ class SyncUpdate(BaseModel):
 
 class SyncBatch(BaseModel):
     sequenceNumber: int
-    updates: list[SyncUpdate] = Field(default_factory=list)
+    updates: list[SyncUpdate]
 
 
 class PartialSyncResponse(BaseModel):

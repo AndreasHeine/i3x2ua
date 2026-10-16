@@ -5,6 +5,7 @@ from typing import cast
 
 import pytest
 from fastapi import HTTPException
+from pydantic import ValidationError
 from starlette.responses import StreamingResponse
 
 from i3x_server.api.v1.monolithic import StreamRequest, stream_subscription_v1
@@ -30,6 +31,7 @@ class _FakeSubscriptionService:
         self.active_sequence: list[bool] = [False]
         self.wait_returns: list[list[SubscriptionUpdate] | None] = []
         self.deactivated: list[tuple[str, int]] = []
+        self.sync_acknowledgements: list[int | None] = []
 
     async def activate_stream(self, client_id: str | None, subscription_id: str) -> int | None:
         del client_id, subscription_id
@@ -42,7 +44,8 @@ class _FakeSubscriptionService:
         acknowledge_sequence: int | None = None,
         allow_when_stream_active: bool = False,
     ) -> SubscriptionSyncResult | None:
-        del client_id, subscription_id, acknowledge_sequence, allow_when_stream_active
+        del client_id, subscription_id, allow_when_stream_active
+        self.sync_acknowledgements.append(acknowledge_sequence)
         return self.sync_result
 
     async def is_stream_active(self, subscription_id: str, stream_generation: int) -> bool:
@@ -114,7 +117,7 @@ async def test_stream_subscription_raises_not_found_when_activation_fails() -> N
     service = _FakeSubscriptionService()
     service.activate_returns = [None, None]
     service.sync_result = SubscriptionSyncResult(updates=[])
-    body = StreamRequest(clientId="client-1", subscriptionId="sub-missing", acknowledgeSequence=0)
+    body = StreamRequest(clientId="client-1", subscriptionId="sub-missing")
 
     with pytest.raises(HTTPException) as exc_info:
         await stream_subscription_v1(
@@ -142,7 +145,7 @@ async def test_stream_subscription_sends_initial_payload_then_close() -> None:
         ]
     )
     service.active_sequence = [False]
-    body = StreamRequest(clientId="client-1", subscriptionId="sub-1", acknowledgeSequence=0)
+    body = StreamRequest(clientId="client-1", subscriptionId="sub-1")
 
     response = await stream_subscription_v1(
         body,
@@ -163,6 +166,7 @@ async def test_stream_subscription_sends_initial_payload_then_close() -> None:
     assert any("data:" in chunk and "sequenceNumber" in chunk for chunk in chunks)
     assert any("event: close" in chunk for chunk in chunks)
     assert service.deactivated == [("sub-1", 1)]
+    assert service.sync_acknowledgements == [None]
 
 
 @pytest.mark.asyncio
@@ -184,7 +188,7 @@ async def test_stream_subscription_keepalive_and_update_flow() -> None:
             )
         ],
     ]
-    body = StreamRequest(clientId="client-1", subscriptionId="sub-2", acknowledgeSequence=1)
+    body = StreamRequest(clientId="client-1", subscriptionId="sub-2")
 
     response = await stream_subscription_v1(
         body,
@@ -210,7 +214,7 @@ async def test_stream_subscription_second_stream_closes_existing_stream() -> Non
     service = _ClosingSubscriptionService()
     service.sync_result = SubscriptionSyncResult(updates=[])
 
-    first_body = StreamRequest(clientId="client-1", subscriptionId="sub-1", acknowledgeSequence=0)
+    first_body = StreamRequest(clientId="client-1", subscriptionId="sub-1")
     first_response = await stream_subscription_v1(
         first_body,
         opcua_client=cast(OpcUaClientProtocol, _FakeOpcUaClient()),
@@ -219,7 +223,7 @@ async def test_stream_subscription_second_stream_closes_existing_stream() -> Non
     first_iterator = first_response.body_iterator.__aiter__()
     assert await first_iterator.__anext__() == ": connected\n\n"
 
-    second_body = StreamRequest(clientId="client-1", subscriptionId="sub-1", acknowledgeSequence=0)
+    second_body = StreamRequest(clientId="client-1", subscriptionId="sub-1")
     second_response = await stream_subscription_v1(
         second_body,
         opcua_client=cast(OpcUaClientProtocol, _FakeOpcUaClient()),
@@ -239,7 +243,7 @@ async def test_stream_subscription_raises_not_found_when_ack_sync_missing() -> N
     service = _FakeSubscriptionService()
     service.activate_returns = [2]
     service.sync_result = None
-    body = StreamRequest(clientId="client-1", subscriptionId="sub-3", acknowledgeSequence=0)
+    body = StreamRequest(clientId="client-1", subscriptionId="sub-3")
 
     with pytest.raises(HTTPException) as exc_info:
         await stream_subscription_v1(
@@ -248,3 +252,14 @@ async def test_stream_subscription_raises_not_found_when_ack_sync_missing() -> N
             subscription_app_service=_stream_app_service(service),
         )
     assert exc_info.value.status_code == 404
+
+
+def test_stream_request_does_not_accept_acknowledgement_fields() -> None:
+    with pytest.raises(ValidationError):
+        StreamRequest.model_validate(
+            {
+                "clientId": "client-1",
+                "subscriptionId": "sub-1",
+                "acknowledgeSequence": 1,
+            }
+        )

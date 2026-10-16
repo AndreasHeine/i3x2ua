@@ -168,7 +168,7 @@ async def query_last_known_values_v1(
     resolved_nodes = _resolve_model_nodes(model, body.elementIds)
     node_ids: list[str] = []
     component_nodes_by_element_id: dict[str, list[ModelNode]] = {}
-    requested_depth = body.maxDepth if body.maxDepth is not None else 1
+    requested_depth = body.maxDepth
     for element_id, node in resolved_nodes:
         if node is None:
             continue
@@ -237,7 +237,7 @@ async def query_historical_values_v1(
     started = perf_counter()
     resolved_nodes = _resolve_model_nodes(model, body.elementIds)
     start_time, end_time = _parse_history_time_range(body)
-    max_depth = body.maxDepth if body.maxDepth is not None else 1
+    max_depth = body.maxDepth
 
     lookup, node_ids = _collect_history_lookup_and_node_ids(model, resolved_nodes, max_depth)
 

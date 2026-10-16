@@ -59,7 +59,7 @@ def test_v1_subscription_lifecycle(client: TestClient) -> None:
         assert sync_payload["result"][0]["updates"][0]["elementId"]
 
 
-def test_v1_subscription_register_omitted_maxdepth_monitors_descendant_properties(client: TestClient) -> None:
+def test_v1_subscription_register_defaults_to_one_composition_level(client: TestClient) -> None:
     client_id = "my-app-instance-001"
     app = fastapi_app(client)
     model = app.state.model_cache
@@ -113,7 +113,32 @@ def test_v1_subscription_register_omitted_maxdepth_monitors_descendant_propertie
     assert len(payload["result"]) == 1
     updates = payload["result"][0]["updates"]
     element_ids = {item["elementId"] for item in updates}
-    assert {"property-abc", "property-def"}.issubset(element_ids)
+    assert "property-abc" in element_ids
+    assert "property-def" not in element_ids
+
+    details = client.post(
+        "/v1/subscriptions/list",
+        json={"clientId": client_id, "subscriptionIds": [subscription_id]},
+    ).json()
+    assert details["results"][0]["result"]["monitoredObjects"][0]["maxDepth"] == 1
+
+    register_all = client.post(
+        "/v1/subscriptions/register",
+        json={
+            "clientId": client_id,
+            "subscriptionId": subscription_id,
+            "elementIds": ["asset-root"],
+            "maxDepth": 0,
+        },
+    )
+    assert register_all.status_code == 200
+    synced_all = client.post(
+        "/v1/subscriptions/sync",
+        json={"clientId": client_id, "subscriptionId": subscription_id},
+    )
+    assert synced_all.status_code == 200
+    all_element_ids = {item["elementId"] for batch in synced_all.json()["result"] for item in batch["updates"]}
+    assert {"property-abc", "property-def"}.issubset(all_element_ids)
 
     deleted = client.post(
         "/v1/subscriptions/delete",
@@ -326,15 +351,15 @@ def test_v1_subscription_stream_not_found(client: TestClient) -> None:
     assert response.status_code == 404
 
 
-def test_v1_subscription_stream_not_found_with_ack_fields(client: TestClient) -> None:
+def test_v1_subscription_stream_rejects_acknowledgement_fields(client: TestClient) -> None:
     response_ack = client.post(
         "/v1/subscriptions/stream",
         json={"clientId": "my-app-instance-001", "subscriptionId": "missing", "acknowledgeSequence": 4},
     )
-    assert response_ack.status_code == 404
+    assert response_ack.status_code == 400
 
     response_legacy = client.post(
         "/v1/subscriptions/stream",
         json={"clientId": "my-app-instance-001", "subscriptionId": "missing", "lastSequenceNumber": 4},
     )
-    assert response_legacy.status_code == 404
+    assert response_legacy.status_code == 400

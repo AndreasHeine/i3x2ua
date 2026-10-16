@@ -1,7 +1,7 @@
 <script>
   import { onMount } from 'svelte';
 
-  const endpoint = '/v1/model/metrics';
+  const endpoint = '/model/metrics';
 
   let metrics = null;
   let loading = true;

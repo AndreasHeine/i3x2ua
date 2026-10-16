@@ -56,6 +56,25 @@ def test_history_upsert_preserves_current_value(client: TestClient, monkeypatch:
     assert opcua.snapshot_request_metrics().write_count == 0
 
 
+def test_history_write_accepts_rfc3339_offset(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("I3X_ENABLE_WRITES", "1")
+    opcua = fastapi_app(client).state.opcua_client
+    update = _update(value=21.0)
+    update["value"]["timestamp"] = "2026-01-01T12:00:00+02:00"
+
+    response = client.put("/v1/objects/history", json={"updates": [update]})
+
+    assert response.status_code == 200
+    assert response.json()["success"] is True
+    assert opcua.history_values["ns=2;s=Temperature"][0].SourceTimestamp == datetime(
+        2026,
+        1,
+        1,
+        10,
+        tzinfo=timezone.utc,
+    )
+
+
 def test_history_bulk_order_and_item_errors(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("I3X_ENABLE_WRITES", "1")
     updates = [_update(), _update("missing"), _update("asset-root"), _update(value="bad"), _update(value=20)]

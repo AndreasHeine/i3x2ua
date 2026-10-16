@@ -174,7 +174,7 @@ def test_poll_acknowledges_printed_updates_and_preserves_ack_on_empty_sync(
     sync_bodies = [body for path, body, _ in state.requests if path.endswith("/sync")]
     assert "acknowledgeSequence" not in sync_bodies[0]
     assert [body["acknowledgeSequence"] for body in sync_bodies[1:]] == [7, 7]
-    assert state.requests[1][1]["maxDepth"] is None
+    assert state.requests[1][1]["maxDepth"] == 1
     assert state.requests[-1][0] == "/subscriptions/delete"
 
 

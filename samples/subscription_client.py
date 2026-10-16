@@ -177,7 +177,7 @@ def main() -> int:
     parser.add_argument("--client-id", default=f"sample-subscription-{uuid4()}", help="Subscription owner ID")
     parser.add_argument("--poll-interval", type=_positive_float, default=1.0, help="Seconds between sync calls")
     parser.add_argument(
-        "--max-depth", type=_nonnegative_int, default=None, help="Composition depth (default: all descendants)"
+        "--max-depth", type=_nonnegative_int, default=1, help="Composition depth (default: all descendants)"
     )
     parser.add_argument("--timeout", type=_positive_float, default=30.0, help="HTTP/socket read timeout in seconds")
     parser.add_argument("--insecure", action="store_true", help="Disable TLS certificate verification")

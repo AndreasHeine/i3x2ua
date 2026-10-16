@@ -346,7 +346,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Generic i3X discovery client example")
     parser.add_argument("--base-url", default="http://127.0.0.1:8000/v1", help="i3X server base URL")
     parser.add_argument("--max-nodes", type=int, default=200, help="Cap on discovered objects")
-    parser.add_argument("--max-depth", type=int, default=None, help="Cap on BFS levels traversed from the roots")
+    parser.add_argument("--max-depth", type=int, default=1, help="Cap on BFS levels traversed from the roots")
     parser.add_argument(
         "--type-element-id",
         default=None,

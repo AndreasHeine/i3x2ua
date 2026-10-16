@@ -548,7 +548,7 @@ wheels = [
 
 [[package]]
 name = "i3x2ua"
-version = "1.10.7"
+version = "1.11.0"
 source = { editable = "." }
 dependencies = [
     { name = "asyncua" },

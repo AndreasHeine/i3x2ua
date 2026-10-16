@@ -368,10 +368,6 @@ class RecursiveJobOrderAndStateDataType:
     State: list[str] = field(default_factory=list)
 
 
-def _set_ua_attr(name: str, value: Any) -> None:
-    setattr(ua, name, value)
-
-
 def _assert_schema_type_contains(schema: dict[str, Any], expected: str) -> None:
     schema_type = schema["type"]
     if isinstance(schema_type, list):
@@ -395,8 +391,10 @@ def _def_key_from_ref(ref: str) -> str:
     return ref.split("#/$defs/", 1)[1]
 
 
-def test_structured_array_schema_inferred_from_datatype_registry_when_value_empty() -> None:
-    _set_ua_attr("extension_objects_by_datatype", {"ns=1;i=3015": FakeJobOrderAndState})
+def test_structured_array_schema_inferred_from_datatype_registry_when_value_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ua, "extension_objects_by_datatype", {"ns=1;i=3015": FakeJobOrderAndState})
 
     member = OpcUaObjectTypeMemberInfo(
         node_id="ns=22;i=6033",
@@ -448,8 +446,10 @@ def test_structured_array_schema_inferred_from_datatype_registry_when_value_empt
     _assert_schema_type_contains(state_def["properties"]["State"], "string")
 
 
-def test_structured_array_schema_inferred_when_placeholder_extension_object_and_valuerank_array() -> None:
-    _set_ua_attr("extension_objects_by_datatype", {"ns=22;i=3015": FakeJobOrderAndState})
+def test_structured_array_schema_inferred_when_placeholder_extension_object_and_valuerank_array(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ua, "extension_objects_by_datatype", {"ns=22;i=3015": FakeJobOrderAndState})
 
     member = OpcUaObjectTypeMemberInfo(
         node_id="ns=22;i=6033",
@@ -498,12 +498,13 @@ def test_structured_array_schema_inferred_when_placeholder_extension_object_and_
     assert job_order_list_schema["items"]["$ref"].startswith("#/$defs/")
 
 
-def test_recursive_datatype_annotations_resolve_nested_subschemas() -> None:
-    _set_ua_attr("RecursiveParameterDataType", RecursiveParameterDataType)
-    _set_ua_attr("RecursiveWorkMasterDataType", RecursiveWorkMasterDataType)
-    _set_ua_attr("RecursiveJobOrderDataType", RecursiveJobOrderDataType)
-    _set_ua_attr("RecursiveJobOrderAndStateDataType", RecursiveJobOrderAndStateDataType)
-    _set_ua_attr(
+def test_recursive_datatype_annotations_resolve_nested_subschemas(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ua, "RecursiveParameterDataType", RecursiveParameterDataType, raising=False)
+    monkeypatch.setattr(ua, "RecursiveWorkMasterDataType", RecursiveWorkMasterDataType, raising=False)
+    monkeypatch.setattr(ua, "RecursiveJobOrderDataType", RecursiveJobOrderDataType, raising=False)
+    monkeypatch.setattr(ua, "RecursiveJobOrderAndStateDataType", RecursiveJobOrderAndStateDataType, raising=False)
+    monkeypatch.setattr(
+        ua,
         "extension_objects_by_datatype",
         {
             "ns=22;i=3015": RecursiveJobOrderAndStateDataType,
@@ -574,11 +575,11 @@ def test_unresolved_datatype_annotation_falls_back_to_object() -> None:
     assert schema["title"] == "UnknownCustomDataType"
 
 
-def test_forwardref_annotation_is_resolved_as_structure() -> None:
+def test_forwardref_annotation_is_resolved_as_structure(monkeypatch: pytest.MonkeyPatch) -> None:
     class _Nested:
         __annotations__ = {"ID": "ua.String"}
 
-    _set_ua_attr("ForwardRefNested", _Nested)
+    monkeypatch.setattr(ua, "ForwardRefNested", _Nested, raising=False)
 
     class _ForwardRef:
         __forward_arg__ = "ua.ForwardRefNested"
@@ -587,18 +588,20 @@ def test_forwardref_annotation_is_resolved_as_structure() -> None:
     assert schema == {"$ref": "#/$defs/Nested"}
 
 
-def test_non_dataclass_structured_class_with_annotations_is_resolved() -> None:
+def test_non_dataclass_structured_class_with_annotations_is_resolved(monkeypatch: pytest.MonkeyPatch) -> None:
     class _AnnotatedOnlyType:
         __annotations__ = {"JobOrderID": "ua.String", "Priority": "ua.Int16"}
 
-    _set_ua_attr("AnnotatedOnlyType", _AnnotatedOnlyType)
+    monkeypatch.setattr(ua, "AnnotatedOnlyType", _AnnotatedOnlyType, raising=False)
     schema = objecttype_schema._schema_for_annotation_string(
         "ua.AnnotatedOnlyType", objecttype_schema._SchemaRegistry()
     )
     assert schema == {"$ref": "#/$defs/AnnotatedOnlyType"}
 
 
-def test_dataclass_docstring_vartype_override_applies_for_ambiguous_annotations() -> None:
+def test_dataclass_docstring_vartype_override_applies_for_ambiguous_annotations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     class _DocNested:
         __annotations__ = {"ID": "ua.String"}
 
@@ -610,14 +613,14 @@ def test_dataclass_docstring_vartype_override_applies_for_ambiguous_annotations(
 
         JobOrder: ua.String | None = None
 
-    _set_ua_attr("DocNested", _DocNested)
+    monkeypatch.setattr(ua, "DocNested", _DocNested, raising=False)
 
     registry = objecttype_schema._SchemaRegistry()
     schema = objecttype_schema._structure_schema_for_type(_DocCarrier, registry)
     assert schema["properties"]["JobOrder"] == {"$ref": "#/$defs/DocNested"}
 
 
-def test_dataclass_ua_types_override_applies_for_ambiguous_annotations() -> None:
+def test_dataclass_ua_types_override_applies_for_ambiguous_annotations(monkeypatch: pytest.MonkeyPatch) -> None:
     class _UaNested:
         __annotations__ = {"ID": "ua.String"}
 
@@ -626,7 +629,7 @@ def test_dataclass_ua_types_override_applies_for_ambiguous_annotations() -> None
         JobOrder: ua.String | None = None
 
     cast(Any, _UaCarrier).ua_types = [("JobOrder", "ua.UaNested")]
-    _set_ua_attr("UaNested", _UaNested)
+    monkeypatch.setattr(ua, "UaNested", _UaNested, raising=False)
 
     registry = objecttype_schema._SchemaRegistry()
     schema = objecttype_schema._structure_schema_for_type(_UaCarrier, registry)
@@ -662,7 +665,7 @@ def test_loaded_structures_module_name_resolution_supports_recursive_arrays() ->
         sys.modules.pop(module.__name__, None)
 
 
-def test_localizedtext_deduplicates_across_distinct_runtime_types() -> None:
+def test_localizedtext_deduplicates_across_distinct_runtime_types(monkeypatch: pytest.MonkeyPatch) -> None:
     module = types.ModuleType("asyncua.common.structures902")
     module_any = cast(Any, module)
 
@@ -680,7 +683,7 @@ def test_localizedtext_deduplicates_across_distinct_runtime_types() -> None:
         [("Locale", str | None, None), ("Text", str | None, None)],
         slots=True,
     )
-    _set_ua_attr("LocalizedText", localized_text_ua)
+    monkeypatch.setattr(ua, "LocalizedText", localized_text_ua)
 
     try:
         registry = objecttype_schema._SchemaRegistry()
@@ -697,14 +700,14 @@ def test_localizedtext_deduplicates_across_distinct_runtime_types() -> None:
         sys.modules.pop(module.__name__, None)
 
 
-def test_localizedtext_deduplicates_between_value_and_annotation_paths() -> None:
+def test_localizedtext_deduplicates_between_value_and_annotation_paths(monkeypatch: pytest.MonkeyPatch) -> None:
     @dataclass(slots=True)
     class LocalizedText:
         Encoding: int = 0
         Locale: str | None = None
         Text: str | None = None
 
-    _set_ua_attr("LocalizedText", LocalizedText)
+    monkeypatch.setattr(ua, "LocalizedText", LocalizedText)
     registry = objecttype_schema._SchemaRegistry()
 
     value_ref = objecttype_schema._reference_or_register_structure(
@@ -927,12 +930,12 @@ def test_guess_generated_dependency_type_prefers_personnel_for_personnelrequirem
         sys.modules.pop(module.__name__, None)
 
 
-def test_build_data_type_schema_resolves_expanded_node_id_via_namespace_lookup() -> None:
+def test_build_data_type_schema_resolves_expanded_node_id_via_namespace_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
     @dataclass(slots=True)
     class _StandardStruct:
         Name: ua.String | None = None
 
-    _set_ua_attr("extension_objects_by_datatype", {"ns=0;i=96": _StandardStruct})
+    monkeypatch.setattr(ua, "extension_objects_by_datatype", {"ns=0;i=96": _StandardStruct})
     schema = objecttype_schema.build_data_type_schema(
         "nsu=http://opcfoundation.org/UA/;i=96",
         [OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/", display_name="UA")],

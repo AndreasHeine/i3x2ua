@@ -285,6 +285,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         client_key_password=settings.opcua_client_key_password,
         server_cert_path=settings.opcua_server_cert_path,
         browse_concurrency=settings.opcua_browse_concurrency,
+        browse_roots=settings.opcua_browse_roots,
         metadata_cache_ttl_seconds=settings.opcua_metadata_cache_ttl_seconds,
         connection_monitor_interval_seconds=settings.opcua_connection_monitor_interval_seconds,
         reconnect_request_timeout_seconds=settings.opcua_reconnect_request_timeout_seconds,

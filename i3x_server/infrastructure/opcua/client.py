@@ -14,6 +14,7 @@ from typing import Any, TypeVar, cast
 from asyncua import ua
 from asyncua.client.client import Client
 from asyncua.client.ua_client import UaClientState
+from asyncua.common.node import Node
 from asyncua.ua import NodeClass
 from asyncua.ua.attribute_ids import AttributeIds
 from asyncua.ua.object_ids import ObjectIds
@@ -145,6 +146,7 @@ class OpcUaClient:
         connection_monitor_interval_seconds: int = 5,
         reconnect_request_timeout_seconds: float = 10.0,
         reconnect_max_delay_seconds: float = 30.0,
+        browse_roots: list[str] | None = None,
     ) -> None:
         self._endpoint = endpoint
         self._username = username.strip() if isinstance(username, str) and username.strip() else None
@@ -164,6 +166,7 @@ class OpcUaClient:
             server_cert_path.strip() if isinstance(server_cert_path, str) and server_cert_path.strip() else None
         )
         self._browse_concurrency = max(1, browse_concurrency)
+        self._browse_roots = tuple(browse_roots) if browse_roots is not None else None
         self._metadata_cache_ttl_seconds = max(0, metadata_cache_ttl_seconds)
         self._connection_monitor_interval_seconds = max(1, connection_monitor_interval_seconds)
         self._reconnect_request_timeout_seconds = max(0.1, float(reconnect_request_timeout_seconds))
@@ -619,6 +622,40 @@ class OpcUaClient:
             except Exception:
                 logger.exception("OPC UA reconnect listener failed endpoint=%s", self._endpoint)
 
+    async def _resolve_browse_roots(self) -> list[Node]:
+        if self._browse_roots is None:
+            return [self._client.nodes.objects]
+        if not self._browse_roots:
+            raise ValueError("Configured OPC UA browse roots must not be empty")
+        namespace_array = await self._client.get_namespace_array()
+        roots: dict[str, Node] = {}
+        for configured_id in self._browse_roots:
+            expanded = ua.NodeId.from_string(configured_id)
+            if not isinstance(expanded, ua.ExpandedNodeId) or not expanded.NamespaceUri or expanded.ServerIndex:
+                raise ValueError(f"Browse root must be a local URI-based ExpandedNodeId: {configured_id!r}")
+            try:
+                namespace_index = namespace_array.index(expanded.NamespaceUri)
+            except ValueError as exc:
+                raise ValueError(
+                    f"Browse root namespace is not available on {self._endpoint}: {configured_id!r}"
+                ) from exc
+            node_id = ua.NodeId(expanded.Identifier, ua.Int16(namespace_index), expanded.NodeIdType)
+            node = self._client.get_node(node_id)
+            try:
+                node_class = await node.read_node_class()
+            except UaStatusCodeError as exc:
+                raise ValueError(f"Cannot read configured OPC UA browse root {configured_id!r}: {exc}") from exc
+            if node_class != NodeClass.Object:
+                raise ValueError(f"Configured OPC UA browse root is not an Object: {configured_id!r}")
+            roots[node_id.to_string()] = node
+        logger.info(
+            "OPC UA browse roots resolved endpoint=%s configured=%s resolved=%s",
+            self._endpoint,
+            self._browse_roots,
+            list(roots),
+        )
+        return list(roots.values())
+
     async def browse_tree(self) -> list[OpcUaNodeInfo]:
         started = perf_counter()
         self._runtime_metrics.browse_tree_calls += 1
@@ -630,11 +667,11 @@ class OpcUaClient:
             self._browse_concurrency,
             max_nodes_per_browse,
         )
-        root = self._client.nodes.objects
+        roots = await self._resolve_browse_roots()
         output: list[OpcUaNodeInfo] = []
         visited: set[str] = set()
         reference_type_names: dict[str, str] = {}
-        stack: list[tuple[Any, str | None]] = [(root, None)]
+        stack: list[tuple[Any, str | None]] = [(root, None) for root in roots]
 
         while stack:
             batch_entries = stack[:max_nodes_per_browse]

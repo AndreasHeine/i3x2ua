@@ -4,12 +4,14 @@ import asyncio
 import os
 from types import SimpleNamespace
 from typing import Any, cast
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import FastAPI
 from fastapi.routing import APIRoute
 
 from i3x_server.api.v1 import monolithic
+from i3x_server.bootstrap import app_factory
 from i3x_server.bootstrap.app_factory import (
     _extract_inline_script_bodies,
     _frontend_inline_script_hashes,
@@ -286,6 +288,48 @@ async def test_run_periodic_model_refresh_disabled_when_interval_zero(monkeypatc
 
     monkeypatch.setattr("i3x_server.bootstrap.app_factory.settings.model_refresh_interval_seconds", 0)
     await _run_periodic_model_refresh(app)
+
+
+@pytest.mark.asyncio
+async def test_browse_roots_are_wired_at_startup(monkeypatch: pytest.MonkeyPatch) -> None:
+    roots = ["nsu=urn:plant;s=Machine1", "nsu=urn:plant;s=Machine2"]
+    monkeypatch.setattr("i3x_server.bootstrap.app_factory.settings.opcua_browse_roots", roots)
+    monkeypatch.setenv("I3X_SKIP_OPCUA_CONNECT", "1")
+    monkeypatch.setenv("I3X_ENABLE_MCP", "0")
+    app = FastAPI()
+    async with app_factory.lifespan(app):
+        assert app.state.opcua_client._browse_roots == tuple(roots)
+
+
+@pytest.mark.asyncio
+async def test_failed_refresh_preserves_previous_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    model = BuildResult(
+        nodes_by_id={},
+        root_ids=[],
+        children_by_id={},
+        instances_by_type_id={},
+        property_to_node={},
+        action_to_method={},
+    )
+    app = FastAPI()
+    app.state.model_cache = model
+    build = AsyncMock(side_effect=ValueError("Browse root namespace is not available"))
+    app.state.model_builder = SimpleNamespace(build=build)
+    app.state.model_lock = asyncio.Lock()
+    sleeps = 0
+
+    async def sleep(_: float) -> None:
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps == 2:
+            raise asyncio.CancelledError()
+
+    monkeypatch.setattr("i3x_server.bootstrap.app_factory.settings.model_refresh_interval_seconds", 1)
+    monkeypatch.setattr("i3x_server.bootstrap.app_factory.asyncio.sleep", sleep)
+    with pytest.raises(asyncio.CancelledError):
+        await _run_periodic_model_refresh(app)
+    build.assert_awaited_once()
+    assert app.state.model_cache is model
 
 
 @pytest.mark.parametrize("enabled", [False, True])

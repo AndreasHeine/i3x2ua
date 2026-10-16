@@ -1,6 +1,6 @@
 [project]
 name = "i3x2ua"
-version = "1.10.7"
+version = "1.11.0"
 description = "The i3X API Gateway for OPC UA"
 license = { file = "LICENSE" }
 requires-python = ">=3.14,<3.16"
@@ -14,7 +14,7 @@ dependencies = [
     "httpx>=0.27.0",
     "jsonschema[format]>=4.23.0",
     "pydantic==2.14.1",
-    "pydantic-settings>=2.3.0",
+    "pydantic-settings>=2.7.0",
     "trio>=0.27.0",
     "uvicorn>=0.54,<0.55",
     "wsproto>=1.2.0",

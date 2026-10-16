@@ -1,7 +1,11 @@
-from typing import Any
+import base64
+import json
+import re
+from typing import Annotated, Any
+from uuid import UUID
 
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -17,6 +21,7 @@ class Settings(BaseSettings):
     opcua_client_key_password: str | None = Field(default=None)
     opcua_server_cert_path: str | None = Field(default=None)
     opcua_browse_concurrency: int = Field(default=128, ge=1)
+    opcua_browse_roots: Annotated[list[str] | None, NoDecode] = None
     opcua_metadata_cache_ttl_seconds: int = Field(default=300, ge=0)
     opcua_connection_monitor_interval_seconds: int = Field(default=5, ge=0)
     opcua_reconnect_request_timeout_seconds: float = Field(default=10.0, gt=0)
@@ -62,6 +67,37 @@ class Settings(BaseSettings):
         if normalized not in {"hybrid", "strict", "adaptive"}:
             raise ValueError("subscription_native_timeout_refresh_mode must be one of: hybrid, strict, adaptive")
         return normalized
+
+    @field_validator("opcua_browse_roots", mode="before")
+    @classmethod
+    def _validate_opcua_browse_roots(cls, value: Any) -> list[str] | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            text = value.strip()
+            value = json.loads(text) if text.startswith("[") else [text]
+        if not isinstance(value, list) or not value:
+            raise ValueError("opcua_browse_roots must be a non-empty ExpandedNodeId or JSON array")
+        roots: list[str] = []
+        for root in value:
+            if not isinstance(root, str):
+                raise ValueError("opcua_browse_roots entries must be strings")
+            root = root.strip()
+            match = re.fullmatch(r"nsu=([^;\s]+);([isgb])=(.+)", root, flags=re.DOTALL)
+            if match is None:
+                raise ValueError(f"Invalid browse root {root!r}; expected nsu=<URI>;<i|s|g|b>=<identifier>")
+            kind, identifier = match.group(2, 3)
+            if kind == "i" and (not identifier.isascii() or not identifier.isdecimal() or int(identifier) > 0xFFFFFFFF):
+                raise ValueError(f"Invalid numeric browse root {root!r}")
+            if kind == "g":
+                UUID(identifier)
+            elif kind == "b":
+                base64.b64decode(identifier, validate=True)
+            elif kind == "s" and any(ord(char) < 32 or 127 <= ord(char) <= 159 for char in identifier):
+                raise ValueError(f"Browse root string identifier contains control characters: {root!r}")
+            if root not in roots:
+                roots.append(root)
+        return roots
 
 
 settings = Settings()

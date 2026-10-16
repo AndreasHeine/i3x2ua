@@ -307,6 +307,40 @@ Active endpoints are exposed under `/v1` for:
 
 Current scope emphasis: this implementation prioritizes read/query/subscribe operations and includes optional current-value and historical write support.
 
+### OPC UA browse entrypoints
+
+By default, instance discovery starts at the OPC UA **Objects** folder (`ns=0;i=85`).
+Set `I3X_OPCUA_BROWSE_ROOTS` to a single URI-based ExpandedNodeId or a JSON array
+to discover only the selected objects and their forward hierarchical descendants:
+
+```dotenv
+I3X_OPCUA_BROWSE_ROOTS='nsu=urn:example:plant;s=Machine1'
+# Or multiple entrypoints:
+I3X_OPCUA_BROWSE_ROOTS='["nsu=urn:example:plant;s=Machine1","nsu=urn:example:plant;s=Machine2"]'
+```
+
+Configured entrypoints must be readable OPC UA Objects. Numeric (`i=`), string (`s=`),
+GUID (`g=`), and base64 byte-string (`b=`) identifiers are supported. Namespace URIs
+are resolved against the connected server on every model build; namespace-index IDs
+(`ns=2;...`) and remote-server addressing are not accepted.
+Configuration is read at startup; restart the gateway after changing it.
+
+Disjoint entrypoints become separate i3X root objects, accessible through
+`GET /v1/objects?root=true`. Overlapping entrypoints and shared descendants are
+deduplicated, preserving modeled hierarchy/composition relationships. No synthetic
+container or Objects folder is added. These are browse entrypoints, not forced API roots.
+
+Empty or malformed configuration is rejected. An unknown namespace, missing node,
+unreadable node, or non-Object entrypoint fails the entire model build, without falling
+back to Objects or publishing a partial model. A failed periodic refresh retains the
+previous model. To fail startup on model-build errors, set both
+`I3X_MODEL_PRELOAD_BLOCKING=1` and `I3X_FAIL_STARTUP_ON_MODEL_PRELOAD_ERROR=1`
+with `I3X_MODEL_PRELOAD_ON_STARTUP=1`.
+
+Object-type discovery remains independent and is not restricted to these entrypoints.
+This setting scopes discovery, not authorization: forward hierarchical cross-links
+can lead into other branches or namespaces.
+
 ### Model revisions and conditional GET
 
 Every response built from the address-space model carries `I3X-Model-Revision`, a content hash of the model. It changes only when the model content changes, not on every periodic rebuild. Model-derived `GET` endpoints (`/objects`, `/objecttypes`, `/namespaces`, `/relationshiptypes`, `/model/namespace-gaps`) also return a weak `ETag` and `Cache-Control: no-cache`. Send it back in `If-None-Match` to get `304 Not Modified` with an empty body while the representation is unchanged:

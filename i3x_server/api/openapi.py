@@ -46,7 +46,7 @@ class DocumentedFastAPI(FastAPI):
     def openapi(self) -> dict[str, Any]:
         schema = super().openapi()
         for path, operations in schema["paths"].items():
-            if not path.startswith(("/v1/", "/ua/", "/mcp")):
+            if not path.startswith(("/v1/", "/ua/", "/mcp", "/model/")):
                 continue
             for operation in operations.values():
                 if not isinstance(operation, dict) or "responses" not in operation:

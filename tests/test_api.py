@@ -2481,7 +2481,7 @@ def test_openapi_operations_are_grouped_by_workflow(client: TestClient) -> None:
                 expected_tag = "Info"
             elif path.startswith("/mcp"):
                 expected_tag = "MCP"
-            elif path.startswith("/ua") or path.startswith("/v1/model/"):
+            elif path.startswith("/ua") or path.startswith("/model/"):
                 expected_tag = "Diagnostics"
             elif path.startswith("/v1/subscriptions"):
                 expected_tag = "Subscribe"
@@ -2504,6 +2504,10 @@ def _assert_documented_response(client: TestClient, method: str, path: str, stat
 
 
 def test_openapi_errors_match_runtime(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    invalid_limit = client.get("/model/namespace-gaps", params={"limit": 0})
+    assert invalid_limit.status_code == 400
+    _assert_documented_response(client, "get", "/model/namespace-gaps", 400, invalid_limit.json())
+
     validation = client.post("/v1/objects/value", json={"maxDepth": 1})
     assert validation.status_code == 400
     _assert_documented_response(client, "post", "/v1/objects/value", 400, validation.json())
@@ -2559,7 +2563,7 @@ def test_openapi_validation_and_streaming_contracts(client: TestClient) -> None:
     assert "securitySchemes" not in document["components"]
     assert document["info"]["contact"]["url"].startswith("https://")
     assert document["externalDocs"]["url"].startswith("https://")
-    assert "304" not in document["paths"]["/v1/model/metrics"]["get"]["responses"]
+    assert "304" not in document["paths"]["/model/metrics"]["get"]["responses"]
 
 
 def test_openapi_mcp_jsonrpc_responses_match_runtime(client: TestClient) -> None:
@@ -2583,7 +2587,7 @@ def test_openapi_mcp_jsonrpc_responses_match_runtime(client: TestClient) -> None
         "/v1/objecttypes",
         "/v1/namespaces",
         "/v1/relationshiptypes",
-        "/v1/model/namespace-gaps",
+        "/model/namespace-gaps",
     ],
 )
 def test_openapi_conditional_get_matches_runtime(client: TestClient, path: str) -> None:

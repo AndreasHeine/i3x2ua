@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Protocol
+from typing import Any, Protocol, runtime_checkable
 
 from asyncua import ua
 
@@ -145,6 +145,19 @@ class OpcUaWriteMetadataUnsupportedError(Exception):
 
 class OpcUaWriteMetadataVerificationError(Exception):
     """Raised when current-value VQT metadata cannot be verified after writing."""
+
+
+@dataclass(slots=True)
+class BoundedHistoryResult:
+    values: list[ua.DataValue]
+    truncated: bool
+
+
+@runtime_checkable
+class BoundedHistoryReader(Protocol):
+    async def read_bounded_history(
+        self, node_id: str, start_time: datetime, end_time: datetime, max_points: int
+    ) -> BoundedHistoryResult: ...
 
 
 class OpcUaClientProtocol(Protocol):

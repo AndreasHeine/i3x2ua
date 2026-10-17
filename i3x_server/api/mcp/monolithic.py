@@ -19,7 +19,7 @@ from i3x_server.prompts.api import execute_prompt, get_prompt, list_prompt_metad
 from i3x_server.prompts.registry import PromptRegistry
 from i3x_server.version import get_server_version
 
-router = APIRouter(prefix="/mcp", tags=["MCP"])
+router = APIRouter(prefix="/mcp")
 logger = logging.getLogger(__name__)
 MCP_PROTOCOL_VERSION = "2025-06-18"
 MCP_INSTRUCTIONS = (
@@ -29,6 +29,9 @@ MCP_INSTRUCTIONS = (
     "Inspect per-item failures even when HTTP succeeds. PUT/write operations are REST-only. "
     "Subscription tools change monitoring state; acknowledge only updates already processed. "
     "Plant roots are available using getObjectsV1(root=true), not MCP filesystem roots."
+    " Use findAssets for explicit candidates, discoverAssetContext for bounded graph context, "
+    "getAssetSnapshot for non-atomic VQT evidence, and startAssetMonitoring for create/register with rollback. "
+    "summarizeSignalHistory reads bounded pages; diagnoseDataAvailability reports evidence, not health verdicts."
 )
 
 
@@ -355,7 +358,7 @@ async def _handle_jsonrpc(request: Request, message: dict[str, Any]) -> dict[str
     return _jsonrpc_error(message_id, -32601, f"Method not found: {method}")
 
 
-@router.get("/tools")
+@router.get("/tools", tags=["MCP Helpers"])
 async def list_tools(request: Request) -> dict[str, Any]:
     tools = getattr(request.app.state, "mcp_tools", {})
     if isinstance(tools, Mapping):
@@ -372,7 +375,7 @@ async def list_tools(request: Request) -> dict[str, Any]:
     return {"tools": {}}
 
 
-@router.post("/call")
+@router.post("/call", tags=["MCP Helpers"])
 async def call_tool(request: Request, payload: McpCallRequest) -> Any:
     tools = getattr(request.app.state, "mcp_tools", {})
     if not isinstance(tools, Mapping) or payload.tool not in tools:
@@ -382,38 +385,39 @@ async def call_tool(request: Request, payload: McpCallRequest) -> Any:
     return await call_mcp_tool(request, tool, payload.arguments)
 
 
-@router.get("/prompts")
+@router.get("/prompts", tags=["MCP Helpers"])
 async def list_prompts(request: Request) -> dict[str, Any]:
     return {"prompts": list_prompt_metadata(_prompt_registry(request))}
 
 
-@router.get("/prompts/{name}")
+@router.get("/prompts/{name}", tags=["MCP Helpers"])
 async def get_prompt_definition(request: Request, name: str) -> dict[str, Any]:
     return get_prompt(_prompt_registry(request), name)
 
 
-@router.post("/prompts/execute")
+@router.post("/prompts/execute", tags=["MCP Helpers"])
 async def execute_prompt_template(request: Request, payload: McpPromptExecuteRequest) -> dict[str, Any]:
     return execute_prompt(_prompt_registry(request), payload.name, payload.parameters)
 
 
-@router.get("/resources")
+@router.get("/resources", tags=["MCP Helpers"])
 async def list_resources(request: Request) -> dict[str, Any]:
     return {"resources": _resource_catalog(request)}
 
 
-@router.post("/resources/read")
+@router.post("/resources/read", tags=["MCP Helpers"])
 async def read_resource(request: Request, payload: McpResourceReadRequest) -> dict[str, Any]:
     return {"contents": [_read_resource_content(request, payload.uri)]}
 
 
-@router.get("/roots")
+@router.get("/roots", tags=["MCP Helpers"])
 async def list_roots(request: Request) -> dict[str, Any]:
     return {"roots": _roots_catalog(request)}
 
 
 @router.post(
     "",
+    tags=["MCP"],
     response_class=JSONResponse,
     responses={
         200: {

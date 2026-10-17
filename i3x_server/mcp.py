@@ -252,6 +252,14 @@ class McpToolDefinition:
 
     @property
     def annotations(self) -> dict[str, bool]:
+        if self.path.startswith("/mcp/composites/"):
+            read_only = self.path.rsplit("/", 1)[-1] in {"discover", "find", "snapshot", "history", "diagnose"}
+            return {
+                "readOnlyHint": read_only,
+                "destructiveHint": not read_only,
+                "idempotentHint": read_only,
+                "openWorldHint": True,
+            }
         read_only = (
             self.method == "GET"
             or self.path.endswith(
@@ -303,7 +311,8 @@ def build_mcp_tools(
     for path, methods in paths.items():
         if not isinstance(path, str) or not isinstance(methods, Mapping):
             continue
-        if path.startswith("/mcp"):
+        composite = path.startswith("/mcp/composites/")
+        if path.startswith("/mcp") and not composite:
             continue
         # Extract per-path server override if present
         path_server_override: str | None = None
@@ -352,9 +361,15 @@ def build_mcp_tools(
                 body_required = bool(request_body.get("required"))
                 body_schema = _resolve_request_body_schema(request_body, components)
                 if body_schema is not None:
-                    input_properties["body"] = body_schema
-                    if body_required:
-                        required.append("body")
+                    if composite:
+                        input_properties.update(body_schema.get("properties", {}))
+                        required.extend(body_schema.get("required", []))
+                        query_parameters.extend(input_properties)
+                        body_required = False
+                    else:
+                        input_properties["body"] = body_schema
+                        if body_required:
+                            required.append("body")
 
             override = overrides.get(operation_id, {}) if isinstance(overrides, Mapping) else {}
             if not isinstance(override, Mapping):
@@ -367,7 +382,11 @@ def build_mcp_tools(
             tools[operation_id] = McpToolDefinition(
                 name=operation_id,
                 description=str(
-                    override.get("description") or details.get("summary") or details.get("description") or ""
+                    override.get("description")
+                    or (details.get("description") if composite else details.get("summary"))
+                    or details.get("summary")
+                    or details.get("description")
+                    or ""
                 ),
                 method=method.upper(),
                 path=path,
@@ -581,6 +600,8 @@ async def invoke_mcp_tool(request: Request, tool: McpToolDefinition, arguments: 
                 effective_prefix = _safe_api_prefix(tool.server_url_override)
             else:
                 effective_prefix = api_prefix
+            if tool.path.startswith("/mcp/composites/"):
+                effective_prefix = ""
 
             resolved_path = _safe_request_path(effective_prefix, tool.path)
             for parameter_name in tool.path_parameters:
@@ -599,6 +620,9 @@ async def invoke_mcp_tool(request: Request, tool: McpToolDefinition, arguments: 
             }
 
             request_body = arguments.get("body") if "body" in arguments else None
+            if tool.path.startswith("/mcp/composites/"):
+                request_body = dict(arguments)
+                query_params = {}
             if tool.body_required and request_body is None:
                 raise i3x_http_error(400, "Bad Request", "Missing required body")
 

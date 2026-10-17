@@ -25,9 +25,8 @@ Each discovery client repeated the workflow. The results demonstrate why
 concurrency matters: a single client did not create enough simultaneous work
 to reveal the full benefit of multiple application workers.
 
-The original 1-versus-8-worker benchmark was run with HTTP API traffic and
-OpenTelemetry exporting to Jaeger enabled. The additional 16-worker result
-below used HTTPS through NGINX with Basic Authentication. Transport and proxy
+The original 1-versus-8-worker benchmark was run with HTTPS through NGINX with Basic Authentication traffic and
+OpenTelemetry exporting to Jaeger enabled. Transport and proxy
 differences are another reason not to treat the runs as a perfectly controlled
 head-to-head comparison.
 

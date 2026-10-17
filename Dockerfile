@@ -20,7 +20,12 @@ COPY pyproject.toml uv.lock README.md /app/
 COPY i3x_server /app/i3x_server
 COPY frontend /app/frontend
 
-RUN uv sync --no-dev --frozen
+ARG INSTALL_OTEL=false
+RUN if [ "$INSTALL_OTEL" = "true" ]; then \
+        uv sync --no-dev --frozen --extra otel; \
+    else \
+        uv sync --no-dev --frozen; \
+    fi
 
 RUN cd /app/frontend \
     && npm ci \

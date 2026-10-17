@@ -183,16 +183,19 @@ for traces and **Mimir** for metrics.
 
 ## Docker / Docker Compose integration
 
-Pass the variables via environment in your `docker-compose.yml`:
+The repository's `docker-compose.yml` enables OpenTelemetry for the `i3x2ua`
+service, builds the image with the `otel` extra installed, and sends OTLP/HTTP
+data to the Jaeger all-in-one service over the internal Compose network. Start
+the stack with:
 
-```yaml
-services:
-  i3x2ua:
-    environment:
-      I3X_OTEL_ENABLED: "true"
-      OTEL_SERVICE_NAME: "i3x2ua"
-      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4318"
+```bash
+docker compose up --build
 ```
+
+Open `http://localhost:16686` to inspect traces. The Jaeger UI is bound to
+localhost; its OTLP receiver is available only to services on the Compose
+network. After changing the telemetry build configuration, use `docker compose
+up --build` to rebuild the application image with the required SDK and exporter.
 
 ---
 

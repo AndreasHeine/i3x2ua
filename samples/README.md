@@ -128,3 +128,69 @@ Display all command-line options:
 python .\samples\client.py --help
 python .\samples\subscription_client.py --help
 ```
+
+## Performance benchmark
+
+Run [run_benchmark.py](../run_benchmark.py) from the repository root to measure
+the sample clients rather than repeatedly launching their command-line programs:
+
+```powershell
+python .\run_benchmark.py --duration 30 --warmup 5 --output benchmark.json
+python .\run_benchmark.py --discovery 4 --subscriptions 4 --element-ids "property-dd1a9a05d251425f" --duration 60 --output benchmark-mixed.json
+```
+
+Use IDs discovered on your own server for subscriptions. The default workload is
+one discovery client and no subscriptions, plus an independent `GET /info` probe.
+Discovery clients repeatedly run the sample's breadth-first discovery, type/schema
+resolution, and composition-root value reads, without tree/value printing. Object
+and type caches are cleared between discovery cycles; each worker retains its own
+HTTP keep-alive connection. Polling clients reuse the subscription sample's create,
+register, and delete methods, acknowledging received updates without printing them.
+Subscriptions are created before warm-up and deleted after all workers stop.
+
+The console and optional JSON report show successful requests/second, failure
+counts, and successful-request latency mean, p50, p95, p99, and maximum in
+milliseconds, grouped by workload and endpoint. Discovery workflow latency is
+reported separately and is **not** counted again in HTTP totals. Polling also
+reports notification counts and notifications/second. These are delivered update
+counts, not source sampling rates or end-to-end source-to-client latency.
+
+Measurements use a monotonic high-resolution clock and include HTTP transport,
+response reads, JSON decoding, and response validation. Only operations that both
+start and finish inside the fixed measurement window are counted. Warm-up,
+subscription setup/cleanup, and requests draining after the deadline are excluded.
+Ctrl+C shortens the measurement window and still attempts subscription cleanup.
+Shutdown can take longer than the measured duration while active workflows drain;
+`--request-timeout` bounds each request, not an entire discovery workflow.
+Percentiles use nearest rank over **all successful measured samples**, not a rolling
+window; memory use grows with measured request count.
+
+This is a closed-loop benchmark: each worker waits for its response before issuing
+the next request. It measures client-observed performance at the selected
+concurrency, not an open-loop arrival rate or server-only execution time. Run it
+on a separate machine from the gateway for less client/server resource contention.
+Keep workload limits and polling/probe intervals identical when comparing runs.
+
+| Option | Description | Default |
+|---|---|---|
+| `--duration SECONDS` | Fixed measurement duration after warm-up | `30` |
+| `--warmup SECONDS` | Unmeasured warm-up under the same workload; `0` disables it | `5` |
+| `--discovery N` | Parallel discovery workers; `0` disables discovery | `1` |
+| `--subscriptions N` | Parallel polling workers; requires `--element-ids` | `0` |
+| `--max-nodes N`, `--max-depth N` | Discovery bounds, using the sample client's traversal semantics | `200`, `1` |
+| `--no-values` | Skip composition-root value reads | Values enabled |
+| `--value-max-depth N` | Composition depth for value reads; `0` is unbounded | `1` |
+| `--subscription-max-depth N` | Composition depth for monitored items | All descendant properties |
+| `--poll-interval SECONDS` | Delay after each sync; `0` requests maximum polling throughput | `1` |
+| `--probe-interval SECONDS` | Delay after each independent `/info` probe | `0.5` |
+| `--request-timeout SECONDS` | Per-request socket timeout | `10` |
+| `--failure-delay SECONDS` | Backoff after a failed discovery cycle | `0.2` |
+| `--output PATH` | Save machine-readable results (overwrites an existing file) | Not set |
+
+The benchmark accepts the same `--base-url`, `--username`, `--password`, and
+`--insecure` connection options shown above. Credentials are omitted from report
+configuration. Partial bulk failures, malformed responses, and subscription
+overflow warnings are failures, not successful samples. Errors during warm-up,
+setup, draining, or cleanup are reported separately and also cause a nonzero exit.
+Exit codes: `0` for an error-free run with measured requests, `1` for failures or no
+measured requests, `2` for invalid arguments, and `130` for interruption.

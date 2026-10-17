@@ -20,6 +20,8 @@ services:
       - --proxy-headers
       - --forwarded-allow-ips
       - "*"
+      - "--workers"
+      - "1"  # Number of worker processes for uvicorn.
     environment:
       # I3X_HOST: 0.0.0.0  # Optional host bind for run.py (not used by this compose command).
       # I3X_PORT: 8000  # Optional app port for run.py (not used by this compose command).

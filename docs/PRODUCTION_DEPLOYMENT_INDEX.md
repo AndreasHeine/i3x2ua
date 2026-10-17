@@ -33,15 +33,20 @@ Complete guide for deploying i3x2ua in production with HTTPS, path-based routing
    - Performance tuning
    - **Read time**: 15-20 minutes
 
+4. **[SCALING_GUIDE.md](SCALING_GUIDE.md)** 📈 SCALING
+   - Uvicorn worker sizing and NGINX starting configuration
+   - Benchmark results and repeatable concurrency tests
+   - Operational checks while scaling
+
 ### Configuration & Scripts
 
-4. **[.env.production.example](.env.production.example)** 🔧 CONFIG TEMPLATE
+5. **[.env.production.example](.env.production.example)** 🔧 CONFIG TEMPLATE
    - Production environment configuration template
    - All configuration options documented
    - Security recommendations
    - Copy to `.env` and customize for your environment
 
-5. **[docker-compose.multi-instance.yml](docker-compose.multi-instance.yml)** 📦 MULTI-INSTANCE SETUP
+6. **[docker-compose.multi-instance.yml](docker-compose.multi-instance.yml)** 📦 MULTI-INSTANCE SETUP
    - Multi-instance Docker Compose configuration
    - 3 independent i3x2ua instances with separate OPC-UA connections
    - NGINX reverse proxy with path-based routing
@@ -49,14 +54,14 @@ Complete guide for deploying i3x2ua in production with HTTPS, path-based routing
    - Each instance completely independent with no shared state
    - Use with: `docker-compose -f docker-compose.multi-instance.yml up -d`
 
-6. **[cert-manager.sh](cert-manager.sh)** 🔐 CERTIFICATE TOOL
+7. **[cert-manager.sh](cert-manager.sh)** 🔐 CERTIFICATE TOOL
    - Certificate management utility
    - Generate, verify, and check certificates
    - Validate certificate chain and domain matching
    - Integration with Let's Encrypt
    - **Usage**: `bash cert-manager.sh help`
 
-7. **[deploy.sh](deploy.sh)** 🚀 DEPLOYMENT TOOL
+8. **[deploy.sh](deploy.sh)** 🚀 DEPLOYMENT TOOL
    - Automated deployment helper script
    - Validates prerequisites and configuration
    - Builds and starts services

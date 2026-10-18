@@ -1,19 +1,29 @@
 # i3x2ua Scaling Guide
 
-This guide summarizes measured REST API scaling results and gives a starting
-point for sizing Uvicorn workers and NGINX. Treat the figures as observations
-from one test environment, not as capacity guarantees: OPC UA server behavior,
-model size, request mix, container limits, and network latency can all change
-the result.
+This guide summarizes measured REST API scaling results and provides practical guidance for sizing Uvicorn workers and NGINX deployments.
 
-## Test environment and workload
+The reported figures should be treated as observations from a specific test environment, not as capacity guarantees. Actual performance depends on factors including OPC UA server behavior, information model size, request patterns, network latency, available hardware, and deployment configuration.
 
-The measurements below were reported on a system with an AMD Ryzen 7 7800X3D,
-8 physical cores, and 16 logical CPUs. NGINX used `worker_processes auto` and
-could see all 16 logical CPUs. The API was tested with either 1 or 8 Uvicorn
-workers.
+---
 
-The discovery workload repeatedly exercised these API operations:
+# Test Environment and Workload
+
+The measurements below were reported on:
+
+- AMD Ryzen 7 7800X3D
+- 8 physical CPU cores
+- 16 logical CPUs
+- 32 GB DDR5 RAM @ 6000 MT/s
+
+The OPC UA server was:
+
+```text
+opc.tcp://opcua.umati.app:4843
+```
+
+which is a cloud-hosted OPC UA server accessed over the Internet. As a result, the measured performance includes both OPC UA server behavior and network latency.
+
+The discovery workload repeatedly executed the following API operations:
 
 1. `GET /info`
 2. `GET /objects`
@@ -21,256 +31,507 @@ The discovery workload repeatedly exercised these API operations:
 4. `POST /objects/value`
 5. `POST /objecttypes/query`
 
-Each discovery client repeated the workflow. The results demonstrate why
-concurrency matters: a single client did not create enough simultaneous work
-to reveal the full benefit of multiple application workers.
+Each discovery client continuously repeated this workflow for the configured benchmark duration.
 
-The original 1-versus-8-worker benchmark was run with HTTPS through NGINX with Basic Authentication traffic and
-OpenTelemetry exporting to Jaeger enabled. Transport and proxy
-differences are another reason not to treat the runs as a perfectly controlled
-head-to-head comparison.
+---
 
-## Results
+# Benchmark Configurations
 
-| Uvicorn workers | Discovery clients | Successful HTTP requests/s | Discovery workflows/s | Mean workflow latency | P95 workflow latency | P99 workflow latency |
-|---:|---:|---:|---:|---:|---:|---:|
-| 1 | 8 | 305 | 60 | 132 ms | 238 ms | — |
-| 8 | 8 | 786 | 157 | 51 ms | 78 ms | 139 ms |
-| 16 | 16 | 762 | 152 | 81 ms | 126 ms | 242 ms |
+Two deployment configurations were tested.
 
-The 8-worker run increased throughput by about 2.6x (approximately 158%) and
-reduced mean workflow latency by about 61%. It completed without errors in the
-reported repeated runs.
+## Full Production-Style Configuration
 
-In the 16-worker/16-client run, the reported successful HTTP throughput was
-about 762 requests/s and successful discovery workflow throughput was about
-152 workflows/s. The workflow mean was about 81 ms, with P95 of 126 ms and P99
-of 242 ms. The run reported a 2.25% HTTP error rate, predominantly NGINX
-`502 Bad Gateway` responses, including 498 failed `GET /info` requests. This
-is a useful signal that this particular configuration/workload combination
-was encountering errors; it is not evidence that NGINX alone was the root
-cause. Review NGINX upstream and application logs, resource usage, and worker
-health before attributing the failures.
+Enabled:
 
-The 16-worker run used twice as many discovery clients as the 8-worker run.
-Although its throughput is in a similar range, the different concurrency,
-HTTPS/proxy path, and reported errors mean that it should not be read as a
-controlled comparison showing that 16 workers are slower than 8.
+- NGINX reverse proxy
+- HTTPS
+- HTTP Basic Authentication
+- OpenTelemetry tracing
+- Cloud OPC UA server
 
-At a single discovery client, throughput was about 217 HTTP requests/s and 43
-workflows/s, and increasing workers provided only a small improvement of
-around 10%. That result is not representative of the higher-concurrency runs.
+## Minimal Configuration
 
-Reported endpoint mean latencies in the 8-worker test were approximately
-8–13 ms:
+Enabled:
 
-| Endpoint | Mean latency |
-|---|---:|
-| `GET /info` | 8 ms |
-| `GET /objects` | 13 ms |
-| `POST /objects/list` | 10 ms |
-| `POST /objects/value` | 9 ms |
-| `POST /objecttypes/query` | 11 ms |
+- Direct HTTP access to Uvicorn
+- Cloud OPC UA server
 
-Another reported observation was P95 latency around 16–19 ms, P99 around
-30–42 ms, and occasional maximums of 180–700 ms. These figures describe
-different measurements from the workflow percentiles in the table above;
-compare percentiles only when the workload, metric, and measurement window
-match. Use throughput, P95, and P99 together rather than sizing from isolated
-maximum latency spikes.
+Disabled:
 
-## Starting worker counts
+- NGINX
+- HTTPS
+- Basic Authentication
+- OpenTelemetry
 
-Use these only as initial values to test:
+The minimal configuration removes most infrastructure overhead and better isolates application performance.
 
-| Available CPU capacity | Initial Uvicorn worker range |
-|---|---:|
-| 2–4 cores | 2–4 |
-| 8 cores | 4–8 |
-| 16+ logical CPUs | 8+ |
+---
 
-The reported 8-worker result was on a 16-logical-CPU system. More workers are
-not automatically better: each worker is a separate process and consumes
-memory and application resources. In particular, confirm the impact on OPC UA
-connections and startup work for your deployment before increasing the count.
+# Results
 
-For NGINX, `worker_processes auto` is a reasonable starting point. In the
-reported tests, increasing Uvicorn workers was the useful scaling change; no
-NGINX tuning was needed. Revisit NGINX settings only when measurements point to
-proxy saturation.
+## Single Worker - Direct HTTP (No NGINX, No HTTPS, No Telemetry)
 
-## Deployment options and process trade-offs
+The following measurements were taken using:
 
-### One Uvicorn worker
+- 1 Uvicorn worker
+- Direct HTTP access
+- No NGINX reverse proxy
+- No HTTPS
+- No Authentication
+- No OpenTelemetry
+- Cloud-hosted OPC UA server
 
-For example, the application can be run with Uvicorn's default single worker,
-or explicitly with `--workers 1`:
+| Discovery Clients | HTTP Requests/s | Discovery Workflows/s | Mean Workflow Latency |
+|---:|---:|---:|---:|
+| 1 | 388 | 77 | 13 ms |
+| 8 | 443 | 88 | 91 ms |
+| 16 | 407 | 81 | 197 ms |
+| 32 | 429 | 85 | 373 ms |
+| 64 | 438 | 85 | 730 ms |
 
-```sh
-uvicorn i3x_server.main:app
-uvicorn i3x_server.main:app --workers 1
+### Observations
+
+The highest observed throughput was approximately:
+
+```text
+438 HTTP requests/s
+88 discovery workflows/s
 ```
 
-This is still an ASGI application served by Uvicorn; it is not a serverless
-plain Python process. A single worker is the simplest option and usually has
-the lowest memory use. It can suit development, debugging, low request rates,
-and small memory budgets. It also keeps process-local caches and state in one
-worker. Its trade-offs are limited parallelism on multi-core systems and
-throughput that can plateau under concurrent load; a slow or blocking
-operation can affect requests handled by that worker.
+using:
 
-### Multiple Uvicorn workers
+```text
+1 Uvicorn worker
+64 concurrent discovery clients
+```
+
+Throughput remains remarkably stable between 8 and 64 concurrent discovery clients:
+
+```text
+407-443 HTTP requests/s
+81-88 discovery workflows/s
+```
+
+while latency increases as requests queue.
+
+Most importantly:
+
+```text
+0% error rate
+```
+
+was observed for all measurements.
+
+This demonstrates that even a single-worker deployment can provide stable operation under substantial discovery traffic.
+
+---
+
+## Full Production-Style Deployment
+
+The following measurements were taken using:
+
+- NGINX
+- HTTPS
+- Basic Authentication
+- OpenTelemetry
+- Cloud-hosted OPC UA server
+
+| Uvicorn Workers | Discovery Clients | HTTP Requests/s | Discovery Workflows/s | Mean Workflow Latency |
+|---:|---:|---:|---:|---:|
+| 1 | 8 | 314 | 62 | 128 ms |
+| 4 | 8 | 623 | 124 | 50 ms |
+| 8 | 8 | 786 | 157 | 51 ms |
+
+### Observations
+
+The best observed result was:
+
+```text
+786 HTTP requests/s
+157 discovery workflows/s
+```
+
+using:
+
+```text
+8 Uvicorn workers
+8 concurrent discovery clients
+```
+
+This represents approximately:
+
+```text
+2.5x higher throughput
+```
+
+than the equivalent single-worker production-style deployment.
+
+However, increasing worker count also increases:
+
+- Memory consumption
+- Cache duplication
+- OPC UA sessions and connections
+- Startup overhead
+
+For many deployments the additional throughput is unnecessary.
+
+---
+
+# Interpretation of the Results
+
+The benchmark workload is intentionally demanding because it continuously performs complete information-model discovery operations.
+
+Most industrial applications do not perform continuous discovery.
+
+Typical industrial workloads consist of:
+
+- HMI access
+- Dashboard refreshes
+- MES queries
+- Engineering diagnostics
+- Asset lookup
+- Subscription-based updates
+
+rather than repeated full information-model discovery.
+
+For that reason, benchmark throughput numbers should be viewed as stress-test results rather than representative day-to-day operating conditions.
+
+---
+
+# Recommended Worker Counts
+
+The benchmark results suggest starting conservatively and scaling only when necessary.
+
+## Suggested Starting Points
+
+| Deployment Type | Initial Worker Count |
+|---|---:|
+| Single Machine | 1 |
+| Production Cell | 1 |
+| Production Line | 1-2 |
+| Factory Gateway | 2-4 |
+| Enterprise Aggregation Gateway | 4-8 |
+
+A single-worker deployment sustained approximately:
+
+```text
+388-443 REST requests/s
+77-88 discovery workflows/s
+```
+
+during testing against a cloud-hosted OPC UA server.
+
+For many machine-level and production-line deployments this level of performance is already sufficient.
+
+---
+
+# Why Start With One Worker?
+
+A single worker offers several advantages:
+
+- Lowest memory footprint
+- Lowest OPC UA session count
+- Simplest deployment
+- Shared cache state
+- No worker coordination overhead
+- Excellent performance for most machine-level deployments
+
+The benchmark results show that one worker is not merely a development configuration. It is a viable production configuration for many industrial use cases.
+
+---
+
+# Multiple Uvicorn Workers
 
 For example:
 
-```sh
+```bash
 uvicorn i3x_server.main:app --workers 8
 ```
 
-Workers are independent Python processes, not threads in one shared process.
-They can use multiple cores and isolate a worker crash, but each process loads
-the application and maintains its own process-local state. This can duplicate
-memory and caches, and may create additional OPC UA connections, sessions, or
-subscriptions. Confirm the actual behavior and resource impact with the
-configured OPC UA server and workload.
+Each worker is an independent Python process.
 
-The benchmark's 1-worker and 8-worker results illustrate the throughput and
-latency benefits possible under concurrent load. They should be balanced
-against the additional memory and backend connection costs for the deployment.
+Advantages:
 
-## Memory planning
+- Better concurrency
+- Higher throughput
+- Lower latency under heavy load
+- Better CPU utilization
 
-A useful first approximation is:
+Trade-offs:
 
-```text
-Total RAM ≈ master/supervisor process + (worker count × worker memory)
+- Higher memory consumption
+- Duplicated caches
+- Additional OPC UA connections or sessions
+- Longer startup time
+
+Additional workers should therefore be added only when measurements demonstrate a need for additional concurrency.
+
+---
+
+# NGINX Configuration
+
+The benchmark results indicate that NGINX was not the primary bottleneck.
+
+A reasonable production starting point is:
+
+```nginx
+worker_processes auto;
 ```
 
-As a rule of thumb, measure a worker's resident set size (RSS) after startup
-and a representative workload, then estimate:
+No additional NGINX tuning was required to achieve the reported throughput numbers.
+
+Only revisit NGINX parameters when measurements specifically indicate reverse-proxy saturation.
+
+---
+
+# Memory Planning
+
+A useful approximation is:
 
 ```text
-Estimated deployment RAM ≈ worker RSS × worker count × 1.2
+Total RAM ≈ master/supervisor process
+          + (worker count × worker memory)
 ```
 
-The extra 20% is a rough allowance for the operating system, NGINX, and runtime
-overhead, not a guaranteed upper bound. The estimate depends on cache size,
-OPC UA model and object count, loaded libraries, and how much memory is shared
-between processes. RSS can count shared pages in each process, so summing
-process RSS may overestimate physical memory; use container/cgroup memory for
-the actual container budget.
+Estimate deployment memory with:
 
-On Linux, inspect the Python worker processes and their RSS with:
+```text
+Estimated RAM ≈ worker RSS × worker count × 1.2
+```
 
-```sh
+The additional 20% accounts for:
+
+- Operating system overhead
+- Container runtime overhead
+- NGINX
+- Background activity
+
+Measure worker memory using:
+
+```bash
 ps -o pid,rss,command -C python
 ```
 
-RSS is reported in kilobytes; for example, `180000` is approximately 180 MB.
-For Docker, observe the actual container memory while the workload is running:
+For Docker deployments:
 
-```sh
+```bash
 docker stats
 ```
 
-An example `i3x2ua 1.4GiB` reading is total container usage at that moment, not
-the memory of one worker.
+Use measured container memory whenever possible.
 
-## Example starting profiles
+---
 
-These hardware and memory profiles are starting points only; validate them
-with representative measurements:
+# Example Deployment Profiles
 
-| Deployment size | Example hardware | Initial worker setting |
-|---|---|---:|
-| Small | 2–4 cores, 4 GB RAM | 2 |
-| Medium | 8 cores, 8 GB RAM | 4; compare with 8 |
-| Large | 16+ logical CPUs, 16+ GB RAM | 8; benchmark before increasing |
+## Single Machine
 
-For most production deployments, a reasonable initial combination is
-`worker_processes auto` in NGINX and 4 Uvicorn workers, then compare with 8
-using the benchmark procedure below. Use one worker for development, debugging,
-very low request rates, or very limited RAM. Start near the physical core count
-only as a hypothesis to test, not as a rule that overrides measured memory,
-latency, errors, or OPC UA capacity.
+Typical examples:
 
-## Configure Docker Compose
+- CNC machine
+- Robot cell
+- Packaging machine
+- Test station
 
-The root [`docker-compose.yml`](../docker-compose.yml) currently starts the
-application with one Uvicorn worker. Change the value following `--workers`
-under the `i3x2ua` service to the number you intend to test. For example:
+Recommended configuration:
 
-```yaml
-      - "--workers"
-      - "4"
+```text
+1 worker
 ```
 
-Apply the change by recreating the service:
+---
 
-```sh
+## Production Cell
+
+Typical examples:
+
+- Multiple machines
+- Local HMI
+- Local dashboards
+
+Recommended configuration:
+
+```text
+1 worker
+```
+
+Increase to:
+
+```text
+2 workers
+```
+
+only if measurements justify it.
+
+---
+
+## Production Line
+
+Typical examples:
+
+- Multiple production stations
+- MES connectivity
+- Several dashboard users
+
+Recommended configuration:
+
+```text
+1-2 workers
+```
+
+---
+
+## Factory Gateway
+
+Typical examples:
+
+- Multiple machine connections
+- Several concurrent client applications
+
+Recommended configuration:
+
+```text
+2-4 workers
+```
+
+---
+
+## Enterprise Gateway
+
+Typical examples:
+
+- Multiple OPC UA servers
+- Centralized asset access
+- Digital twin platforms
+
+Recommended configuration:
+
+```text
+4-8 workers
+```
+
+Benchmark before increasing beyond eight workers.
+
+---
+
+# Configure Docker Compose
+
+The default deployment starts with a single worker.
+
+Example:
+
+```yaml
+command:
+  - python
+  - -m
+  - uvicorn
+  - i3x_server.main:app
+  - --workers
+  - "1"
+```
+
+Increase only when measurements demonstrate a need for additional concurrency.
+
+Apply changes with:
+
+```bash
 docker compose up -d --build i3x2ua
 ```
 
-Check the service logs and health after changing the worker count:
+Verify deployment health afterwards:
 
-```sh
-docker compose logs --tail=100 i3x2ua
+```bash
 docker compose ps
+docker compose logs --tail=100 i3x2ua
 ```
 
-## Benchmark your deployment
+---
 
-Use enough concurrent discovery clients to exercise the workers. Start with 8,
-then compare 16 and 32; include 1 as a low-concurrency baseline:
+# Benchmark Your Deployment
 
-```sh
+Suggested benchmark progression:
+
+```bash
 uv run python run_benchmark.py --base-url http://127.0.0.1:8000/v1 --discovery 1 --duration 60
+
 uv run python run_benchmark.py --base-url http://127.0.0.1:8000/v1 --discovery 8 --duration 60
+
 uv run python run_benchmark.py --base-url http://127.0.0.1:8000/v1 --discovery 16 --duration 60
+
 uv run python run_benchmark.py --base-url http://127.0.0.1:8000/v1 --discovery 32 --duration 60
 ```
 
-`run_benchmark.py` defaults to a 5-second warm-up and reports successful
-requests per second, errors, and mean/P50/P95/P99/maximum latency. For
-repeatable comparisons:
+For realistic comparisons:
 
-- Keep the API data, OPC UA server, benchmark client, request limits, and
-  duration the same between runs.
-- Change only the worker count or only the client concurrency at a time.
-- Run each configuration more than once and compare consistent results.
-- Watch CPU and memory use as well as API latency and error rate.
-- Include the real proxy and TLS path in a separate test if those are part of
-  production traffic.
-- Increase concurrency gradually and stop if errors or resource exhaustion
-  appear.
+- Keep the OPC UA server identical.
+- Keep the information model identical.
+- Change only one parameter at a time.
+- Repeat measurements.
+- Monitor CPU, memory, latency, and errors.
+- Validate using the real production proxy and TLS path when applicable.
 
-The project benchmark supports `--output results.json` to save a machine-
-readable report. See `uv run python run_benchmark.py --help` for all workload
-options. The benchmark's discovery workload and any custom end-to-end workflow
-should not be assumed to be identical; use the workload that best represents
-your clients.
+---
 
-## Troubleshooting during scaling tests
+# Troubleshooting Scaling Issues
 
-If errors appear or latency rises sharply:
+If latency increases or errors appear:
 
-1. Check container resource use with `docker stats`.
-2. Review application logs with `docker compose logs i3x2ua` and NGINX logs
-   with `docker compose logs nginx`.
-3. Check whether the error is repeatable with the same worker count and
-   concurrency before treating a transient 502 as a capacity limit.
-4. Compare CPU, memory, OPC UA behavior, and NGINX upstream errors; do not
-   assume the reverse proxy is the bottleneck.
-5. Reduce the worker count if memory or OPC UA resources are exhausted, then
-   retest.
+1. Check resource usage:
 
-## Summary
+```bash
+docker stats
+```
 
-The reported workload scaled substantially from 1 to 8 Uvicorn workers when
-discovery concurrency was increased to 8. The 16-worker/16-client HTTPS run
-reached similar throughput but had higher workflow latency and a 2.25% error
-rate; investigate these errors before increasing workers further. For
-production, start with a worker-count range appropriate to available CPU and
-memory, keep NGINX at `worker_processes auto`, and benchmark at representative
-concurrency (8, 16, and 32 clients) to find the deployment's actual saturation
-point.
+2. Review application logs:
+
+```bash
+docker compose logs i3x2ua
+```
+
+3. Review NGINX logs:
+
+```bash
+docker compose logs nginx
+```
+
+4. Verify OPC UA server responsiveness.
+
+5. Check whether increased worker counts create excessive sessions or backend load.
+
+6. Repeat measurements to distinguish transient failures from reproducible capacity limits.
+
+---
+
+# Summary
+
+The benchmark results demonstrate that i3x2ua can support the workload of many industrial applications without requiring complex deployment topologies.
+
+A single-worker deployment communicating with a cloud-hosted OPC UA server achieved approximately:
+
+```text
+440 HTTP requests/s
+88 discovery workflows/s
+```
+
+with zero observed errors.
+
+This level of performance is sufficient for many machine-level, production-cell, and production-line deployments.
+
+Additional workers provide substantial gains for highly concurrent environments, reaching approximately:
+
+```text
+786 HTTP requests/s
+157 discovery workflows/s
+```
+
+in the tested environment.
+
+For most deployments, start with:
+
+```text
+1 worker
+```
+
+measure actual latency, memory consumption, and CPU usage, and scale incrementally only when required.
+
+This approach minimizes memory consumption, reduces OPC UA backend resource usage, and reflects the scaling characteristics observed during benchmarking.

@@ -12,7 +12,8 @@ This document provides detailed reference information for NGINX configuration in
 6. [Security Headers](#security-headers)
 7. [Rate Limiting](#rate-limiting)
 8. [Performance Tuning](#performance-tuning)
-9. [Troubleshooting](#troubleshooting)
+9. [High-Load Upstream Connections](#high-load-upstream-connections)
+10. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -345,12 +346,16 @@ location / {
 ```nginx
 worker_processes auto;
 worker_rlimit_nofile 65535;
+
+events {
+  worker_connections 4096;
+}
 ```
 
 ### Keep-Alive
 ```nginx
-keepalive_timeout 65;
-keepalive_requests 100;
+keepalive_timeout 65s;
+keepalive_requests 1000;
 ```
 
 ### Gzip Compression
@@ -385,6 +390,241 @@ client_max_body_size 10m;
 client_body_buffer_size 128k;
 ```
 
+## High-Load Upstream Connections
+
+### Why `connect() ... failed (99: Address not available)` Happens
+
+On Linux, `EADDRNOTAVAIL` from NGINX while connecting to an upstream commonly means
+the kernel could not allocate a local source address/ephemeral port for that
+outbound TCP connection. If NGINX opens and closes a new upstream connection for
+every lightweight request, connections to the same backend address and port can
+accumulate in `TIME_WAIT`. The source-port range and the time those ports remain
+unavailable can then limit connection creation rate. A default range of roughly
+28,000 ports combined with a typical 60-second `TIME_WAIT` lifetime is on the
+order of 470 new connections/second to one destination before accounting for
+reuse and other traffic; this is a useful diagnostic estimate, not a hard
+throughput limit.
+
+The error can also arise from an exhausted or constrained port range, local
+address/interface changes, or Docker/host networking and conntrack pressure.
+Check the NGINX container's network namespace and the exact upstream tuple;
+host-level socket counts alone may not show the container's sockets. This error
+is different from an upstream timeout or a refused connection. Reusing
+upstream TCP connections is the first corrective action; sysctl changes do not
+substitute for reuse.
+
+### Active Configuration Used by This Deployment
+
+The image's `/etc/nginx/nginx.conf` sets the worker, descriptor, logging, and
+HTTP defaults. The entrypoint generates the `upstream` and `server` blocks in
+`/etc/nginx/conf.d/default.conf` using the configured backend host and port.
+The relevant upstream and HTTP proxy settings are:
+
+```nginx
+upstream i3x2ua_backend {
+  server i3x2ua:8000;
+  keepalive 32;
+  keepalive_requests 1000;
+  keepalive_timeout 60s;
+}
+
+location / {
+  proxy_http_version 1.1;
+  proxy_set_header Host $host;
+  proxy_set_header X-Real-IP $remote_addr;
+  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+  proxy_set_header X-Forwarded-Proto $scheme;
+  proxy_set_header X-Forwarded-Host $host;
+  proxy_set_header X-Forwarded-Port $server_port;
+  proxy_set_header Connection "";
+  proxy_connect_timeout 5s;
+  proxy_send_timeout 60s;
+  proxy_read_timeout 60s;
+  proxy_pass http://i3x2ua_backend;
+}
+```
+
+The `keepalive` value is the maximum number of **idle cached upstream
+connections per worker**, not a limit on active requests or connections. With
+`worker_processes auto`, the theoretical idle cache is 32 multiplied by the
+worker count. Tune it to the measured concurrency and available file descriptors.
+HTTP/1.1 plus an empty `Connection` header is required for upstream reuse.
+Server-Sent Events keep buffering disabled and use longer read/send timeouts;
+they use the same upstream pool.
+
+The complete global configuration shipped in `nginx/nginx.conf` is:
+
+```nginx
+worker_processes auto;
+worker_rlimit_nofile 65535;
+error_log /dev/stderr warn;
+pid /var/run/nginx.pid;
+
+events {
+  worker_connections 4096;
+}
+
+http {
+  include /etc/nginx/mime.types;
+  default_type application/octet-stream;
+
+  log_format upstream_timing
+    '$remote_addr - $remote_user [$time_local] "$request" '
+    '$status $body_bytes_sent rt=$request_time '
+    'ua="$upstream_addr" us="$upstream_status" '
+    'uct="$upstream_connect_time" uht="$upstream_header_time" '
+    'urt="$upstream_response_time" conn=$connection '
+    'conn_reqs=$connection_requests';
+
+  access_log /dev/stdout upstream_timing;
+  sendfile on;
+  tcp_nopush on;
+  keepalive_timeout 65s;
+  keepalive_requests 1000;
+  server_tokens off;
+
+  include /etc/nginx/conf.d/*.conf;
+}
+```
+
+`worker_connections` counts both downstream and upstream sockets, so it is not
+the number of proxied clients per worker. Each proxied request normally uses
+two connections while active. `worker_rlimit_nofile` must be paired with the
+container's `nofile` ulimit; the Docker Compose service sets both soft and hard
+limits to 65535. These are generous starting values, not a substitute for
+measuring memory, process counts, and actual concurrent connections.
+
+The access log goes to Docker stdout and includes upstream address/status and
+connect, header, and response timings. A sustained nonzero `uct` is expected
+for newly opened connections; after pooling, most reused requests should show a
+near-zero connect time (or `-`, depending on NGINX version/log variables).
+
+### Linux Networking
+
+First inspect the active network namespace and host limits. On a Linux Docker
+host, the following targets the NGINX container's network namespace:
+
+```bash
+NGINX_PID=$(docker inspect --format '{{.State.Pid}}' i3x2ua-nginx)
+sudo nsenter -t "$NGINX_PID" -n ss -tan
+sudo nsenter -t "$NGINX_PID" -n ss -tan state time-wait
+sudo nsenter -t "$NGINX_PID" -n sh -c 'cat /proc/sys/net/ipv4/ip_local_port_range'
+sudo nsenter -t "$NGINX_PID" -n ss -tan | grep ':8000'
+```
+
+If observations confirm ephemeral-port pressure, a broader range is a
+reasonable Linux-host or supported per-container-network-namespace setting:
+
+```conf
+# /etc/sysctl.d/99-nginx-proxy.conf
+net.ipv4.ip_local_port_range = 10240 65535
+net.core.somaxconn = 4096
+net.ipv4.tcp_max_syn_backlog = 8192
+net.core.netdev_max_backlog = 4096
+fs.file-max = 2097152
+```
+
+Apply on a Linux host with `sudo sysctl --system`. Verify that any reserved
+ports in `net.ipv4.ip_local_reserved_ports` do not conflict with the chosen
+range. `somaxconn`, the SYN backlog, and the device backlog concern accepting
+connections/packet bursts; they do not create more ephemeral ports. `fs.file-max`
+is a host-wide ceiling and should only be raised if host file-table usage
+approaches it. Docker Desktop has a Linux VM/network boundary, so host sysctls
+may not change the VM or container namespace that owns the sockets.
+
+Do not set `tcp_fin_timeout` to try to shorten `TIME_WAIT`: it does not control
+the normal TCP `TIME_WAIT` duration. Do not use the removed
+`tcp_tw_recycle` setting or raise `tcp_max_tw_buckets` as a port-exhaustion
+fix. Modern Linux may set `net.ipv4.tcp_tw_reuse` to `2` (loopback only) by
+default. Leave it at the kernel default unless measurements still show
+`TIME_WAIT` port pressure after keepalive and range tuning. Setting it to `1`
+can permit safe reuse for outgoing connections on supported kernels, but it is
+kernel-version-sensitive and is not required for this NGINX fix. If testing
+supports it, apply it temporarily before making it persistent:
+
+```bash
+sudo sysctl -w net.ipv4.tcp_tw_reuse=1
+```
+
+### Docker and Resource Limits
+
+- Keep the backend on a user-defined bridge network and proxy to its Compose
+  service name and container port. Do not publish the backend port to the host
+  solely for NGINX-to-backend traffic; the current Compose setup already uses
+  `expose` and a shared bridge network.
+- NGINX resolves a static `server service-name:port` upstream when its
+  configuration loads. If a recreated backend receives a different container
+  IP, reload/recreate NGINX so it resolves the new address; dynamic DNS
+  resolution requires an explicitly configured resolver and a compatible
+  NGINX configuration.
+- Ensure the NGINX process's `nofile` soft/hard limits are at least as high as
+  its worker needs. Check both the Compose ulimit and `/proc/1/limits` in the
+  running container.
+- Avoid very low CPU or memory quotas for NGINX. TLS termination can need CPU;
+  confirm resource pressure with `docker stats` before changing limits.
+- Linux Compose deployments may optionally set `net.ipv4.ip_local_port_range`
+  under the NGINX service's `sysctls` if the Docker Engine allows that
+  namespace-scoped setting. Do not assume a Compose sysctl changes the host,
+  Docker Desktop VM, or another container's namespace.
+- Example optional Compose setting (Linux Docker Engine only; validate on the
+  target kernel before using):
+
+  ```yaml
+  services:
+    nginx:
+      sysctls:
+        net.ipv4.ip_local_port_range: "10240 65535"
+  ```
+- Do not use host networking as a first-line fix. It changes isolation and
+  port exposure and does not address connection churn by itself.
+
+### Verification and Monitoring
+
+```bash
+# Configuration and generated upstream block
+docker compose exec nginx nginx -t
+docker compose exec nginx nginx -T
+
+# Limits, running processes, and resource usage
+docker compose exec nginx sh -c 'ulimit -n; grep "open files" /proc/1/limits'
+docker compose exec nginx ps
+docker stats i3x2ua-nginx i3x2ua
+
+# NGINX logs, including upstream connection timings
+docker compose logs --since=10m nginx
+docker compose logs --follow nginx
+
+# In the NGINX container namespace on Linux (see nsenter commands above)
+ss -tan
+ss -tan state time-wait
+cat /proc/sys/net/ipv4/ip_local_port_range
+ss -tan | grep ':8000'
+```
+
+The Alpine NGINX image may not include `ss`; use `nsenter` from the Linux host
+or install `iproute2` only in a diagnostic image/container. On Docker Desktop,
+run the socket inspection inside its Linux VM/container namespace where
+available. Compare `TIME_WAIT` and `ESTAB` counts before and during a sustained
+benchmark, and correlate 502 log entries with `$upstream_connect_time` and
+`$upstream_status`.
+
+For live connection counters, NGINX's `stub_status` module can be exposed at a
+dedicated location restricted to a monitoring network or loopback. Do not
+publish an unrestricted status endpoint on the public listener.
+
+### Expected Effect
+
+When source-port exhaustion caused the failures, upstream keepalive should
+reduce new backend TCP connection creation from approximately one per request
+to approximately one per active/cached upstream connection, sharply lowering
+`TIME_WAIT` growth and typically removing this cause of 502s. The active
+connection count will follow request concurrency; the idle count is bounded by
+the per-worker keepalive cache. Throughput should stay at least comparable and
+latency should be more stable because handshakes are avoided. The exact
+throughput/latency gain depends on TLS, API work, and request concurrency; no
+configuration can guarantee zero 502s if the actual cause is conntrack
+exhaustion, resource limits, DNS/address changes, or a backend failure.
+
 ---
 
 ## Logging
@@ -416,7 +656,7 @@ access_log off;
 
 ### View NGINX Configuration
 ```bash
-docker-compose exec nginx cat /etc/nginx/conf.d/default.conf
+docker compose exec nginx nginx -T
 ```
 
 ### Test Configuration
@@ -426,12 +666,12 @@ docker-compose exec nginx nginx -t
 
 ### View Error Log
 ```bash
-docker-compose exec nginx tail -f /var/log/nginx/error.log
+docker compose logs --follow nginx
 ```
 
 ### View Access Log
 ```bash
-docker-compose exec nginx tail -f /var/log/nginx/access.log
+docker compose logs --follow nginx
 ```
 
 ### Reload Configuration
@@ -446,7 +686,8 @@ docker-compose exec nginx ps aux | grep nginx
 
 ### Monitor Connections
 ```bash
-docker-compose exec nginx netstat -an | grep ESTABLISHED | wc -l
+docker compose exec nginx ps
+docker stats i3x2ua-nginx
 ```
 
 ---

@@ -103,6 +103,10 @@ services:
       context: ./nginx
     container_name: i3x2ua-nginx
     restart: unless-stopped
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
     depends_on:
       i3x2ua:
         condition: service_healthy

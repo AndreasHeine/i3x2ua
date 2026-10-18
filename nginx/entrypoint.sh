@@ -45,6 +45,16 @@ EOF
 )
 fi
 
+upstream_block=$(cat <<EOF
+upstream i3x2ua_backend {
+  server $upstream_host:$upstream_port;
+  keepalive 32;
+  keepalive_requests 1000;
+  keepalive_timeout 60s;
+}
+EOF
+)
+
 proxy_block=$(cat <<EOF
       proxy_http_version 1.1;
       proxy_set_header Host \$host;
@@ -54,7 +64,10 @@ proxy_block=$(cat <<EOF
       proxy_set_header X-Forwarded-Host \$host;
       proxy_set_header X-Forwarded-Port \$server_port;
       proxy_set_header Connection "";
-      proxy_pass http://$upstream_host:$upstream_port;
+      proxy_connect_timeout 5s;
+      proxy_send_timeout 60s;
+      proxy_read_timeout 60s;
+      proxy_pass http://i3x2ua_backend;
 EOF
 )
 
@@ -71,7 +84,7 @@ sse_proxy_block=$(cat <<EOF
       proxy_cache off;
       proxy_read_timeout 3600s;
       proxy_send_timeout 3600s;
-      proxy_pass http://$upstream_host:$upstream_port;
+      proxy_pass http://i3x2ua_backend;
 EOF
 )
 
@@ -86,6 +99,8 @@ if is_truthy "$https_enabled"; then
   fi
 
   cat > /etc/nginx/conf.d/default.conf <<EOF
+$(printf '%s\n' "$upstream_block")
+
 server {
   listen 80;
   server_name $server_name;
@@ -93,7 +108,8 @@ server {
 }
 
 server {
-  listen 443 ssl http2;
+  listen 443 ssl;
+  http2 on;
   server_name $server_name;
   ssl_certificate $cert_file;
   ssl_certificate_key $key_file;
@@ -117,6 +133,8 @@ $(printf '%s\n' "$proxy_block")
 EOF
 else
   cat > /etc/nginx/conf.d/default.conf <<EOF
+$(printf '%s\n' "$upstream_block")
+
 server {
   listen 80;
   server_name $server_name;

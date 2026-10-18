@@ -22,7 +22,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--app-uri",
-        default="urn:example.org:FreeOpcUa:opcua-asyncio",
+        default="urn:example.org:i3x2ua-opcua-client",
         help="Application URI to write into SAN URI.",
     )
     parser.add_argument(

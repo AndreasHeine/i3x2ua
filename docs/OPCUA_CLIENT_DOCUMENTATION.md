@@ -68,11 +68,14 @@ Main limits used:
 
 - `MaxNodesPerBrowse`
 - `MaxNodesPerRead`
+- `MaxNodesPerHistoryReadData`
 
 How this helps:
 
-- Browse/read requests are split into batches that respect server capabilities.
+- Browse, read, and history-read requests are split into batches that respect server capabilities.
 - This reduces `BadTooManyOperations` errors and avoids oversized single requests.
+- Multi-attribute metadata reads share Read services, and BrowseNext batches active continuation points.
+- HistoryRead sends multiple nodes and their continuation points in each service request.
 
 If limits cannot be read, safe defaults are used and warnings are logged.
 
@@ -82,8 +85,8 @@ Concurrency is intentionally controlled, not unlimited.
 
 Key controls:
 
-- `I3X_OPCUA_BROWSE_CONCURRENCY` (default 128 in settings) controls parallel worker count for fallback browse/history/member reads.
-- For many operations, the client prefers batched reads first, then falls back to per-node workers behind a semaphore when required.
+- `I3X_OPCUA_BROWSE_CONCURRENCY` (default 128 in settings) controls parallel worker count for fallback browse/member reads.
+- For many operations, the client prefers batched reads first, then falls back to per-node reads behind a semaphore when required.
 
 Why this matters:
 

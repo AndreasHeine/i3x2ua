@@ -87,6 +87,7 @@ class OpcUaNamespaceInfo:
 class OpcUaOperationalLimits:
     max_nodes_per_browse: int | None
     max_nodes_per_read: int | None
+    max_nodes_per_history_read_data: int | None = None
 
 
 @dataclass(slots=True)

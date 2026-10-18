@@ -239,33 +239,31 @@ class _FakeUaClient:
     def __init__(self) -> None:
         self.browse_calls = 0
         self.browse_next_calls = 0
+        self.browse_next_batches: list[list[bytes]] = []
         self.fail_browse_once = False
         self.fail_browse_next_once = False
         self.browse_continuation_point: bytes | None = None
 
     async def browse(self, params: Any) -> list[Any]:
-        del params
         self.browse_calls += 1
         if self.fail_browse_once:
             self.fail_browse_once = False
             raise RuntimeError("connection is closed")
-        result = SimpleNamespace(
-            References=[],
-            ContinuationPoint=self.browse_continuation_point,
-        )
-        return [result]
+        return [
+            SimpleNamespace(
+                References=[],
+                ContinuationPoint=self.browse_continuation_point,
+            )
+            for _ in params.NodesToBrowse
+        ]
 
     async def browse_next(self, params: Any) -> list[Any]:
-        del params
         self.browse_next_calls += 1
+        self.browse_next_batches.append(list(params.ContinuationPoints))
         if self.fail_browse_next_once:
             self.fail_browse_next_once = False
             raise RuntimeError("connection is not open")
-        result = SimpleNamespace(
-            References=[],
-            ContinuationPoint=None,
-        )
-        return [result]
+        return [SimpleNamespace(References=[], ContinuationPoint=None) for _ in params.ContinuationPoints]
 
 
 class _FakeNodeId:
@@ -414,17 +412,136 @@ async def test_wait_for_reconnect_reports_lost_session_to_asyncua(monkeypatch: p
 
 @pytest.mark.asyncio
 async def test_read_history_values_treats_unsupported_history_as_empty() -> None:
+    class _HistoryUaClient:
+        async def history_read(self, params: Any) -> list[Any]:
+            results = []
+            for item in params.NodesToRead:
+                if item.NodeId.to_string() == "ns=2;s=bad":
+                    status = ua.StatusCode(ua.UInt32(StatusCodes.BadHistoryOperationUnsupported))
+                    results.append(ua.HistoryReadResult(StatusCode=status))
+                else:
+                    results.append(
+                        ua.HistoryReadResult(HistoryData=ua.HistoryData(DataValues=[ua.DataValue(ua.Variant(1))]))
+                    )
+            return results
+
     client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
-    nodes = {
-        "good": _FakeNode([SimpleNamespace(Value=SimpleNamespace(Value=1))]),
-        "bad": _FakeNode(error=RuntimeError("BadHistoryOperationUnsupported")),
-    }
-    cast(Any, client)._client = SimpleNamespace(get_node=lambda node_id: nodes[node_id])
+    cast(Any, client)._client = SimpleNamespace(
+        get_node=lambda node_id: SimpleNamespace(nodeid=ua.NodeId.from_string(node_id)),
+        uaclient=_HistoryUaClient(),
+    )
+    client._limits_cache = OpcUaOperationalLimits(None, None, 10)
 
-    values = await client.read_history_values(["good", "bad"], None, None)
+    values = await client.read_history_values(["ns=2;s=good", "ns=2;s=bad"], None, None)
 
-    assert values["good"]
-    assert values["bad"] == []
+    assert len(values["ns=2;s=good"]) == 1
+    assert values["ns=2;s=bad"] == []
+
+
+@pytest.mark.asyncio
+async def test_read_history_values_batches_nodes_and_continuation_points() -> None:
+    class _HistoryUaClient:
+        def __init__(self) -> None:
+            self.calls: list[list[tuple[str, bytes | None]]] = []
+
+        async def history_read(self, params: Any) -> list[Any]:
+            batch = [(item.NodeId.to_string(), item.ContinuationPoint) for item in params.NodesToRead]
+            self.calls.append(batch)
+            if batch[0][1] is None:
+                return [
+                    ua.HistoryReadResult(
+                        ContinuationPoint=f"cp:{node_id}".encode(),
+                        HistoryData=ua.HistoryData(DataValues=[ua.DataValue(ua.Variant(f"{node_id}:first"))]),
+                    )
+                    for node_id, _ in batch
+                ]
+            return [
+                ua.HistoryReadResult(
+                    HistoryData=ua.HistoryData(DataValues=[ua.DataValue(ua.Variant(f"{node_id}:next"))])
+                )
+                for node_id, _ in batch
+            ]
+
+    client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
+    fake_uaclient = _HistoryUaClient()
+    cast(Any, client)._client = SimpleNamespace(
+        get_node=lambda node_id: SimpleNamespace(nodeid=ua.NodeId.from_string(node_id)),
+        uaclient=fake_uaclient,
+    )
+    client._limits_cache = OpcUaOperationalLimits(None, None, 10)
+
+    values = await client.read_history_values(["ns=2;s=first", "ns=2;s=second"], None, None)
+
+    assert [len(value) for value in values.values()] == [2, 2]
+    assert fake_uaclient.calls == [
+        [("ns=2;s=first", None), ("ns=2;s=second", None)],
+        [("ns=2;s=first", b"cp:ns=2;s=first"), ("ns=2;s=second", b"cp:ns=2;s=second")],
+    ]
+    metrics = client.snapshot_runtime_metrics()
+    assert metrics.history_read_calls == 2
+    assert metrics.history_read_nodes == 2
+
+
+@pytest.mark.asyncio
+async def test_multi_attribute_read_batches_different_attributes() -> None:
+    class _ReadUaClient:
+        def __init__(self) -> None:
+            self.batches: list[list[tuple[str, int]]] = []
+
+        async def read(self, params: Any) -> list[ua.DataValue]:
+            batch = [(item.NodeId.to_string(), item.AttributeId) for item in params.NodesToRead]
+            self.batches.append(batch)
+            return [ua.DataValue(ua.Variant(attribute_id)) for _, attribute_id in batch]
+
+    client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
+    fake_uaclient = _ReadUaClient()
+    cast(Any, client)._client = SimpleNamespace(uaclient=fake_uaclient)
+    nodes = [
+        SimpleNamespace(nodeid=ua.NodeId.from_string("ns=2;s=first")),
+        SimpleNamespace(nodeid=ua.NodeId.from_string("ns=2;s=second")),
+    ]
+
+    values = await client._read_attribute_pairs(
+        [
+            (nodes[0], AttributeIds.BrowseName),
+            (nodes[0], AttributeIds.DisplayName),
+            (nodes[1], AttributeIds.BrowseName),
+            (nodes[1], AttributeIds.DisplayName),
+        ],
+        batch_size=3,
+    )
+
+    assert len(fake_uaclient.batches) == 2
+    assert [len(batch) for batch in fake_uaclient.batches] == [3, 1]
+    assert len(values) == 4
+
+
+@pytest.mark.asyncio
+async def test_subscription_capabilities_read_as_one_batch() -> None:
+    class _ReadUaClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def read(self, params: Any) -> list[ua.DataValue]:
+            self.calls += 1
+            return [ua.DataValue(ua.Variant(10)) for _ in params.NodesToRead]
+
+    client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
+    fake_uaclient = _ReadUaClient()
+    cast(Any, client)._client = SimpleNamespace(
+        get_node=lambda node_id: SimpleNamespace(nodeid=ua.NodeId.from_string(node_id)),
+        uaclient=fake_uaclient,
+    )
+    client._limits_cache = OpcUaOperationalLimits(None, 10)
+
+    capabilities = await client.get_subscription_capabilities()
+
+    assert fake_uaclient.calls == 1
+    assert capabilities.max_monitored_items_per_call == 10
+    assert capabilities.max_subscriptions == 10
+    assert capabilities.max_monitored_items == 10
+    assert capabilities.max_subscriptions_per_session == 10
+    assert capabilities.max_monitored_items_per_subscription == 10
 
 
 @pytest.mark.asyncio
@@ -833,6 +950,23 @@ async def test_browse_next_retry_after_disconnect(monkeypatch: pytest.MonkeyPatc
     assert reconnect_calls == 1
     assert fake_uaclient.browse_next_calls == 2
     assert len(out) == 1
+
+
+@pytest.mark.asyncio
+async def test_browse_next_batches_continuation_points() -> None:
+    client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
+    fake_uaclient = _FakeUaClient()
+    fake_uaclient.browse_continuation_point = b"next"
+    cast(Any, client)._client = SimpleNamespace(uaclient=fake_uaclient)
+
+    out = await client._browse_references_descriptions(
+        [_FakeBrowseNode("ns=1;i=1"), _FakeBrowseNode("ns=1;i=2")],
+        max_nodes_per_browse=10,
+        reference_type_id=33,
+    )
+
+    assert fake_uaclient.browse_next_batches == [[b"next", b"next"]]
+    assert len(out) == 2
 
 
 @pytest.mark.asyncio

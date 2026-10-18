@@ -807,12 +807,14 @@ class OpcUaClient:
             nodes = [node for node, _ in entry_batch]
             parent_by_node_id = {node.nodeid.to_string(): parent_node_id for node, parent_node_id in entry_batch}
 
+            attributes_per_node = 3
             try:
-                browse_names, display_names, node_classes = await asyncio.gather(
-                    self._read_attribute_batch(nodes, AttributeIds.BrowseName),
-                    self._read_attribute_batch(nodes, AttributeIds.DisplayName),
-                    self._read_attribute_batch(nodes, AttributeIds.NodeClass),
-                )
+                node_attributes = [
+                    (node, attr)
+                    for node in nodes
+                    for attr in (AttributeIds.BrowseName, AttributeIds.DisplayName, AttributeIds.NodeClass)
+                ]
+                attribute_values = await self._read_attribute_pairs(node_attributes)
             except Exception:
                 logger.warning(
                     "OPC UA batch node read failed endpoint=%s batch_size=%d; falling back to per-node reads",
@@ -831,9 +833,10 @@ class OpcUaClient:
 
             for index, node in enumerate(nodes):
                 node_id = node.nodeid.to_string()
-                browse_name_value = self._extract_attribute_value(browse_names[index])
-                display_name_value = self._extract_attribute_value(display_names[index])
-                node_class_value = self._extract_attribute_value(node_classes[index])
+                start = index * attributes_per_node
+                browse_name_value = self._extract_attribute_value(attribute_values[start])
+                display_name_value = self._extract_attribute_value(attribute_values[start + 1])
+                node_class_value = self._extract_attribute_value(attribute_values[start + 2])
                 node_class = self._coerce_node_class(node_class_value)
 
                 if node_class is None or browse_name_value is None or display_name_value is None:
@@ -854,11 +857,25 @@ class OpcUaClient:
                     object_nodes.append(node)
                     object_or_variable_nodes.append(node)
 
-            data_types_by_node_id, type_definitions_by_node_id, event_notifiers_by_node_id = await asyncio.gather(
-                self._read_optional_node_ids(variable_nodes, AttributeIds.DataType),
+            optional_node_attributes = [
+                *((node, AttributeIds.DataType) for node in variable_nodes),
+                *((node, AttributeIds.EventNotifier) for node in object_nodes),
+            ]
+            optional_values, type_definitions_by_node_id = await asyncio.gather(
+                self._read_attribute_pairs(optional_node_attributes),
                 self._read_type_definitions(object_or_variable_nodes),
-                self._read_optional_scalars(object_nodes, AttributeIds.EventNotifier),
             )
+            data_types_by_node_id: dict[str, str | None] = {}
+            event_notifiers_by_node_id: dict[str, Any] = {}
+            for (node, attr), data_value in zip(optional_node_attributes, optional_values, strict=True):
+                value = self._extract_attribute_value(data_value)
+                if value is None:
+                    continue
+                node_id = node.nodeid.to_string()
+                if attr == AttributeIds.DataType:
+                    data_types_by_node_id[node_id] = value.to_string() if hasattr(value, "to_string") else str(value)
+                else:
+                    event_notifiers_by_node_id[node_id] = value
 
             for node in nodes:
                 node_id = node.nodeid.to_string()
@@ -929,6 +946,73 @@ class OpcUaClient:
             values = await self._client.read_attributes(retry_nodes, attr=attr)
             self._record_read_data_values(values)
             return values
+
+    async def _read_attribute_pairs(
+        self,
+        node_attributes: list[tuple[Any, AttributeIds]],
+        batch_size: int | None = None,
+    ) -> list[ua.DataValue]:
+        if not node_attributes:
+            return []
+
+        if batch_size is None:
+            limits = await self.get_operational_limits()
+            batch_size = limits.max_nodes_per_read or len(node_attributes)
+
+        batches = _chunked_nodes(node_attributes, max(1, batch_size))
+        semaphore = asyncio.Semaphore(self._browse_concurrency)
+
+        async def read_batch(batch: list[tuple[Any, AttributeIds]]) -> list[ua.DataValue]:
+            async with semaphore:
+                return await self._read_attribute_pairs_batch(batch)
+
+        batch_values = await asyncio.gather(*(read_batch(batch) for batch in batches))
+        return [value for values in batch_values for value in values]
+
+    async def _read_attribute_pairs_batch(
+        self,
+        node_attributes: list[tuple[Any, AttributeIds]],
+    ) -> list[ua.DataValue]:
+        params = ua.ReadParameters()
+        params.MaxAge = 0
+        params.TimestampsToReturn = ua.TimestampsToReturn.Both
+        params.NodesToRead = [
+            ua.ReadValueId(NodeId=node.nodeid, AttributeId=int(attr)) for node, attr in node_attributes
+        ]
+
+        self._runtime_metrics.read_calls += 1
+        self._runtime_metrics.read_nodes += len(node_attributes)
+        try:
+            values = await self._client.uaclient.read(params)
+        except Exception as exc:
+            if self._should_retry_after_disconnect(exc):
+                logger.warning(
+                    "OPC UA multi-attribute read retry after reconnect endpoint=%s batch_size=%d",
+                    self._endpoint,
+                    len(node_attributes),
+                )
+                await self._wait_for_reconnect(exc)
+                values = await self._client.uaclient.read(params)
+            elif self._is_too_many_operations_error(exc) and len(node_attributes) > 1:
+                split_at = max(1, len(node_attributes) // 2)
+                logger.warning(
+                    "OPC UA multi-attribute read split retry endpoint=%s batch_size=%d split_at=%d",
+                    self._endpoint,
+                    len(node_attributes),
+                    split_at,
+                )
+                left = await self._read_attribute_pairs_batch(node_attributes[:split_at])
+                right = await self._read_attribute_pairs_batch(node_attributes[split_at:])
+                return left + right
+            else:
+                self._record_failed_request()
+                raise
+
+        if len(values) != len(node_attributes):
+            self._record_failed_request()
+            raise RuntimeError(f"Read returned {len(values)} results for {len(node_attributes)} attributes")
+        self._record_read_data_values(values)
+        return values
 
     async def _read_attribute_batch_limited(
         self,
@@ -1069,22 +1153,40 @@ class OpcUaClient:
         started = perf_counter()
         max_nodes_per_browse: int | None = None
         max_nodes_per_read: int | None = None
+        max_nodes_per_history_read_data: int | None = None
 
         try:
             operational_limits_node = self._client.get_node("i=11704")
             children = await operational_limits_node.get_children()
-            for child in children:
-                browse_name_obj = await child.read_browse_name()
-                browse_name = browse_name_obj.Name
-                if browse_name not in {"MaxNodesPerBrowse", "MaxNodesPerRead"}:
+            browse_names = await self._read_attribute_batch_limited(
+                children,
+                AttributeIds.BrowseName,
+                batch_size=max(1, len(children)),
+            )
+            limit_nodes: list[tuple[Any, str]] = []
+            supported_limits = {
+                "MaxNodesPerBrowse",
+                "MaxNodesPerRead",
+                "MaxNodesPerHistoryReadData",
+            }
+            for child, browse_name_value in zip(children, browse_names, strict=True):
+                browse_name = getattr(self._extract_attribute_value(browse_name_value), "Name", None)
+                if browse_name in supported_limits:
+                    limit_nodes.append((child, browse_name))
+            limit_values = await self._read_attribute_pairs(
+                [(node, AttributeIds.Value) for node, _ in limit_nodes],
+                batch_size=max(1, len(limit_nodes)),
+            )
+            for (_, browse_name), value_data in zip(limit_nodes, limit_values, strict=True):
+                value = self._extract_attribute_value(value_data)
+                if not isinstance(value, int) or value <= 0:
                     continue
-
-                value = await child.read_value()
-                if isinstance(value, int) and value > 0:
-                    if browse_name == "MaxNodesPerBrowse":
-                        max_nodes_per_browse = value
-                    if browse_name == "MaxNodesPerRead":
-                        max_nodes_per_read = value
+                if browse_name == "MaxNodesPerBrowse":
+                    max_nodes_per_browse = value
+                elif browse_name == "MaxNodesPerRead":
+                    max_nodes_per_read = value
+                elif browse_name == "MaxNodesPerHistoryReadData":
+                    max_nodes_per_history_read_data = value
         except Exception:
             logger.warning(
                 "OPC UA operational limits read failed endpoint=%s; using internal defaults",
@@ -1095,14 +1197,16 @@ class OpcUaClient:
         limits = OpcUaOperationalLimits(
             max_nodes_per_browse=max_nodes_per_browse,
             max_nodes_per_read=max_nodes_per_read,
+            max_nodes_per_history_read_data=max_nodes_per_history_read_data,
         )
         self._limits_cache = limits
         logger.info(
             "OPC UA operational limits resolved endpoint=%s "
-            "max_nodes_per_browse=%s max_nodes_per_read=%s duration_s=%.3f",
+            "max_nodes_per_browse=%s max_nodes_per_read=%s max_nodes_per_history_read_data=%s duration_s=%.3f",
             self._endpoint,
             limits.max_nodes_per_browse,
             limits.max_nodes_per_read,
+            limits.max_nodes_per_history_read_data,
             perf_counter() - started,
         )
         return limits
@@ -1115,12 +1219,27 @@ class OpcUaClient:
     async def _load_subscription_capabilities(self) -> OpcUaSubscriptionCapabilities:
         started = perf_counter()
 
+        node_ids = ["i=11714", "i=24096", "i=24097", "i=24098", "i=24104"]
+        nodes = [self._client.get_node(node_id) for node_id in node_ids]
+        try:
+            capability_values = await self._read_attribute_pairs([(node, AttributeIds.Value) for node in nodes])
+        except Exception:
+            logger.debug("OPC UA subscription capability batch read failed endpoint=%s", self._endpoint, exc_info=True)
+            fallback_values = await asyncio.gather(*(self._read_positive_int(node_id) for node_id in node_ids))
+            values_by_node_id = dict(zip(node_ids, fallback_values, strict=True))
+        else:
+            values_by_node_id = {}
+            for node, data_value in zip(nodes, capability_values, strict=True):
+                value = self._extract_attribute_value(data_value)
+                node_id = node.nodeid.to_string()
+                values_by_node_id[node_id] = value if isinstance(value, int) and value > 0 else None
+
         capabilities = OpcUaSubscriptionCapabilities(
-            max_monitored_items_per_call=await self._read_positive_int("i=11714"),
-            max_subscriptions=await self._read_positive_int("i=24096"),
-            max_monitored_items=await self._read_positive_int("i=24097"),
-            max_subscriptions_per_session=await self._read_positive_int("i=24098"),
-            max_monitored_items_per_subscription=await self._read_positive_int("i=24104"),
+            max_monitored_items_per_call=values_by_node_id.get("i=11714"),
+            max_subscriptions=values_by_node_id.get("i=24096"),
+            max_monitored_items=values_by_node_id.get("i=24097"),
+            max_subscriptions_per_session=values_by_node_id.get("i=24098"),
+            max_monitored_items_per_subscription=values_by_node_id.get("i=24104"),
         )
 
         self._subscription_caps_cache = capabilities
@@ -1137,6 +1256,17 @@ class OpcUaClient:
             perf_counter() - started,
         )
         return capabilities
+
+    async def _read_positive_int(self, node_id: str) -> int | None:
+        try:
+            value = await self._client.get_node(node_id).read_value()
+        except Exception:
+            logger.debug("OPC UA subscription capability read failed node_id=%s", node_id, exc_info=True)
+            return None
+
+        if isinstance(value, int) and value > 0:
+            return value
+        return None
 
     async def get_namespaces(self) -> list[str]:
         started = perf_counter()
@@ -1464,72 +1594,61 @@ class OpcUaClient:
 
         description_by_node_id: dict[str, str | None] = {}
         descriptions_batch_ok = True
-        try:
-            descriptions = await self._read_attribute_batch_limited(all_nodes, AttributeIds.Description)
-            for node_id, description_value in zip(all_node_ids, descriptions, strict=True):
-                description_raw = self._extract_attribute_value(description_value)
-                text_value = getattr(description_raw, "Text", None)
-                if isinstance(text_value, str) and text_value.strip():
-                    description_by_node_id[node_id] = text_value
-                else:
-                    description_by_node_id[node_id] = None
-        except Exception:
-            descriptions_batch_ok = False
-            logger.debug(
-                "OPC UA member description batch read failed endpoint=%s",
-                self._endpoint,
-                exc_info=True,
-            )
 
         variable_nodes = [node for _, _, _, _, node_class, node, _, _, _ in entries if node_class == NodeClass.Variable]
         variable_node_ids = [node.nodeid.to_string() for node in variable_nodes]
 
         data_type_by_node_id: dict[str, str | None] = {}
         data_type_batch_ok = True
-        if variable_nodes:
-            try:
-                data_types = await self._read_attribute_batch_limited(variable_nodes, AttributeIds.DataType)
-                for node_id, data_type_value in zip(variable_node_ids, data_types, strict=True):
-                    data_type_raw = self._extract_attribute_value(data_type_value)
-                    if data_type_raw is None:
-                        data_type_by_node_id[node_id] = None
-                        continue
-                    if hasattr(data_type_raw, "to_string"):
-                        data_type_by_node_id[node_id] = data_type_raw.to_string()
-                    else:
-                        data_type_by_node_id[node_id] = str(data_type_raw)
-            except Exception:
-                data_type_batch_ok = False
-                logger.debug(
-                    "OPC UA member datatype batch read failed endpoint=%s",
-                    self._endpoint,
-                    exc_info=True,
-                )
 
         value_rank_by_node_id: dict[str, int | None] = {}
         value_rank_batch_ok = True
-        if variable_nodes:
-            try:
-                value_ranks = await self._read_attribute_batch_limited(variable_nodes, AttributeIds.ValueRank)
-                for node_id, value_rank_value in zip(variable_node_ids, value_ranks, strict=True):
-                    value_rank_raw = self._extract_attribute_value(value_rank_value)
-                    if value_rank_raw is None:
-                        value_rank_by_node_id[node_id] = None
-                        continue
-                    if isinstance(value_rank_raw, int):
-                        value_rank_by_node_id[node_id] = value_rank_raw
-                    else:
-                        try:
-                            value_rank_by_node_id[node_id] = int(value_rank_raw)
-                        except (TypeError, ValueError):
-                            value_rank_by_node_id[node_id] = None
-            except Exception:
-                value_rank_batch_ok = False
-                logger.debug(
-                    "OPC UA member value-rank batch read failed endpoint=%s",
-                    self._endpoint,
-                    exc_info=True,
+        member_attributes = [(node, AttributeIds.Description) for node in all_nodes]
+        member_attributes.extend((node, AttributeIds.DataType) for node in variable_nodes)
+        member_attributes.extend((node, AttributeIds.ValueRank) for node in variable_nodes)
+        try:
+            member_values = await self._read_attribute_pairs(member_attributes)
+        except Exception:
+            descriptions_batch_ok = False
+            data_type_batch_ok = False
+            value_rank_batch_ok = False
+            logger.debug(
+                "OPC UA member metadata batch read failed endpoint=%s",
+                self._endpoint,
+                exc_info=True,
+            )
+        else:
+            offset = 0
+            description_values = member_values[offset : offset + len(all_nodes)]
+            for node_id, description_value in zip(all_node_ids, description_values, strict=True):
+                description_raw = self._extract_attribute_value(description_value)
+                text_value = getattr(description_raw, "Text", None)
+                description_by_node_id[node_id] = (
+                    text_value if isinstance(text_value, str) and text_value.strip() else None
                 )
+            offset += len(all_nodes)
+
+            data_type_values = member_values[offset : offset + len(variable_nodes)]
+            offset += len(variable_nodes)
+            for node_id, data_type_value in zip(variable_node_ids, data_type_values, strict=True):
+                data_type_raw = self._extract_attribute_value(data_type_value)
+                if data_type_raw is not None:
+                    data_type_by_node_id[node_id] = (
+                        data_type_raw.to_string() if hasattr(data_type_raw, "to_string") else str(data_type_raw)
+                    )
+
+            value_rank_values = member_values[offset : offset + len(variable_nodes)]
+            for node_id, value_rank_value in zip(variable_node_ids, value_rank_values, strict=True):
+                value_rank_raw = self._extract_attribute_value(value_rank_value)
+                if value_rank_raw is None:
+                    continue
+                if isinstance(value_rank_raw, int):
+                    value_rank_by_node_id[node_id] = value_rank_raw
+                else:
+                    try:
+                        value_rank_by_node_id[node_id] = int(value_rank_raw)
+                    except (TypeError, ValueError):
+                        value_rank_by_node_id[node_id] = None
 
         semaphore = asyncio.Semaphore(self._browse_concurrency)
 
@@ -1712,14 +1831,14 @@ class OpcUaClient:
         if not nodes:
             return {}
 
-        descriptions = await self._read_attribute_batch(nodes, AttributeIds.Description)
-        abstract_flags = await self._read_attribute_batch(nodes, AttributeIds.IsAbstract)
+        attributes = [(node, attr) for node in nodes for attr in (AttributeIds.Description, AttributeIds.IsAbstract)]
+        values = await self._read_attribute_pairs(attributes)
 
         output: dict[str, dict[str, Any]] = {}
-        for node, description_value, abstract_value in zip(nodes, descriptions, abstract_flags, strict=True):
+        for index, node in enumerate(nodes):
             node_id = node.nodeid.to_string()
-            description_raw = self._extract_attribute_value(description_value)
-            abstract_raw = self._extract_attribute_value(abstract_value)
+            description_raw = self._extract_attribute_value(values[index * 2])
+            abstract_raw = self._extract_attribute_value(values[index * 2 + 1])
 
             description: str | None = None
             text_value = getattr(description_raw, "Text", None)
@@ -1791,42 +1910,47 @@ class OpcUaClient:
                 initial_references_total,
             )
 
+            continuation_entries: list[tuple[Any, bytes, list[ua.ReferenceDescription]]] = []
+            browse_next_references_total = 0
             for node, browse_result in zip(node_batch, browse_results, strict=True):
                 refs = list(browse_result.References)
                 continuation_point = browse_result.ContinuationPoint
-                browse_next_calls = 0
-                browse_next_references_total = 0
+                results.append((node, refs))
+                if continuation_point:
+                    continuation_entries.append((node, continuation_point, refs))
 
-                while continuation_point:
-                    next_params = ua.BrowseNextParameters()
-                    next_params.ReleaseContinuationPoints = False
-                    next_params.ContinuationPoints = [continuation_point]
-                    next_results = await self._browse_next_with_retry(
-                        next_params=next_params,
-                        node_id=node.nodeid.to_string(),
+            while continuation_entries:
+                next_params = ua.BrowseNextParameters()
+                next_params.ReleaseContinuationPoints = False
+                next_params.ContinuationPoints = [
+                    continuation_point for _, continuation_point, _ in continuation_entries
+                ]
+                next_results = await self._browse_next_with_retry(
+                    next_params=next_params,
+                    node_ids=[node.nodeid.to_string() for node, _, _ in continuation_entries],
+                )
+                self._runtime_metrics.browse_next_calls += 1
+                if len(next_results) != len(continuation_entries):
+                    raise RuntimeError(
+                        f"BrowseNext returned {len(next_results)} results for {len(continuation_entries)} points"
                     )
-                    browse_next_calls += 1
-                    self._runtime_metrics.browse_next_calls += 1
-                    if not next_results:
-                        break
-                    next_result = next_results[0]
+
+                next_entries: list[tuple[Any, bytes, list[ua.ReferenceDescription]]] = []
+                for (node, _, refs), next_result in zip(continuation_entries, next_results, strict=True):
                     refs.extend(next_result.References)
                     browse_next_references_total += len(next_result.References)
                     self._runtime_metrics.browse_next_references += len(next_result.References)
-                    continuation_point = next_result.ContinuationPoint
+                    if next_result.ContinuationPoint:
+                        next_entries.append((node, next_result.ContinuationPoint, refs))
+                continuation_entries = next_entries
 
-                if browse_next_calls > 0:
-                    logger.debug(
-                        "OPC UA browse-next endpoint=%s node_id=%s calls=%d "
-                        "additional_references=%d total_references=%d",
-                        self._endpoint,
-                        node.nodeid.to_string(),
-                        browse_next_calls,
-                        browse_next_references_total,
-                        len(refs),
-                    )
-
-                results.append((node, refs))
+            if browse_next_references_total:
+                logger.debug(
+                    "OPC UA browse-next endpoint=%s nodes=%d additional_references=%d",
+                    self._endpoint,
+                    len(browse_results),
+                    browse_next_references_total,
+                )
 
         return results
 
@@ -1852,7 +1976,7 @@ class OpcUaClient:
     async def _browse_next_with_retry(
         self,
         next_params: ua.BrowseNextParameters,
-        node_id: str,
+        node_ids: list[str],
     ) -> list[ua.BrowseResult]:
         try:
             results = await self._client.uaclient.browse_next(next_params)
@@ -1863,9 +1987,9 @@ class OpcUaClient:
                 self._record_failed_request()
                 raise
             logger.warning(
-                "OPC UA browse-next retry after reconnect endpoint=%s node_id=%s",
+                "OPC UA browse-next retry after reconnect endpoint=%s node_count=%d",
                 self._endpoint,
-                node_id,
+                len(node_ids),
             )
             await self._wait_for_reconnect(exc)
             results = await self._client.uaclient.browse_next(next_params)
@@ -2255,51 +2379,75 @@ class OpcUaClient:
             return {}
 
         started = perf_counter()
-        self._runtime_metrics.history_read_calls += len(node_ids)
         self._runtime_metrics.history_read_nodes += len(node_ids)
+        limits = await self.get_operational_limits()
+        batch_size = limits.max_nodes_per_history_read_data or len(node_ids)
+        details = ua.ReadRawModifiedDetails(
+            IsReadModified=False,
+            StartTime=start_time if start_time is not None else ua.get_win_epoch(),
+            EndTime=end_time if end_time is not None else ua.get_win_epoch(),
+            NumValuesPerNode=0,
+            ReturnBounds=False,
+        )
+        values_by_node_id: dict[str, list[ua.DataValue]] = {}
+        history_batches = _chunked(node_ids, max(1, batch_size))
         semaphore = asyncio.Semaphore(self._browse_concurrency)
 
-        async def worker(node_id: str) -> tuple[str, list[ua.DataValue]]:
+        async def read_history_batch(node_batch: list[str]) -> dict[str, list[ua.DataValue]]:
             async with semaphore:
-                node = self._client.get_node(node_id)
-                try:
-                    values = await node.read_raw_history(
-                        starttime=start_time,
-                        endtime=end_time,
-                        numvalues=0,
-                        return_bounds=False,
-                    )
-                    self._record_history_read_success()
-                except Exception as exc:
-                    if not self._should_retry_after_disconnect(exc):
-                        if self._is_history_missing_or_unsupported(exc):
-                            logger.info(
-                                "OPC UA history read returned no data or unsupported history endpoint=%s node_id=%s",
-                                self._endpoint,
-                                node_id,
-                            )
-                            self._record_history_read_success()
-                            return node_id, []
-                        self._record_failed_request()
-                        raise
-                    logger.warning(
-                        "OPC UA history read retry after reconnect endpoint=%s node_id=%s",
-                        self._endpoint,
-                        node_id,
-                    )
-                    await self._wait_for_reconnect(exc)
-                    retry_node = self._client.get_node(node_id)
-                    values = await retry_node.read_raw_history(
-                        starttime=start_time,
-                        endtime=end_time,
-                        numvalues=0,
-                        return_bounds=False,
-                    )
-                    self._record_history_read_success()
-                return node_id, values
+                batch_values = await self._read_history_batch(details, node_batch)
+                batch_values_by_node_id: dict[str, list[ua.DataValue]] = {node_id: [] for node_id in node_batch}
+                active_node_ids = list(node_batch)
+                active_results = batch_values
 
-        pairs = await asyncio.gather(*[worker(node_id) for node_id in node_ids])
-        values_by_node_id = {node_id: values for node_id, values in pairs}
+                while active_node_ids:
+                    next_node_ids: list[str] = []
+                    next_continuations: dict[str, bytes] = {}
+                    for node_id, result in zip(active_node_ids, active_results, strict=True):
+                        try:
+                            result.StatusCode.check()
+                        except Exception as exc:
+                            if self._is_history_missing_or_unsupported(exc):
+                                logger.info(
+                                    "OPC UA history read returned no data or unsupported history "
+                                    "endpoint=%s node_id=%s",
+                                    self._endpoint,
+                                    node_id,
+                                )
+                                batch_values_by_node_id[node_id] = []
+                                continue
+                            raise
+
+                        history_data = result.HistoryData
+                        data_values = getattr(history_data, "DataValues", None)
+                        if not isinstance(data_values, list):
+                            raise UaError(f"Incomplete OPC UA history response for {node_id}")
+                        batch_values_by_node_id[node_id].extend(data_values)
+                        continuation_point = result.ContinuationPoint
+                        if continuation_point:
+                            next_node_ids.append(node_id)
+                            next_continuations[node_id] = continuation_point
+
+                    if not next_node_ids:
+                        break
+                    active_results = await self._read_history_batch(
+                        details,
+                        next_node_ids,
+                        [next_continuations[node_id] for node_id in next_node_ids],
+                    )
+                    active_node_ids = next_node_ids
+                return batch_values_by_node_id
+
+        try:
+            batch_results = await asyncio.gather(*(read_history_batch(batch) for batch in history_batches))
+            for batch_values in batch_results:
+                values_by_node_id.update(batch_values)
+        except Exception:
+            self._record_failed_request()
+            raise
+
+        for _ in range(len(values_by_node_id)):
+            self._record_history_read_success()
 
         logger.debug(
             "OPC UA history read ok endpoint=%s nodes=%d values=%d duration_s=%.3f",
@@ -2309,6 +2457,52 @@ class OpcUaClient:
             perf_counter() - started,
         )
         return values_by_node_id
+
+    async def _read_history_batch(
+        self,
+        details: ua.ReadRawModifiedDetails,
+        node_ids: list[str],
+        continuation_points: list[bytes | None] | None = None,
+    ) -> list[ua.HistoryReadResult]:
+        points = continuation_points or [None] * len(node_ids)
+        params = ua.HistoryReadParameters()
+        params.HistoryReadDetails = details
+        params.TimestampsToReturn = ua.TimestampsToReturn.Both
+        params.ReleaseContinuationPoints = False
+        params.NodesToRead = [
+            ua.HistoryReadValueId(NodeId=self._client.get_node(node_id).nodeid, ContinuationPoint=point)
+            for node_id, point in zip(node_ids, points, strict=True)
+        ]
+
+        self._runtime_metrics.history_read_calls += 1
+        try:
+            results = await self._client.uaclient.history_read(params)
+        except Exception as exc:
+            if self._should_retry_after_disconnect(exc):
+                logger.warning(
+                    "OPC UA batched history read retry after reconnect endpoint=%s node_count=%d",
+                    self._endpoint,
+                    len(node_ids),
+                )
+                await self._wait_for_reconnect(exc)
+                results = await self._client.uaclient.history_read(params)
+            elif self._is_too_many_operations_error(exc) and len(node_ids) > 1:
+                split_at = max(1, len(node_ids) // 2)
+                logger.warning(
+                    "OPC UA history read split retry endpoint=%s batch_size=%d split_at=%d",
+                    self._endpoint,
+                    len(node_ids),
+                    split_at,
+                )
+                left = await self._read_history_batch(details, node_ids[:split_at], points[:split_at])
+                right = await self._read_history_batch(details, node_ids[split_at:], points[split_at:])
+                return left + right
+            else:
+                raise
+
+        if len(results) != len(node_ids):
+            raise UaError(f"HistoryRead returned {len(results)} results for {len(node_ids)} nodes")
+        return results
 
     def _is_history_missing_or_unsupported(self, exc: Exception) -> bool:
         lowered = str(exc).lower()
@@ -2447,17 +2641,6 @@ class OpcUaClient:
             if handle is not None:
                 result[node_id] = handle
         return result
-
-    async def _read_positive_int(self, node_id: str) -> int | None:
-        try:
-            value = await self._client.get_node(node_id).read_value()
-        except Exception:
-            logger.debug("OPC UA subscription capability read failed node_id=%s", node_id, exc_info=True)
-            return None
-
-        if isinstance(value, int) and value > 0:
-            return value
-        return None
 
     async def _configure_security_if_needed(self) -> None:
         mode = self._security_mode.strip()

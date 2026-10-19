@@ -15,6 +15,8 @@ is_truthy() {
 upstream_host="${NGINX_UPSTREAM_HOST:-i3x2ua}"
 upstream_port="${NGINX_UPSTREAM_PORT:-8000}"
 server_name="${NGINX_SERVER_NAME:-_}"
+http_port="${NGINX_HTTP_PORT:-80}"
+https_port="${NGINX_HTTPS_PORT:-443}"
 basic_auth_enabled="${NGINX_BASIC_AUTH_ENABLED:-0}"
 https_enabled="${NGINX_HTTPS_ENABLED:-0}"
 # Container runs read_only; conf.d is the only writable path available for the generated auth file.
@@ -102,13 +104,13 @@ if is_truthy "$https_enabled"; then
 $(printf '%s\n' "$upstream_block")
 
 server {
-  listen 80;
+  listen $http_port;
   server_name $server_name;
   return 301 $https_redirect_target;
 }
 
 server {
-  listen 443 ssl;
+  listen $https_port ssl;
   http2 on;
   server_name $server_name;
   ssl_certificate $cert_file;
@@ -136,7 +138,7 @@ else
 $(printf '%s\n' "$upstream_block")
 
 server {
-  listen 80;
+  listen $http_port;
   server_name $server_name;
 
   location = /v1/info {

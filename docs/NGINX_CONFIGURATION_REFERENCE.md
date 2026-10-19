@@ -418,6 +418,10 @@ substitute for reuse.
 The image's `/etc/nginx/nginx.conf` sets the worker, descriptor, logging, and
 HTTP defaults. The entrypoint generates the `upstream` and `server` blocks in
 `/etc/nginx/conf.d/default.conf` using the configured backend host and port.
+`NGINX_HTTP_PORT` and `NGINX_HTTPS_PORT` set the container's HTTP and HTTPS
+listen ports; the Compose configuration publishes those same container ports
+on host ports 8080 and 8443, respectively. `NGINX_HTTPS_REDIRECT_PORT` is
+separate and controls the port included in HTTP-to-HTTPS redirects.
 The relevant upstream and HTTP proxy settings are:
 
 ```nginx

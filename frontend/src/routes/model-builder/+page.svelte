@@ -60,7 +60,7 @@
   <div class="panel header">
     <h1>Model Builder</h1>
     <div class="header-actions">
-      <a class="back-link" href="/view?endpoint=/v1/model/metrics&label=Model%20Builder%20Metrics">View raw</a>
+      <a class="back-link" href="/view?endpoint=/model/metrics&label=Model%20Builder%20Metrics">View raw</a>
       <a class="back-link" href="/">&larr; Back</a>
     </div>
   </div>

@@ -186,6 +186,7 @@ class SubscriptionService:
         self._subscriptions: dict[str, _SubscriptionState] = {}
         self._node_monitors: dict[str, _NodeMonitor] = {}
         self._bins: dict[str, _ManagedBin] = {}
+        self._native_bin_admission_lock = asyncio.Lock()
         self._native_admission_semaphore = asyncio.Semaphore(max(1, int(max_concurrent_native_admissions)))
         self._native_backoff_seconds = max(0.1, float(native_backoff_seconds))
         self._native_backoff_until_monotonic: float = 0.0
@@ -1120,23 +1121,24 @@ class SubscriptionService:
 
     async def _acquire_native_bin_slot(self, monitor: _NodeMonitor, caps: OpcUaSubscriptionCapabilities) -> bool:
         """Pack monitor.node_id into an existing bin with spare capacity, or open a new one."""
-        capacity = _min_positive(caps.max_monitored_items_per_subscription)
-        effective_capacity = capacity or _DEFAULT_BIN_CAPACITY
+        async with self._native_bin_admission_lock:
+            capacity = _min_positive(caps.max_monitored_items_per_subscription)
+            effective_capacity = capacity or _DEFAULT_BIN_CAPACITY
 
-        async with self._lock:
-            if caps.max_monitored_items is not None:
-                total_monitored = sum(len(bin_.node_handles) for bin_ in self._bins.values())
-                if total_monitored + 1 > caps.max_monitored_items:
-                    return False
-            target_bin = next((b for b in self._bins.values() if len(b.node_handles) < b.capacity), None)
+            async with self._lock:
+                if caps.max_monitored_items is not None:
+                    total_monitored = sum(len(bin_.node_handles) for bin_ in self._bins.values())
+                    if total_monitored + 1 > caps.max_monitored_items:
+                        return False
+                target_bin = next((b for b in self._bins.values() if len(b.node_handles) < b.capacity), None)
 
-        if target_bin is not None:
-            return await self._add_node_to_bin(monitor, target_bin)
+            if target_bin is not None:
+                return await self._add_node_to_bin(monitor, target_bin)
 
-        if not await self._can_open_new_bin(caps):
-            return False
+            if not await self._can_open_new_bin(caps):
+                return False
 
-        return await self._open_new_bin(monitor, effective_capacity)
+            return await self._open_new_bin(monitor, effective_capacity)
 
     async def _subscribe_single_node(self, ua_subscription: Any, node_id: str) -> int | None:
         handles = await self._opcua_client.subscribe_data_changes(ua_subscription, [node_id])

@@ -854,6 +854,25 @@ async def test_distinct_nodes_are_packed_into_one_bin() -> None:
 
 
 @pytest.mark.asyncio
+async def test_concurrent_distinct_node_admissions_share_available_bin() -> None:
+    class _DelayedAdmissionClient(FakeOpcUaClient):
+        async def create_datachange_subscription(self, publishing_interval_ms: float, handler: Any) -> Any:
+            await asyncio.sleep(0.01)
+            return await super().create_datachange_subscription(publishing_interval_ms, handler)
+
+    client = _DelayedAdmissionClient()
+    service = SubscriptionService(cast(OpcUaClientProtocol, client), interval_seconds=1, seed_initial_values=False)
+    try:
+        await asyncio.gather(*(service._acquire_node_monitor(f"ns=1;i={index}", f"sub-{index}") for index in range(6)))
+
+        assert client.create_subscription_calls == 1
+        assert len(service._bins) == 1
+        assert len(next(iter(service._bins.values())).node_handles) == 6
+    finally:
+        await service.close()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("per_call", "per_subscription", "node_count", "expected_capacity"),
     [

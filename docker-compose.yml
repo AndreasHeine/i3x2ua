@@ -74,6 +74,8 @@ services:
     image: jaegertracing/all-in-one:latest
     container_name: i3x2ua-jaeger
     restart: unless-stopped
+    command:
+      - "--memory.max-traces=10000" # ~ 100 MB RAM
     depends_on:
       i3x2ua:
         condition: service_healthy

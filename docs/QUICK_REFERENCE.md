@@ -6,7 +6,7 @@
 |------|---------|
 | `PRODUCTION_HTTPS_GUIDE.md` | Comprehensive production deployment guide (START HERE) |
 | `.env.production.example` | Example environment configuration |
-| `docker-compose.multi-instance.yml` | Multi-instance HA setup with load balancing |
+| `examples/multi-instance-path-routing/` | Three independent instances with NGINX path routing |
 | `cert-manager.sh` | Certificate management utility script |
 | `deploy.sh` | Automated deployment helper script |
 | `QUICK_REFERENCE.md` | This quick reference guide |
@@ -71,8 +71,9 @@ NGINX_BASIC_AUTH_PASSWORD=secure-password
 
 ### Multi-Instance Setup
 ```bash
-# Use multi-instance compose file
-docker-compose -f docs/docker-compose.multi-instance.yml up -d
+# Copy and edit the multi-instance example environment file, then start it
+Copy-Item docs/examples/multi-instance-path-routing/.env.example docs/examples/multi-instance-path-routing/.env
+docker compose --env-file docs/examples/multi-instance-path-routing/.env -f docs/examples/multi-instance-path-routing/docker-compose.yml up -d
 
 # Update .env with per-instance OPC-UA settings
 I3X_OPCUA_ENDPOINT_1=opc.tcp://server-1:4843

@@ -51,11 +51,11 @@ upstream instance1_backend {
 }
 
 upstream instance2_backend {
-  server i3x2ua-2:8001;
+  server i3x2ua-2:8000;
 }
 
 upstream instance3_backend {
-  server i3x2ua-3:8002;
+  server i3x2ua-3:8000;
 }
 ```
 

@@ -306,6 +306,9 @@ OAUTH_ALLOWED_EMAILS=admin@your-company.com,dev@your-company.com
 
 Run multiple independent i3x2ua instances behind NGINX, each with its own OPC-UA connection and state. NGINX routes requests to different instances based on URL path.
 
+For a runnable Compose deployment with a dedicated NGINX configuration and
+environment template, see the [multi-instance path-routing example](examples/multi-instance-path-routing/README.md).
+
 Each instance is completely independent:
 - `/i3x/instance1/v1/...` → i3x2ua-1
 - `/i3x/instance2/v1/...` → i3x2ua-2  
@@ -504,11 +507,11 @@ upstream instance1_backend {
 }
 
 upstream instance2_backend {
-  server i3x2ua-2:8001;
+  server i3x2ua-2:8000;
 }
 
 upstream instance3_backend {
-  server i3x2ua-3:8002;
+  server i3x2ua-3:8000;
 }
 
 server {
@@ -921,8 +924,8 @@ docker-compose exec nginx cat /etc/nginx/conf.d/default.conf | grep -A 10 upstre
 
 # Test individual backends directly
 curl http://i3x2ua-1:8000/v1/info
-curl http://i3x2ua-2:8001/v1/info
-curl http://i3x2ua-3:8002/v1/info
+curl http://i3x2ua-2:8000/v1/info
+curl http://i3x2ua-3:8000/v1/info
 
 # Check backend health
 docker-compose ps
@@ -1050,17 +1053,10 @@ I3X_LOG_LEVEL=INFO
 
 ### Example 2: High-Availability Multi-Instance Setup
 
-```env
-# .env - HA Configuration
-NGINX_HTTPS_ENABLED=1
-NGINX_SERVER_NAME=api.mycompany.com
-NGINX_LOAD_BALANCING=least_conn
-NGINX_UPSTREAM_HOSTS=i3x2ua-1:8000 i3x2ua-2:8001 i3x2ua-3:8002
-DB_USER=i3x2ua
-DB_PASSWORD=StrongDbPassword123!
-I3X_OPCUA_ENDPOINT=opc.tcp://opcua.mycompany.com:4843
-I3X_LOG_LEVEL=WARN
-```
+For a runnable path-routed three-instance Compose setup, use the
+[multi-instance path-routing example](examples/multi-instance-path-routing/README.md).
+The example documents the required per-instance OPC UA endpoints and includes
+the NGINX configuration that implements the routes.
 
 ### Example 3: OAuth Protected Setup
 

@@ -46,13 +46,11 @@ Complete guide for deploying i3x2ua in production with HTTPS, path-based routing
    - Security recommendations
    - Copy to `.env` and customize for your environment
 
-6. **[docker-compose.multi-instance.yml](docker-compose.multi-instance.yml)** 📦 MULTI-INSTANCE SETUP
-   - Multi-instance Docker Compose configuration
-   - 3 independent i3x2ua instances with separate OPC-UA connections
-   - NGINX reverse proxy with path-based routing
-   - Prometheus and Grafana monitoring (optional)
-   - Each instance completely independent with no shared state
-   - Use with: `docker-compose -f docker-compose.multi-instance.yml up -d`
+6. **[Multi-instance path-routing example](examples/multi-instance-path-routing/README.md)** 📦 MULTI-INSTANCE SETUP
+   - Docker Compose configuration for 3 independent i3x2ua instances
+   - Separate OPC UA connections and NGINX path-based routing
+   - Includes its own NGINX configuration and environment template
+   - Each instance is independent and has no shared state
 
 7. **[cert-manager.sh](cert-manager.sh)** 🔐 CERTIFICATE TOOL
    - Certificate management utility
@@ -92,9 +90,9 @@ Complete guide for deploying i3x2ua in production with HTTPS, path-based routing
 ### For Multi-Instance Setup (1 hour)
 
 1. Read [PRODUCTION_HTTPS_GUIDE.md](PRODUCTION_HTTPS_GUIDE.md) - Multi-Instance Section
-2. Review [docker-compose.multi-instance.yml](docker-compose.multi-instance.yml)
-3. Customize `.env` with multi-instance settings
-4. Deploy: `docker-compose -f docker-compose.multi-instance.yml up -d`
+2. Review the [multi-instance path-routing example](examples/multi-instance-path-routing/README.md)
+3. Copy and customize its `.env.example`
+4. Deploy using the Compose commands in the example README
 5. Verify with: `docker-compose ps`
 
 ---
@@ -150,10 +148,10 @@ docker-compose logs -f i3x2ua
 curl https://your-domain.com/v1/info
 
 # Multi-instance deployment
-docker-compose -f docs/docker-compose.multi-instance.yml up -d
+docker compose --env-file docs/examples/multi-instance-path-routing/.env -f docs/examples/multi-instance-path-routing/docker-compose.yml up -d
 
 # Multi-instance status
-docker-compose -f docs/docker-compose.multi-instance.yml ps
+docker compose --env-file docs/examples/multi-instance-path-routing/.env -f docs/examples/multi-instance-path-routing/docker-compose.yml ps
 
 # Test multi-instance endpoints
 curl https://your-domain.com/i3x/instance1/v1/info
@@ -363,9 +361,11 @@ docs/
 ├── NGINX_CONFIGURATION_REFERENCE.md     (Configuration reference - 20 min read)
 ├── PRODUCTION_DEPLOYMENT_INDEX.md       (This file)
 ├── .env.production.example              (Configuration template)
-├── docker-compose.multi-instance.yml    (HA setup)
 ├── cert-manager.sh                      (Certificate management utility)
-└── deploy.sh                            (Deployment automation script)
+├── deploy.sh                            (Deployment automation script)
+└── examples/
+    ├── discovery-subscription-split/    (subscription routing workaround)
+    └── multi-instance-path-routing/    (independent instances by URL path)
 ```
 
 ---

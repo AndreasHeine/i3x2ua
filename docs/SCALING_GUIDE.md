@@ -1,250 +1,485 @@
 # i3x2ua Scaling Guide
 
-This guide summarizes measured REST API scaling results and provides practical guidance for sizing Uvicorn workers and NGINX deployments.
+This guide summarizes measured REST API scaling results and provides practical guidance for sizing Uvicorn workers, choosing deployment architectures, handling subscriptions, and operating i3x2ua at scale.
 
-The reported figures should be treated as observations from a specific test environment, not as capacity guarantees. Actual performance depends on factors including OPC UA server behavior, information model size, request patterns, network latency, available hardware, and deployment configuration.
-
----
-
-# Test Environment and Workload
-
-The measurements below were reported on:
-
-- AMD Ryzen 7 7800X3D
-- 8 physical CPU cores
-- 16 logical CPUs
-- 32 GB DDR5 RAM @ 6000 MT/s
-
-The OPC UA server was:
-
-```text
-opc.tcp://opcua.umati.app:4843
-```
-
-which is a cloud-hosted OPC UA server accessed over the Internet. As a result, the measured performance includes both OPC UA server behavior and network latency.
-
-The discovery workload repeatedly executed the following API operations:
-
-1. `GET /info`
-2. `GET /objects`
-3. `POST /objects/list`
-4. `POST /objects/value`
-5. `POST /objecttypes/query`
-
-Each discovery client continuously repeated this workflow for the configured benchmark duration.
+The reported figures should be treated as observations from specific test environments, not as capacity guarantees. Actual performance depends on OPC UA server behavior, information model size, request patterns, subscription volume, network latency, available hardware, and deployment topology.
 
 ---
 
-# Benchmark Configurations
+# Scaling Philosophy
 
-Two deployment configurations were tested.
+When scaling i3x2ua it is important to distinguish between four different concerns:
 
-## Full Production-Style Configuration
+- Discovery scaling
+- Query scaling
+- Subscription scaling
+- OPC UA connection scaling
 
-Enabled:
+Not all workloads scale the same way.
 
-- NGINX reverse proxy
-- HTTPS
-- HTTP Basic Authentication
-- OpenTelemetry tracing
-- Cloud-hosted OPC UA server
+Most i3x2ua APIs are stateless and scale naturally across multiple workers.
 
-## Minimal Configuration
-
-Enabled:
-
-- Direct HTTP access to Uvicorn
-- Cloud-hosted OPC UA server
-
-Disabled:
-
-- NGINX
-- HTTPS
-- HTTP Basic Authentication
-- OpenTelemetry
-
-The minimal configuration removes most infrastructure overhead and better isolates application performance.
+Subscription management currently relies on process-local state and therefore requires additional architectural considerations.
 
 ---
 
-# Results
+# API Categories
 
-## Single Worker - Direct HTTP (No NGINX, No HTTPS, No Telemetry)
+Understanding which API category a request belongs to helps determine the best scaling strategy.
 
-The following measurements were taken using:
+## Stateless APIs
 
-- 1 Uvicorn worker
-- Direct HTTP access
-- No NGINX reverse proxy
-- No HTTPS
-- No Authentication
-- No OpenTelemetry
-- Cloud-hosted OPC UA server
+These APIs scale naturally across multiple workers and instances.
 
-| Discovery Clients | HTTP Requests/s | Discovery Workflows/s | Mean Workflow Latency |
-|---:|---:|---:|---:|
-| 1 | 388 | 77 | 13 ms |
-| 8 | 443 | 88 | 91 ms |
-| 16 | 407 | 81 | 197 ms |
-| 32 | 429 | 85 | 373 ms |
-| 64 | 438 | 85 | 730 ms |
-
-### Observations
-
-The highest observed throughput was approximately:
+### Information
 
 ```text
-443 HTTP requests/s
-88 discovery workflows/s
+GET /v1/info
 ```
 
-using:
+### Discovery
 
 ```text
-1 Uvicorn worker
-8 concurrent discovery clients
+GET  /v1/namespaces
+
+GET  /v1/relationshiptypes
+POST /v1/relationshiptypes/query
+
+GET  /v1/objecttypes
+POST /v1/objecttypes/query
+
+GET  /v1/objects
+POST /v1/objects/list
+POST /v1/objects/related
 ```
 
-Throughput remains remarkably stable between 8 and 64 concurrent discovery clients:
+### Query
 
 ```text
-407-443 HTTP requests/s
-81-88 discovery workflows/s
+POST /v1/objects/value
+POST /v1/objects/history
 ```
 
-while latency increases as requests queue.
-
-Most importantly:
+### Update
 
 ```text
-0% error rate
+PUT /v1/objects/value
+PUT /v1/objects/history
 ```
 
-was observed for all measurements.
+### Diagnostics
 
-This demonstrates that even a single-worker deployment can provide stable operation under substantial discovery traffic.
+```text
+GET /model/metrics
+GET /model/namespace-gaps
+
+GET /ua/status
+GET /ua/connection
+GET /ua/limits
+GET /ua/metrics
+```
+
+### MCP
+
+```text
+GET  /mcp/tools
+POST /mcp/call
+
+GET  /mcp/prompts
+GET  /mcp/prompts/{name}
+POST /mcp/prompts/execute
+
+GET  /mcp/resources
+POST /mcp/resources/read
+
+GET  /mcp/roots
+
+POST /mcp
+```
+
+These APIs generally benefit directly from additional workers.
 
 ---
 
-## Production Deployment (NGINX, HTTPS, Authentication, OpenTelemetry)
+# Subscription APIs
 
-The following measurements were taken using:
-
-- NGINX reverse proxy
-- HTTPS
-- HTTP Basic Authentication
-- OpenTelemetry tracing
-- Cloud-hosted OPC UA server
-
-### Historical Results
-
-| Uvicorn Workers | Discovery Clients | HTTP Requests/s | Discovery Workflows/s | Mean Workflow Latency |
-|---:|---:|---:|---:|---:|
-| 1 | 8 | 314 | 62 | 128 ms |
-| 4 | 8 | 623 | 124 | 50 ms |
-| 8 | 8 | 786 | 157 | 51 ms |
-
-### Optimized Production Deployment
-
-After enabling upstream connection pooling and keepalive reuse:
-
-| Uvicorn Workers | Discovery Clients | HTTP Requests/s | Discovery Workflows/s | Mean Workflow Latency |
-|---:|---:|---:|---:|---:|
-| 4 | 64 | 1074 | 213 | 298 ms |
-| 4 | 128 | 1132 | 223 | 564 ms |
-| 4 | 256 | 1037 | 200 | 1225 ms |
-| 4 | 512 | 1003 | 187 | 2496 ms |
-| 8 | 64 | 896 | 177 | 355 ms |
-| 8 | 128 | **1587** | **314** | **402 ms** |
-| 8 | 256 | 1580 | 309 | 805 ms |
-| 8 | 512 | 1469 | 280 | 1704 ms |
-
-### Worker Scaling Comparison
-
-| Workers | Peak HTTP Requests/s | Peak Discovery Workflows/s |
-|---:|---:|---:|
-| 1 | 443 | 88 |
-| 4 | 1132 | 223 |
-| 8 | 1587 | 314 |
-
-Compared to a single-worker deployment:
-
-- 4 workers increased throughput by approximately 2.6×.
-- 8 workers increased throughput by approximately 3.6×.
-- All optimized configurations completed with 0% observed HTTP errors.
-
-### Observations
-
-The highest observed throughput was:
+The subscription APIs are different.
 
 ```text
-1587 HTTP requests/s
-314 discovery workflows/s
+POST /v1/subscriptions
+POST /v1/subscriptions/register
+POST /v1/subscriptions/unregister
+POST /v1/subscriptions/stream
+POST /v1/subscriptions/sync
+POST /v1/subscriptions/delete
+POST /v1/subscriptions/list
 ```
 
-using:
+These APIs maintain subscription state which currently exists only inside the worker process that owns the subscription.
 
-```text
-8 Uvicorn workers
-128 concurrent discovery clients
-HTTPS
-Basic Authentication
-OpenTelemetry
-NGINX upstream keepalive pooling
-```
-
-The optimized configuration completed all benchmark runs with:
-
-```text
-0% error rate
-```
-
-Throughput increased substantially as concurrency increased from 64 to 128 concurrent clients.
-
-Beyond approximately:
-
-```text
-128 concurrent discovery clients
-```
-
-throughput plateaued while latency continued to increase.
-
-This behavior indicates that the deployment reached a saturation point where additional concurrency primarily increased queueing delay rather than useful work.
-
-The observed practical throughput limit for the tested environment appears to be approximately:
-
-```text
-1600 REST requests/s
-300+ discovery workflows/s
-```
-
-with stable operation and no observed HTTP errors.
+As a result, discovery scaling and subscription scaling behave differently.
 
 ---
 
-# NGINX Connection Reuse and Scaling
+# Scaling Models
 
-Benchmarking identified NGINX upstream connection management as a major factor affecting both throughput and reliability.
+i3x2ua supports several deployment models with different trade-offs.
 
-During early testing, the reverse proxy occasionally produced:
+## Deployment Model Comparison
+
+| Model | Discovery | Query | Polling Subscriptions | SSE Streams | OPC UA Sessions | Complexity |
+|---------|---------|---------|---------|---------|---------|---------|
+| Single Worker | ✅ | ✅ | ✅ | ✅ | 1 | Low |
+| Multiple Workers | ✅✅✅ | ✅✅✅ | ⚠ | ✅ | N | Low |
+| Discovery / Subscription Split | ✅✅✅ | ✅✅✅ | ✅ | ✅ | N+1 | Medium |
+| Multi-Instance Routing | ✅✅✅ | ✅✅✅ | ✅ | ✅ | 1 per instance | Medium |
+| Hybrid Deployment | ✅✅✅ | ✅✅✅ | ✅ | ✅ | Multiple | High |
+
+---
+
+# Single Worker Deployment
+
+## Architecture
 
 ```text
-502 Bad Gateway
-connect() failed (99: Address not available)
+Client
+   │
+   ▼
+NGINX
+   │
+   ▼
+i3x2ua (1 Worker)
+   │
+   ▼
+OPC UA Server
 ```
 
-errors under heavy load.
+## Advantages
 
-The root cause was excessive upstream connection churn between NGINX and Uvicorn. Without an upstream keepalive pool, NGINX can establish and close backend TCP connections far more frequently than necessary.
+- Lowest memory footprint
+- Lowest OPC UA session count
+- Shared cache state
+- Simplest deployment
+- Full subscription compatibility
+- Recommended default deployment
 
-Enabling upstream connection reuse:
+## Recommended For
 
-- Eliminated the observed 502 errors
-- Increased throughput substantially
-- Reduced backend connection churn
-- Improved scalability under high concurrency
+- Machines
+- CNCs
+- Robots
+- Packaging systems
+- Test stations
+- Production cells
 
-A recommended starting configuration is:
+---
+
+# Multi-Worker Deployment
+
+## Architecture
+
+```text
+Client
+   │
+   ▼
+NGINX
+   │
+   ▼
+┌─────────┐
+│ Worker1 │
+├─────────┤
+│ Worker2 │
+├─────────┤
+│ Worker3 │
+├─────────┤
+│ Worker4 │
+└─────────┘
+   │
+   ▼
+OPC UA Server
+```
+
+Example:
+
+```bash
+uvicorn i3x_server.main:app --workers 4
+```
+
+or
+
+```bash
+uvicorn i3x_server.main:app --workers 8
+```
+
+## Advantages
+
+- Higher throughput
+- Better CPU utilization
+- Better discovery performance
+- Better query performance
+- Better MCP performance
+
+## Trade-offs
+
+- More memory
+- Duplicate caches
+- Additional OPC UA sessions
+- Subscription state becomes worker-local
+
+## Recommended For
+
+- Discovery-heavy workloads
+- Asset browsing
+- Query-heavy environments
+- MCP workloads
+- Analytics workloads
+
+---
+
+# Polling Subscription Scaling
+
+Polling subscriptions follow this workflow:
+
+```text
+POST /v1/subscriptions
+
+POST /v1/subscriptions/register
+
+POST /v1/subscriptions/sync
+
+POST /v1/subscriptions/sync
+
+POST /v1/subscriptions/sync
+
+POST /v1/subscriptions/delete
+```
+
+The subscription is stored within the worker process that created it.
+
+Example:
+
+```text
+Worker A
+    creates subscription
+```
+
+Later:
+
+```text
+Worker B
+    receives sync request
+```
+
+Worker B does not necessarily know the subscription.
+
+Possible effects:
+
+```text
+Subscription not found
+
+Missing updates
+
+Unexpected results
+```
+
+This is why polling subscriptions currently require additional deployment considerations.
+
+---
+
+# SSE Streaming
+
+SSE follows a different behavior pattern.
+
+Workflow:
+
+```text
+POST /v1/subscriptions
+
+POST /v1/subscriptions/register
+
+POST /v1/subscriptions/stream
+```
+
+Once the stream is established:
+
+```text
+Client
+   │
+   ▼
+Worker A
+```
+
+The TCP connection remains attached to the same worker.
+
+Because the subscription state and the stream remain in the same process:
+
+```text
+SSE generally scales well in multi-worker deployments.
+```
+
+---
+
+# Discovery / Subscription Split
+
+This deployment pattern isolates polling subscriptions from discovery traffic.
+
+## Architecture
+
+```text
+NGINX
+ ├── Discovery Service (4 Workers)
+ └── Subscription Service (1 Worker)
+```
+
+NGINX routes:
+
+```text
+/v1/subscriptions*
+```
+
+to:
+
+```text
+Subscription Service
+```
+
+and everything else to:
+
+```text
+Discovery Service
+```
+
+## Advantages
+
+```text
+✅ Scalable discovery
+
+✅ Stable polling subscriptions
+
+✅ Stable SSE streams
+
+✅ No worker affinity required
+```
+
+## Trade-offs
+
+```text
+Additional OPC UA client
+
+Additional OPC UA session
+
+Additional containers
+```
+
+## Recommended For
+
+- Factory gateways
+- MES integration
+- Dashboard environments
+- Mixed workloads
+
+---
+
+# Multi-Instance Deployment
+
+Multiple independent i3x2ua instances.
+
+## Architecture
+
+```text
+/i3x/instance1/*
+/i3x/instance2/*
+/i3x/instance3/*
+```
+
+Each instance maintains:
+
+```text
+Own OPC UA Connection
+
+Own Cache
+
+Own Subscription Registry
+
+Own Worker Process
+```
+
+## Advantages
+
+```text
+Isolation between systems
+
+Independent lifecycle
+
+Independent subscriptions
+
+Independent OPC UA sessions
+```
+
+## Recommended For
+
+```text
+Multiple OPC UA servers
+
+Tenant isolation
+
+Departmental environments
+
+Hub-and-spoke architectures
+```
+
+---
+
+# Hybrid Enterprise Deployment
+
+Large deployments often combine multiple patterns.
+
+## Architecture
+
+```text
+NGINX
+
+├── Discovery Cluster
+│    ├── Worker
+│    ├── Worker
+│    ├── Worker
+│    └── Worker
+│
+├── Subscription Service
+│
+├── Instance A
+│
+├── Instance B
+│
+└── Instance C
+```
+
+## Advantages
+
+```text
+Maximum discovery throughput
+
+Stable subscriptions
+
+Independent server groups
+
+Clear operational boundaries
+```
+
+## Recommended For
+
+- Enterprise gateways
+- Digital twins
+- Multiple factories
+- Corporate analytics platforms
+
+---
+
+# NGINX Connection Reuse
+
+NGINX upstream keepalive pooling can significantly improve throughput and reduce backend connection churn.
+
+Recommended configuration:
 
 ```nginx
 upstream i3x2ua_backend {
@@ -267,7 +502,7 @@ location / {
 }
 ```
 
-Additional recommended settings:
+Additional recommendations:
 
 ```nginx
 worker_processes auto;
@@ -277,7 +512,7 @@ events {
 }
 ```
 
-For Docker deployments, increasing the file descriptor limit is also recommended:
+Docker:
 
 ```yaml
 ulimits:
@@ -286,461 +521,214 @@ ulimits:
     hard: 65535
 ```
 
-For production deployments, upstream keepalive pooling should be considered a standard configuration rather than an optional optimization.
-
 ---
 
-# Saturation Characteristics
-
-The benchmark results indicate that throughput scales significantly with concurrency up to approximately:
-
-```text
-128 concurrent discovery clients
-```
-
-At that point the tested environment achieved approximately:
-
-```text
-1587 HTTP requests/s
-314 discovery workflows/s
-```
-
-Beyond this level, additional concurrency did not significantly increase throughput:
-
-| Discovery Clients | HTTP Requests/s |
-|---:|---:|
-| 128 | 1587 |
-| 256 | 1580 |
-| 512 | 1469 |
-
-Instead, latency increased while throughput remained relatively constant.
-
-This behavior is consistent with a saturated system and suggests that either:
-
-- the OPC UA backend,
-- network latency,
-- application processing,
-- or hardware resources
-
-became the dominant limiting factors rather than the HTTP stack itself.
-
----
-
-# Interpretation of the Results
-
-The benchmark workload is intentionally demanding because it continuously performs complete information-model discovery operations.
-
-Most industrial applications do not continuously execute discovery workflows.
-
-Typical industrial workloads consist of:
-
-- HMI access
-- Dashboard refreshes
-- MES queries
-- Engineering diagnostics
-- Asset lookups
-- Subscription-based updates
-
-rather than repeated full information-model discovery.
-
-For this reason, benchmark throughput numbers should be viewed as stress-test results rather than representative day-to-day operating conditions.
-
-The benchmark also demonstrates that infrastructure configuration can significantly influence throughput. In this test environment, NGINX connection reuse was responsible for a substantial throughput increase without requiring changes to the application itself.
-
----
-
-# Recommended Worker Counts
-
-The benchmark results suggest starting conservatively and scaling only when necessary.
-
-## Suggested Starting Points
-
-| Deployment Type | Initial Worker Count |
-|---|---:|
-| Single Machine | 1 |
-| Production Cell | 1 |
-| Production Line | 1-2 |
-| Factory Gateway | 4 |
-| Enterprise Aggregation Gateway | 8 |
-
-A single-worker deployment sustained approximately:
-
-```text
-388-443 REST requests/s
-77-88 discovery workflows/s
-```
-
-during testing against a cloud-hosted OPC UA server.
-
-For many machine-level and production-line deployments, this level of performance is already sufficient.
-
----
-
-# Why Start With One Worker?
-
-A single worker offers several advantages:
-
-- Lowest memory footprint
-- Lowest OPC UA session count
-- Simplest deployment
-- Shared cache state
-- No worker coordination overhead
-- Excellent performance for most machine-level deployments
-
-The benchmark results show that one worker is not merely a development configuration. It is a viable production configuration for many industrial use cases.
-
----
-
-# Multiple Uvicorn Workers
-
-For example:
-
-```bash
-uvicorn i3x_server.main:app --workers 4
-```
-
-or:
-
-```bash
-uvicorn i3x_server.main:app --workers 8
-```
-
-Each worker is an independent Python process.
-
-Advantages:
-
-- Better concurrency
-- Higher throughput
-- Lower latency under heavy load
-- Better CPU utilization
-
-Trade-offs:
-
-- Higher memory consumption
-- Duplicated caches
-- Additional OPC UA connections or sessions
-- Longer startup time
-
-Additional workers should therefore be added only when measurements demonstrate a need for additional concurrency.
-
----
-
-# Memory Planning
-
-A useful approximation is:
-
-```text
-Total RAM ≈ supervisor process
-          + (worker count × worker memory)
-```
-
-Estimate deployment memory with:
-
-```text
-Estimated RAM ≈ worker RSS × worker count × 1.2
-```
-
-The additional 20% accounts for:
-
-- Operating system overhead
-- Container runtime overhead
-- NGINX
-- Background activity
-
-Measure worker memory using:
-
-```bash
-ps -o pid,rss,command -C python
-```
-
-For Docker deployments:
-
-```bash
-docker stats
-```
-
-Use measured container memory whenever possible.
-
----
-
-# Example Deployment Profiles
+# Worker Selection Guide
 
 ## Single Machine
 
-Typical examples:
-
-- CNC machine
-- Robot cell
-- Packaging machine
-- Test station
-
-Recommended configuration:
-
 ```text
-1 worker
+1 Worker
 ```
+
+Typical:
+
+- CNC
+- Robot
+- Packaging Machine
+- Test Station
 
 ---
 
 ## Production Cell
 
-Typical examples:
-
-- Multiple machines
-- Local HMI
-- Local dashboards
-
-Recommended configuration:
-
 ```text
-1 worker
+1 Worker
 ```
 
-Increase to:
+Typical:
 
-```text
-2 workers
-```
-
-only if measurements justify it.
+- Several machines
+- Local dashboard
+- Engineering access
 
 ---
 
 ## Production Line
 
-Typical examples:
-
-- Multiple production stations
-- MES connectivity
-- Several dashboard users
-
-Recommended configuration:
-
 ```text
-1-2 workers
+1-2 Workers
 ```
+
+Typical:
+
+- MES integration
+- Multiple clients
+- Operational dashboards
 
 ---
 
 ## Factory Gateway
 
-Typical examples:
-
-- Multiple machine connections
-- Multiple HMIs
-- MES integration
-- Dashboarding platforms
-
-Recommended configuration:
+Recommended:
 
 ```text
-4 workers
+4 Workers
 ```
 
-The benchmark demonstrated approximately:
+or:
 
 ```text
-1100 HTTP requests/s
-220 discovery workflows/s
+Discovery / Subscription Split
 ```
 
-using four workers, making this configuration suitable for many centralized factory gateway deployments.
+Typical:
+
+- Multiple machines
+- Multiple dashboards
+- Continuous discovery queries
 
 ---
 
 ## Enterprise Gateway
 
-Typical examples:
+Recommended:
+
+```text
+4-8 Workers
+```
+
+or:
+
+```text
+Hybrid Deployment
+```
+
+Typical:
 
 - Multiple OPC UA servers
-- Centralized asset access
-- Analytics systems
-- Digital twin platforms
-
-Recommended configuration:
-
-```text
-8 workers
-```
-
-The benchmark demonstrated approximately:
-
-```text
-1587 HTTP requests/s
-314 discovery workflows/s
-0% error rate
-```
-
-using eight workers.
-
-For deployments serving many concurrent clients or aggregating multiple OPC UA servers, eight workers can provide substantially higher throughput than four workers.
+- Digital Twin Platforms
+- Analytics
+- Enterprise Applications
 
 ---
 
-# Configure Docker Compose
+# MCP Scaling Considerations
 
-The default deployment starts with a single worker.
+The MCP endpoints are stateless and scale similarly to discovery APIs.
 
-Example:
+Examples:
 
-```yaml
-command:
-  - python
-  - -m
-  - uvicorn
-  - i3x_server.main:app
-  - --workers
-  - "1"
+```text
+GET  /mcp/tools
+
+POST /mcp/call
+
+GET  /mcp/prompts
+
+POST /mcp/prompts/execute
+
+GET  /mcp/resources
+
+POST /mcp/resources/read
 ```
 
-Increase only when measurements demonstrate a need for additional concurrency.
+These operations scale naturally across multiple workers.
 
-Apply changes with:
+However:
 
-```bash
-docker compose up -d --build i3x2ua
+```text
+MCP Tool
+      ↓
+POST /v1/subscriptions/sync
 ```
 
-Verify deployment health afterwards:
+inherits the same subscription behavior as the underlying REST API.
 
-```bash
-docker compose ps
-
-docker compose logs --tail=100 i3x2ua
-```
+If an MCP tool internally uses subscription APIs, the same process-local limitations apply.
 
 ---
 
-# Benchmark Your Deployment
+# Diagnostics for Load Testing
 
-Suggested benchmark progression:
+Useful endpoints while benchmarking:
 
-```bash
-uv run python run_benchmark.py --base-url http://127.0.0.1:8000/v1 --discovery 1 --duration 60
+```text
+GET /ua/status
 
-uv run python run_benchmark.py --base-url http://127.0.0.1:8000/v1 --discovery 8 --duration 60
+GET /ua/connection
 
-uv run python run_benchmark.py --base-url http://127.0.0.1:8000/v1 --discovery 16 --duration 60
+GET /ua/limits
 
-uv run python run_benchmark.py --base-url http://127.0.0.1:8000/v1 --discovery 32 --duration 60
-
-uv run python run_benchmark.py --base-url http://127.0.0.1:8000/v1 --discovery 64 --duration 60
-
-uv run python run_benchmark.py --base-url http://127.0.0.1:8000/v1 --discovery 128 --duration 60
+GET /ua/metrics
 ```
 
-For realistic comparisons:
+Monitor:
 
-- Keep the OPC UA server identical.
-- Keep the information model identical.
-- Change only one parameter at a time.
-- Repeat measurements.
-- Monitor CPU, memory, latency, and errors.
-- Validate using the real production proxy and TLS path whenever applicable.
+- OPC UA session count
+- Subscription counts
+- Connection health
+- Server capability detection
+- OPC UA limits
+
+Model diagnostics:
+
+```text
+GET /model/metrics
+
+GET /model/namespace-gaps
+```
+
+These help correlate benchmark results with information-model complexity.
 
 ---
 
-# Troubleshooting Scaling Issues
+# Important Subscription Limitation
 
-If latency increases or errors appear:
+Subscription state is currently process-local.
 
-1. Check resource usage:
+The following APIs rely on local worker state:
 
-```bash
-docker stats
+```text
+POST /v1/subscriptions
+
+POST /v1/subscriptions/register
+
+POST /v1/subscriptions/unregister
+
+POST /v1/subscriptions/sync
+
+POST /v1/subscriptions/list
+
+POST /v1/subscriptions/delete
 ```
 
-2. Review application logs:
+Polling-based clients should therefore use one of:
 
-```bash
-docker compose logs i3x2ua
+```text
+Single Worker
 ```
 
-3. Review NGINX logs:
-
-```bash
-docker compose logs nginx
+```text
+Discovery / Subscription Split
 ```
 
-4. Verify OPC UA server responsiveness.
+```text
+Sticky Routing
+```
 
-5. Check whether increased worker counts create excessive OPC UA sessions or backend load.
+```text
+Multi-Instance Deployment
+```
 
-6. Verify NGINX upstream connection reuse and keepalive configuration.
+when subscription consistency is important.
 
-7. Repeat measurements to distinguish transient failures from reproducible capacity limits.
+SSE streaming via:
+
+```text
+POST /v1/subscriptions/stream
+```
+
+is generally unaffected because the long-lived stream remains attached to the worker handling the request.
 
 ---
-
-# Summary
-
-The benchmark results demonstrate that i3x2ua can support substantial industrial REST workloads ranging from individual machines to centralized factory gateways and enterprise deployments.
-
-A single-worker deployment achieved approximately:
-
-```text
-440 HTTP requests/s
-88 discovery workflows/s
-0% error rate
-```
-
-A four-worker deployment achieved approximately:
-
-```text
-1130 HTTP requests/s
-223 discovery workflows/s
-0% error rate
-```
-
-A production-style deployment using:
-
-- NGINX
-- HTTPS
-- HTTP Basic Authentication
-- OpenTelemetry
-- Optimized upstream connection pooling
-- 8 Uvicorn workers
-
-achieved approximately:
-
-```text
-1587 HTTP requests/s
-314 discovery workflows/s
-0% error rate
-```
-
-on the tested hardware.
-
-These benchmark results demonstrate three practical deployment tiers:
-
-| Deployment Tier | Workers | Typical Throughput |
-|---|---:|---:|
-| Machine / Cell | 1 | ~440 req/s |
-| Factory Gateway | 4 | ~1130 req/s |
-| Enterprise Gateway | 8 | ~1587 req/s |
-
-Throughput increased with concurrency up to approximately:
-
-```text
-128 concurrent discovery clients
-```
-
-Beyond that point, throughput remained largely constant while latency increased, indicating a practical saturation point for the tested environment.
-
-The benchmark also demonstrated that NGINX upstream connection reuse is an important part of a high-performance deployment. Enabling keepalive pooling eliminated observed reverse-proxy-related 502 errors and significantly increased throughput.
-
-For most deployments:
-
-```text
-Start with 1 worker
-Measure
-Scale incrementally
-```
-
-For centralized factory gateways and enterprise deployments:
-
-```text
-4-8 workers
-```
-
-combined with NGINX upstream keepalive pooling provides excellent scalability while maintaining stable operation.

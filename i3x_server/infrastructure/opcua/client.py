@@ -12,9 +12,11 @@ from time import perf_counter
 from typing import Any, TypeVar, cast
 
 from asyncua import ua
-from asyncua.client.client import Client
-from asyncua.client.ua_client import UaClientState
+from asyncua.client.client import Client, _supervisor_owns_requests
+from asyncua.client.ua_client import UaClient, UaClientState
 from asyncua.common.node import Node
+from asyncua.common.shortcuts import Shortcuts
+from asyncua.common.utils import Buffer
 from asyncua.ua import NodeClass
 from asyncua.ua.attribute_ids import AttributeIds
 from asyncua.ua.object_ids import ObjectIds
@@ -88,14 +90,108 @@ _CONNECTION_LOST_MARKERS = (
 )
 
 
+class _RecoveryUaClient(UaClient):
+    """Reserve the recovery path independently of the application request budget."""
+
+    async def _send_request(
+        self,
+        request: Any,
+        timeout: float | None = None,
+        # asyncua annotates byte-valued MessageType constants as MessageType.
+        message_type: ua.MessageType = cast(ua.MessageType, ua.MessageType.SecureMessage),
+    ) -> Buffer:
+        supervisor_request = _supervisor_owns_requests.get()
+        # Readiness must be checked before acquiring a slot, not only in the protocol hook.
+        if not supervisor_request and self.pre_request_hook is not None:
+            await self.pre_request_hook()
+        with self.observer.observe_request(request):
+            # Publish is long-lived and must not consume the only slot when the budget is one.
+            if supervisor_request or isinstance(request, ua.PublishRequest):
+                if self.protocol is None:
+                    raise ConnectionError("Connection is not open")
+                return await self.protocol.send_request(request, timeout, message_type)
+            request_timeout = self._timeout if timeout is None else timeout
+            return await asyncio.wait_for(
+                self._send_application_request(request, timeout, message_type), timeout=request_timeout or None
+            )
+
+    async def _send_application_request(
+        self, request: Any, timeout: float | None, message_type: ua.MessageType
+    ) -> Buffer:
+        async with self._request_semaphore:
+            if self.protocol is None:
+                raise ConnectionError("Connection is not open")
+            return await self.protocol.send_request(request, timeout, message_type)
+
+
 class _SupervisedAsyncuaClient(Client):
     """asyncua client that reports when its connection supervisor completed a reconnect.
 
-    asyncua (pinned to 2.1.0) exposes no public "reconnected" hook. `_finalize_reconnect` runs
-    after the session was re-activated or recreated and the tracked subscriptions were restored.
+    asyncua is pinned to 2.1.0: the request scheduler and supervisor context are
+    private integration points, as is the post-subscription `_finalize_reconnect` hook.
     """
 
     reconnected_callback: Callable[[bool], None] | None = None
+
+    def __init__(
+        self,
+        url: str,
+        *,
+        watchdog_intervall: float,
+        reconnect_max_delay: float,
+        reconnect_request_timeout: float,
+        application_request_limit: int,
+    ) -> None:
+        super().__init__(
+            url,
+            watchdog_intervall=watchdog_intervall,
+            reconnect_max_delay=reconnect_max_delay,
+            reconnect_request_timeout=reconnect_request_timeout,
+        )
+        self.uaclient = _RecoveryUaClient(timeout=self.uaclient._timeout)
+        self.uaclient.set_max_concurrent_requests(application_request_limit)
+        self.uaclient.pre_request_hook = self._wait_until_ready
+        self.nodes = Shortcuts(self.uaclient.session)
+
+    async def _wait_until_ready(self) -> None:
+        if (
+            not _supervisor_owns_requests.get()
+            and self._supervisor_task is not None
+            and self.uaclient.state in {UaClientState.CONNECTING, UaClientState.SOCKET_OPEN, UaClientState.CHANNEL_OPEN}
+        ):
+            async with self.uaclient.subscribe_state() as states:
+                try:
+                    await states.wait_for_state(UaClientState.CONNECTED, timeout=self._reconnect_request_timeout)
+                except TimeoutError:
+                    raise ConnectionError(
+                        f"Timed out waiting for client to reconnect (state={self.uaclient.state.value})"
+                    ) from None
+            return
+        await super()._wait_until_ready()
+
+    async def _try_reactivate_existing_session(self) -> bool:
+        try:
+            return await asyncio.wait_for(
+                super()._try_reactivate_existing_session(), timeout=self._reconnect_request_timeout
+            )
+        except TimeoutError:
+            self.disconnect_socket()
+            raise
+
+    async def _recreate_subscriptions(self) -> None:
+        self._subscriptions = [sub for sub in self._subscriptions if not sub.is_deleted]
+        for sub in self._subscriptions:
+            try:
+                try:
+                    await asyncio.wait_for(sub.restore(), timeout=self._reconnect_request_timeout)
+                except TimeoutError:
+                    logger.warning(
+                        "OPC UA subscription restore timed out subscription_id=%s; recreating",
+                        sub.subscription_id,
+                    )
+                    await asyncio.wait_for(sub.recreate(), timeout=self._reconnect_request_timeout)
+            except Exception:
+                logger.exception("OPC UA subscription recovery failed subscription_id=%s", sub.subscription_id)
 
     async def _finalize_reconnect(self, reused: bool) -> None:
         await super()._finalize_reconnect(reused)
@@ -179,6 +275,7 @@ class OpcUaClient:
             watchdog_intervall=float(self._connection_monitor_interval_seconds),
             reconnect_max_delay=self._reconnect_max_delay_seconds,
             reconnect_request_timeout=self._reconnect_request_timeout_seconds,
+            application_request_limit=min(16, self._browse_concurrency),
         )
         self._client.reconnected_callback = self._on_asyncua_reconnected
         self._client.application_uri = "urn:i3x2ua:opcua_client"
@@ -2081,8 +2178,8 @@ class OpcUaClient:
     async def read_data_values(self, node_ids: list[str]) -> list[ua.DataValue]:
         """Read Value attributes with one OPC UA Read service call per MaxNodesPerRead chunk.
 
-        Per-node status codes are returned as-is. If a batched read fails for a reason other than a
-        recoverable disconnect or an oversized batch, fall back to isolated per-node reads.
+        Per-node status codes are returned as-is. Transport failures propagate without
+        per-node fan-out; other batch failures fall back to isolated per-node reads.
         """
         if not node_ids:
             return []
@@ -2093,7 +2190,16 @@ class OpcUaClient:
             values = await self._read_attribute_batch_limited(nodes, AttributeIds.Value)
             if len(values) != len(node_ids):
                 raise RuntimeError(f"Read returned {len(values)} results for {len(node_ids)} nodes")
-        except Exception:
+        except Exception as exc:
+            if self._is_transport_read_failure(exc):
+                logger.warning(
+                    "OPC UA batched data-value read unavailable endpoint=%s requested=%d; "
+                    "not falling back to per-node reads",
+                    self._endpoint,
+                    len(node_ids),
+                    exc_info=True,
+                )
+                raise
             logger.warning(
                 "OPC UA batched data-value read failed endpoint=%s requested=%d; falling back to per-node reads",
                 self._endpoint,
@@ -2136,8 +2242,21 @@ class OpcUaClient:
                             retry_value = await self._client.get_node(node_id).read_data_value()
                             self._record_read_data_values([retry_value])
                             return retry_value
-                        except Exception:
-                            pass
+                        except Exception as retry_exc:
+                            if self._is_transport_read_failure(retry_exc):
+                                logger.warning(
+                                    "OPC UA data-value retry unavailable node_id=%s; aborting remaining reads",
+                                    node_id,
+                                    exc_info=True,
+                                )
+                                raise
+                    elif self._is_transport_read_failure(exc):
+                        logger.warning(
+                            "OPC UA data-value read unavailable node_id=%s; aborting remaining reads",
+                            node_id,
+                            exc_info=True,
+                        )
+                        raise
                     logger.warning(
                         "OPC UA data-value read failed node_id=%s; returning Bad null",
                         node_id,
@@ -2150,7 +2269,14 @@ class OpcUaClient:
 
         results: list[ua.DataValue] = []
         for chunk in _chunked(node_ids, batch_size):
-            chunk_results = await asyncio.gather(*[_read_one(nid) for nid in chunk])
+            tasks = [asyncio.create_task(_read_one(nid)) for nid in chunk]
+            try:
+                chunk_results = await asyncio.gather(*tasks)
+            except BaseException:
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                raise
             results.extend(chunk_results)
 
         self._runtime_metrics.read_calls += 1
@@ -2588,6 +2714,16 @@ class OpcUaClient:
         if isinstance(exc, ConnectionError):
             return True
         return any(marker in text for marker in _CONNECTION_LOST_MARKERS)
+
+    def _is_transport_read_failure(self, exc: Exception) -> bool:
+        return (
+            isinstance(exc, (TimeoutError, ConnectionError))
+            or self._should_retry_after_disconnect(exc)
+            or (
+                isinstance(exc, UaStatusCodeError)
+                and exc.code in {StatusCodes.BadTimeout, StatusCodes.BadRequestTimeout, StatusCodes.BadServerTooBusy}
+            )
+        )
 
     def _is_too_many_operations_error(self, exc: Exception) -> bool:
         text = str(exc).lower()

@@ -47,9 +47,11 @@ asyncua's connection supervisor owns the connection; the gateway never tears dow
 
 - The supervisor probes the server every `I3X_OPCUA_CONNECTION_MONITOR_INTERVAL_SECONDS` (asyncua watchdog interval, also the probe timeout). When the transport or the probe fails, it reconnects with exponential backoff up to `I3X_OPCUA_RECONNECT_MAX_DELAY_SECONDS` and never gives up. It first tries to re-activate the existing session and falls back to creating a new one.
 - While a reconnect runs, new requests wait in asyncua's request gate for at most `I3X_OPCUA_RECONNECT_REQUEST_TIMEOUT_SECONDS` and then fail fast instead of piling up.
+- The gateway's asyncua 2.1.0 adapter also gates application requests during replacement socket/channel establishment, before they acquire a shared request slot. Supervisor recovery requests use a separate path so session activation cannot queue behind reads. Each reconnect handshake has an overall deadline of `I3X_OPCUA_RECONNECT_REQUEST_TIMEOUT_SECONDS`; a timed-out handshake drops its socket and returns to the supervisor's backoff loop.
 - Idempotent operations (read, browse, history) that fail because the connection or session was lost wait once for the supervisor to reach `CONNECTED` (same timeout) and are then retried once. Request timeouts are never retried. If the server reports a lost session (for example `BadSessionIdInvalid`) while the transport still looks healthy, the client hands this over to the supervisor immediately instead of waiting for the next probe.
 - Writes and method calls are never retried: the server may already have applied them before the connection dropped.
 - asyncua restores its subscriptions (TransferSubscriptions, or recreate with new server handles) before it reports the reconnect as finished.
+- Each subscription restore is bounded by `I3X_OPCUA_RECONNECT_REQUEST_TIMEOUT_SECONDS`. If transfer/republish stalls, the adapter logs the timeout and attempts subscription recreation with the same deadline, so a replay loop cannot block the reconnect-completion callback indefinitely. Recovery failures are logged and the gateway's subscription reconciliation handles missing monitored items.
 - After a finished reconnect, operational limits and subscription capabilities are cleared and re-read lazily, with one shared OPC UA load for all concurrent callers. Namespace info and object types are marked stale: requests keep getting the previous values while one background load refreshes them, so a reconnect does not block API requests on a cold browse. Additional type definitions are reloaded only if the session had to be recreated.
 - Registered reconnect listeners are then notified from a gateway task. The subscription service adopts the restored server handles of every native bin and re-admits only the monitored items asyncua could not restore; a bin whose OPC UA subscription is gone is dropped and its nodes are re-admitted.
 - The connection state reported by the API mirrors asyncua's client state (`Connected`, `Reconnecting`, `Disconnected`).
@@ -87,6 +89,8 @@ Key controls:
 
 - `I3X_OPCUA_BROWSE_CONCURRENCY` (default 128 in settings) controls parallel worker count for fallback browse/member reads.
 - For many operations, the client prefers batched reads first, then falls back to per-node reads behind a semaphore when required.
+- All application service requests share a client-wide budget of `min(16, I3X_OPCUA_BROWSE_CONCURRENCY)` in-flight requests. Request deadlines include waiting for this budget. Native Publish requests keep their long-poll semantics and do not consume application slots.
+- Value-read timeouts and transport/session failures do not trigger per-node fallback. They propagate to the caller's existing error handling instead of multiplying traffic or synthesizing a successful response with unavailable values. A transport failure during per-node fallback cancels the remaining workers and stops further chunks; node-specific failures still return Bad-quality values.
 
 Why this matters:
 

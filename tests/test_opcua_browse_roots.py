@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
 from asyncua import ua
+from asyncua.client.ua_client import UaClientState
 from asyncua.common.node import Node
 from asyncua.server.server import Server
 from asyncua.ua.object_ids import ObjectIds
@@ -79,6 +82,63 @@ async def test_default_browse_root_is_objects() -> None:
     client = OpcUaClient("opc.tcp://localhost:4840")
     roots = await client._resolve_browse_roots()
     assert [root.nodeid for root in roots] == [ua.NodeId(ua.Int32(ObjectIds.ObjectsFolder))]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("concurrency", [1, 16])
+async def test_reconnect_restores_reads_and_native_subscription(
+    browse_server: tuple[Server, str], concurrency: int
+) -> None:
+    server, endpoint = browse_server
+    namespace = ua.Int16(await server.get_namespace_index("urn:browse-roots"))
+    temperature = server.get_node(ua.NodeId(ua.String("Temperature"), namespace))
+    initial_value = asyncio.Event()
+    changed_value = asyncio.Event()
+    reconnected = asyncio.Event()
+
+    class Handler:
+        def datachange_notification(self, node: Node, value: Any, data: Any) -> None:
+            if value == 42.0:
+                initial_value.set()
+            if value == 43.0:
+                changed_value.set()
+
+    async def on_reconnect() -> None:
+        reconnected.set()
+
+    client = OpcUaClient(
+        endpoint,
+        browse_concurrency=concurrency,
+        connection_monitor_interval_seconds=1,
+        reconnect_request_timeout_seconds=2,
+    )
+    client.add_reconnect_listener(on_reconnect)
+    await client.connect()
+    reads: list[asyncio.Task[list[ua.DataValue]]] = []
+    try:
+        subscription = await client.create_datachange_subscription(50, Handler())
+        await client.subscribe_data_changes(subscription, [temperature.nodeid.to_string()])
+        await asyncio.wait_for(initial_value.wait(), timeout=5)
+        transport = client._client.uaclient
+        protocol = transport.protocol
+        assert protocol is not None
+        assert protocol.transport is not None
+        async with transport.subscribe_state() as states:
+            protocol.transport.abort()
+            await states.wait_for_state(UaClientState.RECONNECTING, timeout=5)
+            reads = [asyncio.create_task(client.read_data_values([temperature.nodeid.to_string()])) for _ in range(20)]
+            await states.wait_for_state(UaClientState.CONNECTED, timeout=5)
+        results = await asyncio.wait_for(asyncio.gather(*reads), timeout=5)
+        assert all(result[0].Value is not None and result[0].Value.Value == 42.0 for result in results)
+        await asyncio.wait_for(reconnected.wait(), timeout=5)
+        assert client.get_connection_snapshot().state == "Connected"
+        await temperature.write_value(43.0)
+        await asyncio.wait_for(changed_value.wait(), timeout=5)
+    finally:
+        for task in reads:
+            task.cancel()
+        await asyncio.gather(*reads, return_exceptions=True)
+        await client.disconnect()
 
 
 @pytest.mark.asyncio

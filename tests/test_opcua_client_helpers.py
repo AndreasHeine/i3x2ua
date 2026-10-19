@@ -11,6 +11,8 @@ import pytest
 from asyncua import ua
 from asyncua.client.client import Client
 from asyncua.client.ua_client import UaClient, UaClientState
+from asyncua.common.subscription import Subscription
+from asyncua.common.utils import Buffer
 from asyncua.ua.attribute_ids import AttributeIds
 from asyncua.ua.status_codes import StatusCodes
 from asyncua.ua.uaerrors import UaStatusCodeError
@@ -1265,3 +1267,296 @@ async def test_read_data_values_falls_back_to_per_node_reads_when_batch_fails(
 
     assert fake.batches == [node_ids]
     assert _variant_values(values) == [f"single:{node_id}" for node_id in node_ids]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    [
+        TimeoutError(),
+        ConnectionError("Timed out waiting for client to reconnect (state=channel_open)"),
+        _status_error(StatusCodes.BadTimeout),
+        _status_error(StatusCodes.BadSessionClosed),
+    ],
+)
+async def test_read_data_values_does_not_fan_out_transport_failures(
+    monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> None:
+    client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
+
+    async def fail_batch(nodes: list[Any], attr: AttributeIds) -> list[ua.DataValue]:
+        raise error
+
+    async def unexpected_fallback(node_ids: list[str]) -> list[ua.DataValue]:
+        pytest.fail("A transport failure must not launch per-node reads")
+
+    monkeypatch.setattr(client, "_read_attribute_batch_limited", fail_batch)
+    monkeypatch.setattr(client, "_read_data_values_per_node", unexpected_fallback)
+    with pytest.raises(type(error)):
+        await client.read_data_values(["i=2256", "i=2259"])
+
+
+@pytest.mark.asyncio
+async def test_reconnect_activation_precedes_queued_application_reads(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = OpcUaClient(endpoint="opc.tcp://localhost:4840", browse_concurrency=2)
+    supervised = client._client
+    transport = supervised.uaclient
+    protocol = transport._make_protocol()
+    sent: list[str] = []
+    supervised._supervisor_task = asyncio.current_task()
+    transport.enter_reconnecting()
+
+    async def send(
+        request: Any, timeout: float | None = None, message_type: bytes = ua.MessageType.SecureMessage
+    ) -> Buffer:
+        sent.append(type(request).__name__)
+        return Buffer(b"")
+
+    async def teardown() -> None:
+        pass
+
+    async def activate() -> bool:
+        transport._set_state(UaClientState.SOCKET_OPEN)
+        await asyncio.sleep(0)
+        transport._set_state(UaClientState.CHANNEL_OPEN)
+        await asyncio.sleep(0)
+        await transport._send_request(ua.ActivateSessionRequest())
+        transport._set_state(UaClientState.CONNECTED)
+        return True
+
+    async def finalize(self: Client, reused: bool) -> None:
+        assert reused
+
+    monkeypatch.setattr(protocol, "send_request", send)
+    monkeypatch.setattr(supervised, "_teardown_transport_only", teardown)
+    monkeypatch.setattr(supervised, "_try_reactivate_existing_session", activate)
+    monkeypatch.setattr(Client, "_finalize_reconnect", finalize)
+    reads = [asyncio.create_task(transport._send_request(ua.ReadRequest())) for _ in range(8)]
+    try:
+        await asyncio.sleep(0)
+        assert await asyncio.wait_for(supervised._reconnect_with_backoff(), timeout=1)
+        await asyncio.wait_for(asyncio.gather(*reads), timeout=1)
+        assert sent == ["ActivateSessionRequest"] + ["ReadRequest"] * 8
+        assert client._reconnected_event.is_set()
+        assert client.get_connection_snapshot().state == "Connected"
+        assert supervised.nodes.server_state.session is transport.session
+    finally:
+        for task in reads:
+            task.cancel()
+        await asyncio.gather(*reads, return_exceptions=True)
+        supervised._supervisor_task = None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", [UaClientState.CONNECTING, UaClientState.SOCKET_OPEN, UaClientState.CHANNEL_OPEN])
+async def test_application_requests_wait_for_session_during_reconnect(
+    monkeypatch: pytest.MonkeyPatch, state: UaClientState
+) -> None:
+    client = OpcUaClient(endpoint="opc.tcp://localhost:4840", reconnect_request_timeout_seconds=0.01)
+    supervised = client._client
+    transport = supervised.uaclient
+    protocol = transport._make_protocol()
+    supervised._supervisor_task = asyncio.current_task()
+    transport._set_state(state)
+    sent: list[Any] = []
+
+    async def send(
+        request: Any, timeout: float | None = None, message_type: bytes = ua.MessageType.SecureMessage
+    ) -> Buffer:
+        sent.append(request)
+        return Buffer(b"")
+
+    monkeypatch.setattr(protocol, "send_request", send)
+    try:
+        with pytest.raises(ConnectionError, match="waiting for client to reconnect"):
+            await transport._send_request(ua.ReadRequest())
+        assert not sent
+    finally:
+        supervised._supervisor_task = None
+
+
+@pytest.mark.asyncio
+async def test_application_request_concurrency_is_shared(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = OpcUaClient(endpoint="opc.tcp://localhost:4840", browse_concurrency=2)
+    transport = client._client.uaclient
+    transport._set_state(UaClientState.CONNECTED)
+    protocol = transport._make_protocol()
+    release = asyncio.Event()
+    at_capacity = asyncio.Event()
+    active = 0
+    maximum = 0
+
+    async def send(
+        request: Any, timeout: float | None = None, message_type: bytes = ua.MessageType.SecureMessage
+    ) -> Buffer:
+        nonlocal active, maximum
+        active += 1
+        maximum = max(maximum, active)
+        if active == 2:
+            at_capacity.set()
+        try:
+            await release.wait()
+            return Buffer(b"")
+        finally:
+            active -= 1
+
+    monkeypatch.setattr(protocol, "send_request", send)
+    requests = [asyncio.create_task(transport._send_request(ua.ReadRequest())) for _ in range(6)]
+    try:
+        await asyncio.wait_for(at_capacity.wait(), timeout=1)
+        assert maximum == 2
+    finally:
+        release.set()
+        await asyncio.gather(*requests)
+    assert maximum == 2
+
+
+@pytest.mark.asyncio
+async def test_reconnect_handshake_has_an_overall_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = OpcUaClient(endpoint="opc.tcp://localhost:4840", reconnect_request_timeout_seconds=0.1)
+    client._client.uaclient._make_protocol()
+    client._client.uaclient._set_state(UaClientState.CHANNEL_OPEN)
+
+    async def stalled_activation(self: Client) -> bool:
+        await asyncio.Event().wait()
+        return True
+
+    monkeypatch.setattr(Client, "_try_reactivate_existing_session", stalled_activation)
+    started = time.monotonic()
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(client._client._try_reactivate_existing_session(), timeout=1)
+    assert time.monotonic() - started < 0.5
+    assert client._client.uaclient.state is UaClientState.DISCONNECTED
+    assert client._client.uaclient.protocol is None
+
+
+@pytest.mark.asyncio
+async def test_request_deadline_includes_waiting_for_shared_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = OpcUaClient(endpoint="opc.tcp://localhost:4840", browse_concurrency=1)
+    transport = client._client.uaclient
+    transport._set_state(UaClientState.CONNECTED)
+    protocol = transport._make_protocol()
+    occupied = asyncio.Event()
+    release = asyncio.Event()
+    sends = 0
+
+    async def send(
+        request: Any, timeout: float | None = None, message_type: bytes = ua.MessageType.SecureMessage
+    ) -> Buffer:
+        nonlocal sends
+        sends += 1
+        occupied.set()
+        await release.wait()
+        return Buffer(b"")
+
+    monkeypatch.setattr(protocol, "send_request", send)
+    first = asyncio.create_task(transport._send_request(ua.ReadRequest()))
+    try:
+        await asyncio.wait_for(occupied.wait(), timeout=1)
+        with pytest.raises(TimeoutError):
+            await transport._send_request(ua.ReadRequest(), timeout=0.01)
+        assert sends == 1
+    finally:
+        release.set()
+        await first
+    await transport._send_request(ua.ReadRequest())
+    assert sends == 2
+
+
+@pytest.mark.asyncio
+async def test_publish_does_not_occupy_application_request_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = OpcUaClient(endpoint="opc.tcp://localhost:4840", browse_concurrency=1)
+    transport = client._client.uaclient
+    transport._set_state(UaClientState.CONNECTED)
+    protocol = transport._make_protocol()
+    publishing = asyncio.Event()
+    release = asyncio.Event()
+
+    async def send(
+        request: Any, timeout: float | None = None, message_type: bytes = ua.MessageType.SecureMessage
+    ) -> Buffer:
+        if isinstance(request, ua.PublishRequest):
+            assert timeout == 0
+            publishing.set()
+            await release.wait()
+        return Buffer(b"")
+
+    monkeypatch.setattr(protocol, "send_request", send)
+    publish = asyncio.create_task(transport._send_request(ua.PublishRequest(), timeout=0))
+    try:
+        await asyncio.wait_for(publishing.wait(), timeout=1)
+        await asyncio.wait_for(transport._send_request(ua.ReadRequest()), timeout=0.2)
+    finally:
+        release.set()
+        await publish
+
+
+@pytest.mark.asyncio
+async def test_per_node_transport_failure_cancels_pending_reads(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = OpcUaClient(endpoint="opc.tcp://localhost:4840", browse_concurrency=2)
+    waiting = asyncio.Event()
+    cancelled = asyncio.Event()
+    started: list[str] = []
+
+    class FailingNode:
+        def __init__(self, node_id: str) -> None:
+            self.node_id = node_id
+
+        async def read_data_value(self) -> ua.DataValue:
+            started.append(self.node_id)
+            if self.node_id == "i=1":
+                await waiting.wait()
+                raise TimeoutError()
+            waiting.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+            return ua.DataValue()
+
+    async def limits() -> OpcUaOperationalLimits:
+        return OpcUaOperationalLimits(max_nodes_per_browse=None, max_nodes_per_read=2)
+
+    monkeypatch.setattr(client._client, "get_node", FailingNode)
+    monkeypatch.setattr(client, "get_operational_limits", limits)
+    with pytest.raises(TimeoutError):
+        await client._read_data_values_per_node(["i=1", "i=2", "i=3"])
+    assert started == ["i=1", "i=2"]
+    assert cancelled.is_set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("recreation_fails", [False, True])
+async def test_stalled_subscription_restore_does_not_block_reconnect_completion(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, recreation_fails: bool
+) -> None:
+    client = OpcUaClient(endpoint="opc.tcp://localhost:4840", reconnect_request_timeout_seconds=0.1)
+    supervised = client._client
+    subscription = Subscription(supervised.uaclient.session, ua.CreateSubscriptionParameters())
+    subscription.subscription_id = 1
+    supervised._subscriptions = [subscription]
+    recreated = False
+    cancelled = False
+
+    async def restore() -> None:
+        nonlocal cancelled
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled = True
+
+    async def recreate() -> None:
+        nonlocal recreated
+        recreated = True
+        if recreation_fails:
+            raise ConnectionError("server unavailable")
+
+    monkeypatch.setattr(subscription, "restore", restore)
+    monkeypatch.setattr(subscription, "recreate", recreate)
+    await asyncio.wait_for(supervised._finalize_reconnect(True), timeout=1)
+    assert cancelled
+    assert recreated
+    assert client._reconnected_event.is_set()
+    assert "subscription restore timed out" in caplog.text
+    if recreation_fails:
+        assert "subscription recovery failed" in caplog.text

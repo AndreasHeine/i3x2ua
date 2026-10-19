@@ -79,6 +79,12 @@ location /i3x/instance3/ {
 
 This deployment model routes requests by path to independent instances. For upstream-based load balancing examples, see the Load Balancing section below.
 
+### Separating discovery and subscription traffic
+
+For a deployment example that routes direct REST subscription requests to a
+dedicated single-worker service while discovery uses a separately scalable
+service, see [the discovery/subscription split example](examples/discovery-subscription-split/README.md).
+
 ---
 
 ## Authentication Configuration

@@ -1,0 +1,210 @@
+#!/bin/sh
+set -eu
+
+is_truthy() {
+  case "${1:-}" in
+    1|true|TRUE|yes|YES|on|ON)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+upstream_host="${NGINX_UPSTREAM_HOST:-i3x2ua}"
+upstream_port="${NGINX_UPSTREAM_PORT:-8000}"
+subscription_upstream_host="${NGINX_SUBSCRIPTION_UPSTREAM_HOST:-$upstream_host}"
+subscription_upstream_port="${NGINX_SUBSCRIPTION_UPSTREAM_PORT:-$upstream_port}"
+server_name="${NGINX_SERVER_NAME:-_}"
+http_port="${NGINX_HTTP_PORT:-80}"
+https_port="${NGINX_HTTPS_PORT:-443}"
+basic_auth_enabled="${NGINX_BASIC_AUTH_ENABLED:-0}"
+https_enabled="${NGINX_HTTPS_ENABLED:-0}"
+auth_file="/etc/nginx/conf.d/.htpasswd"
+cert_file="${NGINX_SSL_CERTIFICATE:-/etc/nginx/certs/fullchain.pem}"
+key_file="${NGINX_SSL_CERTIFICATE_KEY:-/etc/nginx/certs/privkey.pem}"
+realm="${NGINX_BASIC_AUTH_REALM:-i3x2ua}"
+redirect_https_port="${NGINX_HTTPS_REDIRECT_PORT:-443}"
+
+if [ "$redirect_https_port" = "443" ]; then
+  https_redirect_target="https://\$host\$request_uri"
+else
+  https_redirect_target="https://\$host:$redirect_https_port\$request_uri"
+fi
+
+auth_block=""
+if is_truthy "$basic_auth_enabled"; then
+  if [ -z "${NGINX_BASIC_AUTH_USER:-}" ] || [ -z "${NGINX_BASIC_AUTH_PASSWORD:-}" ]; then
+    echo "NGINX_BASIC_AUTH_USER and NGINX_BASIC_AUTH_PASSWORD are required when NGINX_BASIC_AUTH_ENABLED is enabled" >&2
+    exit 1
+  fi
+
+  htpasswd -cbB "$auth_file" "$NGINX_BASIC_AUTH_USER" "$NGINX_BASIC_AUTH_PASSWORD" >/dev/null
+  auth_block=$(cat <<EOF
+      auth_basic "$realm";
+      auth_basic_user_file $auth_file;
+EOF
+)
+fi
+
+upstream_block=$(cat <<EOF
+upstream i3x2ua_backend {
+  server $upstream_host:$upstream_port;
+  keepalive 32;
+  keepalive_requests 1000;
+  keepalive_timeout 60s;
+}
+EOF
+)
+
+subscription_upstream_block=$(cat <<EOF
+upstream i3x2ua_subscriptions_backend {
+  server $subscription_upstream_host:$subscription_upstream_port;
+  keepalive 32;
+  keepalive_requests 1000;
+  keepalive_timeout 60s;
+}
+EOF
+)
+
+proxy_block=$(cat <<EOF
+      proxy_http_version 1.1;
+      proxy_set_header Host \$host;
+      proxy_set_header X-Real-IP \$remote_addr;
+      proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto \$scheme;
+      proxy_set_header X-Forwarded-Host \$host;
+      proxy_set_header X-Forwarded-Port \$server_port;
+      proxy_set_header Connection "";
+      proxy_connect_timeout 5s;
+      proxy_send_timeout 60s;
+      proxy_read_timeout 60s;
+      proxy_pass http://i3x2ua_backend;
+EOF
+)
+
+subscription_proxy_block=$(cat <<EOF
+      proxy_http_version 1.1;
+      proxy_set_header Host \$host;
+      proxy_set_header X-Real-IP \$remote_addr;
+      proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto \$scheme;
+      proxy_set_header X-Forwarded-Host \$host;
+      proxy_set_header X-Forwarded-Port \$server_port;
+      proxy_set_header Connection "";
+      proxy_connect_timeout 5s;
+      proxy_send_timeout 60s;
+      proxy_read_timeout 60s;
+      proxy_pass http://i3x2ua_subscriptions_backend;
+EOF
+)
+
+subscription_sse_proxy_block=$(cat <<EOF
+      proxy_http_version 1.1;
+      proxy_set_header Host \$host;
+      proxy_set_header X-Real-IP \$remote_addr;
+      proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto \$scheme;
+      proxy_set_header X-Forwarded-Host \$host;
+      proxy_set_header X-Forwarded-Port \$server_port;
+      proxy_set_header Connection "";
+      proxy_buffering off;
+      proxy_cache off;
+      proxy_read_timeout 3600s;
+      proxy_send_timeout 3600s;
+      proxy_pass http://i3x2ua_subscriptions_backend;
+EOF
+)
+
+mkdir -p /etc/nginx/conf.d
+
+if is_truthy "$https_enabled"; then
+  if [ ! -r "$cert_file" ] || [ ! -r "$key_file" ]; then
+    echo "NGINX_HTTPS_ENABLED is enabled but certificate or key file is missing" >&2
+    echo "Expected cert: $cert_file" >&2
+    echo "Expected key:  $key_file" >&2
+    exit 1
+  fi
+
+  cat > /etc/nginx/conf.d/default.conf <<EOF
+$(printf '%s\n' "$upstream_block")
+$(printf '%s\n' "$subscription_upstream_block")
+
+server {
+  listen $http_port;
+  server_name $server_name;
+  return 301 $https_redirect_target;
+}
+
+server {
+  listen $https_port ssl;
+  http2 on;
+  server_name $server_name;
+  ssl_certificate $cert_file;
+  ssl_certificate_key $key_file;
+  ssl_protocols TLSv1.2 TLSv1.3;
+  ssl_prefer_server_ciphers on;
+
+  location = /v1/info {
+$(printf '%s\n' "$proxy_block")
+  }
+
+  location = /v1/subscriptions {
+$(printf '%s\n' "$auth_block")
+$(printf '%s\n' "$subscription_proxy_block")
+  }
+
+  location ^~ /v1/subscriptions/ {
+$(printf '%s\n' "$auth_block")
+$(printf '%s\n' "$subscription_proxy_block")
+  }
+
+  location = /v1/subscriptions/stream {
+$(printf '%s\n' "$auth_block")
+$(printf '%s\n' "$subscription_sse_proxy_block")
+  }
+
+  location / {
+$(printf '%s\n' "$auth_block")
+$(printf '%s\n' "$proxy_block")
+  }
+}
+EOF
+else
+  cat > /etc/nginx/conf.d/default.conf <<EOF
+$(printf '%s\n' "$upstream_block")
+$(printf '%s\n' "$subscription_upstream_block")
+
+server {
+  listen $http_port;
+  server_name $server_name;
+
+  location = /v1/info {
+$(printf '%s\n' "$proxy_block")
+  }
+
+  location = /v1/subscriptions {
+$(printf '%s\n' "$auth_block")
+$(printf '%s\n' "$subscription_proxy_block")
+  }
+
+  location ^~ /v1/subscriptions/ {
+$(printf '%s\n' "$auth_block")
+$(printf '%s\n' "$subscription_proxy_block")
+  }
+
+  location = /v1/subscriptions/stream {
+$(printf '%s\n' "$auth_block")
+$(printf '%s\n' "$subscription_sse_proxy_block")
+  }
+
+  location / {
+$(printf '%s\n' "$auth_block")
+$(printf '%s\n' "$proxy_block")
+  }
+}
+EOF
+fi
+
+exec nginx -g 'daemon off;'

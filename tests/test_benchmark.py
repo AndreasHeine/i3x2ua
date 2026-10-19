@@ -269,6 +269,9 @@ def test_end_to_end_discovery_polling_and_json_report(
         metric["attempts"] for name, metric in metrics.items() if name != "discovery workflow"
     )
     assert metrics["subscription POST /subscriptions/sync"]["updates"] > 0
+    register_bodies = [body for path, body in requests if path.endswith("/subscriptions/register")]
+    assert len(register_bodies) == 1
+    assert "maxDepth" not in register_bodies[0]
     sync_bodies = [body for path, body in requests if path.endswith("/subscriptions/sync")]
     assert "acknowledgeSequence" not in sync_bodies[0]
     assert sync_bodies[1]["acknowledgeSequence"] == 1

@@ -71,14 +71,16 @@ class I3XSubscriptionClient(I3XClient):
         return subscription_id
 
     def register(self, client_id: str, subscription_id: str, element_ids: list[str], max_depth: int | None) -> None:
+        body: dict[str, Any] = {
+            "clientId": client_id,
+            "subscriptionId": subscription_id,
+            "elementIds": element_ids,
+        }
+        if max_depth is not None:
+            body["maxDepth"] = max_depth
         payload = self._post(
             "/subscriptions/register",
-            {
-                "clientId": client_id,
-                "subscriptionId": subscription_id,
-                "elementIds": element_ids,
-                "maxDepth": max_depth,
-            },
+            body,
         )
         _check_bulk_result(payload, "Register monitored items", len(element_ids))
 

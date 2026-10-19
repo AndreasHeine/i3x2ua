@@ -291,9 +291,7 @@ class Supervisor:
                 self.stop_event.wait(self.args.discovery_pause)
 
     def subscription_worker(self, index: int) -> None:
-        command = self._client_command(
-            [*SUBSCRIPTION_COMMAND, "--element-ids", *self.args.element_ids]
-        )
+        command = self._client_command([*SUBSCRIPTION_COMMAND, "--element-ids", *self.args.element_ids])
         stats = self.subscription
         backoff = self.args.restart_backoff
         while not self.stop_event.is_set():

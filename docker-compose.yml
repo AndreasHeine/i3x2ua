@@ -23,8 +23,6 @@ services:
       - "--workers"
       - "1"  # Number of worker processes for uvicorn.
     environment:
-      # I3X_HOST: 0.0.0.0  # Optional host bind for run.py (not used by this compose command).
-      # I3X_PORT: 8000  # Optional app port for run.py (not used by this compose command).
       I3X_OPCUA_ENDPOINT: opc.tcp://opcua.umati.app:4843  # OPC UA server endpoint URL.
       # I3X_OPCUA_USERNAME: ""  # Optional OPC UA username.
       # I3X_OPCUA_PASSWORD: ""  # Optional OPC UA password.
@@ -37,20 +35,10 @@ services:
       I3X_OPCUA_BROWSE_CONCURRENCY: 128  # Max concurrent browse operations.
       # I3X_OPCUA_BROWSE_ROOTS: '["nsu=urn:example:plant;s=Machine1","nsu=urn:example:plant;s=Machine2"]'
       I3X_OPCUA_METADATA_CACHE_TTL_SECONDS: 300  # Metadata cache lifetime in seconds.
-      I3X_OPCUA_CONNECTION_MONITOR_INTERVAL_SECONDS: 5  # asyncua connection watchdog interval in seconds.
-      I3X_OPCUA_RECONNECT_REQUEST_TIMEOUT_SECONDS: 10  # Max wait of a request for a running reconnect.
-      I3X_OPCUA_RECONNECT_MAX_DELAY_SECONDS: 30  # Max backoff between reconnect attempts.
       I3X_MODEL_REFRESH_INTERVAL_SECONDS: 60  # Model refresh cadence in seconds.
-      I3X_MODEL_PRELOAD_ON_STARTUP: 1  # Preload model during startup.
-      I3X_MODEL_PRELOAD_BLOCKING: 0  # Block startup until preload finishes.
-      I3X_FAIL_STARTUP_ON_MODEL_PRELOAD_ERROR: 0  # Fail startup if preload fails.
-      I3X_SUBSCRIPTION_INTERVAL_SECONDS: 2  # Poll interval for subscription updates.
+      I3X_SUBSCRIPTION_INTERVAL_SECONDS: 1  # Poll interval for subscription updates.
       I3X_SUBSCRIPTION_MAX_UPDATES: 10000  # Max queued updates per subscription.
       I3X_SUBSCRIPTION_TTL_SECONDS: 300  # Subscription expiry timeout in seconds.
-      I3X_SUBSCRIPTIONS_INITIAL_VALUES: true  # Seed subscriptions with initial values.
-      I3X_ENABLE_TYPE_BROWSENAME_LOOKUP: 0  # Enable live type browse-name enrichment.
-      I3X_TYPE_BROWSENAME_LOOKUP_TIMEOUT_S: 0.05  # Timeout per type lookup request.
-      I3X_TYPE_BROWSENAME_LOOKUP_MAX: 20  # Max enriched type names per request.
       I3X_LOG_LEVEL: INFO  # Application log level.
       # I3X_CORS_ALLOWED_ORIGINS: "[]"  # JSON array of allowed CORS origins.
       I3X_OTEL_ENABLED: "true"  # Enable OpenTelemetry instrumentation.
@@ -58,10 +46,6 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318  # Jaeger OTLP/HTTP endpoint on the compose network.
       I3X_ENABLE_MCP: 1  # Enable MCP endpoints and tool catalog.
       I3X_ENABLE_WRITES: 1  # Enable write operations.
-      # I3X_SKIP_OPCUA_CONNECT: 0  # Skip OPC UA connect for dev/testing.
-      # I3X_DEBUG_SUBSCRIPTION_STREAM: 0  # Enable verbose SSE stream diagnostics.
-      # I3X_RELOAD: 0  # Auto-reload toggle for run.py.
-      # I3X_UVICORN_LOOP: ""  # Optional uvicorn loop policy override.
       I3X_OPCUA_CERTS_DIR: ./certs  # Host cert directory reference for documentation parity.
     volumes:
       - ./certs:/app/certs:ro

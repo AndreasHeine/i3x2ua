@@ -13,6 +13,7 @@ Usage:
     python run_stresstest.py
     python run_stresstest.py --discovery 20 --subscriptions 50 --duration 600
     python run_stresstest.py --base-url https://127.0.0.1:8443/v1 --insecure --username admin --password PASSWORD
+    python run_stresstest.py --subscriptions 50 --element-ids property-0123456789abcdef
 
 TLS verification and HTTP Basic Auth options apply to all clients and the latency probe.
 Use --insecure only for trusted test endpoints with self-signed certificates.
@@ -50,15 +51,16 @@ DISCOVERY_COMMAND = [
 ]
 DISCOVERY_CONCURRENT_INSTANCES = 10
 
+DEFAULT_SUBSCRIPTION_ELEMENT_IDS = [
+    "property-dd1a9a05d251425f",
+    "property-7fe339112a5b01e4",
+]
 SUBSCRIPTION_COMMAND = [
     str(REPO_ROOT / "samples" / "subscription_client.py"),
     "--mode",
     "poll",
     "--poll-interval",
     "3",
-    "--element-ids",
-    "property-dd1a9a05d251425f",
-    "property-7fe339112a5b01e4",
 ]
 SUBSCRIPTION_CONCURRENT_INSTANCES = 10
 
@@ -289,7 +291,9 @@ class Supervisor:
                 self.stop_event.wait(self.args.discovery_pause)
 
     def subscription_worker(self, index: int) -> None:
-        command = self._client_command(SUBSCRIPTION_COMMAND)
+        command = self._client_command(
+            [*SUBSCRIPTION_COMMAND, "--element-ids", *self.args.element_ids]
+        )
         stats = self.subscription
         backoff = self.args.restart_backoff
         while not self.stop_event.is_set():
@@ -415,6 +419,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--subscriptions", type=int, default=SUBSCRIPTION_CONCURRENT_INSTANCES, help="Subscription instances"
     )
+    parser.add_argument(
+        "--element-ids",
+        nargs="+",
+        default=DEFAULT_SUBSCRIPTION_ELEMENT_IDS,
+        help="Element IDs monitored by each subscription client",
+    )
     parser.add_argument("--duration", type=float, default=0, help="Test duration in seconds (0 = endless)")
     parser.add_argument("--ramp-up", type=float, default=0.2, help="Delay between starting workers in seconds")
     parser.add_argument("--report-interval", type=float, default=10.0, help="Seconds between statistics reports")
@@ -436,7 +446,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--probe-timeout", type=float, default=10.0, help="GET /info probe timeout in seconds")
     parser.add_argument("--slow-probe", type=float, default=1.0, help="Log probes slower than N seconds")
     parser.add_argument("--shutdown-grace", type=float, default=10.0, help="Seconds to let clients clean up on stop")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if any(not element_id.strip() for element_id in args.element_ids):
+        parser.error("--element-ids must not contain empty IDs")
+    args.element_ids = list(dict.fromkeys(args.element_ids))
+    return args
 
 
 def main() -> int:

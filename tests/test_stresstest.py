@@ -38,12 +38,53 @@ def test_workers_forward_connection_options(monkeypatch: pytest.MonkeyPatch, wor
     getattr(supervisor, worker)(0)
 
     base_command = (
-        run_stresstest.DISCOVERY_COMMAND if worker == "discovery_worker" else run_stresstest.SUBSCRIPTION_COMMAND
+        run_stresstest.DISCOVERY_COMMAND
+        if worker == "discovery_worker"
+        else [
+            *run_stresstest.SUBSCRIPTION_COMMAND,
+            "--element-ids",
+            *run_stresstest.DEFAULT_SUBSCRIPTION_ELEMENT_IDS,
+        ]
     )
     expected = [*base_command, "--base-url", options[1], "--timeout", "7.0"]
     if authenticated:
         expected += ["--insecure", "--username", "test-user", "--password", "test-password"]
     spawn.assert_called_once_with(expected, capture_stdout=worker == "subscription_worker")
+
+
+def test_subscription_worker_uses_configured_element_ids(monkeypatch: pytest.MonkeyPatch) -> None:
+    supervisor = make_supervisor(
+        monkeypatch,
+        "--element-ids",
+        "property-custom",
+        "property-custom",
+        "property-other",
+    )
+    process = Mock(stdout=io.StringIO(""), stderr=io.StringIO(""), returncode=0)
+    process.wait.side_effect = supervisor.stop_event.set
+    spawn = Mock(return_value=process)
+    monkeypatch.setattr(supervisor, "_spawn", spawn)
+
+    supervisor.subscription_worker(0)
+
+    expected = [
+        *run_stresstest.SUBSCRIPTION_COMMAND,
+        "--element-ids",
+        "property-custom",
+        "property-other",
+        "--base-url",
+        run_stresstest.BASE_URL,
+        "--timeout",
+        "10.0",
+    ]
+    spawn.assert_called_once_with(expected, capture_stdout=True)
+
+
+def test_element_ids_reject_empty_values(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "argv", ["run_stresstest.py", "--element-ids", " "])
+    with pytest.raises(SystemExit) as exc:
+        run_stresstest._parse_args()
+    assert exc.value.code == 2
 
 
 @pytest.mark.parametrize("insecure", [False, True])

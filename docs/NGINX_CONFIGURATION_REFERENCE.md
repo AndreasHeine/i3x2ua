@@ -486,7 +486,12 @@ http {
     'urt="$upstream_response_time" conn=$connection '
     'conn_reqs=$connection_requests';
 
-  access_log /dev/stdout upstream_timing;
+  map $status $log_non_200 {
+    200     0;
+    default 1;
+  }
+
+  access_log /dev/stdout upstream_timing if=$log_non_200;
   sendfile on;
   tcp_nopush on;
   keepalive_timeout 65s;

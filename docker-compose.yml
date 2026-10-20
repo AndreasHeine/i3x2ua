@@ -22,6 +22,9 @@ services:
       - "*"
       - "--workers"
       - "1"  # Number of worker processes for uvicorn.
+      - "--no-access-log"
+      - "--timeout-keep-alive"
+      - "75" # Raise keep-alive timeout above Nginx's 60s
     environment:
       I3X_OPCUA_ENDPOINT: opc.tcp://opcua.umati.app:4843  # OPC UA server endpoint URL.
       # I3X_OPCUA_USERNAME: ""  # Optional OPC UA username.
@@ -34,12 +37,12 @@ services:
       # I3X_OPCUA_SERVER_CERT_PATH: ""  # Optional pinned server certificate path.
       I3X_OPCUA_BROWSE_CONCURRENCY: 128  # Max concurrent browse operations.
       # I3X_OPCUA_BROWSE_ROOTS: '["nsu=urn:example:plant;s=Machine1","nsu=urn:example:plant;s=Machine2"]'
-      I3X_OPCUA_METADATA_CACHE_TTL_SECONDS: 300  # Metadata cache lifetime in seconds.
+      I3X_OPCUA_METADATA_CACHE_TTL_SECONDS: 120  # Metadata cache lifetime in seconds.
       I3X_MODEL_REFRESH_INTERVAL_SECONDS: 60  # Model refresh cadence in seconds.
       I3X_SUBSCRIPTION_INTERVAL_SECONDS: 1  # Poll interval for subscription updates.
       I3X_SUBSCRIPTION_MAX_UPDATES: 10000  # Max queued updates per subscription.
-      I3X_SUBSCRIPTION_TTL_SECONDS: 300  # Subscription expiry timeout in seconds.
-      I3X_LOG_LEVEL: INFO  # Application log level.
+      I3X_SUBSCRIPTION_TTL_SECONDS: 120  # Subscription expiry timeout in seconds.
+      I3X_LOG_LEVEL: WARN  # Application log level.
       # I3X_CORS_ALLOWED_ORIGINS: "[]"  # JSON array of allowed CORS origins.
       I3X_OTEL_ENABLED: "true"  # Enable OpenTelemetry instrumentation.
       OTEL_SERVICE_NAME: i3x2ua  # OpenTelemetry service name.

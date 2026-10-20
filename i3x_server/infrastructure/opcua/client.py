@@ -872,11 +872,24 @@ class OpcUaClient:
 
     async def _read_node_info(self, node: Any, parent_node_id: str | None) -> OpcUaNodeInfo:
         node_id = node.nodeid.to_string()
-        browse_name_obj, display_name_obj, node_class_obj = await asyncio.gather(
-            node.read_browse_name(),
-            node.read_display_name(),
-            node.read_node_class(),
+        attribute_values = await self._read_attribute_pairs(
+            [
+                (node, AttributeIds.BrowseName),
+                (node, AttributeIds.DisplayName),
+                (node, AttributeIds.NodeClass),
+                (node, AttributeIds.Description),
+            ]
         )
+        browse_name_obj, display_name_obj, node_class_value, description_value = (
+            self._extract_attribute_value(value) for value in attribute_values
+        )
+        if browse_name_obj is None or display_name_obj is None:
+            raise ValueError(f"Cannot read required node names for OPC UA node {node_id}")
+        node_class_obj = self._coerce_node_class(node_class_value)
+        if node_class_obj is None:
+            raise ValueError(f"Cannot read node class for OPC UA node {node_id}")
+        description_text = getattr(description_value, "Text", None)
+        description = description_text if isinstance(description_text, str) and description_text.strip() else None
 
         data_type: str | None = None
         type_definition_id: str | None = None
@@ -895,7 +908,6 @@ class OpcUaClient:
                     node_id,
                     exc_info=True,
                 )
-
         event_notifier = bool(await node.read_event_notifier()) if node_class_obj == NodeClass.Object else False
 
         return OpcUaNodeInfo(
@@ -907,6 +919,7 @@ class OpcUaClient:
             data_type=data_type,
             type_definition_id=type_definition_id,
             event_notifier=event_notifier,
+            description=description,
         )
 
     async def _read_node_infos_limited(self, entries: list[tuple[Any, str | None]]) -> list[OpcUaNodeInfo]:
@@ -922,12 +935,17 @@ class OpcUaClient:
             nodes = [node for node, _ in entry_batch]
             parent_by_node_id = {node.nodeid.to_string(): parent_node_id for node, parent_node_id in entry_batch}
 
-            attributes_per_node = 3
+            attributes_per_node = 4
             try:
                 node_attributes = [
                     (node, attr)
                     for node in nodes
-                    for attr in (AttributeIds.BrowseName, AttributeIds.DisplayName, AttributeIds.NodeClass)
+                    for attr in (
+                        AttributeIds.BrowseName,
+                        AttributeIds.DisplayName,
+                        AttributeIds.NodeClass,
+                        AttributeIds.Description,
+                    )
                 ]
                 attribute_values = await self._read_attribute_pairs(node_attributes)
             except Exception:
@@ -944,6 +962,7 @@ class OpcUaClient:
             object_or_variable_nodes: list[Any] = []
             object_nodes: list[Any] = []
             mandatory_by_node_id: dict[str, tuple[str, str, NodeClass]] = {}
+            descriptions_by_node_id: dict[str, str] = {}
             fallback_entries: list[tuple[Any, str | None]] = []
 
             for index, node in enumerate(nodes):
@@ -952,7 +971,11 @@ class OpcUaClient:
                 browse_name_value = self._extract_attribute_value(attribute_values[start])
                 display_name_value = self._extract_attribute_value(attribute_values[start + 1])
                 node_class_value = self._extract_attribute_value(attribute_values[start + 2])
+                description_value = self._extract_attribute_value(attribute_values[start + 3])
                 node_class = self._coerce_node_class(node_class_value)
+                description = getattr(description_value, "Text", None)
+                if isinstance(description, str) and description.strip():
+                    descriptions_by_node_id[node_id] = description
 
                 if node_class is None or browse_name_value is None or display_name_value is None:
                     fallback_entries.append((node, parent_by_node_id[node_id]))
@@ -1009,6 +1032,7 @@ class OpcUaClient:
                         data_type=data_types_by_node_id.get(node_id),
                         type_definition_id=_normalize_type_definition_id(type_definitions_by_node_id.get(node_id)),
                         event_notifier=bool(event_notifiers_by_node_id.get(node_id, False)),
+                        description=descriptions_by_node_id.get(node_id),
                     )
                 )
 

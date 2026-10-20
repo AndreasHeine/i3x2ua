@@ -30,6 +30,22 @@ def test_relationship_type_helpers_use_model_namespaces() -> None:
         assert [item.model_dump() for item in helper(model)] == expected
 
 
+def test_object_instance_metadata_uses_node_description_or_fallback() -> None:
+    model = _sample_model()
+    node = model.nodes_by_id["asset-root"]
+
+    for helper in (v1._build_object_instance_metadata, object_helpers._build_object_instance_metadata):
+        node.metadata["description"] = " OPC UA description "
+        metadata = helper(model, node, None, "nsu=urn:example;s=Root")
+        assert metadata is not None
+        assert metadata.description == " OPC UA description "
+
+        node.metadata["description"] = " "
+        metadata = helper(model, node, None, "nsu=urn:example;s=Root")
+        assert metadata is not None
+        assert metadata.description == "Derived from model node Root"
+
+
 def _sample_model() -> BuildResult:
     root = ModelNode(
         id="asset-root",

@@ -25,6 +25,7 @@ class OpcUaNodeInfo:
     type_definition_id: str | None = None
     event_notifier: bool = False
     outgoing_references: list[OpcUaReferenceInfo] = field(default_factory=list)
+    description: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

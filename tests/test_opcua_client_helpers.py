@@ -519,6 +519,90 @@ async def test_multi_attribute_read_batches_different_attributes() -> None:
 
 
 @pytest.mark.asyncio
+async def test_node_description_is_read_with_required_node_attributes(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
+    client._limits_cache = OpcUaOperationalLimits(
+        max_nodes_per_browse=10,
+        max_nodes_per_read=10,
+        max_nodes_per_history_read_data=None,
+    )
+    node = SimpleNamespace(nodeid=ua.NodeId.from_string("ns=2;s=Device"))
+    attribute_batches: list[list[AttributeIds]] = []
+    values_by_attribute = {
+        AttributeIds.BrowseName: ua.QualifiedName("Device"),
+        AttributeIds.DisplayName: ua.LocalizedText("Device"),
+        AttributeIds.NodeClass: ua.NodeClass.Object,
+        AttributeIds.Description: ua.LocalizedText("Device description"),
+        AttributeIds.EventNotifier: 0,
+    }
+
+    async def read_attributes(
+        node_attributes: list[tuple[Any, AttributeIds]], batch_size: int | None = None
+    ) -> list[ua.DataValue]:
+        del batch_size
+        attribute_batches.append([attribute for _, attribute in node_attributes])
+        return [
+            ua.DataValue(ua.Variant(values_by_attribute[attribute]))
+            for _, attribute in node_attributes
+        ]
+
+    async def read_type_definitions(nodes: list[Any]) -> dict[str, str | None]:
+        del nodes
+        return {}
+
+    monkeypatch.setattr(client, "_read_attribute_pairs", read_attributes)
+    monkeypatch.setattr(client, "_read_type_definitions", read_type_definitions)
+
+    result = await client._read_node_infos_limited([(node, None)])
+
+    assert attribute_batches == [
+        [
+            AttributeIds.BrowseName,
+            AttributeIds.DisplayName,
+            AttributeIds.NodeClass,
+            AttributeIds.Description,
+        ],
+        [AttributeIds.EventNotifier],
+    ]
+    assert result[0].description == "Device description"
+
+
+@pytest.mark.asyncio
+async def test_fallback_node_description_is_read_with_node_names(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
+    node = SimpleNamespace(nodeid=ua.NodeId.from_string("ns=2;s=Reset"))
+    requested_attributes: list[AttributeIds] = []
+    values_by_attribute = {
+        AttributeIds.BrowseName: ua.QualifiedName("Reset"),
+        AttributeIds.DisplayName: ua.LocalizedText("Reset"),
+        AttributeIds.NodeClass: ua.NodeClass.Method,
+        AttributeIds.Description: ua.LocalizedText("Reset method"),
+    }
+
+    async def read_attributes(
+        node_attributes: list[tuple[Any, AttributeIds]], batch_size: int | None = None
+    ) -> list[ua.DataValue]:
+        del batch_size
+        requested_attributes.extend(attribute for _, attribute in node_attributes)
+        return [
+            ua.DataValue(ua.Variant(values_by_attribute[attribute]))
+            for _, attribute in node_attributes
+        ]
+
+    monkeypatch.setattr(client, "_read_attribute_pairs", read_attributes)
+
+    result = await client._read_node_info(node, None)
+
+    assert requested_attributes == [
+        AttributeIds.BrowseName,
+        AttributeIds.DisplayName,
+        AttributeIds.NodeClass,
+        AttributeIds.Description,
+    ]
+    assert result.description == "Reset method"
+
+
+@pytest.mark.asyncio
 async def test_subscription_capabilities_read_as_one_batch() -> None:
     class _ReadUaClient:
         def __init__(self) -> None:

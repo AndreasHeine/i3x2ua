@@ -836,10 +836,14 @@ def _build_object_instance_metadata(
         if isinstance(indexed_composition_parent, str):
             composition_parent_id = indexed_composition_parent
 
+    description = node.metadata.get("description")
+    if not isinstance(description, str) or not description.strip():
+        description = f"Derived from model node {node.name}"
+
     return ObjectInstanceMetadata(
         typeNamespaceUri=type_namespace_uri,
         sourceTypeId=source_type_id_expanded,
-        description=f"Derived from model node {node.name}",
+        description=description,
         compositionParentId=composition_parent_id,
         relationships=relationships,
     )

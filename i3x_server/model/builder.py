@@ -417,6 +417,7 @@ class ModelBuilder:
                     "uaTypeNodeId": opc_node.type_definition_id,
                     "namespaceUri": namespace_uri,
                     "appliedProfileIds": applied_profile_ids,
+                    **({"description": opc_node.description} if opc_node.description is not None else {}),
                 },
             )
             nodes_by_id[mapped.id] = mapped

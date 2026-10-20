@@ -91,6 +91,28 @@ async def test_model_builder_shares_applied_profile_lists() -> None:
 
 
 @pytest.mark.asyncio
+async def test_model_builder_maps_opcua_description_to_metadata() -> None:
+    class FakeOpcuaWithDescription:
+        async def browse_tree(self) -> list[OpcUaNodeInfo]:
+            return [
+                OpcUaNodeInfo(
+                    node_id="ns=2;s=Machine",
+                    parent_node_id=None,
+                    browse_name="Machine",
+                    display_name="Machine",
+                    node_class="Object",
+                    data_type=None,
+                    description="Machine description",
+                )
+            ]
+
+    model = await ModelBuilder(cast(OpcUaClientProtocol, FakeOpcuaWithDescription())).build()
+
+    node = next(iter(model.nodes_by_id.values()))
+    assert node.metadata["description"] == "Machine description"
+
+
+@pytest.mark.asyncio
 async def test_model_builder_shares_hierarchy_parent_index() -> None:
     for client in (FakeOpcuaForBuilder(), FakeOpcuaWithOutgoingReferences(), FakeOpcuaWithGraphReference()):
         model = await ModelBuilder(cast(OpcUaClientProtocol, client)).build()

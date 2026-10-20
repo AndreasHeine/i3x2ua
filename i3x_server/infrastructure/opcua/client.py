@@ -402,8 +402,7 @@ class OpcUaClient:
         if incident is not None:
             started_at, suppressed_events = incident
             logger.info(
-                "OPC UA metadata refresh recovered endpoint=%s key=%s stale_duration_s=%.3f "
-                "suppressed_events=%d",
+                "OPC UA metadata refresh recovered endpoint=%s key=%s stale_duration_s=%.3f suppressed_events=%d",
                 self._endpoint,
                 key,
                 perf_counter() - started_at,

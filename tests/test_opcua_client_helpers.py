@@ -541,10 +541,7 @@ async def test_node_description_is_read_with_required_node_attributes(monkeypatc
     ) -> list[ua.DataValue]:
         del batch_size
         attribute_batches.append([attribute for _, attribute in node_attributes])
-        return [
-            ua.DataValue(ua.Variant(values_by_attribute[attribute]))
-            for _, attribute in node_attributes
-        ]
+        return [ua.DataValue(ua.Variant(values_by_attribute[attribute])) for _, attribute in node_attributes]
 
     async def read_type_definitions(nodes: list[Any]) -> dict[str, str | None]:
         del nodes
@@ -584,10 +581,7 @@ async def test_fallback_node_description_is_read_with_node_names(monkeypatch: py
     ) -> list[ua.DataValue]:
         del batch_size
         requested_attributes.extend(attribute for _, attribute in node_attributes)
-        return [
-            ua.DataValue(ua.Variant(values_by_attribute[attribute]))
-            for _, attribute in node_attributes
-        ]
+        return [ua.DataValue(ua.Variant(values_by_attribute[attribute])) for _, attribute in node_attributes]
 
     monkeypatch.setattr(client, "_read_attribute_pairs", read_attributes)
 

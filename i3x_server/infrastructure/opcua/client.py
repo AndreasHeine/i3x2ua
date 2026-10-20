@@ -302,6 +302,7 @@ class OpcUaClient:
         self._namespace_infos_cache: tuple[float, list[OpcUaNamespaceInfo]] | None = None
         self._object_types_cache: tuple[float, list[OpcUaObjectTypeInfo]] | None = None
         self._metadata_load_tasks: dict[str, asyncio.Future[Any]] = {}
+        self._stale_metadata_incidents: dict[str, tuple[float, int]] = {}
         self._reference_type_supertypes_cache: dict[str, tuple[float, list[str]]] = {}
         self._type_definition_hierarchy_cache: dict[str, tuple[float, list[OpcUaTypeDefinitionInfo]]] = {}
         self._runtime_metrics = OpcUaRuntimeMetrics()
@@ -375,21 +376,39 @@ class OpcUaClient:
             return await self._coalesce_metadata_load(key, loader)
         cached_at, cached_value = cached
         if not self._is_metadata_cache_entry_fresh(cached_at):
-            logger.warning(
-                "OPC UA serving stale metadata while refreshing endpoint=%s key=%s age_s=%s ttl_s=%s",
-                self._endpoint,
-                key,
-                "invalidated" if cached_at == _METADATA_INVALIDATED_AT else f"{perf_counter() - cached_at:.3f}",
-                self._metadata_cache_ttl_seconds,
-            )
+            incident = self._stale_metadata_incidents.get(key)
+            if incident is None:
+                self._stale_metadata_incidents[key] = (perf_counter(), 0)
+                logger.warning(
+                    "OPC UA serving stale metadata while refreshing endpoint=%s key=%s age_s=%s ttl_s=%s",
+                    self._endpoint,
+                    key,
+                    "invalidated" if cached_at == _METADATA_INVALIDATED_AT else f"{perf_counter() - cached_at:.3f}",
+                    self._metadata_cache_ttl_seconds,
+                )
+            else:
+                started_at, suppressed_events = incident
+                self._stale_metadata_incidents[key] = (started_at, suppressed_events + 1)
             self._start_metadata_load(key, loader)
         return cached_value
 
     def _finish_metadata_load(self, key: str, task: asyncio.Future[Any]) -> None:
         if self._metadata_load_tasks.get(key) is task:
             del self._metadata_load_tasks[key]
-        if not task.cancelled():
-            task.exception()
+        if task.cancelled() or task.exception() is not None:
+            return
+
+        incident = self._stale_metadata_incidents.pop(key, None)
+        if incident is not None:
+            started_at, suppressed_events = incident
+            logger.info(
+                "OPC UA metadata refresh recovered endpoint=%s key=%s stale_duration_s=%.3f "
+                "suppressed_events=%d",
+                self._endpoint,
+                key,
+                perf_counter() - started_at,
+                suppressed_events,
+            )
 
     async def resolve_reference_type_supertype_browse_names(self, reference_type_id: str) -> list[str]:
         if not isinstance(reference_type_id, str) or not reference_type_id:

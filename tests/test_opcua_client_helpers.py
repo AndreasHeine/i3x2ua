@@ -795,23 +795,38 @@ async def test_expired_metadata_cache_serves_stale_while_one_background_reload_r
 
     monkeypatch.setattr(client, "_load_object_types", _slow_load)
 
-    with caplog.at_level("WARNING"):
-        results = await asyncio.wait_for(asyncio.gather(*(client.get_object_types() for _ in range(20))), 1)
+    caplog.set_level("INFO", logger="i3x_server.infrastructure.opcua.client")
+    results = await asyncio.wait_for(asyncio.gather(*(client.get_object_types() for _ in range(20))), 1)
 
     stale_logs = [r for r in caplog.records if "serving stale metadata" in r.getMessage()]
-    assert len(stale_logs) == 20
+    assert len(stale_logs) == 1
     assert all(r.levelname == "WARNING" and "key=object_types" in r.getMessage() for r in stale_logs)
     assert all(cast(list[Any], result) == ["stale"] for result in results)
     assert calls == 1
     release.set()
     await cast(Any, client)._metadata_load_tasks["object_types"]
+    await asyncio.sleep(0)
     assert cast(list[Any], await client.get_object_types()) == ["fresh"]
     assert calls == 1
     assert cast(Any, client)._metadata_load_tasks == {}
+    recovered_logs = [r for r in caplog.records if "metadata refresh recovered" in r.getMessage()]
+    assert len(recovered_logs) == 1
+    assert "suppressed_events=19" in recovered_logs[0].getMessage()
+    assert cast(Any, client)._stale_metadata_incidents == {}
+
+    cast(Any, client)._object_types_cache = (-1e9, ["stale-again"])
+    assert cast(list[Any], await client.get_object_types()) == ["stale-again"]
+    await cast(Any, client)._metadata_load_tasks["object_types"]
+    await asyncio.sleep(0)
+    assert len([r for r in caplog.records if "serving stale metadata" in r.getMessage()]) == 2
+    assert len([r for r in caplog.records if "metadata refresh recovered" in r.getMessage()]) == 2
 
 
 @pytest.mark.asyncio
-async def test_failed_background_metadata_reload_keeps_serving_stale_value(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_failed_background_metadata_reload_keeps_serving_stale_value(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
     cast(Any, client)._namespace_infos_cache = (-1e9, ["stale"])
 
@@ -820,10 +835,18 @@ async def test_failed_background_metadata_reload_keeps_serving_stale_value(monke
 
     monkeypatch.setattr(client, "_load_namespace_infos", _failing_load)
 
+    caplog.set_level("INFO", logger="i3x_server.infrastructure.opcua.client")
     assert cast(list[Any], await client.get_namespace_infos()) == ["stale"]
     with pytest.raises(RuntimeError):
         await cast(Any, client)._metadata_load_tasks["namespace_infos"]
     assert cast(list[Any], await client.get_namespace_infos()) == ["stale"]
+    with pytest.raises(RuntimeError):
+        await cast(Any, client)._metadata_load_tasks["namespace_infos"]
+
+    stale_logs = [r for r in caplog.records if "serving stale metadata" in r.getMessage()]
+    assert len(stale_logs) == 1
+    assert cast(Any, client)._stale_metadata_incidents["namespace_infos"][1] == 1
+    assert not [r for r in caplog.records if "metadata refresh recovered" in r.getMessage()]
 
 
 @pytest.mark.asyncio

@@ -80,6 +80,5 @@ discovery worker processes, but it does not share OPC UA connections or
 subscription state across services. It increases OPC UA client connections and
 does not provide subscription recovery after the dedicated service restarts.
 
-Use this example as a stepping stone while designing a proper shared
-subscription manager. Monitor OPC UA server capacity and compare load before
+Monitor OPC UA server capacity and compare load before
 increasing discovery workers.

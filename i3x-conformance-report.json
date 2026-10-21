@@ -41,7 +41,7 @@
     "serverName": "The i3X API Gateway for OPC UA",
     "notes": [],
     "docsUrl": "https://www.i3x.dev/sdk/category/server-developers",
-    "finishedAt": "2026-10-16T18:21:20.426Z"
+    "finishedAt": "2026-10-21T06:17:19.989Z"
   },
   "results": [
     {
@@ -54,7 +54,7 @@
       "refTitle": "Implementation Guide § Server Capabilities Endpoints (GET /info)",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#server-capabilities-endpoints",
       "status": "pass",
-      "message": "HTTP 200 in 8ms",
+      "message": "HTTP 200 in 7ms",
       "ms": 8,
       "index": 1,
       "total": 60
@@ -100,7 +100,7 @@
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#transport--encoding",
       "status": "pass",
       "message": "gzip honored (169 compressed bytes)",
-      "ms": 5,
+      "ms": 4,
       "index": 4,
       "total": 60
     },
@@ -145,7 +145,7 @@
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#namespace-endpoints",
       "status": "pass",
       "message": "3 namespace(s)",
-      "ms": 3,
+      "ms": 2,
       "index": 7,
       "total": 60
     },
@@ -188,7 +188,7 @@
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#object-type-endpoints",
       "status": "pass",
       "message": "333 type(s)",
-      "ms": 32,
+      "ms": 31,
       "index": 10,
       "total": 60
     },
@@ -216,7 +216,7 @@
       "refTitle": "Implementation Guide § Object Type Endpoints",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#object-type-endpoints",
       "status": "pass",
-      "ms": 18,
+      "ms": 17,
       "index": 12,
       "total": 60
     },
@@ -230,7 +230,7 @@
       "refTitle": "Implementation Guide § Response Format — Bulk Response",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#bulk-response",
       "status": "pass",
-      "ms": 4,
+      "ms": 5,
       "index": 13,
       "total": 60
     },
@@ -244,7 +244,7 @@
       "refTitle": "Implementation Guide § Response Format — Bulk Response",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#bulk-response",
       "status": "pass",
-      "ms": 3,
+      "ms": 2,
       "index": 14,
       "total": 60
     },
@@ -259,7 +259,7 @@
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#relationship-type-endpoints",
       "status": "pass",
       "message": "4 relationship type(s)",
-      "ms": 2,
+      "ms": 3,
       "index": 15,
       "total": 60
     },
@@ -287,7 +287,7 @@
       "refTitle": "Implementation Guide § Relationship Type Endpoints",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#relationship-type-endpoints",
       "status": "pass",
-      "ms": 3,
+      "ms": 2,
       "index": 17,
       "total": 60
     },
@@ -360,7 +360,7 @@
       "refTitle": "Implementation Guide § Object Endpoints",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#object-endpoints",
       "status": "pass",
-      "ms": 4,
+      "ms": 5,
       "index": 22,
       "total": 60
     },
@@ -374,7 +374,7 @@
       "refTitle": "Implementation Guide § Object Endpoints",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#object-endpoints",
       "status": "pass",
-      "ms": 19,
+      "ms": 20,
       "index": 23,
       "total": 60
     },
@@ -388,7 +388,7 @@
       "refTitle": "Implementation Guide § Object Endpoints",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#object-endpoints",
       "status": "pass",
-      "ms": 4,
+      "ms": 3,
       "index": 24,
       "total": 60
     },
@@ -403,7 +403,7 @@
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#object-endpoints",
       "status": "pass",
       "message": "47 edge(s) discovered",
-      "ms": 16,
+      "ms": 8,
       "index": 25,
       "total": 60
     },
@@ -418,7 +418,7 @@
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#relationship-semantics",
       "status": "pass",
       "message": "5 edge(s) verified in both directions",
-      "ms": 10,
+      "ms": 8,
       "index": 26,
       "total": 60
     },
@@ -461,7 +461,7 @@
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#query-methods",
       "status": "pass",
       "message": "10 value(s) read",
-      "ms": 5,
+      "ms": 4,
       "index": 29,
       "total": 60
     },
@@ -519,7 +519,7 @@
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#maxdepth-parameter-semantics",
       "status": "pass",
       "message": "2 component value(s)",
-      "ms": 3,
+      "ms": 2,
       "index": 33,
       "total": 60
     },
@@ -561,7 +561,7 @@
       "refTitle": "Implementation Guide § Query Methods",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#query-methods",
       "status": "pass",
-      "message": "284 historical point(s) validated",
+      "message": "289 historical point(s) validated",
       "ms": 0,
       "index": 36,
       "total": 60
@@ -590,7 +590,7 @@
       "refTitle": "Implementation Guide § Query Methods",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#query-methods",
       "status": "pass",
-      "ms": 6,
+      "ms": 5,
       "index": 38,
       "total": 60
     },
@@ -620,7 +620,7 @@
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#update-methods",
       "status": "pass",
       "message": "wrote current value back to \"property-96539f2467e1b945\"",
-      "ms": 12,
+      "ms": 13,
       "index": 40,
       "total": 60
     },
@@ -649,7 +649,7 @@
       "refTitle": "Implementation Guide § Response Format — Bulk Response",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#bulk-response",
       "status": "pass",
-      "ms": 10,
+      "ms": 13,
       "index": 42,
       "total": 60
     },
@@ -663,7 +663,7 @@
       "refTitle": "Implementation Guide § Update Methods",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#update-methods",
       "status": "pass",
-      "ms": 12,
+      "ms": 16,
       "index": 43,
       "total": 60
     },
@@ -693,7 +693,7 @@
       "refTitle": "Implementation Guide § Subscriptions",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#subscriptions",
       "status": "pass",
-      "ms": 18,
+      "ms": 9,
       "index": 45,
       "total": 60
     },
@@ -751,7 +751,7 @@
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#registering-and-unregistering-objects",
       "status": "pass",
       "message": "registered 2 object(s)",
-      "ms": 11,
+      "ms": 9,
       "index": 49,
       "total": 60
     },
@@ -794,7 +794,7 @@
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#sync",
       "status": "pass",
       "message": "1 pending batch(es)",
-      "ms": 3,
+      "ms": 2,
       "index": 52,
       "total": 60
     },
@@ -824,7 +824,7 @@
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#sync",
       "status": "pass",
       "message": "queue cleared through sequence 5 in a single round trip",
-      "ms": 8,
+      "ms": 7,
       "index": 54,
       "total": 60
     },
@@ -867,7 +867,7 @@
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#streaming",
       "status": "pass",
       "message": "previous stream closed cleanly when the new stream opened",
-      "ms": 63,
+      "ms": 65,
       "index": 57,
       "total": 60
     },
@@ -881,7 +881,7 @@
       "refTitle": "Implementation Guide § Subscriptions",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#subscriptions",
       "status": "pass",
-      "ms": 15,
+      "ms": 10,
       "index": 58,
       "total": 60
     },

@@ -31,6 +31,7 @@ from i3x_server.api.v1 import router as v1_router
 from i3x_server.api.v1.contracts import HttpErrorResponse
 from i3x_server.api.v1.objecttype_helpers import warm_object_type_context
 from i3x_server.application.errors import ApplicationServiceError
+from i3x_server.bootstrap.dependencies import get_or_build_model
 from i3x_server.config.settings import Settings, settings
 from i3x_server.http_caching import MODEL_REVISION_HEADER, ModelRevisionMiddleware, NotModifiedError
 from i3x_server.infrastructure.opcua.client import OpcUaClient
@@ -313,6 +314,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await opcua_client.connect()
     app.state.opcua_client = opcua_client
     app.state.model_builder = ModelBuilder(opcua_client)
+    app.state.mcp_model_provider = get_or_build_model
     app.state.object_type_context_cache = None
     app.state.object_type_lock = asyncio.Lock()
     app.state.subscription_service = SubscriptionService(

@@ -188,7 +188,7 @@ async def test_container_values_reads_only_descendant_properties_in_bounded_batc
     async def fake_get_model(_: Request) -> Any:
         return model
 
-    monkeypatch.setattr("i3x_server.mcp.get_or_build_model", fake_get_model)
+    request.app.state.mcp_model_provider = fake_get_model
     batches: list[list[str]] = []
 
     async def fake_internal_asgi(**kwargs: Any) -> _InternalASGIResponse:

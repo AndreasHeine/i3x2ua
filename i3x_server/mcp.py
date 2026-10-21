@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from contextlib import nullcontext as _nullcontext
 from copy import deepcopy
 from dataclasses import asdict, dataclass
@@ -17,9 +17,9 @@ import httpx
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response
 
-from i3x_server.bootstrap.dependencies import get_or_build_model
 from i3x_server.errors import i3x_http_error
 from i3x_server.schemas.i3x import ModelNode
+from i3x_server.schemas.state import BuildResult
 
 
 def _load_otel_tracing() -> tuple[Any, Any, Any, Any]:
@@ -58,6 +58,7 @@ MCP_CONTAINER_VALUES_TOOL = "readContainerValues"
 MCP_CONTAINER_VALUES_BATCH_SIZE = 10
 MCP_CONTAINER_VALUES_MAX_NODES = 5000
 MCP_CONTAINER_VALUES_MAX_DEPTH = 32
+McpModelProvider = Callable[[Request], Awaitable[BuildResult]]
 _MCP_INTERNAL_BASE_URL = httpx.URL("http://mcp.local")
 _TRACEPARENT_PATTERN = re.compile(
     r"^[\da-f]{2}-([\da-f]{32})-([\da-f]{16})-[\da-f]{2}$",
@@ -478,7 +479,10 @@ async def _invoke_container_values(
     if type(offset) is not int or offset < 0:
         raise i3x_http_error(400, "Bad Request", "offset must be a non-negative integer")
 
-    model = await get_or_build_model(request)
+    model_provider = getattr(request.app.state, "mcp_model_provider", None)
+    if not callable(model_provider):
+        raise i3x_http_error(500, "Internal Error", "MCP model provider is not initialized")
+    model: BuildResult = await model_provider(request)
     container = model.nodes_by_id.get(container_id)
     if container is None:
         raise i3x_http_error(404, "Not Found", f"Container not found: {container_id}")
@@ -636,8 +640,7 @@ def _paginate_history_result(result: Any, *, limit: int, offset: int) -> Any:
     components = result.get("components")
     if isinstance(components, dict):
         paged["components"] = {
-            key: _paginate_history_result(value, limit=limit, offset=offset)
-            for key, value in components.items()
+            key: _paginate_history_result(value, limit=limit, offset=offset) for key, value in components.items()
         }
     return paged
 

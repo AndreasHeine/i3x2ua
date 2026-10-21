@@ -205,11 +205,7 @@ def _prompt_registry(request: Request) -> PromptRegistry | None:
 def _compact_object(item: Any) -> Any:
     if not isinstance(item, dict):
         return item
-    return {
-        key: item[key]
-        for key in ("elementId", "displayName")
-        if key in item
-    }
+    return {key: item[key] for key in ("elementId", "displayName") if key in item}
 
 
 def _compact_bulk_results(body: dict[str, Any], project_result: Any) -> dict[str, Any]:
@@ -242,6 +238,7 @@ def _compact_tool_body(tool_name: str, body: Any) -> Any:
         return _compact_bulk_results(body, _compact_object)
 
     if tool_name == "queryRelatedObjectsV1":
+
         def compact_related(result: Any) -> Any:
             if not isinstance(result, list):
                 return result
@@ -270,9 +267,11 @@ def _compact_tool_body(tool_name: str, body: Any) -> Any:
     if tool_name == "queryObjectTypesV1":
         return _compact_bulk_results(
             body,
-            lambda result: {key: value for key, value in result.items() if key != "related"}
-            if isinstance(result, dict)
-            else result,
+            lambda result: (
+                {key: value for key, value in result.items() if key != "related"}
+                if isinstance(result, dict)
+                else result
+            ),
         )
 
     if tool_name in {"getRelationshipTypesV1", "queryRelationshipTypesV1"}:
@@ -284,6 +283,7 @@ def _compact_tool_body(tool_name: str, body: Any) -> Any:
             return _compact_bulk_results(body, _compact_object)
 
     if tool_name == "queryLastKnownValuesV1":
+
         def compact_current(result: Any) -> Any:
             if not isinstance(result, dict):
                 return result
@@ -296,6 +296,7 @@ def _compact_tool_body(tool_name: str, body: Any) -> Any:
         return _compact_bulk_results(body, compact_current)
 
     if tool_name == "queryHistoricalValuesV1":
+
         def compact_history(result: Any) -> Any:
             if not isinstance(result, dict):
                 return result

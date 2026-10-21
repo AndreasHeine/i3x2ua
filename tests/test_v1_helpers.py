@@ -338,9 +338,7 @@ def test_custom_scalar_datatype_object_type_uses_resolved_primitive_schema(
 
     assert response is not None
     assert response.displayName == "DataType_i_3001"
-    scalar_branch = next(
-        branch for branch in response.schema_["oneOf"] if branch.get("type") == "integer"
-    )
+    scalar_branch = next(branch for branch in response.schema_["oneOf"] if branch.get("type") == "integer")
     array_branch = next(branch for branch in response.schema_["oneOf"] if branch.get("type") == "array")
     assert scalar_branch == {"type": "integer", "minimum": 0, "maximum": 255}
     assert array_branch["items"] == scalar_branch

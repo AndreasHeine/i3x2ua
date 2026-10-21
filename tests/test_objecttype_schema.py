@@ -229,9 +229,7 @@ def test_resolved_custom_scalar_datatype_schema_applies_to_scalar_and_array_memb
         {item.node_id: item},
         {item.node_id: "custom-scalar-type"},
         namespace_infos,
-        resolved_data_type_schemas={
-            "nsu=urn:custom;i=3001": {"type": "integer", "minimum": 0, "maximum": 255}
-        },
+        resolved_data_type_schemas={"nsu=urn:custom;i=3001": {"type": "integer", "minimum": 0, "maximum": 255}},
     )
 
     assert schema["properties"]["Value"]["type"] == "integer"

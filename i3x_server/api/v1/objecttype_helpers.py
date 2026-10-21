@@ -543,25 +543,25 @@ def _datatype_object_type_from_source_type_id(
         schema = build_data_type_schema(source_type_id, namespace_infos)
 
     if not isinstance(schema, Mapping):
-        scalar_schema: dict[str, Any] | None = None
+        fallback_scalar_schema: dict[str, Any] | None = None
         if _is_builtin_ua_datatype_node_id(source_type_id):
-            scalar_schema = json_schema_for_opcua_type(source_type_id)
+            fallback_scalar_schema = json_schema_for_opcua_type(source_type_id)
         else:
-            scalar_schema = _scalar_schema_for_standard_ua_datatype_node_id(source_type_id)
-        if scalar_schema is None:
+            fallback_scalar_schema = _scalar_schema_for_standard_ua_datatype_node_id(source_type_id)
+        if fallback_scalar_schema is None:
             return None
         schema = (
             {
                 "oneOf": [
                     {"type": "null"},
-                    dict(scalar_schema),
+                    dict(fallback_scalar_schema),
                     {
                         "type": "array",
-                        "items": _array_items_schema_for_builtin_data_type(source_type_id, scalar_schema),
+                        "items": _array_items_schema_for_builtin_data_type(source_type_id, fallback_scalar_schema),
                     },
                 ]
             }
-            if scalar_schema
+            if fallback_scalar_schema
             else {}
         )
 
@@ -684,9 +684,7 @@ async def _resolve_custom_scalar_datatype_schemas(
     if not candidates:
         return {}
 
-    lookup_ids = {
-        _indexed_node_id_for_hierarchy_lookup(type_id, namespace_infos): type_id for type_id in candidates
-    }
+    lookup_ids = {_indexed_node_id_for_hierarchy_lookup(type_id, namespace_infos): type_id for type_id in candidates}
     resolve_many = getattr(opcua_client, "resolve_type_definition_hierarchies", None)
     resolve_one = getattr(opcua_client, "resolve_type_definition_hierarchy", None)
     if not callable(resolve_many) and not callable(resolve_one):

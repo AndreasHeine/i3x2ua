@@ -45,6 +45,14 @@ WORKDIR /app
 RUN apk add --no-cache \
         ca-certificates \
         tini \
+    && rm -rf \
+        /usr/local/lib/python3.15/site-packages/pip \
+        /usr/local/lib/python3.15/site-packages/pip-*.dist-info \
+        /usr/local/lib/python3.15/ensurepip \
+    && rm -f \
+        /usr/local/bin/pip \
+        /usr/local/bin/pip3 \
+        /usr/local/bin/pip3.15 \
     && addgroup -g 10001 -S app \
     && adduser -u 10001 -S -D -H -G app app
 

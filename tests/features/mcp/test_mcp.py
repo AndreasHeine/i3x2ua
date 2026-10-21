@@ -145,6 +145,8 @@ def _with_runtime_argument_overrides(
 ) -> dict[str, Any]:
     result = dict(arguments)
 
+    if tool_name == "readContainerValues":
+        result["containerId"] = "asset-root"
     if "elementId" in result:
         result["elementId"] = "property-abc"
     if "element_id" in result:
@@ -240,6 +242,8 @@ def test_mcp_tool_input_schemas_match_openapi_contract(client: TestClient) -> No
 
             expected_required: set[str] = set()
             expected_property_names: set[str] = set()
+            paginated_list_tools = {"getObjectsV1", "getObjectTypesV1", "getRelationshipTypesV1"}
+            paginated_body_tools = {"queryRelatedObjectsV1", "queryHistoricalValuesV1"}
 
             for parameter in details.get("parameters", []):
                 if not isinstance(parameter, Mapping):
@@ -263,9 +267,25 @@ def test_mcp_tool_input_schemas_match_openapi_contract(client: TestClient) -> No
                     if isinstance(app_json, Mapping) and "schema" in app_json:
                         expected_property_names.add("body")
                         expected_body_schema = _resolve_openapi_schema(app_json["schema"], components)
+                        if operation_id in paginated_body_tools:
+                            assert isinstance(expected_body_schema, dict)
+                            expected_body_schema["properties"]["limit"] = {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 500,
+                            }
+                            expected_body_schema["properties"]["offset"] = {
+                                "type": "integer",
+                                "minimum": 0,
+                            }
                         assert properties.get("body") == expected_body_schema
                         if request_body.get("required"):
                             expected_required.add("body")
+
+            if operation_id in paginated_list_tools:
+                expected_property_names.update({"limit", "offset"})
+                assert properties["limit"] == {"type": "integer", "minimum": 1, "maximum": 500}
+                assert properties["offset"] == {"type": "integer", "minimum": 0}
 
             assert set(properties.keys()) == expected_property_names
             assert required == expected_required

@@ -25,6 +25,8 @@ MCP_PROTOCOL_VERSION = "2025-06-18"
 MCP_INSTRUCTIONS = (
     "Discover elementIds before querying values. Value/history maxDepth traverses composition only, "
     "not hierarchy: 1 reads only the object, 2 includes direct components, 0 is unlimited. "
+    "For many values below one known container, call readContainerValues with its exact containerId "
+    "instead of generating a long elementIds array. "
     "Preserve value, quality, and source timestamp; latest known values need not be fresh. "
     "Inspect per-item failures even when HTTP succeeds. PUT/write operations are REST-only. "
     "Subscription tools change monitoring state; acknowledge only updates already processed. "
@@ -200,7 +202,117 @@ def _prompt_registry(request: Request) -> PromptRegistry | None:
     return registry if isinstance(registry, PromptRegistry) else None
 
 
-def _tool_result(body: Any, status_code: int) -> dict[str, Any]:
+def _compact_object(item: Any) -> Any:
+    if not isinstance(item, dict):
+        return item
+    return {
+        key: item[key]
+        for key in ("elementId", "displayName")
+        if key in item
+    }
+
+
+def _compact_bulk_results(body: dict[str, Any], project_result: Any) -> dict[str, Any]:
+    results = body.get("results")
+    if not isinstance(results, list):
+        return body
+    compacted = dict(body)
+    compacted["results"] = [
+        {
+            **item,
+            **({"result": project_result(item["result"])} if item.get("success") and "result" in item else {}),
+        }
+        if isinstance(item, dict)
+        else item
+        for item in results
+    ]
+    return compacted
+
+
+def _compact_tool_body(tool_name: str, body: Any) -> Any:
+    if not isinstance(body, dict):
+        return body
+
+    if tool_name == "getObjectsV1" and isinstance(body.get("result"), list):
+        compacted = dict(body)
+        compacted["result"] = [_compact_object(item) for item in body["result"]]
+        return compacted
+
+    if tool_name == "listObjectsByIdV1":
+        return _compact_bulk_results(body, _compact_object)
+
+    if tool_name == "queryRelatedObjectsV1":
+        def compact_related(result: Any) -> Any:
+            if not isinstance(result, list):
+                return result
+            return [
+                {
+                    **related,
+                    **({"object": _compact_object(related["object"])} if "object" in related else {}),
+                }
+                if isinstance(related, dict)
+                else related
+                for related in result
+            ]
+
+        return _compact_bulk_results(body, compact_related)
+
+    if tool_name == "getObjectTypesV1" and isinstance(body.get("result"), list):
+        compacted = dict(body)
+        compacted["result"] = [
+            {key: item[key] for key in ("elementId", "displayName", "namespaceUri", "version") if key in item}
+            if isinstance(item, dict)
+            else item
+            for item in body["result"]
+        ]
+        return compacted
+
+    if tool_name == "queryObjectTypesV1":
+        return _compact_bulk_results(
+            body,
+            lambda result: {key: value for key, value in result.items() if key != "related"}
+            if isinstance(result, dict)
+            else result,
+        )
+
+    if tool_name in {"getRelationshipTypesV1", "queryRelationshipTypesV1"}:
+        if tool_name == "getRelationshipTypesV1" and isinstance(body.get("result"), list):
+            compacted = dict(body)
+            compacted["result"] = [_compact_object(item) for item in body["result"]]
+            return compacted
+        if tool_name == "queryRelationshipTypesV1":
+            return _compact_bulk_results(body, _compact_object)
+
+    if tool_name == "queryLastKnownValuesV1":
+        def compact_current(result: Any) -> Any:
+            if not isinstance(result, dict):
+                return result
+            return {
+                key: value
+                for key, value in result.items()
+                if key != "isComposition" and not (key == "components" and value is None)
+            }
+
+        return _compact_bulk_results(body, compact_current)
+
+    if tool_name == "queryHistoricalValuesV1":
+        def compact_history(result: Any) -> Any:
+            if not isinstance(result, dict):
+                return result
+            return {
+                key: value
+                for key, value in result.items()
+                if key != "isComposition" and not (key == "components" and value is None)
+            }
+
+        return _compact_bulk_results(body, compact_history)
+
+    return body
+
+
+def _tool_result(body: Any, status_code: int, tool_name: str | None = None) -> dict[str, Any]:
+    if tool_name is not None:
+        body = _compact_tool_body(tool_name, body)
     failed = status_code >= 400
     if isinstance(body, dict):
         results = body.get("results")
@@ -289,7 +401,7 @@ async def _handle_jsonrpc(request: Request, message: dict[str, Any]) -> dict[str
             return _jsonrpc_error(message_id, -32603, "Internal error")
         status_code = payload["status_code"]
         body = payload["body"]
-        return _jsonrpc_response(message_id, _tool_result(body, status_code))
+        return _jsonrpc_response(message_id, _tool_result(body, status_code, tool_name))
 
     if method == "prompts/list":
         prompts: list[dict[str, Any]] = [dict(item) for item in list_prompt_metadata(_prompt_registry(request))]

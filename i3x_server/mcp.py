@@ -17,7 +17,9 @@ import httpx
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response
 
+from i3x_server.bootstrap.dependencies import get_or_build_model
 from i3x_server.errors import i3x_http_error
+from i3x_server.schemas.i3x import ModelNode
 
 
 def _load_otel_tracing() -> tuple[Any, Any, Any, Any]:
@@ -46,6 +48,16 @@ _mcp_tool_calls: Any = None
 _mcp_tool_duration: Any = None
 
 MCP_EXCLUDED_OPERATION_IDS = {"streamSubscription"}
+MCP_PAGINATED_LIST_TOOLS = {"getObjectsV1", "getObjectTypesV1", "getRelationshipTypesV1"}
+MCP_DEFAULT_PAGE_SIZE = 50
+MCP_BODY_PAGINATED_TOOLS = {
+    "queryRelatedObjectsV1": 50,
+    "queryHistoricalValuesV1": 100,
+}
+MCP_CONTAINER_VALUES_TOOL = "readContainerValues"
+MCP_CONTAINER_VALUES_BATCH_SIZE = 10
+MCP_CONTAINER_VALUES_MAX_NODES = 5000
+MCP_CONTAINER_VALUES_MAX_DEPTH = 32
 _MCP_INTERNAL_BASE_URL = httpx.URL("http://mcp.local")
 _TRACEPARENT_PATTERN = re.compile(
     r"^[\da-f]{2}-([\da-f]{32})-([\da-f]{16})-[\da-f]{2}$",
@@ -352,9 +364,20 @@ def build_mcp_tools(
                 body_required = bool(request_body.get("required"))
                 body_schema = _resolve_request_body_schema(request_body, components)
                 if body_schema is not None:
+                    if operation_id in MCP_BODY_PAGINATED_TOOLS and isinstance(body_schema.get("properties"), dict):
+                        body_schema["properties"]["limit"] = {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 500,
+                        }
+                        body_schema["properties"]["offset"] = {"type": "integer", "minimum": 0}
                     input_properties["body"] = body_schema
                     if body_required:
                         required.append("body")
+
+            if operation_id in MCP_PAGINATED_LIST_TOOLS:
+                input_properties["limit"] = {"type": "integer", "minimum": 1, "maximum": 500}
+                input_properties["offset"] = {"type": "integer", "minimum": 0}
 
             override = overrides.get(operation_id, {}) if isinstance(overrides, Mapping) else {}
             if not isinstance(override, Mapping):
@@ -385,7 +408,250 @@ def build_mcp_tools(
                 server_url_override=path_server_override,
             )
 
+    override = overrides.get(MCP_CONTAINER_VALUES_TOOL, {}) if isinstance(overrides, Mapping) else {}
+    if not isinstance(override, Mapping):
+        override = {}
+    keywords = override.get("keywords", [])
+    if not isinstance(keywords, list):
+        keywords = []
+    tools[MCP_CONTAINER_VALUES_TOOL] = McpToolDefinition(
+        name=MCP_CONTAINER_VALUES_TOOL,
+        description=str(
+            override.get("description")
+            or "Read current values for properties under one discovered container. "
+            "Pass its elementId; do not build a long elementIds array."
+        ),
+        method="POST",
+        path="/v1/objects/value",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "containerId": {"type": "string", "minLength": 1},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 50},
+                "offset": {"type": "integer", "minimum": 0, "default": 0},
+            },
+            "required": ["containerId"],
+            "additionalProperties": False,
+        },
+        path_parameters=(),
+        query_parameters=(),
+        body_required=False,
+        priority=str(override.get("priority") or "high"),
+        keywords=tuple(str(keyword) for keyword in keywords if isinstance(keyword, str)),
+    )
     return tools
+
+
+def _paginate_mcp_list(body: Any, *, limit: int, offset: int) -> Any:
+    if not isinstance(body, dict) or not isinstance(body.get("result"), list):
+        return body
+    items = body["result"]
+    page = items[offset : offset + limit]
+    pagination: dict[str, int] = {
+        "total": len(items),
+        "returned": len(page),
+        "offset": offset,
+    }
+    if offset + len(page) < len(items):
+        pagination["nextOffset"] = offset + len(page)
+    return {**body, "result": page, "pagination": pagination}
+
+
+def _validate_mcp_page(limit: Any, offset: Any) -> None:
+    if type(limit) is not int or not 1 <= limit <= 500:
+        raise i3x_http_error(400, "Bad Request", "limit must be an integer from 1 to 500")
+    if type(offset) is not int or offset < 0:
+        raise i3x_http_error(400, "Bad Request", "offset must be a non-negative integer")
+
+
+async def _invoke_container_values(
+    request: Request,
+    *,
+    container_id: str,
+    limit: int,
+    offset: int,
+) -> _InternalASGIResponse:
+    if not isinstance(container_id, str) or not container_id.strip():
+        raise i3x_http_error(400, "Bad Request", "containerId must not be empty")
+    if type(limit) is not int or not 1 <= limit <= 50:
+        raise i3x_http_error(400, "Bad Request", "limit must be an integer from 1 to 50")
+    if type(offset) is not int or offset < 0:
+        raise i3x_http_error(400, "Bad Request", "offset must be a non-negative integer")
+
+    model = await get_or_build_model(request)
+    container = model.nodes_by_id.get(container_id)
+    if container is None:
+        raise i3x_http_error(404, "Not Found", f"Container not found: {container_id}")
+    if container.kind == "property":
+        raise i3x_http_error(400, "Bad Request", "containerId must identify an object, not a property")
+
+    properties: list[ModelNode] = []
+    visited: set[str] = set()
+    pending = [(container_id, 0)]
+    while pending:
+        element_id, depth = pending.pop()
+        if element_id in visited:
+            continue
+        visited.add(element_id)
+        if len(visited) > MCP_CONTAINER_VALUES_MAX_NODES:
+            raise i3x_http_error(
+                413,
+                "Content Too Large",
+                f"Container subtree exceeds {MCP_CONTAINER_VALUES_MAX_NODES} nodes",
+            )
+        if depth > MCP_CONTAINER_VALUES_MAX_DEPTH:
+            raise i3x_http_error(
+                413,
+                "Content Too Large",
+                f"Container subtree exceeds depth {MCP_CONTAINER_VALUES_MAX_DEPTH}",
+            )
+        node = model.nodes_by_id.get(element_id)
+        if node is None:
+            continue
+        if node.kind == "property":
+            properties.append(node)
+            continue
+        pending.extend((child_id, depth + 1) for child_id in reversed(model.children_by_id.get(element_id, [])))
+
+    total = len(properties)
+    page = properties[offset : offset + limit]
+    values_by_id: dict[str, Any] = {}
+    api_prefix = getattr(request.app.state, "mcp_api_prefix", "")
+    if not isinstance(api_prefix, str):
+        api_prefix = ""
+    value_path = _safe_request_path(api_prefix, "/v1/objects/value")
+
+    for start in range(0, len(page), MCP_CONTAINER_VALUES_BATCH_SIZE):
+        batch = page[start : start + MCP_CONTAINER_VALUES_BATCH_SIZE]
+        response = await _invoke_internal_asgi(
+            app=request.app,
+            method="POST",
+            path=value_path,
+            query_params={},
+            request_body={"elementIds": [node.id for node in batch], "maxDepth": 1},
+        )
+        if response.status_code >= 400:
+            return response
+        try:
+            body = json.loads(response.body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise i3x_http_error(502, "Bad Gateway", "Value endpoint returned invalid JSON") from exc
+        results = body.get("results") if isinstance(body, dict) else None
+        if not isinstance(results, list):
+            raise i3x_http_error(502, "Bad Gateway", "Value endpoint returned an invalid result")
+        for result in results:
+            if isinstance(result, dict) and isinstance(result.get("elementId"), str):
+                values_by_id[result["elementId"]] = result
+
+    items: list[dict[str, Any]] = []
+    for node in page:
+        result = values_by_id.get(node.id)
+        if result is None:
+            items.append(
+                {
+                    "id": node.id,
+                    "name": node.name,
+                    "success": False,
+                    "error": {"message": "Value endpoint returned no result for this property"},
+                }
+            )
+        elif result.get("success") is True:
+            vqt = result.get("result")
+            compact_vqt = (
+                {key: vqt[key] for key in ("value", "quality", "timestamp") if key in vqt}
+                if isinstance(vqt, dict)
+                else vqt
+            )
+            items.append(
+                {
+                    "id": node.id,
+                    "name": node.name,
+                    "success": True,
+                    "value": compact_vqt,
+                }
+            )
+        else:
+            items.append(
+                {
+                    "id": node.id,
+                    "name": node.name,
+                    "success": False,
+                    "error": result.get("error"),
+                    "responseDetail": result.get("responseDetail"),
+                }
+            )
+
+    response_body: dict[str, Any] = {
+        "success": all(item["success"] for item in items),
+        "containerId": container_id,
+        "total": total,
+        "returned": len(items),
+        "offset": offset,
+        "items": items,
+    }
+    if offset + len(page) < total:
+        response_body["nextOffset"] = offset + len(page)
+    return _InternalASGIResponse(
+        status_code=200,
+        headers={"content-type": "application/json"},
+        body=json.dumps(response_body).encode("utf-8"),
+    )
+
+
+def _pagination(total: int, returned: int, offset: int) -> dict[str, int]:
+    page = {"total": total, "returned": returned, "offset": offset}
+    if offset + returned < total:
+        page["nextOffset"] = offset + returned
+    return page
+
+
+def _paginate_mcp_related(body: Any, *, limit: int, offset: int) -> Any:
+    if not isinstance(body, dict) or not isinstance(body.get("results"), list):
+        return body
+    results = []
+    for item in body["results"]:
+        if not isinstance(item, dict) or not item.get("success") or not isinstance(item.get("result"), list):
+            results.append(item)
+            continue
+        related = item["result"]
+        results.append(
+            {
+                **item,
+                "result": related[offset : offset + limit],
+                "pagination": _pagination(len(related), len(related[offset : offset + limit]), offset),
+            }
+        )
+    return {**body, "results": results}
+
+
+def _paginate_history_result(result: Any, *, limit: int, offset: int) -> Any:
+    if not isinstance(result, dict):
+        return result
+    paged = dict(result)
+    values = result.get("values")
+    if isinstance(values, list):
+        selected = values[offset : offset + limit]
+        paged["values"] = selected
+        paged["pagination"] = _pagination(len(values), len(selected), offset)
+    components = result.get("components")
+    if isinstance(components, dict):
+        paged["components"] = {
+            key: _paginate_history_result(value, limit=limit, offset=offset)
+            for key, value in components.items()
+        }
+    return paged
+
+
+def _paginate_mcp_history(body: Any, *, limit: int, offset: int) -> Any:
+    if not isinstance(body, dict) or not isinstance(body.get("results"), list):
+        return body
+    results = []
+    for item in body["results"]:
+        if isinstance(item, dict) and item.get("success") and isinstance(item.get("result"), dict):
+            results.append({**item, "result": _paginate_history_result(item["result"], limit=limit, offset=offset)})
+        else:
+            results.append(item)
+    return {**body, "results": results}
 
 
 def get_api_prefix(openapi_spec: Mapping[str, Any]) -> str:
@@ -555,6 +821,10 @@ async def invoke_mcp_tool(request: Request, tool: McpToolDefinition, arguments: 
     with span_ctx as _span:
         try:
             allowed_arguments = set(tool.path_parameters) | set(tool.query_parameters)
+            if tool.name in MCP_PAGINATED_LIST_TOOLS:
+                allowed_arguments.update({"limit", "offset"})
+            if tool.name == MCP_CONTAINER_VALUES_TOOL:
+                allowed_arguments.update({"containerId", "limit", "offset"})
             if tool.body_required or "body" in tool.input_schema.get("properties", {}):
                 allowed_arguments.add("body")
 
@@ -571,6 +841,13 @@ async def invoke_mcp_tool(request: Request, tool: McpToolDefinition, arguments: 
             missing_arguments = missing_path_parameters + missing_required_query_parameters
             if missing_arguments:
                 raise i3x_http_error(400, "Bad Request", f"Missing required arguments: {', '.join(missing_arguments)}")
+            if tool.name in MCP_PAGINATED_LIST_TOOLS:
+                limit = arguments.get("limit", MCP_DEFAULT_PAGE_SIZE)
+                offset = arguments.get("offset", 0)
+                if type(limit) is not int or not 1 <= limit <= 500:
+                    raise i3x_http_error(400, "Bad Request", "limit must be an integer from 1 to 500")
+                if type(offset) is not int or offset < 0:
+                    raise i3x_http_error(400, "Bad Request", "offset must be a non-negative integer")
 
             api_prefix = getattr(request.app.state, "mcp_api_prefix", "")
             if not isinstance(api_prefix, str):
@@ -597,18 +874,36 @@ async def invoke_mcp_tool(request: Request, tool: McpToolDefinition, arguments: 
                 for parameter_name in tool.query_parameters
                 if arguments.get(parameter_name) is not None
             }
+            if tool.name == "getObjectsV1" and "root" in tool.query_parameters:
+                query_params.setdefault("root", True)
 
             request_body = arguments.get("body") if "body" in arguments else None
+            body_page_size: int | None = None
+            body_page_offset = 0
+            if tool.name in MCP_BODY_PAGINATED_TOOLS and isinstance(request_body, dict):
+                request_body = dict(request_body)
+                default_limit = MCP_BODY_PAGINATED_TOOLS[tool.name]
+                body_page_size = request_body.pop("limit", default_limit)
+                body_page_offset = request_body.pop("offset", 0)
+                _validate_mcp_page(body_page_size, body_page_offset)
             if tool.body_required and request_body is None:
                 raise i3x_http_error(400, "Bad Request", "Missing required body")
 
-            response = await _invoke_internal_asgi(
-                app=request.app,
-                method=tool.method,
-                path=request_target,
-                query_params=query_params,
-                request_body=request_body,
-            )
+            if tool.name == MCP_CONTAINER_VALUES_TOOL:
+                response = await _invoke_container_values(
+                    request,
+                    container_id=arguments.get("containerId", ""),
+                    limit=arguments.get("limit", 50),
+                    offset=arguments.get("offset", 0),
+                )
+            else:
+                response = await _invoke_internal_asgi(
+                    app=request.app,
+                    method=tool.method,
+                    path=request_target,
+                    query_params=query_params,
+                    request_body=request_body,
+                )
 
             if response.headers.get("content-type", "").startswith("application/json"):
                 try:
@@ -620,6 +915,17 @@ async def invoke_mcp_tool(request: Request, tool: McpToolDefinition, arguments: 
                     "text": response.body.decode("utf-8", errors="replace"),
                     "content_type": response.headers.get("content-type"),
                 }
+
+            if tool.name in MCP_PAGINATED_LIST_TOOLS:
+                body = _paginate_mcp_list(
+                    body,
+                    limit=arguments.get("limit", MCP_DEFAULT_PAGE_SIZE),
+                    offset=arguments.get("offset", 0),
+                )
+            elif tool.name == "queryRelatedObjectsV1" and body_page_size is not None:
+                body = _paginate_mcp_related(body, limit=body_page_size, offset=body_page_offset)
+            elif tool.name == "queryHistoricalValuesV1" and body_page_size is not None:
+                body = _paginate_mcp_history(body, limit=body_page_size, offset=body_page_offset)
 
             duration_s = perf_counter() - started
             if _span is not None:

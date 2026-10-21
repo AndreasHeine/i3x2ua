@@ -8,7 +8,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from jsonschema import validate
 
-from i3x_server.api.mcp.monolithic import router
+from i3x_server.api.mcp.monolithic import _compact_tool_body, router
 from i3x_server.mcp import build_mcp_tools
 from i3x_server.prompts.registry import PromptDefinition, PromptRegistry
 
@@ -134,6 +134,77 @@ def test_structured_tool_results(
     assert json.loads(result["content"][0]["text"]) == body
     assert result["structuredContent"] == {"statusCode": status, "body": body}
     validate(result["structuredContent"], tools["readValues"]["outputSchema"])
+
+
+def test_mcp_object_and_value_results_are_compact() -> None:
+    object_body = {
+        "success": True,
+        "result": [
+            {
+                "elementId": "asset-1",
+                "displayName": "PLC_1",
+                "typeElementId": "type-1",
+                "parentId": None,
+                "isComposition": False,
+                "isExtended": False,
+                "metadata": None,
+            }
+        ],
+    }
+    assert _compact_tool_body("getObjectsV1", object_body) == {
+        "success": True,
+        "result": [{"elementId": "asset-1", "displayName": "PLC_1"}],
+    }
+
+    related_body = {
+        "success": True,
+        "results": [
+            {
+                "success": True,
+                "elementId": "asset-1",
+                "result": [
+                    {
+                        "sourceRelationship": "HasComponent",
+                        "object": {
+                            "elementId": "property-1",
+                            "displayName": "OrderNumber",
+                            "typeElementId": "type-1",
+                            "metadata": {"description": "Large optional details"},
+                        },
+                    }
+                ],
+            }
+        ],
+    }
+    compacted_related = _compact_tool_body("queryRelatedObjectsV1", related_body)
+    assert compacted_related["results"][0]["result"] == [
+        {
+            "sourceRelationship": "HasComponent",
+            "object": {"elementId": "property-1", "displayName": "OrderNumber"},
+        }
+    ]
+
+    value_body = {
+        "success": True,
+        "results": [
+            {
+                "success": True,
+                "elementId": "property-1",
+                "result": {
+                    "isComposition": False,
+                    "value": "123",
+                    "quality": "Good",
+                    "timestamp": "2026-10-21T11:00:00Z",
+                    "components": None,
+                },
+            }
+        ],
+    }
+    assert _compact_tool_body("queryLastKnownValuesV1", value_body)["results"][0]["result"] == {
+        "value": "123",
+        "quality": "Good",
+        "timestamp": "2026-10-21T11:00:00Z",
+    }
 
 
 def test_tool_argument_error_is_protocol_error(protocol_client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:

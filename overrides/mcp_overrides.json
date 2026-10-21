@@ -1,288 +1,192 @@
-﻿{
-    "$schema": "./schema.json",
-    "tools": {
-        "getInfoV1": {
-            "description": "Return server version and capabilities. Use when the user asks about server info, version, or health status.",
-            "priority": "normal",
-            "keywords": [
-                "server",
-                "info",
-                "version",
-                "health",
-                "capabilities"
-            ]
-        },
-        "getNamespacesV1": {
-            "description": "List all namespaces available on the server. Use when the user asks about namespaces or wants to explore the data model.",
-            "priority": "high",
-            "keywords": [
-                "namespaces",
-                "list",
-                "available namespaces"
-            ]
-        },
-        "getObjectTypesV1": {
-            "description": "Return all object types. Use when the user asks about types, schemas, or structure of objects.",
-            "priority": "high",
-            "keywords": [
-                "object types",
-                "schemas",
-                "types",
-                "structure"
-            ]
-        },
-        "queryObjectTypesV1": {
-            "description": "Return object type schemas for specific element IDs. Use when the user asks for type details of specific objects.",
-            "priority": "normal",
-            "keywords": [
-                "object types",
-                "schema",
-                "elementId",
-                "type info"
-            ]
-        },
-        "getRelationshipTypesV1": {
-            "description": "Return all relationship types. Use when the user asks about relationships or how objects are connected.",
-            "priority": "normal",
-            "keywords": [
-                "relationship types",
-                "relationships",
-                "connections"
-            ]
-        },
-        "queryRelationshipTypesV1": {
-            "description": "Return relationship types for specific element IDs. Use when the user asks about relationships of specific objects.",
-            "priority": "normal",
-            "keywords": [
-                "relationship types",
-                "elementId",
-                "relationships"
-            ]
-        },
-        "getObjectsV1": {
-            "description": "Return objects, optionally filtered by type or root. Use when the user asks to browse or list objects.",
-            "priority": "high",
-            "keywords": [
-                "objects",
-                "list objects",
-                "browse",
-                "instances"
-            ]
-        },
-        "listObjectsByIdV1": {
-            "description": "Return objects by element ID. Use when the user asks for specific objects by ID.",
-            "priority": "high",
-            "keywords": [
-                "objects",
-                "elementId",
-                "lookup",
-                "details"
-            ]
-        },
-        "queryRelatedObjectsV1": {
-            "description": "Return related objects for one or more element IDs. Use when the user asks about connections or related items.",
-            "priority": "normal",
-            "keywords": [
-                "related objects",
-                "relationships",
-                "connections"
-            ]
-        },
-        "queryLastKnownValuesV1": {
-            "description": "Return last known values for objects. Use when the user asks for current or latest values.",
-            "priority": "high",
-            "keywords": [
-                "current value",
-                "last known",
-                "latest",
-                "value"
-            ]
-        },
-        "queryHistoricalValuesV1": {
-            "description": "Return historical values for objects. Use when the user asks for trends, history, or past values.",
-            "priority": "high",
-            "keywords": [
-                "history",
-                "trend",
-                "historical",
-                "past values"
-            ]
-        },
-        "createSubscriptionV1": {
-            "description": "Create a new subscription for monitoring values. Use when the user asks to subscribe to updates.",
-            "priority": "normal",
-            "keywords": [
-                "subscription",
-                "monitor",
-                "create subscription"
-            ]
-        },
-        "registerMonitoredItemsV1": {
-            "description": "Add monitored items to a subscription. Use when the user wants to monitor additional objects.",
-            "priority": "normal",
-            "keywords": [
-                "subscription",
-                "monitor",
-                "register",
-                "add items"
-            ]
-        },
-        "removeMonitoredItemsV1": {
-            "description": "Remove monitored items from a subscription. Use when the user wants to stop monitoring objects.",
-            "priority": "normal",
-            "keywords": [
-                "subscription",
-                "monitor",
-                "remove",
-                "unregister"
-            ]
-        },
-        "getUaStatus": {
-            "description": "Return the current OPC UA gateway state. Use when the user asks whether the UA side is running or healthy.",
-            "priority": "normal",
-            "keywords": [
-                "ua",
-                "state",
-                "health",
-                "gateway"
-            ]
-        },
-        "getUaConnection": {
-            "description": "Return OPC UA connection details such as endpoint, state, and connection age. Use when the user asks about connectivity.",
-            "priority": "normal",
-            "keywords": [
-                "ua",
-                "connection",
-                "endpoint",
-                "connectivity"
-            ]
-        },
-        "getUaLimits": {
-            "description": "Return OPC UA operational and subscription limits. Use when the user asks about capacity or protocol limits.",
-            "priority": "normal",
-            "keywords": [
-                "ua",
-                "limits",
-                "capacity",
-                "subscription limits"
-            ]
-        },
-        "getUaMetrics": {
-            "description": "Return OPC UA request and performance metrics. Use when the user asks about load, latency, or runtime behavior.",
-            "priority": "normal",
-            "keywords": [
-                "ua",
-                "metrics",
-                "performance",
-                "latency"
-            ]
-        },
-        "syncSubscriptionV1": {
-            "description": "Synchronize subscription updates and acknowledge received data. Use when the user asks to sync or fetch pending updates.",
-            "priority": "normal",
-            "keywords": [
-                "sync",
-                "subscription",
-                "updates",
-                "pending"
-            ]
-        },
-        "deleteSubscriptionsV1": {
-            "description": "Delete one or more subscriptions. Use when the user asks to remove or delete subscriptions.",
-            "priority": "normal",
-            "keywords": [
-                "subscription",
-                "delete",
-                "remove"
-            ]
-        },
-        "listSubscriptionsV1": {
-            "description": "Return details for one or more subscriptions. Use when the user asks about subscription status or configuration.",
-            "priority": "normal",
-            "keywords": [
-                "subscription",
-                "details",
-                "status",
-                "list"
-            ]
-        }
+{
+  "$schema": "./schema.json",
+  "tools": {
+    "getObjectsV1": {
+      "description": "DISCOVERY: Start unknown-asset searches here. MCP defaults to root=true and returns at most 50 compact objects; follow pagination.nextOffset with the same filters if needed. Explicitly set root=false only when the user requests full-model enumeration. Then navigate from returned elementIds with queryRelatedObjectsV1. Never guess typeElementId values such as \"plc\"; filter only with an exact known type ID.",
+      "priority": "high",
+      "keywords": ["discover assets", "root assets", "entry point"]
     },
-    "prompts": {
-        "machine_health_snapshot": {
-            "description": "Summarize current machine condition and risk",
-            "inputs": [
-                "asset_id",
-                "lookback_minutes"
-            ],
-            "template": "You are an industrial reliability analyst.\n\nAsset: {{asset_id}}\nLookback: {{lookback_minutes}} minutes\n\nTasks:\n1. Build a health snapshot (availability, stability, critical signals).\n2. Flag anomalies and classify severity (low/medium/high).\n3. State likely failure modes and confidence.\n4. Recommend immediate checks and next monitoring actions.\n\nUse tools as needed:\n- queryRelatedObjects to find related sensors/components\n- queryLastKnownValues for current state\n- queryHistoricalValues if behavior changed"
-        },
-        "alarm_triage": {
-            "description": "Prioritize alarms and propose safe first actions",
-            "inputs": [
-                "asset_id",
-                "alarm_text",
-                "time_window"
-            ],
-            "template": "You are a controls and maintenance triage assistant.\n\nAsset: {{asset_id}}\nAlarm: {{alarm_text}}\nWindow: {{time_window}}\n\nTasks:\n1. Interpret alarm likely meaning in plant context.\n2. Prioritize urgency and safety impact.\n3. Provide first 5 operator actions in safe order.\n4. List probable root causes and checks to confirm each.\n\nUse tools as needed:\n- queryLastKnownValues for current process values\n- queryHistoricalValues to inspect pre-alarm trend\n- queryRelatedObjects to include upstream/downstream context"
-        },
-        "predictive_maintenance_check": {
-            "description": "Estimate degradation risk and maintenance priority",
-            "inputs": [
-                "asset_id",
-                "lookback_days"
-            ],
-            "template": "You are a predictive maintenance specialist.\n\nAsset: {{asset_id}}\nLookback: {{lookback_days}} days\n\nTasks:\n1. Detect degradation patterns (vibration, temperature, current, cycle time, quality).\n2. Estimate short-term failure risk (next shift/day/week) with confidence.\n3. Recommend condition-based maintenance actions and inspection points.\n4. Suggest which signals should be added to subscription monitoring.\n\nUse tools as needed:\n- queryHistoricalValues for trend/seasonality checks\n- queryLastKnownValues for current condition\n- createSubscription/registerMonitoredItems for ongoing watch"
-        },
-        "process_drift_analysis": {
-            "description": "Find process drift and likely causes affecting quality",
-            "inputs": [
-                "line_or_cell",
-                "kpi_name",
-                "lookback_hours"
-            ],
-            "template": "You are a manufacturing process engineer.\n\nScope: {{line_or_cell}}\nKPI: {{kpi_name}}\nLookback: {{lookback_hours}} hours\n\nTasks:\n1. Identify drift from expected operating envelope.\n2. Correlate drift with machine states, setpoints, or environmental signals.\n3. Rank likely causes and confidence.\n4. Recommend corrective tuning and control limits.\n\nUse tools as needed:\n- queryHistoricalValues for trend and step-change analysis\n- queryRelatedObjects to include related equipment\n- getObjectTypes to interpret semantic meaning of signals"
-        },
-        "downtime_root_cause": {
-            "description": "Analyze a downtime event and produce RCA summary",
-            "inputs": [
-                "asset_id",
-                "downtime_start",
-                "downtime_end"
-            ],
-            "template": "You are an industrial RCA facilitator.\n\nAsset: {{asset_id}}\nDowntime start: {{downtime_start}}\nDowntime end: {{downtime_end}}\n\nTasks:\n1. Reconstruct event timeline (before, during, restart).\n2. Identify technical trigger and contributing conditions.\n3. Separate probable cause vs confirmed evidence.\n4. Propose containment, corrective action, and prevention.\n\nUse tools as needed:\n- queryHistoricalValues across the event window\n- queryLastKnownValues for current post-event status\n- queryRelatedObjects for dependency context"
-        },
-        "energy_intensity_review": {
-            "description": "Assess energy usage versus output and operating state",
-            "inputs": [
-                "asset_or_line",
-                "lookback_days",
-                "production_context"
-            ],
-            "template": "You are an energy optimization analyst for industrial equipment.\n\nScope: {{asset_or_line}}\nLookback: {{lookback_days}} days\nProduction context: {{production_context}}\n\nTasks:\n1. Estimate energy intensity patterns by operating state.\n2. Highlight avoidable consumption and probable causes.\n3. Suggest no-capex and low-capex actions.\n4. Define 3 monitoring KPIs for weekly follow-up.\n\nUse tools as needed:\n- queryHistoricalValues for load/state patterns\n- queryRelatedObjects to include auxiliaries\n- queryLastKnownValues for current operating mode"
-        },
-        "opcua_data_quality_audit": {
-            "description": "Audit OPC UA telemetry quality for decision readiness",
-            "inputs": [
-                "asset_id",
-                "lookback_hours"
-            ],
-            "template": "You are an OPC UA data quality auditor.\n\nAsset: {{asset_id}}\nLookback: {{lookback_hours}} hours\n\nTasks:\n1. Check staleness, missingness, timestamp consistency, and value plausibility.\n2. Flag suspicious flat-lines, spikes, or out-of-order updates.\n3. Classify impact on diagnostics (low/medium/high).\n4. Recommend fixes (sampling, publishing, deadband, mapping).\n\nUse tools as needed:\n- queryHistoricalValues for continuity and anomaly checks\n- queryLastKnownValues for freshness\n- getNamespaces/getObjects if source mapping is unclear"
-        },
-        "shift_handover_summary": {
-            "description": "Create concise shift handover for operations and maintenance",
-            "inputs": [
-                "area",
-                "shift_window"
-            ],
-            "template": "You are a production shift handover assistant.\n\nArea: {{area}}\nShift window: {{shift_window}}\n\nTasks:\n1. Summarize major events, alarms, interventions, and unresolved issues.\n2. List top 5 risks for next shift.\n3. Provide clear watchlist signals and thresholds.\n4. Provide next-shift action checklist.\n\nUse tools as needed:\n- queryLastKnownValues for current state\n- queryHistoricalValues for shift timeline\n- listSubscriptions/syncSubscription for monitored updates"
-        },
-        "i3x_context_mapping_assistant": {
-            "description": "Map OPC UA signals into i3X object and relationship context",
-            "inputs": [
-                "asset_id_or_namespace",
-                "mapping_goal"
-            ],
-            "template": "You are an i3X semantic modeling assistant for industrial systems.\n\nScope: {{asset_id_or_namespace}}\nGoal: {{mapping_goal}}\n\nTasks:\n1. Propose i3X object types and relationships for available signals.\n2. Identify missing links needed for diagnostics and lineage.\n3. Recommend a minimal high-value model extension.\n4. Output a practical mapping checklist for implementation.\n\nUse tools as needed:\n- getObjectTypes/getRelationshipTypes for model vocabulary\n- getObjects/listObjectsById/queryRelatedObjects for current graph\n- getNamespaces to align OPC UA source context"
-        }
+    "queryRelatedObjectsV1": {
+      "description": "NAVIGATION: Follow relationships from one or a few real elementIds returned by discovery. MCP returns at most 50 related objects per source; use body.offset with the same elementIds to continue. Follow only the relevant branch to connected equipment, components, properties, Memory, or DataBlocks. Leave relationshipType unset unless its exact value is known. Not a full-model search.",
+      "priority": "high",
+      "keywords": ["navigate", "related equipment", "components", "properties", "variables", "relationships", "children"]
+    },
+    "queryLastKnownValuesV1": {
+      "description": "READ CURRENT VALUES only after discovering the target property's exact elementId. Batch only a few relevant property IDs and use maxDepth=1. Do not read container objects that have no value. To read many properties under one known container without generating a long ID array, use readContainerValues. History is a separate tool.",
+      "priority": "high",
+      "keywords": ["current value", "latest value", "read signal", "value", "quality", "timestamp"]
+    },
+    "readContainerValues": {
+      "description": "READ MANY CURRENT VALUES under one discovered container in one short tool call. Pass the exact containerId from discovery/navigation; the server finds descendant properties and reads at most 50 per page (default 50). Continue with offset when nextOffset is returned. Do not use on a plant root or broad asset unless the user requests all its values. Returns each property's name, ID, value, quality, and timestamp; it does not read container values or history.",
+      "priority": "high",
+      "keywords": ["read container values", "memory variables", "many signals", "bulk current values", "datablock values"]
+    },
+    "queryHistoricalValuesV1": {
+      "description": "READ HISTORY only when the user explicitly asks for a trend or past values. Supply known elementIds and a narrow startTime/endTime interval; use maxDepth=1 unless component history is specifically needed. MCP returns 100 samples per page; use body.offset to continue. For current state use queryLastKnownValuesV1.",
+      "priority": "normal",
+      "keywords": ["history", "trend", "past values", "time range", "historical samples"]
+    },
+    "listObjectsByIdV1": {
+      "description": "Fetch specific objects by exact elementIds already returned by discovery or navigation. Keep the ID list narrow. Do not use this to discover assets or enumerate the model; start unknown searches with getObjectsV1(root=true).",
+      "priority": "normal",
+      "keywords": ["object details", "known elementId", "fetch object", "lookup"]
+    },
+    "getInfoV1": {
+      "description": "Return server version and capabilities. Use only for a server-information question, not to discover industrial assets or inspect model contents.",
+      "priority": "normal",
+      "keywords": ["server info", "version", "capabilities"]
+    },
+    "getModelMetricsV1": {
+      "description": "Return aggregate model metrics. Use for counts or model-size questions; do not list objects just to count them. This does not identify individual assets or values.",
+      "priority": "normal",
+      "keywords": ["model metrics", "model counts", "object count", "model size"]
+    },
+    "getModelNamespaceGapsV1": {
+      "description": "Report namespace mapping gaps. Use only to diagnose incomplete OPC UA namespace mapping, not for asset discovery or ordinary value lookup.",
+      "priority": "low",
+      "keywords": ["namespace gaps", "mapping diagnostics", "missing namespace mapping"]
+    },
+    "getNamespacesV1": {
+      "description": "ADVANCED: List OPC UA namespaces only when the user asks about namespaces or when a specific mapping issue must be diagnosed. Do not start asset discovery here; use getObjectsV1(root=true). Namespace output may be lengthy.",
+      "priority": "low",
+      "keywords": ["namespace", "OPC UA namespace", "namespace mapping"]
+    },
+    "getObjectTypesV1": {
+      "description": "ADVANCED SCHEMA LOOKUP: Use only for explicit type/schema questions, not asset discovery. MCP returns compact type summaries in pages of 50; use pagination.nextOffset to continue and queryObjectTypesV1 for a selected schema. Find assets first with getObjectsV1(root=true), then navigate.",
+      "priority": "low",
+      "keywords": ["object type schema", "types", "type catalog", "model schema"]
+    },
+    "queryObjectTypesV1": {
+      "description": "Look up type schemas for exact elementIds when type details are required. Prefer a narrow lookup over getObjectTypesV1, which lists all types. Not for asset discovery or reading values.",
+      "priority": "normal",
+      "keywords": ["specific type schema", "known elementId", "object type details"]
+    },
+    "getRelationshipTypesV1": {
+      "description": "ADVANCED: Use only when the user asks for relationship vocabulary or a relationship name is needed but unavailable from navigation results. MCP returns compact entries in pages of 50; continue with pagination.nextOffset. Do not call before asset discovery.",
+      "priority": "low",
+      "keywords": ["relationship type catalog", "relationship vocabulary", "relationship names"]
+    },
+    "queryRelationshipTypesV1": {
+      "description": "Look up relationship types for exact elementIds when relationship schema details are explicitly needed. Prefer this narrow lookup over getRelationshipTypesV1. Not a substitute for navigating actual relationships with queryRelatedObjectsV1.",
+      "priority": "low",
+      "keywords": ["specific relationship types", "known elementId", "relationship schema"]
+    },
+    "getUaStatus": {
+      "description": "Return OPC UA gateway status. Use only for a gateway health/status question; it does not describe connected industrial assets.",
+      "priority": "normal",
+      "keywords": ["OPC UA status", "gateway health", "connection state"]
+    },
+    "getUaConnection": {
+      "description": "Return OPC UA connection details such as endpoint and connection age. Use for connectivity questions, not to identify PLCs represented in the information model.",
+      "priority": "normal",
+      "keywords": ["OPC UA connection", "endpoint", "connectivity"]
+    },
+    "getUaLimits": {
+      "description": "Return OPC UA operational and subscription limits. Use only for capacity or protocol-limit questions.",
+      "priority": "low",
+      "keywords": ["OPC UA limits", "capacity", "subscription limits"]
+    },
+    "getUaMetrics": {
+      "description": "Return OPC UA request and performance metrics. Use only for load, latency, or runtime-performance questions.",
+      "priority": "low",
+      "keywords": ["OPC UA metrics", "latency", "performance", "load"]
+    },
+    "createSubscriptionV1": {
+      "description": "Create a value-monitoring subscription only when the user asks for ongoing monitoring. First discover the relevant property elementIds; subscribe only to those signals.",
+      "priority": "normal",
+      "keywords": ["create subscription", "monitor continuously", "subscribe to signal"]
+    },
+    "registerMonitoredItemsV1": {
+      "description": "Add known property elementIds to an existing subscription when ongoing monitoring is requested. Do not register container objects or guess IDs.",
+      "priority": "normal",
+      "keywords": ["add monitored signal", "register monitored item", "subscription"]
+    },
+    "removeMonitoredItemsV1": {
+      "description": "Remove specified monitored items from a subscription when requested. Use exact item IDs; do not use for reading values.",
+      "priority": "normal",
+      "keywords": ["remove monitored item", "unregister signal", "subscription"]
+    },
+    "syncSubscriptionV1": {
+      "description": "Fetch and acknowledge pending subscription updates when the user asks to sync or retrieve updates. Not for one-time current-value reads; use queryLastKnownValuesV1 for those.",
+      "priority": "low",
+      "keywords": ["sync subscription", "pending updates", "subscription data"]
+    },
+    "deleteSubscriptionsV1": {
+      "description": "Delete specified subscriptions only when the user explicitly asks to stop/remove them. Confirm the target subscription IDs from context; this changes monitoring state.",
+      "priority": "low",
+      "keywords": ["delete subscription", "stop monitoring", "remove subscription"]
+    },
+    "listSubscriptionsV1": {
+      "description": "List or inspect subscriptions when the user asks about monitoring configuration or status. This does not discover industrial assets or read model values.",
+      "priority": "low",
+      "keywords": ["list subscriptions", "monitoring status", "subscription details"]
     }
+  },
+  "prompts": {
+    "industrial_discovery_workflow": {
+      "description": "Find assets and answers using the smallest safe discovery path",
+      "inputs": ["question"],
+      "template": "Answer this industrial-model question: {{question}}\n\nWorkflow:\n1. For an unknown asset, call getObjectsV1 with root=true. Never call getObjectsV1({}) or enumerate the full model.\n2. Identify the matching top-level asset from its name and returned details. Do not guess typeElementId or elementIds.\n3. Navigate only the relevant branch with queryRelatedObjectsV1 using returned elementIds. Repeat only when the target is deeper.\n4. For one or a few current values, find the named property and call queryLastKnownValuesV1 with exact elementIds and maxDepth=1. For many values under one known container, call readContainerValues with its exact containerId; do not generate a long ID array. Do not read container values.\n5. Use queryHistoricalValuesV1 only when history/trend is explicitly requested, with a narrow time interval.\n6. Avoid namespace/type catalogs unless the question explicitly concerns schemas or mapping.\n\nReturn the answer and identify missing data rather than broadening to a full-model scan."
+    },
+    "inspect_asset": {
+      "description": "Inspect one named asset and report its relevant structure or requested properties",
+      "inputs": ["asset_name", "question"],
+      "template": "Inspect asset {{asset_name}} for this request: {{question}}\n\nStart with getObjectsV1(root=true) only if the asset elementId is not already known. Match the returned asset by name; never guess IDs or typeElementId values. Navigate from that asset with queryRelatedObjectsV1 and follow only the branch needed to answer. For a current value, locate the named property first, then call queryLastKnownValuesV1 on only its exact elementId with maxDepth=1. Do not read container values or history unless explicitly requested. Avoid global object/type/namespace listings. Return concise findings with source object/property names."
+    },
+    "inspect_signal": {
+      "description": "Locate one named signal and return its current value or requested details",
+      "inputs": ["asset_name", "signal_name"],
+      "template": "Find signal {{signal_name}} under asset {{asset_name}}.\n\nIf the asset ID is unknown, call getObjectsV1(root=true), match the asset by name, then navigate relevant relationships with queryRelatedObjectsV1. Continue from returned IDs until the named property is found. Do not guess IDs, use guessed typeElementId filters, or list the whole model. Read only the matching property's current value with queryLastKnownValuesV1(elementIds=[exact property ID], maxDepth=1). Do not query history unless requested. Report value, quality, timestamp, and the matched property path; if no match exists, say so."
+    },
+    "inspect_plc": {
+      "description": "Find a connected PLC and inspect requested PLC data such as OrderNumber, firmware, DataBlocks, or Memory variables",
+      "inputs": ["asset_name", "question"],
+      "template": "For asset {{asset_name}}, answer: {{question}}\n\nIf needed, discover top-level assets with getObjectsV1(root=true); identify the named asset from returned data. Use queryRelatedObjectsV1 with actual returned elementIds to find the connected PLC/controller, then navigate only the PLC branch. Never guess IDs or typeElementId values such as \"plc\". For OrderNumber or firmware version, locate the exact property and read it with queryLastKnownValuesV1(maxDepth=1). For DataBlock counts or Memory variables, navigate to the relevant collection/container and count/list the returned entries; do not read container values. If asked for many current values under one container, use readContainerValues with the exact containerId instead of assembling property IDs. Avoid full-model scans and type/namespace catalogs. State what was found and distinguish absent data from an unsuccessful lookup."
+    },
+    "machine_health_snapshot": {
+      "description": "Summarize current machine condition using relevant signals and only requested history",
+      "inputs": ["asset_id", "lookback_minutes"],
+      "template": "Assess machine {{asset_id}}. Lookback: {{lookback_minutes}} minutes.\n\nIf asset_id is a name rather than an elementId, discover roots with getObjectsV1(root=true) and match it. Navigate only relevant components/signals with queryRelatedObjectsV1. Read current values only for relevant properties using queryLastKnownValuesV1(maxDepth=1). Query historical values only for those signals and only within the stated lookback if trend evidence is needed. Do not enumerate the model or inspect type/namespace catalogs. Summarize evidence, uncertainty, severity, and safe checks; do not infer unsupported failure causes."
+    },
+    "alarm_triage": {
+      "description": "Triage an alarm using narrow asset navigation and relevant signal evidence",
+      "inputs": ["asset_id", "alarm_text", "time_window"],
+      "template": "Triage alarm {{alarm_text}} for asset {{asset_id}}. Relevant window: {{time_window}}.\n\nIf the asset ID is unknown, call getObjectsV1(root=true) and match by name. Navigate only related alarm/process signals using queryRelatedObjectsV1. Read current values for relevant properties with queryLastKnownValuesV1(maxDepth=1); use queryHistoricalValuesV1 only for those known signal IDs and the specified window. Do not scan all objects or types. Separate observed facts from hypotheses and provide safe, non-invasive operator checks; do not recommend bypassing safeguards."
+    },
+    "predictive_maintenance_check": {
+      "description": "Assess degradation using selected signals and bounded history",
+      "inputs": ["asset_id", "lookback_days"],
+      "template": "Assess degradation risk for asset {{asset_id}} over {{lookback_days}} days.\n\nResolve an unknown asset using getObjectsV1(root=true), then queryRelatedObjectsV1 only for relevant condition signals. Read current values for selected properties with queryLastKnownValuesV1(maxDepth=1). Use queryHistoricalValuesV1 for only those signal IDs and the stated period. Do not enumerate the full model. State evidence and uncertainty, recommend inspections, and suggest subscriptions only if ongoing monitoring is requested."
+    },
+    "process_drift_analysis": {
+      "description": "Analyze a named KPI for drift using only relevant assets and signals",
+      "inputs": ["line_or_cell", "kpi_name", "lookback_hours"],
+      "template": "Analyze {{kpi_name}} for {{line_or_cell}} over {{lookback_hours}} hours.\n\nIf the line/cell is not identified by elementId, discover roots with getObjectsV1(root=true), then navigate the matching asset using queryRelatedObjectsV1. Find only the KPI and directly relevant signals. Query history for those known IDs and the requested time window; read current values only if needed. Do not list the whole model or object types. Report observed drift, evidence, and plausible causes separately; do not recommend unverified control-limit changes."
+    },
+    "downtime_root_cause": {
+      "description": "Reconstruct a downtime event from selected signals in the stated interval",
+      "inputs": ["asset_id", "downtime_start", "downtime_end"],
+      "template": "Analyze downtime for {{asset_id}} from {{downtime_start}} to {{downtime_end}}.\n\nResolve the asset with getObjectsV1(root=true) only if its ID is unknown, then navigate only relevant components and signals with queryRelatedObjectsV1. Query historical values for selected signal IDs over the event interval; use maxDepth=1 unless component history is necessary. Read current values only for post-event status. Avoid full-model scans. Distinguish confirmed telemetry from inferred causes and summarize timeline, containment, and follow-up."
+    },
+    "energy_intensity_review": {
+      "description": "Review energy patterns for a named asset or line using selected measurements",
+      "inputs": ["asset_or_line", "lookback_days", "production_context"],
+      "template": "Review energy use for {{asset_or_line}} over {{lookback_days}} days. Production context: {{production_context}}.\n\nIf needed, discover the asset with getObjectsV1(root=true), then navigate only relevant energy and production signals using queryRelatedObjectsV1. Query history only for those property IDs and the stated period; use current values only if needed for operating state. Do not enumerate the full model or type catalog. Separate measured patterns from estimates and list concise, evidence-based opportunities."
+    },
+    "opcua_data_quality_audit": {
+      "description": "Check telemetry quality for selected signals without scanning the full model",
+      "inputs": ["asset_id", "lookback_hours"],
+      "template": "Audit data quality for asset {{asset_id}} over {{lookback_hours}} hours.\n\nResolve an unknown asset with getObjectsV1(root=true), then use queryRelatedObjectsV1 to select only relevant properties. Use queryLastKnownValuesV1 for freshness and queryHistoricalValuesV1 for continuity only on those IDs and within the stated period. Do not call getObjectsV1 without root=true, and do not inspect namespaces unless a mapping issue is explicitly suspected. Report observed missingness, staleness, timestamp/value anomalies, and limits of the evidence."
+    },
+    "shift_handover_summary": {
+      "description": "Create a concise handover from relevant current state and the stated shift interval",
+      "inputs": ["area", "shift_window"],
+      "template": "Prepare a handover for {{area}} covering {{shift_window}}.\n\nIf the area is not identified, discover roots with getObjectsV1(root=true), then navigate only relevant assets/signals using queryRelatedObjectsV1. Read current values for selected properties with queryLastKnownValuesV1(maxDepth=1). Use history only for relevant signals in the shift window. Inspect subscriptions only if pending monitored updates are specifically relevant. Avoid full-model enumeration. Summarize events, unresolved issues, evidence, and next-shift checks."
+    },
+    "i3x_context_mapping_assistant": {
+      "description": "Review existing i3X context for a mapping task; use schema catalogs only when requested",
+      "inputs": ["asset_id_or_namespace", "mapping_goal"],
+      "template": "Review {{asset_id_or_namespace}} for this mapping goal: {{mapping_goal}}.\n\nFor an asset, start with getObjectsV1(root=true) if needed and navigate the relevant branch with queryRelatedObjectsV1. Do not enumerate all objects. Use getNamespacesV1 only when namespace alignment is part of the task. Use getObjectTypesV1 or getRelationshipTypesV1 only when the mapping goal requires vocabulary/schema details; prefer targeted query tools when exact IDs are known. Report only relevant existing objects, links, gaps, and a minimal mapping checklist."
+    }
+  }
 }

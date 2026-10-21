@@ -525,6 +525,7 @@ def _datatype_object_type_from_source_type_id(
     source_type_id: str,
     namespace_infos: list[OpcUaNamespaceInfo],
     resolved_scalar_schema: Mapping[str, Any] | None = None,
+    resolved_browse_name: str | None = None,
 ) -> ObjectTypeResponse | None:
     schema: Mapping[str, Any] | None = None
     if resolved_scalar_schema is not None:
@@ -582,6 +583,8 @@ def _datatype_object_type_from_source_type_id(
         node_id_match = re.match(r"^nsu=[^;]+;i=(\d+)$", source_type_id, flags=re.IGNORECASE)
         if node_id_match is not None:
             display_name = f"DataType_i_{node_id_match.group(1)}"
+    if resolved_browse_name:
+        display_name = resolved_browse_name
     if builtin_id is not None:
         display_name = _UA_BUILTIN_DATATYPE_NAMES.get(builtin_id, display_name)
     elif _is_standard_ua_namespace_node_id(source_type_id):
@@ -619,6 +622,12 @@ _INTEGER_RANGES_BY_BUILTIN_ID: dict[int, tuple[int, int]] = {
     8: (-(2**63), 2**63 - 1),
     9: (0, 2**64 - 1),
 }
+
+
+@dataclass(frozen=True, slots=True)
+class _ResolvedCustomDataType:
+    scalar_schema: dict[str, Any]
+    browse_name: str | None
 
 
 def _scalar_schema_from_type_hierarchy(
@@ -670,7 +679,7 @@ async def _resolve_custom_scalar_datatype_schemas(
     source_type_ids: set[str],
     namespace_infos: list[OpcUaNamespaceInfo],
     opcua_client: OpcUaClientProtocol,
-) -> dict[str, dict[str, Any]]:
+) -> dict[str, _ResolvedCustomDataType]:
     candidates_set: set[str] = set()
     for type_id in source_type_ids:
         if not type_id:
@@ -711,14 +720,26 @@ async def _resolve_custom_scalar_datatype_schemas(
             except Exception:
                 logger.warning("Custom DataType hierarchy resolution failed for %s", type_id, exc_info=True)
 
-    resolved: dict[str, dict[str, Any]] = {}
+    resolved: dict[str, _ResolvedCustomDataType] = {}
     for type_id in candidates:
         hierarchy = hierarchies.get(type_id)
         if not isinstance(hierarchy, list):
             continue
         scalar_schema = _scalar_schema_from_type_hierarchy(hierarchy, namespace_infos)
         if scalar_schema is not None:
-            resolved[type_id.lower()] = scalar_schema
+            browse_name: str | None = None
+            if hierarchy:
+                root_type = hierarchy[0]
+                root_node_id = getattr(root_type, "node_id", None)
+                root_browse_name = getattr(root_type, "browse_name", None)
+                if (
+                    isinstance(root_node_id, str)
+                    and _expanded_node_id(root_node_id, namespace_infos).lower() == type_id.lower()
+                    and isinstance(root_browse_name, str)
+                    and root_browse_name.strip()
+                ):
+                    browse_name = root_browse_name.strip()
+            resolved[type_id.lower()] = _ResolvedCustomDataType(scalar_schema, browse_name)
     return resolved
 
 
@@ -854,11 +875,14 @@ async def _build_object_type_context(
         for member in item.members
         if member.node_class.lower() == "variable" and member.data_type
     )
-    resolved_data_type_schemas = await _resolve_custom_scalar_datatype_schemas(
+    resolved_custom_datatypes = await _resolve_custom_scalar_datatype_schemas(
         property_type_element_ids,
         namespace_infos,
         opcua_client,
     )
+    resolved_data_type_schemas = {
+        type_id: resolved.scalar_schema for type_id, resolved in resolved_custom_datatypes.items()
+    }
 
     items: list[ObjectTypeResponse] = []
     chunk_size = 50
@@ -894,10 +918,12 @@ async def _build_object_type_context(
         if source_match is not None:
             continue
 
+        resolved_datatype = resolved_custom_datatypes.get(unresolved_key)
         datatype_item = _datatype_object_type_from_source_type_id(
             unresolved_id,
             namespace_infos,
-            resolved_data_type_schemas.get(unresolved_key),
+            resolved_datatype.scalar_schema if resolved_datatype is not None else None,
+            resolved_datatype.browse_name if resolved_datatype is not None else None,
         )
         if datatype_item is not None:
             items.append(datatype_item)

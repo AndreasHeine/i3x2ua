@@ -251,7 +251,12 @@ async def test_custom_scalar_datatype_hierarchies_are_batched_and_keyed_by_expan
         Client(),  # type: ignore[arg-type]
     )
 
-    assert result == {source_type_id: {"type": "integer", "minimum": 0, "maximum": 255}}
+    assert result == {
+        source_type_id: objecttype_helpers._ResolvedCustomDataType(
+            {"type": "integer", "minimum": 0, "maximum": 255},
+            "BYTE",
+        )
+    }
 
 
 @pytest.mark.asyncio
@@ -318,6 +323,8 @@ async def test_object_type_context_applies_resolved_custom_datatype_schema() -> 
     assert device_type.schema_["properties"]["Value"]["minimum"] == 0
     assert device_type.schema_["properties"]["Value"]["maximum"] == 255
     datatype = next(item for item in context.items if item.sourceTypeId == source_type_id)
+    assert datatype.displayName == "BYTE"
+    assert datatype.elementId.endswith(":byte:i-3001")
     scalar_branch = next(branch for branch in datatype.schema_["oneOf"] if branch.get("type") == "integer")
     assert scalar_branch == {"type": "integer", "minimum": 0, "maximum": 255}
 
@@ -334,10 +341,12 @@ def test_custom_scalar_datatype_object_type_uses_resolved_primitive_schema(
             OpcUaNamespaceInfo(uri="http://www.siemens.com/simatic-s7-opcua", display_name="Siemens"),
         ],
         {"type": "integer", "minimum": 0, "maximum": 255},
+        "BYTE",
     )
 
     assert response is not None
-    assert response.displayName == "DataType_i_3001"
+    assert response.displayName == "BYTE"
+    assert response.elementId.endswith(":byte:i-3001")
     scalar_branch = next(branch for branch in response.schema_["oneOf"] if branch.get("type") == "integer")
     array_branch = next(branch for branch in response.schema_["oneOf"] if branch.get("type") == "array")
     assert scalar_branch == {"type": "integer", "minimum": 0, "maximum": 255}

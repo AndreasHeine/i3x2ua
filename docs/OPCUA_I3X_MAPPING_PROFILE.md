@@ -71,6 +71,9 @@ Argument JSON Schemas permit both arrays and null for `ArrayDimensions`.
 7. ObjectType `sourceTypeId`
 - Source namespace member identifier for the type (OPC UA provenance).
 - Kept distinct from ObjectType `elementId`.
+- Synthetic ObjectTypes for custom scalar DataTypes use the resolved DataType
+  BrowseName in their generated `elementId` when hierarchy metadata provides
+  it; the expanded source NodeId remains the identity suffix and provenance.
 
 8. Unknown or unresolved types
 - If a referenced `typeElementId` cannot be resolved from discovered object types:

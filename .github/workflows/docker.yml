@@ -113,6 +113,7 @@ jobs:
           output: trivy-results.sarif
           severity: CRITICAL,HIGH
           ignore-unfixed: true
+          skip-files: '**/pip/_vendor/bom.cdx.json'
 
       - name: Upload vulnerability scan results
         if: ${{ github.event_name != 'pull_request' }}
@@ -128,4 +129,5 @@ jobs:
           format: table
           severity: CRITICAL
           ignore-unfixed: true
+          skip-files: '**/pip/_vendor/bom.cdx.json'
           exit-code: "1"

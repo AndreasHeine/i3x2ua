@@ -217,12 +217,18 @@ produce the same scalar schema.
 
 Numeric identifiers in custom namespaces must not be interpreted as built-in
 datatypes merely because their identifier matches a namespace-zero type.
+For custom DataTypes, ObjectType schema generation resolves the `HasSubtype`
+hierarchy and uses the nearest concrete namespace-zero scalar ancestor when one
+is available. Integer-derived aliases retain the built-in integer range
+constraints (for example, `Byte` is `0..255` and `UInt16` is `0..65535`).
+The DataType's own expanded NodeId remains in member metadata.
 Missing or unresolved scalar datatypes use an unconstrained schema (`{}`),
 accepting any JSON value, including null. Known string datatypes remain `string`.
 Arrays of unresolved datatypes retain `type: array` with `items: {}`. Member
 metadata and mandatory modelling rules are preserved. Unconstrained datatype
 schemas are not wrapped in nullable/array `oneOf` branches, which would overlap.
-Custom datatype ancestry resolution is not provided by this scalar mapper.
+If hierarchy lookup fails, the existing unresolved-type fallback remains in
+effect; custom namespace identifiers are never guessed from their numeric part.
 
 The mapped i3X object currently carries the following fields in code:
 

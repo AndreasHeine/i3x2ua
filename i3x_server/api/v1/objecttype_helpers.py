@@ -524,8 +524,24 @@ def _scalar_schema_for_standard_ua_datatype_node_id(element_id: str) -> dict[str
 def _datatype_object_type_from_source_type_id(
     source_type_id: str,
     namespace_infos: list[OpcUaNamespaceInfo],
+    resolved_scalar_schema: Mapping[str, Any] | None = None,
 ) -> ObjectTypeResponse | None:
-    schema = build_data_type_schema(source_type_id, namespace_infos)
+    schema: Mapping[str, Any] | None = None
+    if resolved_scalar_schema is not None:
+        scalar_schema = dict(resolved_scalar_schema)
+        schema = {
+            "oneOf": [
+                {"type": "null"},
+                scalar_schema,
+                {
+                    "type": "array",
+                    "items": _array_items_schema_for_builtin_data_type(source_type_id, scalar_schema),
+                },
+            ]
+        }
+    else:
+        schema = build_data_type_schema(source_type_id, namespace_infos)
+
     if not isinstance(schema, Mapping):
         scalar_schema: dict[str, Any] | None = None
         if _is_builtin_ua_datatype_node_id(source_type_id):
@@ -562,6 +578,10 @@ def _datatype_object_type_from_source_type_id(
 
     title = schema.get("title") if isinstance(schema, Mapping) else None
     display_name = title if isinstance(title, str) and title else "StructureType"
+    if resolved_scalar_schema is not None and display_name == "StructureType":
+        node_id_match = re.match(r"^nsu=[^;]+;i=(\d+)$", source_type_id, flags=re.IGNORECASE)
+        if node_id_match is not None:
+            display_name = f"DataType_i_{node_id_match.group(1)}"
     if builtin_id is not None:
         display_name = _UA_BUILTIN_DATATYPE_NAMES.get(builtin_id, display_name)
     elif _is_standard_ua_namespace_node_id(source_type_id):
@@ -586,6 +606,122 @@ def _datatype_object_type_from_source_type_id(
         sourceTypeId=source_type_id,
         schema=schema_payload,
     )
+
+
+_ABSTRACT_BUILTIN_DATATYPE_NAMES = {"BaseDataType", "Number", "Integer", "UInteger", "Enumeration"}
+_INTEGER_RANGES_BY_BUILTIN_ID: dict[int, tuple[int, int]] = {
+    2: (-(2**7), 2**7 - 1),
+    3: (0, 2**8 - 1),
+    4: (-(2**15), 2**15 - 1),
+    5: (0, 2**16 - 1),
+    6: (-(2**31), 2**31 - 1),
+    7: (0, 2**32 - 1),
+    8: (-(2**63), 2**63 - 1),
+    9: (0, 2**64 - 1),
+}
+
+
+def _scalar_schema_from_type_hierarchy(
+    hierarchy: list[Any],
+    namespace_infos: list[OpcUaNamespaceInfo],
+) -> dict[str, Any] | None:
+    abstract_scalar_schema: dict[str, Any] | None = None
+    for type_info in hierarchy[1:]:
+        node_id = getattr(type_info, "node_id", None)
+        if not isinstance(node_id, str):
+            continue
+        expanded_node_id = _expanded_node_id(node_id, namespace_infos)
+        if not _is_standard_ua_namespace_node_id(expanded_node_id):
+            continue
+        name = _standard_ua_type_name(expanded_node_id)
+        if not name:
+            continue
+        schema = json_schema_for_opcua_type(expanded_node_id)
+        if not schema:
+            continue
+        if name in _ABSTRACT_BUILTIN_DATATYPE_NAMES:
+            if abstract_scalar_schema is None:
+                abstract_scalar_schema = schema
+            continue
+        node_id_match = re.match(r"^nsu=[^;]+;i=(\d+)$", expanded_node_id, flags=re.IGNORECASE)
+        builtin_id = int(node_id_match.group(1)) if node_id_match else None
+        integer_range = _INTEGER_RANGES_BY_BUILTIN_ID.get(builtin_id) if builtin_id is not None else None
+        if integer_range is not None:
+            schema["minimum"], schema["maximum"] = integer_range
+        return schema
+    return abstract_scalar_schema
+
+
+def _indexed_node_id_for_hierarchy_lookup(
+    expanded_node_id: str,
+    namespace_infos: list[OpcUaNamespaceInfo],
+) -> str:
+    match = re.match(r"^nsu=([^;]+);(.+)$", expanded_node_id, flags=re.IGNORECASE)
+    if match is None:
+        return expanded_node_id
+    namespace_uri = _canonical_namespace_uri(match.group(1), namespace_infos)
+    for namespace_index, namespace_info in enumerate(namespace_infos):
+        if namespace_info.uri == namespace_uri:
+            return f"ns={namespace_index};{match.group(2)}"
+    return expanded_node_id
+
+
+async def _resolve_custom_scalar_datatype_schemas(
+    source_type_ids: set[str],
+    namespace_infos: list[OpcUaNamespaceInfo],
+    opcua_client: OpcUaClientProtocol,
+) -> dict[str, dict[str, Any]]:
+    candidates_set: set[str] = set()
+    for type_id in source_type_ids:
+        if not type_id:
+            continue
+        expanded_type_id = _expanded_node_id(type_id, namespace_infos)
+        if not re.match(r"^(?:nsu=[^;]+;|ns=\d+;)?[isgb]=.+$", expanded_type_id, flags=re.IGNORECASE):
+            continue
+        if not _is_standard_ua_namespace_node_id(expanded_type_id):
+            candidates_set.add(expanded_type_id)
+    candidates = sorted(candidates_set)
+    if not candidates:
+        return {}
+
+    lookup_ids = {
+        _indexed_node_id_for_hierarchy_lookup(type_id, namespace_infos): type_id for type_id in candidates
+    }
+    resolve_many = getattr(opcua_client, "resolve_type_definition_hierarchies", None)
+    resolve_one = getattr(opcua_client, "resolve_type_definition_hierarchy", None)
+    if not callable(resolve_many) and not callable(resolve_one):
+        return {}
+
+    hierarchies: dict[str, list[Any]] = {}
+    if callable(resolve_many):
+        try:
+            resolved_hierarchies = await resolve_many(sorted(lookup_ids))
+            if isinstance(resolved_hierarchies, Mapping):
+                for lookup_id, hierarchy in resolved_hierarchies.items():
+                    candidate = lookup_ids.get(lookup_id) if isinstance(lookup_id, str) else None
+                    if candidate is not None and isinstance(hierarchy, list):
+                        hierarchies[candidate] = hierarchy
+        except Exception:
+            logger.warning("Custom DataType hierarchy batch resolution failed", exc_info=True)
+    if callable(resolve_one):
+        for type_id in candidates:
+            if type_id in hierarchies:
+                continue
+            try:
+                lookup_id = _indexed_node_id_for_hierarchy_lookup(type_id, namespace_infos)
+                hierarchies[type_id] = await resolve_one(lookup_id)
+            except Exception:
+                logger.warning("Custom DataType hierarchy resolution failed for %s", type_id, exc_info=True)
+
+    resolved: dict[str, dict[str, Any]] = {}
+    for type_id in candidates:
+        hierarchy = hierarchies.get(type_id)
+        if not isinstance(hierarchy, list):
+            continue
+        scalar_schema = _scalar_schema_from_type_hierarchy(hierarchy, namespace_infos)
+        if scalar_schema is not None:
+            resolved[type_id.lower()] = scalar_schema
+    return resolved
 
 
 def _opaque_datatype_object_type_from_source_type_id(
@@ -713,6 +849,18 @@ async def _build_object_type_context(
     started = perf_counter()
     object_types_by_node_id = {item.node_id: item for item in object_types}
     element_ids_by_node_id = _object_type_element_ids_by_node_id(object_types, namespace_infos)
+    property_type_element_ids = _collect_property_type_element_ids(model, namespace_infos)
+    property_type_element_ids.update(
+        _expanded_node_id(member.data_type, namespace_infos)
+        for item in object_types
+        for member in item.members
+        if member.node_class.lower() == "variable" and member.data_type
+    )
+    resolved_data_type_schemas = await _resolve_custom_scalar_datatype_schemas(
+        property_type_element_ids,
+        namespace_infos,
+        opcua_client,
+    )
 
     items: list[ObjectTypeResponse] = []
     chunk_size = 50
@@ -720,7 +868,15 @@ async def _build_object_type_context(
         chunk = object_types[i : i + chunk_size]
         items.extend(
             [
-                _to_object_type(item, model, namespace_infos, object_types_by_node_id, element_ids_by_node_id, {})
+                _to_object_type(
+                    item,
+                    model,
+                    namespace_infos,
+                    object_types_by_node_id,
+                    element_ids_by_node_id,
+                    {},
+                    resolved_data_type_schemas,
+                )
                 for item in chunk
             ]
         )
@@ -729,7 +885,6 @@ async def _build_object_type_context(
     items.extend(_synthetic_object_types_from_structure_defs(items, namespace_infos))
 
     referenced_type_element_ids = _collect_referenced_type_element_ids(model, namespace_infos, element_ids_by_node_id)
-    property_type_element_ids = _collect_property_type_element_ids(model, namespace_infos)
     known_ids = {item.elementId for item in items}
     by_source_type_id: dict[str, ObjectTypeResponse] = {item.sourceTypeId.lower(): item for item in items}
     browse_name_cache: dict[str, str | None] = {}
@@ -741,7 +896,11 @@ async def _build_object_type_context(
         if source_match is not None:
             continue
 
-        datatype_item = _datatype_object_type_from_source_type_id(unresolved_id, namespace_infos)
+        datatype_item = _datatype_object_type_from_source_type_id(
+            unresolved_id,
+            namespace_infos,
+            resolved_data_type_schemas.get(unresolved_key),
+        )
         if datatype_item is not None:
             items.append(datatype_item)
             by_source_type_id[unresolved_key] = datatype_item

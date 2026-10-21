@@ -197,6 +197,58 @@ def test_unresolved_member_schema_preserves_metadata_and_array_shape(
     assert not validator.is_valid({})
 
 
+def test_resolved_custom_scalar_datatype_schema_applies_to_scalar_and_array_members() -> None:
+    namespace_infos = [
+        OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/", display_name="UA"),
+        OpcUaNamespaceInfo(uri="urn:unused", display_name="Unused"),
+        OpcUaNamespaceInfo(uri="urn:custom", display_name="Custom"),
+    ]
+    members = [
+        OpcUaObjectTypeMemberInfo(
+            node_id=f"ns=2;i={2000 + index}",
+            browse_name=name,
+            display_name=name,
+            description=None,
+            node_class="Variable",
+            data_type="ns=2;i=3001",
+            is_array=is_array,
+            value_rank=1 if is_array else -1,
+        )
+        for index, (name, is_array) in enumerate((("Value", False), ("Values", True)))
+    ]
+    item = OpcUaObjectTypeInfo(
+        node_id="ns=2;i=1000",
+        parent_node_id=None,
+        browse_name="CustomScalarType",
+        display_name="CustomScalarType",
+        properties={member.browse_name: member.data_type for member in members},
+        members=members,
+    )
+    schema = build_object_type_schema(
+        item,
+        {item.node_id: item},
+        {item.node_id: "custom-scalar-type"},
+        namespace_infos,
+        resolved_data_type_schemas={
+            "nsu=urn:custom;i=3001": {"type": "integer", "minimum": 0, "maximum": 255}
+        },
+    )
+
+    assert schema["properties"]["Value"]["type"] == "integer"
+    assert schema["properties"]["Value"]["minimum"] == 0
+    assert schema["properties"]["Value"]["maximum"] == 255
+    assert schema["properties"]["Values"]["type"] == "array"
+    assert schema["properties"]["Values"]["items"] == {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 255,
+    }
+    validator = Draft202012Validator(schema)
+    validator.validate({"Value": 255, "Values": [0, 255]})
+    assert not validator.is_valid({"Value": 256, "Values": [1]})
+    assert not validator.is_valid({"Value": 1, "Values": [-1]})
+
+
 @pytest.mark.parametrize("include_opcua_fields", [True, False])
 def test_process_value_schema_accepts_numbers_in_inherited_definitions(include_opcua_fields: bool) -> None:
     data_type = ua.NodeId(ua.Int32(ObjectIds.Number), ua.Int16(0)).to_string()

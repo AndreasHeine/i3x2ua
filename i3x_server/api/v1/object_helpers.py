@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from typing import Any
 
 from i3x_server.api.v1.contracts import (
@@ -554,6 +555,7 @@ def _to_object_type(
     object_types_by_node_id: dict[str, OpcUaObjectTypeInfo],
     element_ids_by_node_id: dict[str, str],
     element_ids_by_source_type: dict[str, str],
+    resolved_data_type_schemas: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> ObjectTypeResponse:
     namespace_uri = _namespace_uri_for_node_id(item.node_id, namespace_infos)
     element_id = _object_type_element_id(
@@ -575,7 +577,13 @@ def _to_object_type(
         displayName=item.display_name,
         namespaceUri=namespace_uri,
         sourceTypeId=source_type_id,
-        schema=build_object_type_schema(item, object_types_by_node_id, element_ids_by_node_id, namespace_infos),
+        schema=build_object_type_schema(
+            item,
+            object_types_by_node_id,
+            element_ids_by_node_id,
+            namespace_infos,
+            resolved_data_type_schemas=resolved_data_type_schemas,
+        ),
         related={"instances": related_instances} if related_instances else None,
     )
 

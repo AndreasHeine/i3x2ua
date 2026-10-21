@@ -15,7 +15,12 @@ from jsonschema import Draft202012Validator
 import i3x_server.api.v1.monolithic as v1
 from i3x_server.api.v1 import object_helpers, objecttype_helpers
 from i3x_server.application.services.model_query import _relationship_type_items
-from i3x_server.infrastructure.opcua.client import OpcUaClientProtocol, OpcUaNamespaceInfo, OpcUaObjectTypeInfo
+from i3x_server.infrastructure.opcua.client import (
+    OpcUaClientProtocol,
+    OpcUaNamespaceInfo,
+    OpcUaObjectTypeInfo,
+    OpcUaObjectTypeMemberInfo,
+)
 from i3x_server.model.revision import model_revision
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
@@ -189,6 +194,156 @@ def test_unresolved_builtin_datatype_fallback_is_unconstrained(monkeypatch: pyte
     values: list[Any] = [None, True, 42, 1.5, "text", [], {}, [None, 42]]
     for value in values:
         validator.validate(value)
+
+
+@pytest.mark.parametrize(
+    ("builtin_node_id", "expected"),
+    [
+        ("ns=0;i=3", {"type": "integer", "minimum": 0, "maximum": 255}),
+        ("ns=0;i=5", {"type": "integer", "minimum": 0, "maximum": 65535}),
+    ],
+)
+def test_custom_scalar_datatype_uses_nearest_concrete_builtin_ancestor(
+    builtin_node_id: str,
+    expected: dict[str, Any],
+) -> None:
+    hierarchy = [
+        SimpleNamespace(node_id="ns=2;i=3001", browse_name="VendorWord"),
+        SimpleNamespace(node_id="ns=0;i=28", browse_name="UInteger"),
+        SimpleNamespace(node_id=builtin_node_id, browse_name="Byte" if builtin_node_id == "ns=0;i=3" else "UInt16"),
+        SimpleNamespace(node_id="ns=0;i=27", browse_name="Integer"),
+        SimpleNamespace(node_id="ns=0;i=26", browse_name="Number"),
+    ]
+    namespace_infos = [
+        OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/", display_name="UA"),
+        OpcUaNamespaceInfo(uri="urn:unused", display_name="Unused"),
+        OpcUaNamespaceInfo(uri="http://www.siemens.com/simatic-s7-opcua", display_name="Siemens"),
+    ]
+
+    assert objecttype_helpers._scalar_schema_from_type_hierarchy(hierarchy, namespace_infos) == expected
+    assert objecttype_helpers._scalar_schema_from_type_hierarchy(hierarchy[:2] + hierarchy[3:], namespace_infos) == {
+        "type": "integer"
+    }
+
+
+@pytest.mark.asyncio
+async def test_custom_scalar_datatype_hierarchies_are_batched_and_keyed_by_expanded_id() -> None:
+    source_type_id = "nsu=http://www.siemens.com/simatic-s7-opcua;i=3001"
+
+    class Client:
+        async def resolve_type_definition_hierarchies(self, type_ids: list[str]) -> dict[str, list[Any]]:
+            assert type_ids == ["ns=1;i=3001"]
+            return {
+                "ns=1;i=3001": [
+                    SimpleNamespace(node_id=source_type_id, browse_name="BYTE"),
+                    SimpleNamespace(node_id="ns=0;i=28", browse_name="UInteger"),
+                    SimpleNamespace(node_id="ns=0;i=3", browse_name="Byte"),
+                ]
+            }
+
+    namespace_infos = [
+        OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/", display_name="UA"),
+        OpcUaNamespaceInfo(uri="http://www.siemens.com/simatic-s7-opcua", display_name="Siemens"),
+    ]
+    result = await objecttype_helpers._resolve_custom_scalar_datatype_schemas(
+        {source_type_id},
+        namespace_infos,
+        Client(),  # type: ignore[arg-type]
+    )
+
+    assert result == {source_type_id: {"type": "integer", "minimum": 0, "maximum": 255}}
+
+
+@pytest.mark.asyncio
+async def test_object_type_context_applies_resolved_custom_datatype_schema() -> None:
+    source_type_id = "nsu=http://www.siemens.com/simatic-s7-opcua;i=3001"
+    member = OpcUaObjectTypeInfo(
+        node_id="ns=2;i=1000",
+        parent_node_id=None,
+        browse_name="DeviceType",
+        display_name="DeviceType",
+        properties={"Value": source_type_id},
+        members=[
+            OpcUaObjectTypeMemberInfo(
+                node_id="ns=2;i=1001",
+                browse_name="Value",
+                display_name="Value",
+                description=None,
+                node_class="Variable",
+                data_type=source_type_id,
+                value_rank=-1,
+            )
+        ],
+    )
+
+    class Client:
+        async def resolve_type_definition_hierarchies(self, type_ids: list[str]) -> dict[str, list[Any]]:
+            assert type_ids == ["ns=2;i=3001"]
+            return {
+                "ns=2;i=3001": [
+                    SimpleNamespace(node_id=source_type_id, browse_name="BYTE"),
+                    SimpleNamespace(node_id="ns=0;i=28", browse_name="UInteger"),
+                    SimpleNamespace(node_id="ns=0;i=3", browse_name="Byte"),
+                ]
+            }
+
+    model = BuildResult(
+        {
+            "property": ModelNode(
+                id="property",
+                name="Value",
+                kind="property",
+                type=source_type_id,
+                source_node_id="ns=2;i=1001",
+            )
+        },
+        [],
+        {},
+        {},
+        {},
+        {},
+    )
+    context = await objecttype_helpers._build_object_type_context(
+        model,
+        [
+            OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/", display_name="UA"),
+            OpcUaNamespaceInfo(uri="urn:unused", display_name="Unused"),
+            OpcUaNamespaceInfo(uri="http://www.siemens.com/simatic-s7-opcua", display_name="Siemens"),
+        ],
+        Client(),  # type: ignore[arg-type]
+        [member],
+    )
+
+    device_type = next(item for item in context.items if item.displayName == "DeviceType")
+    assert device_type.schema_["properties"]["Value"]["minimum"] == 0
+    assert device_type.schema_["properties"]["Value"]["maximum"] == 255
+    datatype = next(item for item in context.items if item.sourceTypeId == source_type_id)
+    scalar_branch = next(branch for branch in datatype.schema_["oneOf"] if branch.get("type") == "integer")
+    assert scalar_branch == {"type": "integer", "minimum": 0, "maximum": 255}
+
+
+def test_custom_scalar_datatype_object_type_uses_resolved_primitive_schema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(objecttype_helpers, "build_data_type_schema", lambda *_args: {"type": "object"})
+    source_type_id = "nsu=http://www.siemens.com/simatic-s7-opcua;i=3001"
+    response = objecttype_helpers._datatype_object_type_from_source_type_id(
+        source_type_id,
+        [
+            OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/", display_name="UA"),
+            OpcUaNamespaceInfo(uri="http://www.siemens.com/simatic-s7-opcua", display_name="Siemens"),
+        ],
+        {"type": "integer", "minimum": 0, "maximum": 255},
+    )
+
+    assert response is not None
+    assert response.displayName == "DataType_i_3001"
+    scalar_branch = next(
+        branch for branch in response.schema_["oneOf"] if branch.get("type") == "integer"
+    )
+    array_branch = next(branch for branch in response.schema_["oneOf"] if branch.get("type") == "array")
+    assert scalar_branch == {"type": "integer", "minimum": 0, "maximum": 255}
+    assert array_branch["items"] == scalar_branch
 
 
 def test_standard_ua_datatype_scalar_schema_detection() -> None:

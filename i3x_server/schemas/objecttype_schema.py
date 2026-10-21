@@ -147,6 +147,7 @@ def build_object_type_schema(
     namespace_infos: list[OpcUaNamespaceInfo],
     *,
     include_opcua_fields: bool = True,
+    resolved_data_type_schemas: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     lineage = _lineage(item, object_types_by_node_id)
     registry = _SchemaRegistry()
@@ -158,7 +159,12 @@ def build_object_type_schema(
 
     for ancestor in lineage:
         definition_key = _def_key(_definition_name(ancestor, element_ids_by_node_id))
-        ancestor_schema, ancestor_required = _schema_for_single_type(ancestor, namespace_infos, registry)
+        ancestor_schema, ancestor_required = _schema_for_single_type(
+            ancestor,
+            namespace_infos,
+            registry,
+            resolved_data_type_schemas,
+        )
         registry.set_definition(definition_key, ancestor_schema)
         all_of.append({"$ref": f"#/$defs/{definition_key}"})
 
@@ -224,13 +230,14 @@ def _schema_for_single_type(
     item: OpcUaObjectTypeInfo,
     namespace_infos: list[OpcUaNamespaceInfo],
     registry: _SchemaRegistry,
+    resolved_data_type_schemas: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     properties: dict[str, Any] = {}
     required: list[str] = []
     required_seen: set[str] = set()
 
     for member in _members(item):
-        prop_schema = _schema_for_member(member, namespace_infos, registry)
+        prop_schema = _schema_for_member(member, namespace_infos, registry, resolved_data_type_schemas)
         properties[member.browse_name] = prop_schema
         normalized_rule = (member.modelling_rule or "").strip().lower()
         if normalized_rule in _MANDATORY_RULES and member.browse_name not in required_seen:
@@ -266,7 +273,17 @@ def _schema_for_member(
     member: OpcUaObjectTypeMemberInfo,
     namespace_infos: list[OpcUaNamespaceInfo],
     registry: _SchemaRegistry,
+    resolved_data_type_schemas: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    data_type_id = getattr(member, "data_type", None)
+    normalized_data_type_id = (
+        _expanded_if_node_id(_node_id_to_string(data_type_id), namespace_infos) if data_type_id else None
+    )
+    resolved_schema = (
+        resolved_data_type_schemas.get(normalized_data_type_id.lower())
+        if normalized_data_type_id and resolved_data_type_schemas
+        else None
+    )
     schema_source_value = getattr(member, "schema_value", member.value)
     structured_schema = _schema_for_structured_value(
         schema_source_value,
@@ -278,6 +295,10 @@ def _schema_for_member(
     )
     if member.node_class.lower() == "object":
         schema: dict[str, Any] = {"type": "object"}
+    elif resolved_schema is not None:
+        schema = dict(resolved_schema)
+        if _member_is_array(member):
+            schema = {"type": "array", "items": schema}
     elif structured_schema is not None:
         schema = structured_schema
     else:

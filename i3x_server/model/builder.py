@@ -419,6 +419,19 @@ class ModelBuilder:
                     "namespaceUri": namespace_uri,
                     "appliedProfileIds": applied_profile_ids,
                     **({"description": opc_node.description} if opc_node.description is not None else {}),
+                    **({"accessLevel": opc_node.access_level} if opc_node.access_level is not None else {}),
+                    **(
+                        {"userAccessLevel": opc_node.user_access_level}
+                        if opc_node.user_access_level is not None
+                        else {}
+                    ),
+                    **(
+                        {"writable": bool(opc_node.user_access_level & 0x02)}
+                        if opc_node.user_access_level is not None
+                        else {}
+                    ),
+                    **({"executable": opc_node.executable} if opc_node.executable is not None else {}),
+                    **({"userExecutable": opc_node.user_executable} if opc_node.user_executable is not None else {}),
                 },
             )
             nodes_by_id[mapped.id] = mapped

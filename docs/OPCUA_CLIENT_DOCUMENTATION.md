@@ -77,6 +77,11 @@ How this helps:
 - Browse, read, and history-read requests are split into batches that respect server capabilities.
 - This reduces `BadTooManyOperations` errors and avoids oversized single requests.
 - Multi-attribute metadata reads share Read services, and BrowseNext batches active continuation points.
+- Node metadata reads request common and candidate class-specific attributes together, then interpret optional
+  attributes by `NodeClass`; unavailable values are retained as absent and logged at debug level when applicable.
+- Variable nodes retain their OPC UA `AccessLevel` and session-specific `UserAccessLevel` masks in model metadata;
+  MCP model summaries also expose whether the current user can write the variable. Method metadata exposes whether
+  the current user can execute the method.
 - HistoryRead sends multiple nodes and their continuation points in each service request.
 
 If limits cannot be read, safe defaults are used and warnings are logged.

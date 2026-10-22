@@ -113,6 +113,31 @@ async def test_model_builder_maps_opcua_description_to_metadata() -> None:
 
 
 @pytest.mark.asyncio
+async def test_model_builder_maps_variable_access_levels_and_writability() -> None:
+    class FakeOpcuaWithAccessLevels:
+        async def browse_tree(self) -> list[OpcUaNodeInfo]:
+            return [
+                OpcUaNodeInfo(
+                    node_id="ns=2;s=Temperature",
+                    parent_node_id=None,
+                    browse_name="Temperature",
+                    display_name="Temperature",
+                    node_class="Variable",
+                    data_type="Double",
+                    access_level=3,
+                    user_access_level=2,
+                )
+            ]
+
+    model = await ModelBuilder(cast(OpcUaClientProtocol, FakeOpcuaWithAccessLevels())).build()
+
+    node = next(iter(model.nodes_by_id.values()))
+    assert node.metadata["accessLevel"] == 3
+    assert node.metadata["userAccessLevel"] == 2
+    assert node.metadata["writable"] is True
+
+
+@pytest.mark.asyncio
 async def test_model_builder_indexes_node_id_and_expanded_node_id() -> None:
     namespace_infos = [
         OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/", display_name="OPC UA"),

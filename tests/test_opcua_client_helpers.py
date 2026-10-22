@@ -541,7 +541,12 @@ async def test_node_description_is_read_with_required_node_attributes(monkeypatc
     ) -> list[ua.DataValue]:
         del batch_size
         attribute_batches.append([attribute for _, attribute in node_attributes])
-        return [ua.DataValue(ua.Variant(values_by_attribute[attribute])) for _, attribute in node_attributes]
+        return [
+            ua.DataValue(ua.Variant(values_by_attribute[attribute]))
+            if attribute in values_by_attribute
+            else ua.DataValue()
+            for _, attribute in node_attributes
+        ]
 
     async def read_type_definitions(nodes: list[Any]) -> dict[str, str | None]:
         del nodes
@@ -558,8 +563,13 @@ async def test_node_description_is_read_with_required_node_attributes(monkeypatc
             AttributeIds.DisplayName,
             AttributeIds.NodeClass,
             AttributeIds.Description,
-        ],
-        [AttributeIds.EventNotifier],
+            AttributeIds.DataType,
+            AttributeIds.AccessLevel,
+            AttributeIds.UserAccessLevel,
+            AttributeIds.EventNotifier,
+            AttributeIds.Executable,
+            AttributeIds.UserExecutable,
+        ]
     ]
     assert result[0].description == "Device description"
 
@@ -581,7 +591,12 @@ async def test_fallback_node_description_is_read_with_node_names(monkeypatch: py
     ) -> list[ua.DataValue]:
         del batch_size
         requested_attributes.extend(attribute for _, attribute in node_attributes)
-        return [ua.DataValue(ua.Variant(values_by_attribute[attribute])) for _, attribute in node_attributes]
+        return [
+            ua.DataValue(ua.Variant(values_by_attribute[attribute]))
+            if attribute in values_by_attribute
+            else ua.DataValue()
+            for _, attribute in node_attributes
+        ]
 
     monkeypatch.setattr(client, "_read_attribute_pairs", read_attributes)
 
@@ -592,8 +607,230 @@ async def test_fallback_node_description_is_read_with_node_names(monkeypatch: py
         AttributeIds.DisplayName,
         AttributeIds.NodeClass,
         AttributeIds.Description,
+        AttributeIds.DataType,
+        AttributeIds.AccessLevel,
+        AttributeIds.UserAccessLevel,
+        AttributeIds.EventNotifier,
+        AttributeIds.Executable,
+        AttributeIds.UserExecutable,
     ]
     assert result.description == "Reset method"
+
+
+@pytest.mark.asyncio
+async def test_fallback_variable_access_levels_are_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
+    node = SimpleNamespace(nodeid=ua.NodeId.from_string("ns=2;s=Temperature"))
+    requested_attributes: list[AttributeIds] = []
+    values_by_attribute = {
+        AttributeIds.BrowseName: ua.QualifiedName("Temperature"),
+        AttributeIds.DisplayName: ua.LocalizedText("Temperature"),
+        AttributeIds.NodeClass: ua.NodeClass.Variable,
+        AttributeIds.Description: ua.LocalizedText(None),
+        AttributeIds.DataType: ua.NodeId(ua.Int32(11)),
+        AttributeIds.AccessLevel: 3,
+        AttributeIds.UserAccessLevel: 2,
+    }
+
+    async def read_attributes(
+        node_attributes: list[tuple[Any, AttributeIds]], batch_size: int | None = None
+    ) -> list[ua.DataValue]:
+        del batch_size
+        requested_attributes.extend(attribute for _, attribute in node_attributes)
+        return [
+            ua.DataValue(ua.Variant(values_by_attribute[attribute]))
+            if attribute in values_by_attribute
+            else ua.DataValue()
+            for _, attribute in node_attributes
+        ]
+
+    async def read_type_definition() -> ua.NodeId:
+        return ua.NodeId(ua.Int32(63))
+
+    monkeypatch.setattr(client, "_read_attribute_pairs", read_attributes)
+    monkeypatch.setattr(node, "read_type_definition", read_type_definition, raising=False)
+
+    result = await client._read_node_info(node, None)
+
+    assert requested_attributes == [
+        AttributeIds.BrowseName,
+        AttributeIds.DisplayName,
+        AttributeIds.NodeClass,
+        AttributeIds.Description,
+        AttributeIds.DataType,
+        AttributeIds.AccessLevel,
+        AttributeIds.UserAccessLevel,
+        AttributeIds.EventNotifier,
+        AttributeIds.Executable,
+        AttributeIds.UserExecutable,
+    ]
+    assert result.access_level == 3
+    assert result.user_access_level == 2
+
+
+@pytest.mark.asyncio
+async def test_fallback_method_executable_attributes_are_class_specific(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
+    node = SimpleNamespace(nodeid=ua.NodeId.from_string("ns=2;s=Reset"))
+    requested_attributes: list[AttributeIds] = []
+    values_by_attribute = {
+        AttributeIds.BrowseName: ua.QualifiedName("Reset"),
+        AttributeIds.DisplayName: ua.LocalizedText("Reset"),
+        AttributeIds.NodeClass: ua.NodeClass.Method,
+        AttributeIds.Description: ua.LocalizedText(None),
+        AttributeIds.Executable: True,
+        AttributeIds.UserExecutable: False,
+    }
+
+    async def read_attributes(
+        node_attributes: list[tuple[Any, AttributeIds]], batch_size: int | None = None
+    ) -> list[ua.DataValue]:
+        del batch_size
+        requested_attributes.extend(attribute for _, attribute in node_attributes)
+        return [
+            ua.DataValue(ua.Variant(values_by_attribute[attribute]))
+            if attribute in values_by_attribute
+            else ua.DataValue(StatusCode=ua.StatusCode(ua.UInt32(StatusCodes.BadAttributeIdInvalid)))
+            for _, attribute in node_attributes
+        ]
+
+    monkeypatch.setattr(client, "_read_attribute_pairs", read_attributes)
+
+    result = await client._read_node_info(node, None)
+
+    assert requested_attributes == [
+        AttributeIds.BrowseName,
+        AttributeIds.DisplayName,
+        AttributeIds.NodeClass,
+        AttributeIds.Description,
+        AttributeIds.DataType,
+        AttributeIds.AccessLevel,
+        AttributeIds.UserAccessLevel,
+        AttributeIds.EventNotifier,
+        AttributeIds.Executable,
+        AttributeIds.UserExecutable,
+    ]
+    assert result.executable is True
+    assert result.user_executable is False
+
+
+@pytest.mark.asyncio
+async def test_batch_variable_access_levels_are_included_in_node_info(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
+    client._limits_cache = OpcUaOperationalLimits(max_nodes_per_browse=None, max_nodes_per_read=10)
+    node = SimpleNamespace(nodeid=ua.NodeId.from_string("ns=2;s=Temperature"))
+    requested_attributes: list[AttributeIds] = []
+    values_by_attribute = {
+        AttributeIds.BrowseName: ua.QualifiedName("Temperature"),
+        AttributeIds.DisplayName: ua.LocalizedText("Temperature"),
+        AttributeIds.NodeClass: ua.NodeClass.Variable,
+        AttributeIds.Description: ua.LocalizedText(None),
+        AttributeIds.DataType: ua.NodeId(ua.Int32(11)),
+        AttributeIds.AccessLevel: 1,
+        AttributeIds.UserAccessLevel: 3,
+    }
+
+    async def read_attributes(
+        node_attributes: list[tuple[Any, AttributeIds]], batch_size: int | None = None
+    ) -> list[ua.DataValue]:
+        del batch_size
+        requested_attributes.extend(attribute for _, attribute in node_attributes)
+        return [
+            ua.DataValue(ua.Variant(values_by_attribute[attribute]))
+            if attribute in values_by_attribute
+            else ua.DataValue()
+            for _, attribute in node_attributes
+        ]
+
+    async def read_type_definitions(nodes: list[Any]) -> dict[str, str | None]:
+        del nodes
+        return {}
+
+    monkeypatch.setattr(client, "_read_attribute_pairs", read_attributes)
+    monkeypatch.setattr(client, "_read_type_definitions", read_type_definitions)
+
+    result = await client._read_node_infos_limited([(node, None)])
+
+    assert requested_attributes == [
+        AttributeIds.BrowseName,
+        AttributeIds.DisplayName,
+        AttributeIds.NodeClass,
+        AttributeIds.Description,
+        AttributeIds.DataType,
+        AttributeIds.AccessLevel,
+        AttributeIds.UserAccessLevel,
+        AttributeIds.EventNotifier,
+        AttributeIds.Executable,
+        AttributeIds.UserExecutable,
+    ]
+    assert result[0].access_level == 1
+    assert result[0].user_access_level == 3
+
+
+@pytest.mark.asyncio
+async def test_node_info_candidate_attributes_are_read_once_for_mixed_node_classes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
+    client._limits_cache = OpcUaOperationalLimits(max_nodes_per_browse=None, max_nodes_per_read=20)
+    object_node = SimpleNamespace(nodeid=ua.NodeId.from_string("ns=2;s=Device"))
+    variable_node = SimpleNamespace(nodeid=ua.NodeId.from_string("ns=2;s=Temperature"))
+    entries = [(object_node, None), (variable_node, "ns=2;s=Device")]
+    node_ids = {
+        object_node.nodeid.to_string(): (
+            ua.QualifiedName("Device"),
+            ua.LocalizedText("Device"),
+            ua.NodeClass.Object,
+        ),
+        variable_node.nodeid.to_string(): (
+            ua.QualifiedName("Temperature"),
+            ua.LocalizedText("Temperature"),
+            ua.NodeClass.Variable,
+        ),
+    }
+    attribute_batches: list[list[AttributeIds]] = []
+
+    async def read_attributes(
+        node_attributes: list[tuple[Any, AttributeIds]], batch_size: int | None = None
+    ) -> list[ua.DataValue]:
+        del batch_size
+        attribute_batches.append([attribute for _, attribute in node_attributes])
+        values: list[ua.DataValue] = []
+        for node, attribute in node_attributes:
+            browse_name, display_name, node_class = node_ids[node.nodeid.to_string()]
+            values_by_attribute: dict[AttributeIds, Any] = {
+                AttributeIds.BrowseName: browse_name,
+                AttributeIds.DisplayName: display_name,
+                AttributeIds.NodeClass: node_class,
+                AttributeIds.Description: ua.LocalizedText(None),
+            }
+            if node_class == ua.NodeClass.Object:
+                values_by_attribute[AttributeIds.EventNotifier] = 1
+            else:
+                values_by_attribute.update(
+                    {
+                        AttributeIds.DataType: ua.NodeId(ua.Int32(11)),
+                        AttributeIds.AccessLevel: 1,
+                        AttributeIds.UserAccessLevel: 3,
+                    }
+                )
+            value = values_by_attribute.get(attribute)
+            values.append(ua.DataValue(ua.Variant(value)) if value is not None else ua.DataValue())
+        return values
+
+    async def read_type_definitions(nodes: list[Any]) -> dict[str, str | None]:
+        assert nodes == [object_node, variable_node]
+        return {}
+
+    monkeypatch.setattr(client, "_read_attribute_pairs", read_attributes)
+    monkeypatch.setattr(client, "_read_type_definitions", read_type_definitions)
+
+    result = await client._read_node_infos_limited(entries)
+
+    assert len(attribute_batches) == 1
+    assert len(attribute_batches[0]) == 20
+    assert [node.access_level for node in result] == [None, 1]
+    assert [node.event_notifier for node in result] == [True, False]
 
 
 @pytest.mark.asyncio

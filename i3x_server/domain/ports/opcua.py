@@ -26,6 +26,10 @@ class OpcUaNodeInfo:
     event_notifier: bool = False
     outgoing_references: list[OpcUaReferenceInfo] = field(default_factory=list)
     description: str | None = None
+    access_level: int | None = None
+    user_access_level: int | None = None
+    executable: bool | None = None
+    user_executable: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)

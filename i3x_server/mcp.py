@@ -624,7 +624,7 @@ def _model_node_summary(model: BuildResult, node: ModelNode) -> dict[str, Any]:
     )
     if not isinstance(profile_ids, list):
         profile_ids = []
-    return {
+    summary = {
         "elementId": node.id,
         "displayName": node.name,
         "kind": node.kind,
@@ -635,6 +635,13 @@ def _model_node_summary(model: BuildResult, node: ModelNode) -> dict[str, Any]:
         "appliedProfileIds": profile_ids,
         "parentId": node.parent_id,
     }
+    writable = node.metadata.get("writable")
+    if isinstance(writable, bool):
+        summary["writable"] = writable
+    user_executable = node.metadata.get("userExecutable")
+    if isinstance(user_executable, bool):
+        summary["executable"] = user_executable
+    return summary
 
 
 def _resolve_element_ids_to_node_ids(model: BuildResult, element_ids: list[Any]) -> dict[str, Any]:

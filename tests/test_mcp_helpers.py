@@ -231,6 +231,9 @@ async def test_cached_model_mcp_tools_search_context_subtree_and_path() -> None:
             "expandedNodeId": "nsu=urn:plant;s=Temperature",
             "namespaceUri": "urn:plant",
             "description": "Mixer temperature",
+            "accessLevel": 3,
+            "userAccessLevel": 2,
+            "writable": True,
         },
     )
     model = BuildResult(
@@ -364,6 +367,7 @@ async def test_cached_model_mcp_tools_search_context_subtree_and_path() -> None:
     assert search["body"]["total"] == 1
     assert search["body"]["items"][0]["elementId"] == "property-temperature"
     assert search["body"]["items"][0]["mappingConfidence"] == "high"
+    assert search["body"]["items"][0]["writable"] is True
 
     unfiltered_search = await invoke_mcp_tool(request, tools["searchModelElements"], {})
     assert unfiltered_search["body"]["total"] == 3
@@ -378,6 +382,13 @@ async def test_cached_model_mcp_tools_search_context_subtree_and_path() -> None:
     assert context["body"]["parents"][0]["plane"] == "hierarchy"
     assert context["body"]["children"]["composition"]["items"][0]["elementId"] == "property-temperature"
     assert any(item["relationshipType"] == "FlowsTo" for item in context["body"]["relationships"]["items"])
+    temperature_context = await invoke_mcp_tool(
+        request,
+        tools["getElementContext"],
+        {"elementId": "property-temperature"},
+    )
+    assert temperature_context["body"]["element"]["writable"] is True
+    assert temperature_context["body"]["source"]["extendedAttributes"]["userAccessLevel"] == 2
 
     subtree = await invoke_mcp_tool(
         request,

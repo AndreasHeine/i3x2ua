@@ -61,6 +61,28 @@ logger = logging.getLogger(__name__)
 
 _T = TypeVar("_T")
 _METADATA_INVALIDATED_AT = float("-inf")
+_NODE_INFO_ATTRIBUTES = (
+    AttributeIds.BrowseName,
+    AttributeIds.DisplayName,
+    AttributeIds.NodeClass,
+    AttributeIds.Description,
+    AttributeIds.DataType,
+    AttributeIds.AccessLevel,
+    AttributeIds.UserAccessLevel,
+    AttributeIds.EventNotifier,
+    AttributeIds.Executable,
+    AttributeIds.UserExecutable,
+)
+_NODE_INFO_CLASS_ATTRIBUTES = {
+    NodeClass.Variable: (
+        AttributeIds.DataType,
+        AttributeIds.AccessLevel,
+        AttributeIds.UserAccessLevel,
+    ),
+    NodeClass.Object: (AttributeIds.EventNotifier,),
+    NodeClass.View: (AttributeIds.EventNotifier,),
+    NodeClass.Method: (AttributeIds.Executable, AttributeIds.UserExecutable),
+}
 # Status codes meaning the session or secure channel is gone; asyncua's supervisor must
 # re-establish it before the request can succeed.
 _CONNECTION_LOST_STATUS_CODES = frozenset(
@@ -872,31 +894,40 @@ class OpcUaClient:
 
     async def _read_node_info(self, node: Any, parent_node_id: str | None) -> OpcUaNodeInfo:
         node_id = node.nodeid.to_string()
-        attribute_values = await self._read_attribute_pairs(
-            [
-                (node, AttributeIds.BrowseName),
-                (node, AttributeIds.DisplayName),
-                (node, AttributeIds.NodeClass),
-                (node, AttributeIds.Description),
-            ]
-        )
-        browse_name_obj, display_name_obj, node_class_value, description_value = (
-            self._extract_attribute_value(value) for value in attribute_values
-        )
+        attribute_values = await self._read_attribute_pairs([(node, attr) for attr in _NODE_INFO_ATTRIBUTES])
+        values_by_attribute = dict(zip(_NODE_INFO_ATTRIBUTES, attribute_values, strict=True))
+        browse_name_obj = self._extract_attribute_value(values_by_attribute[AttributeIds.BrowseName])
+        display_name_obj = self._extract_attribute_value(values_by_attribute[AttributeIds.DisplayName])
+        node_class_value = self._extract_attribute_value(values_by_attribute[AttributeIds.NodeClass])
         if browse_name_obj is None or display_name_obj is None:
             raise ValueError(f"Cannot read required node names for OPC UA node {node_id}")
         node_class_obj = self._coerce_node_class(node_class_value)
         if node_class_obj is None:
             raise ValueError(f"Cannot read node class for OPC UA node {node_id}")
+        description_value = self._extract_attribute_value(values_by_attribute[AttributeIds.Description])
         description_text = getattr(description_value, "Text", None)
         description = description_text if isinstance(description_text, str) and description_text.strip() else None
-
-        data_type: str | None = None
+        class_values = {
+            attr: self._extract_class_node_info_attribute(
+                node_id,
+                node_class_obj,
+                attr,
+                values_by_attribute[attr],
+            )
+            for attr in _NODE_INFO_CLASS_ATTRIBUTES.get(node_class_obj, ())
+        }
+        data_type_value = class_values.get(AttributeIds.DataType)
+        data_type = (
+            data_type_value.to_string()
+            if data_type_value is not None and hasattr(data_type_value, "to_string")
+            else (str(data_type_value) if data_type_value is not None else None)
+        )
+        access_level = _coerce_access_level(class_values.get(AttributeIds.AccessLevel))
+        user_access_level = _coerce_access_level(class_values.get(AttributeIds.UserAccessLevel))
+        event_notifier = bool(class_values.get(AttributeIds.EventNotifier, False))
+        executable_value = class_values.get(AttributeIds.Executable)
+        user_executable_value = class_values.get(AttributeIds.UserExecutable)
         type_definition_id: str | None = None
-        if node_class_obj == NodeClass.Variable:
-            data_type_obj = await node.read_data_type()
-            data_type = data_type_obj.to_string()
-
         if node_class_obj in {NodeClass.Object, NodeClass.Variable}:
             try:
                 type_definition_obj = await node.read_type_definition()
@@ -908,7 +939,6 @@ class OpcUaClient:
                     node_id,
                     exc_info=True,
                 )
-        event_notifier = bool(await node.read_event_notifier()) if node_class_obj == NodeClass.Object else False
 
         return OpcUaNodeInfo(
             node_id=node_id,
@@ -920,6 +950,10 @@ class OpcUaClient:
             type_definition_id=type_definition_id,
             event_notifier=event_notifier,
             description=description,
+            access_level=access_level,
+            user_access_level=user_access_level,
+            executable=executable_value if isinstance(executable_value, bool) else None,
+            user_executable=user_executable_value if isinstance(user_executable_value, bool) else None,
         )
 
     async def _read_node_infos_limited(self, entries: list[tuple[Any, str | None]]) -> list[OpcUaNodeInfo]:
@@ -928,25 +962,15 @@ class OpcUaClient:
 
         limits = await self.get_operational_limits()
         max_nodes = limits.max_nodes_per_read or len(entries)
-        batch_size = max(1, min(max_nodes, len(entries)))
+        batch_size = max(1, min(max_nodes // len(_NODE_INFO_ATTRIBUTES), len(entries)))
         output: list[OpcUaNodeInfo] = []
 
         for entry_batch in _chunked_nodes(entries, batch_size):
             nodes = [node for node, _ in entry_batch]
             parent_by_node_id = {node.nodeid.to_string(): parent_node_id for node, parent_node_id in entry_batch}
 
-            attributes_per_node = 4
             try:
-                node_attributes = [
-                    (node, attr)
-                    for node in nodes
-                    for attr in (
-                        AttributeIds.BrowseName,
-                        AttributeIds.DisplayName,
-                        AttributeIds.NodeClass,
-                        AttributeIds.Description,
-                    )
-                ]
+                node_attributes = [(node, attr) for node in nodes for attr in _NODE_INFO_ATTRIBUTES]
                 attribute_values = await self._read_attribute_pairs(node_attributes)
             except Exception:
                 logger.warning(
@@ -958,26 +982,32 @@ class OpcUaClient:
                 output.extend(await self._read_node_infos_fallback(entry_batch))
                 continue
 
-            variable_nodes: list[Any] = []
             object_or_variable_nodes: list[Any] = []
-            object_nodes: list[Any] = []
             mandatory_by_node_id: dict[str, tuple[str, str, NodeClass]] = {}
             descriptions_by_node_id: dict[str, str] = {}
+            class_attributes_by_node_id: dict[str, dict[AttributeIds, Any]] = {}
             fallback_entries: list[tuple[Any, str | None]] = []
 
             for index, node in enumerate(nodes):
                 node_id = node.nodeid.to_string()
-                start = index * attributes_per_node
-                browse_name_value = self._extract_attribute_value(attribute_values[start])
-                display_name_value = self._extract_attribute_value(attribute_values[start + 1])
-                node_class_value = self._extract_attribute_value(attribute_values[start + 2])
-                description_value = self._extract_attribute_value(attribute_values[start + 3])
+                start = index * len(_NODE_INFO_ATTRIBUTES)
+                node_values = {
+                    attr: attribute_values[start + offset] for offset, attr in enumerate(_NODE_INFO_ATTRIBUTES)
+                }
+                browse_name_value = self._extract_attribute_value(node_values[AttributeIds.BrowseName])
+                display_name_value = self._extract_attribute_value(node_values[AttributeIds.DisplayName])
+                node_class_value = self._extract_attribute_value(node_values[AttributeIds.NodeClass])
                 node_class = self._coerce_node_class(node_class_value)
+                if node_class is None:
+                    fallback_entries.append((node, parent_by_node_id[node_id]))
+                    continue
+
+                description_value = self._extract_attribute_value(node_values[AttributeIds.Description])
                 description = getattr(description_value, "Text", None)
                 if isinstance(description, str) and description.strip():
                     descriptions_by_node_id[node_id] = description
 
-                if node_class is None or browse_name_value is None or display_name_value is None:
+                if browse_name_value is None or display_name_value is None:
                     fallback_entries.append((node, parent_by_node_id[node_id]))
                     continue
 
@@ -988,32 +1018,15 @@ class OpcUaClient:
                     continue
 
                 mandatory_by_node_id[node_id] = (browse_name, display_name, node_class)
-                if node_class == NodeClass.Variable:
-                    variable_nodes.append(node)
-                    object_or_variable_nodes.append(node)
-                elif node_class == NodeClass.Object:
-                    object_nodes.append(node)
+                applicable_attributes = _NODE_INFO_CLASS_ATTRIBUTES.get(node_class, ())
+                class_attributes_by_node_id[node_id] = {
+                    attr: self._extract_class_node_info_attribute(node_id, node_class, attr, node_values[attr])
+                    for attr in applicable_attributes
+                }
+                if node_class in {NodeClass.Object, NodeClass.Variable}:
                     object_or_variable_nodes.append(node)
 
-            optional_node_attributes = [
-                *((node, AttributeIds.DataType) for node in variable_nodes),
-                *((node, AttributeIds.EventNotifier) for node in object_nodes),
-            ]
-            optional_values, type_definitions_by_node_id = await asyncio.gather(
-                self._read_attribute_pairs(optional_node_attributes),
-                self._read_type_definitions(object_or_variable_nodes),
-            )
-            data_types_by_node_id: dict[str, str | None] = {}
-            event_notifiers_by_node_id: dict[str, Any] = {}
-            for (node, attr), data_value in zip(optional_node_attributes, optional_values, strict=True):
-                value = self._extract_attribute_value(data_value)
-                if value is None:
-                    continue
-                node_id = node.nodeid.to_string()
-                if attr == AttributeIds.DataType:
-                    data_types_by_node_id[node_id] = value.to_string() if hasattr(value, "to_string") else str(value)
-                else:
-                    event_notifiers_by_node_id[node_id] = value
+            type_definitions_by_node_id = await self._read_type_definitions(object_or_variable_nodes)
 
             for node in nodes:
                 node_id = node.nodeid.to_string()
@@ -1022,6 +1035,15 @@ class OpcUaClient:
                     continue
 
                 browse_name, display_name, node_class = mandatory
+                class_attributes = class_attributes_by_node_id[node_id]
+                data_type_value = class_attributes.get(AttributeIds.DataType)
+                data_type = (
+                    data_type_value.to_string()
+                    if data_type_value is not None and hasattr(data_type_value, "to_string")
+                    else (str(data_type_value) if data_type_value is not None else None)
+                )
+                executable_value = class_attributes.get(AttributeIds.Executable)
+                user_executable_value = class_attributes.get(AttributeIds.UserExecutable)
                 output.append(
                     OpcUaNodeInfo(
                         node_id=node_id,
@@ -1029,10 +1051,14 @@ class OpcUaClient:
                         browse_name=browse_name,
                         display_name=display_name,
                         node_class=node_class.name,
-                        data_type=data_types_by_node_id.get(node_id),
+                        data_type=data_type,
                         type_definition_id=_normalize_type_definition_id(type_definitions_by_node_id.get(node_id)),
-                        event_notifier=bool(event_notifiers_by_node_id.get(node_id, False)),
+                        event_notifier=bool(class_attributes.get(AttributeIds.EventNotifier, False)),
                         description=descriptions_by_node_id.get(node_id),
+                        access_level=_coerce_access_level(class_attributes.get(AttributeIds.AccessLevel)),
+                        user_access_level=_coerce_access_level(class_attributes.get(AttributeIds.UserAccessLevel)),
+                        executable=executable_value if isinstance(executable_value, bool) else None,
+                        user_executable=user_executable_value if isinstance(user_executable_value, bool) else None,
                     )
                 )
 
@@ -1040,6 +1066,30 @@ class OpcUaClient:
                 output.extend(await self._read_node_infos_fallback(fallback_entries))
 
         return output
+
+    def _extract_class_node_info_attribute(
+        self,
+        node_id: str,
+        node_class: NodeClass,
+        attribute: AttributeIds,
+        data_value: ua.DataValue,
+    ) -> Any | None:
+        if attribute not in _NODE_INFO_CLASS_ATTRIBUTES.get(node_class, ()):
+            return None
+        status_code = data_value.StatusCode
+        if status_code is not None and not status_code.is_good():
+            logger.debug(
+                "OPC UA node attribute unavailable endpoint=%s node_id=%s node_class=%s attribute=%s status=%s",
+                self._endpoint,
+                node_id,
+                node_class.name,
+                attribute.name,
+                status_code,
+            )
+            return None
+        if data_value.Value is None:
+            return None
+        return data_value.Value.Value
 
     async def _read_node_infos_fallback(self, entries: list[tuple[Any, str | None]]) -> list[OpcUaNodeInfo]:
         semaphore = asyncio.Semaphore(self._browse_concurrency)
@@ -3049,6 +3099,15 @@ def _attribute_scalar_value(data_value: Any) -> Any:
     if variant is None:
         return data_value
     return getattr(variant, "Value", variant)
+
+
+def _coerce_access_level(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _is_write_access_allowed(value: Any) -> bool:

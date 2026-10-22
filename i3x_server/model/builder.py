@@ -11,7 +11,7 @@ from i3x_server.domain.ports.opcua import (
     OpcUaNodeInfo,
     OpcUaTypeDefinitionInfo,
 )
-from i3x_server.domain.utils import expanded_node_id, namespace_uri_from_expanded_node_id
+from i3x_server.domain.utils import canonical_node_id, expanded_node_id, namespace_uri_from_expanded_node_id
 from i3x_server.model.mapper import classify_opcua_reference_with_confidence, map_node, stable_i3x_id
 from i3x_server.model.revision import compute_model_revision
 from i3x_server.model.semantic_profiles import (
@@ -47,13 +47,13 @@ class ModelBuilder:
         if callable(get_namespace_infos):
             try:
                 namespace_infos = await get_namespace_infos()
-                namespace_uri_by_index = {
-                    index: namespace_info.uri
-                    for index, namespace_info in enumerate(namespace_infos)
-                    if isinstance(namespace_info.uri, str)
-                }
             except Exception:
                 logger.debug("Namespace info resolution failed", exc_info=True)
+        namespace_uri_by_index = {
+            index: namespace_info.uri
+            for index, namespace_info in enumerate(namespace_infos)
+            if isinstance(namespace_info.uri, str) and namespace_info.uri
+        }
 
         child_sources_by_parent: dict[str, list[str]] = {}
         for node in opc_nodes:
@@ -414,6 +414,7 @@ class ModelBuilder:
                 relationships=relationships_by_id.get(mapped_id, {}),
                 metadata={
                     "uaNodeId": opc_node.node_id,
+                    "expandedNodeId": identity_node_id_by_source[source_id],
                     "uaTypeNodeId": opc_node.type_definition_id,
                     "namespaceUri": namespace_uri,
                     "appliedProfileIds": applied_profile_ids,
@@ -445,6 +446,24 @@ class ModelBuilder:
         map_duration_s = perf_counter() - map_started
         total_duration_s = perf_counter() - started
         build_completed_at_utc = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        element_id_by_node_id: dict[str, str] = {}
+        element_id_by_expanded_node_id: dict[str, str] = {}
+        for model_node in nodes_by_id.values():
+            ua_node_id = model_node.metadata.get("uaNodeId")
+            expanded_id = model_node.metadata.get("expandedNodeId")
+            if isinstance(ua_node_id, str) and ua_node_id:
+                element_id_by_node_id.setdefault(ua_node_id, model_node.id)
+                canonical_id = canonical_node_id(ua_node_id, namespace_uri_by_index)
+                if canonical_id is not None:
+                    destination = (
+                        element_id_by_expanded_node_id if canonical_id.startswith("nsu=") else element_id_by_node_id
+                    )
+                    destination.setdefault(canonical_id, model_node.id)
+            if isinstance(expanded_id, str) and expanded_id:
+                element_id_by_expanded_node_id.setdefault(expanded_id, model_node.id)
+                canonical_expanded_id = canonical_node_id(expanded_id, namespace_uri_by_index)
+                if canonical_expanded_id is not None:
+                    element_id_by_expanded_node_id.setdefault(canonical_expanded_id, model_node.id)
 
         result = BuildResult(
             nodes_by_id=nodes_by_id,
@@ -478,6 +497,9 @@ class ModelBuilder:
             },
             applied_profile_ids_by_id=applied_profile_ids_by_id,
             namespace_uri_by_id=namespace_uri_by_id,
+            element_id_by_node_id=element_id_by_node_id,
+            element_id_by_expanded_node_id=element_id_by_expanded_node_id,
+            namespace_uri_by_index=namespace_uri_by_index,
             browse_duration_s=browse_duration_s,
             map_duration_s=map_duration_s,
             total_duration_s=total_duration_s,

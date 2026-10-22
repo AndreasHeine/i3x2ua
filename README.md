@@ -384,6 +384,10 @@ semantic and relationship context rather than exposing individual REST calls:
 `traceRelationshipPath`. They return model element IDs and the current model
 revision; subtree and path traversal are bounded by caller-supplied depth and
 size limits.
+`resolveElementIdsToNodeIds` and `resolveNodeIdsToElementIds` provide batch
+identity translation using indexes built with the cached model. They return
+per-item results and never establish an OPC UA connection or invoke OPC UA
+services.
 
 MCP requests with an `Origin` must match a loopback request origin or an explicit origin
 in `I3X_CORS_ALLOWED_ORIGINS` (wildcards do not authorize MCP origins). Configure

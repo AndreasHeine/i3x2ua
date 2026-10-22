@@ -113,6 +113,29 @@ async def test_model_builder_maps_opcua_description_to_metadata() -> None:
 
 
 @pytest.mark.asyncio
+async def test_model_builder_indexes_node_id_and_expanded_node_id() -> None:
+    namespace_infos = [
+        OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/", display_name="OPC UA"),
+        OpcUaNamespaceInfo(uri="urn:vendor:types", display_name="Types"),
+        OpcUaNamespaceInfo(uri="urn:vendor:plant", display_name="Plant"),
+    ]
+    model = await ModelBuilder(
+        cast(
+            OpcUaClientProtocol,
+            FakeOpcuaWithNamespaceInfo("ns=2;i=1001", namespace_infos),
+        )
+    ).build()
+
+    node = next(iter(model.nodes_by_id.values()))
+    expanded_node_id = "nsu=urn:vendor:plant;i=1001"
+    assert node.metadata["uaNodeId"] == "ns=2;i=1001"
+    assert node.metadata["expandedNodeId"] == expanded_node_id
+    assert model.element_id_by_node_id["ns=2;i=1001"] == node.id
+    assert model.element_id_by_expanded_node_id[expanded_node_id] == node.id
+    assert model.namespace_uri_by_index[2] == "urn:vendor:plant"
+
+
+@pytest.mark.asyncio
 async def test_model_builder_shares_hierarchy_parent_index() -> None:
     for client in (FakeOpcuaForBuilder(), FakeOpcuaWithOutgoingReferences(), FakeOpcuaWithGraphReference()):
         model = await ModelBuilder(cast(OpcUaClientProtocol, client)).build()

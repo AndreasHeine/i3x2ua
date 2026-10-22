@@ -145,6 +145,8 @@ def test_build_mcp_tools_and_api_prefix_from_openapi() -> None:
         "getObjectsV1",
         "queryRelatedObjectsV1",
         "readContainerValues",
+        "resolveElementIdsToNodeIds",
+        "resolveNodeIdsToElementIds",
         "searchModelElements",
         "getElementContext",
         "summarizeSubtree",
@@ -173,6 +175,8 @@ def test_build_mcp_tools_and_api_prefix_from_openapi() -> None:
             "getElementContext",
             "summarizeSubtree",
             "traceRelationshipPath",
+            "resolveElementIdsToNodeIds",
+            "resolveNodeIdsToElementIds",
         )
     )
     assert get_api_prefix(openapi) == "/api"
@@ -187,6 +191,11 @@ async def test_cached_model_mcp_tools_search_context_subtree_and_path() -> None:
         source_node_id="ns=2;s=Plant",
         children=["asset-machine"],
         semantic_role="group",
+        metadata={
+            "uaNodeId": "ns=2;i=1001",
+            "expandedNodeId": "nsu=urn:plant;i=1001",
+            "namespaceUri": "urn:plant",
+        },
     )
     machine = ModelNode(
         id="asset-machine",
@@ -201,7 +210,12 @@ async def test_cached_model_mcp_tools_search_context_subtree_and_path() -> None:
             "HasComponent": ["property-temperature"],
             "FlowsTo": ["asset-root"],
         },
-        metadata={"namespaceUri": "urn:plant", "appliedProfileIds": ["machinery"]},
+        metadata={
+            "uaNodeId": "ns=2;s=Mixer",
+            "expandedNodeId": "nsu=urn:plant;s=Mixer",
+            "namespaceUri": "urn:plant",
+            "appliedProfileIds": ["machinery"],
+        },
     )
     temperature = ModelNode(
         id="property-temperature",
@@ -212,7 +226,12 @@ async def test_cached_model_mcp_tools_search_context_subtree_and_path() -> None:
         parent_id="asset-machine",
         semantic_role="datapoint",
         mapping_confidence="high",
-        metadata={"namespaceUri": "urn:plant", "description": "Mixer temperature"},
+        metadata={
+            "uaNodeId": "ns=2;s=Temperature",
+            "expandedNodeId": "nsu=urn:plant;s=Temperature",
+            "namespaceUri": "urn:plant",
+            "description": "Mixer temperature",
+        },
     )
     model = BuildResult(
         nodes_by_id={node.id: node for node in (root, machine, temperature)},
@@ -242,6 +261,17 @@ async def test_cached_model_mcp_tools_search_context_subtree_and_path() -> None:
             "asset-machine": "urn:plant",
             "property-temperature": "urn:plant",
         },
+        element_id_by_node_id={
+            "ns=2;s=Temperature": "property-temperature",
+            "ns=2;s=Mixer": "asset-machine",
+            "ns=2;i=1001": "asset-root",
+        },
+        element_id_by_expanded_node_id={
+            "nsu=urn:plant;s=Temperature": "property-temperature",
+            "nsu=urn:plant;s=Mixer": "asset-machine",
+            "nsu=urn:plant;i=1001": "asset-root",
+        },
+        namespace_uri_by_index={2: "urn:plant"},
     )
     request = _request()
 
@@ -249,7 +279,81 @@ async def test_cached_model_mcp_tools_search_context_subtree_and_path() -> None:
         return model
 
     request.app.state.mcp_model_provider = provide_model
+    identity_request = _request()
+    identity_request.app.state.model_cache = model
+
+    async def forbid_model_build(_: Request) -> BuildResult:
+        pytest.fail("Identity resolution must not request or build a model")
+
+    identity_request.app.state.mcp_model_provider = forbid_model_build
     tools = build_mcp_tools({"paths": {}})
+
+    resolved_elements = await invoke_mcp_tool(
+        identity_request,
+        tools["resolveElementIdsToNodeIds"],
+        {"elementIds": ["asset-machine", "missing", "property-temperature"]},
+    )
+    assert resolved_elements["body"]["success"] is False
+    assert resolved_elements["body"]["items"] == [
+        {
+            "success": True,
+            "elementId": "asset-machine",
+            "nodeId": "ns=2;s=Mixer",
+            "expandedNodeId": "nsu=urn:plant;s=Mixer",
+            "name": "Mixer",
+            "kind": "asset",
+        },
+        {
+            "success": False,
+            "elementId": "missing",
+            "error": {"code": 404, "message": "ElementId not found"},
+        },
+        {
+            "success": True,
+            "elementId": "property-temperature",
+            "nodeId": "ns=2;s=Temperature",
+            "expandedNodeId": "nsu=urn:plant;s=Temperature",
+            "name": "Temperature",
+            "kind": "property",
+        },
+    ]
+
+    resolved_node_ids = await invoke_mcp_tool(
+        identity_request,
+        tools["resolveNodeIdsToElementIds"],
+        {
+            "nodeIds": [
+                "ns=2;s=Mixer",
+                "ns=02;s=Mixer",
+                "nsu=urn:plant;s=Mixer",
+                "ns=2;i=01001",
+                "nsu=urn:plant;i=1001",
+                "ns=2;s=not-found",
+                "not-a-node-id",
+            ]
+        },
+    )
+    assert resolved_node_ids["body"]["success"] is False
+    assert [item.get("elementId") for item in resolved_node_ids["body"]["items"]] == [
+        "asset-machine",
+        "asset-machine",
+        "asset-machine",
+        "asset-root",
+        "asset-root",
+        None,
+        None,
+    ]
+    assert resolved_node_ids["body"]["items"][5]["error"]["code"] == 404
+    assert resolved_node_ids["body"]["items"][6]["error"]["code"] == 400
+
+    missing_cache_request = _request()
+    with pytest.raises(HTTPException) as unavailable:
+        await invoke_mcp_tool(
+            missing_cache_request,
+            tools["resolveNodeIdsToElementIds"],
+            {"nodeIds": ["ns=2;s=Mixer"]},
+        )
+    assert unavailable.value.status_code == 503
 
     search = await invoke_mcp_tool(
         request,

@@ -14,7 +14,7 @@ from i3x_server.schemas.state import BuildResult
 
 def compute_model_revision(model: BuildResult) -> str:
     # Each node carries its children, parent, relationships, role, confidence and metadata
-    # (uaNodeId, namespaceUri, appliedProfileIds), so the lookup indexes derived from them
+    # (uaNodeId, expandedNodeId, namespaceUri, appliedProfileIds), so the lookup indexes derived from them
     # are covered by the node hash. Only fields not reflected in the nodes are added.
     digest = hashlib.sha256()
     for node_id in sorted(model.nodes_by_id):

@@ -6,6 +6,7 @@ from pathlib import Path
 from i3x_server.domain.ports.opcua import OpcUaNamespaceInfo
 from i3x_server.domain.utils import (
     canonical_namespace_uri,
+    canonical_node_id,
     display_name_for_uri,
     expanded_node_id,
     is_null_opcua_type_node_id,
@@ -50,6 +51,19 @@ def test_expanded_node_id_covers_supported_variants() -> None:
     assert expanded_node_id("ns=1;i=42", infos) == "nsu=http://example.com/Custom/;i=42"
     assert expanded_node_id("ns=2;i=42", infos) == "ns=2;i=42"
     assert expanded_node_id("ns=99;i=42", infos) == "ns=99;i=42"
+
+
+def test_canonical_node_id_normalizes_indexed_and_expanded_forms() -> None:
+    namespace_uri_by_index = {1: "http://example.com/Custom/"}
+    assert canonical_node_id("ns=01;i=0042", namespace_uri_by_index) == "nsu=http://example.com/Custom/;i=42"
+    assert canonical_node_id("nsu=http://example.com/Custom/;i=42", namespace_uri_by_index) == (
+        "nsu=http://example.com/Custom/;i=42"
+    )
+    assert canonical_node_id("s=Machine;i=1001", {}) == ("nsu=http://opcfoundation.org/UA/;s=Machine;i=1001")
+    assert canonical_node_id("nsu=urn:vendor;g=AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE", {}) == (
+        "nsu=urn:vendor;g=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    )
+    assert canonical_node_id("not-a-node-id", {}) is None
 
 
 def test_namespace_uri_from_expanded_node_id_parses_and_rejects_invalid() -> None:

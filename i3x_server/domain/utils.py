@@ -11,6 +11,7 @@ import re
 from collections.abc import Mapping
 from functools import lru_cache
 from pathlib import Path
+from uuid import UUID
 
 from i3x_server.domain.ports.opcua import OpcUaNamespaceInfo
 
@@ -93,6 +94,54 @@ def expanded_node_id(node_id: str, namespace_infos: list[OpcUaNamespaceInfo]) ->
         return node_id
 
     return f"nsu={namespace_uri};{identifier}"
+
+
+def canonical_node_id(node_id: str, namespace_uri_by_index: Mapping[int, str]) -> str | None:
+    """Normalize indexed or expanded OPC UA NodeIds to a stable lookup key."""
+    normalized = node_id.strip()
+    if normalized.startswith("nsu="):
+        expanded_namespace_uri, separator, identifier_text = normalized[4:].partition(";")
+        expanded_match = re.match(r"^([isgb])=(.*)$", identifier_text)
+        if not separator or not expanded_namespace_uri or expanded_match is None:
+            return None
+        identifier_kind, identifier = expanded_match.groups()
+        normalized_identifier = _normalize_node_identifier(identifier_kind, identifier)
+        if normalized_identifier is None:
+            return None
+        return f"nsu={expanded_namespace_uri};{identifier_kind}={normalized_identifier}"
+
+    indexed_match = re.match(r"^(?:ns=(\d+);)?([isgb])=(.*)$", normalized)
+    if indexed_match is None:
+        return None
+    namespace_index_text, identifier_kind, identifier = indexed_match.groups()
+    try:
+        namespace_index = int(namespace_index_text) if namespace_index_text is not None else 0
+    except ValueError:
+        return None
+    normalized_identifier = _normalize_node_identifier(identifier_kind, identifier)
+    if normalized_identifier is None:
+        return None
+    identifier_text = f"{identifier_kind}={normalized_identifier}"
+    namespace_uri = (
+        "http://opcfoundation.org/UA/" if namespace_index == 0 else namespace_uri_by_index.get(namespace_index)
+    )
+    if namespace_uri:
+        return f"nsu={namespace_uri};{identifier_text}"
+    return f"ns={namespace_index};{identifier_text}"
+
+
+def _normalize_node_identifier(identifier_kind: str, identifier: str) -> str | None:
+    if identifier_kind == "i":
+        if not identifier.isdigit():
+            return None
+        numeric_identifier = int(identifier)
+        return str(numeric_identifier) if numeric_identifier <= 0xFFFFFFFF else None
+    if identifier_kind == "g":
+        try:
+            return str(UUID(identifier.strip("{}")))
+        except ValueError:
+            return None
+    return identifier
 
 
 def namespace_uri_from_expanded_node_id(node_id: str) -> str | None:

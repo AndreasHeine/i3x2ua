@@ -18,6 +18,7 @@ import httpx
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response
 
+from i3x_server.domain.utils import canonical_node_id
 from i3x_server.errors import i3x_http_error
 from i3x_server.model.revision import model_revision
 from i3x_server.schemas.i3x import ModelNode
@@ -56,13 +57,42 @@ MCP_BODY_PAGINATED_TOOLS = {
     "queryRelatedObjectsV1": 50,
     "queryHistoricalValuesV1": 100,
 }
+
+
 MCP_CONTAINER_VALUES_TOOL = "readContainerValues"
 MCP_CONTAINER_VALUES_BATCH_SIZE = 10
 MCP_CONTAINER_VALUES_MAX_NODES = 5000
 MCP_CONTAINER_VALUES_MAX_DEPTH = 32
 MCP_MODEL_CONTEXT_MAX_ITEMS = 500
 MCP_MODEL_PATH_MAX_NODES = 5000
+MCP_ID_RESOLUTION_MAX_ITEMS = 500
 MCP_MODEL_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
+    "resolveElementIdsToNodeIds": {
+        "type": "object",
+        "properties": {
+            "elementIds": {
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": 1,
+                "maxItems": MCP_ID_RESOLUTION_MAX_ITEMS,
+            }
+        },
+        "required": ["elementIds"],
+        "additionalProperties": False,
+    },
+    "resolveNodeIdsToElementIds": {
+        "type": "object",
+        "properties": {
+            "nodeIds": {
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": 1,
+                "maxItems": MCP_ID_RESOLUTION_MAX_ITEMS,
+            }
+        },
+        "required": ["nodeIds"],
+        "additionalProperties": False,
+    },
     "searchModelElements": {
         "type": "object",
         "properties": {
@@ -516,6 +546,14 @@ def build_mcp_tools(
         keywords=tuple(str(keyword) for keyword in keywords if isinstance(keyword, str)),
     )
     model_tool_descriptions = {
+        "resolveElementIdsToNodeIds": (
+            "Resolve cached i3X ElementIds to their OPC UA NodeIds and ExpandedNodeIds. "
+            "Uses only the current cached model and never contacts the OPC UA server."
+        ),
+        "resolveNodeIdsToElementIds": (
+            "Resolve standard or expanded OPC UA NodeIds to cached i3X ElementIds. "
+            "Uses only the current cached model and never contacts the OPC UA server."
+        ),
         "searchModelElements": (
             "Search the cached model by name, ID, type, semantic role, namespace, profile, or relationship. "
             "Returns matching element IDs and compact semantic context."
@@ -542,7 +580,17 @@ def build_mcp_tools(
             path_parameters=(),
             query_parameters=(),
             body_required=False,
-            priority="high" if name in {"searchModelElements", "getElementContext"} else "normal",
+            priority=(
+                "high"
+                if name
+                in {
+                    "resolveElementIdsToNodeIds",
+                    "resolveNodeIdsToElementIds",
+                    "searchModelElements",
+                    "getElementContext",
+                }
+                else "normal"
+            ),
         )
     return tools
 
@@ -589,6 +637,99 @@ def _model_node_summary(model: BuildResult, node: ModelNode) -> dict[str, Any]:
     }
 
 
+def _resolve_element_ids_to_node_ids(model: BuildResult, element_ids: list[Any]) -> dict[str, Any]:
+    items: list[dict[str, Any]] = []
+    for element_id in element_ids:
+        if not isinstance(element_id, str) or not element_id.strip():
+            items.append(
+                {
+                    "success": False,
+                    "elementId": element_id,
+                    "error": {"code": 400, "message": "ElementId must be a non-empty string"},
+                }
+            )
+            continue
+        node = model.nodes_by_id.get(element_id)
+        if node is None:
+            items.append(
+                {
+                    "success": False,
+                    "elementId": element_id,
+                    "error": {"code": 404, "message": "ElementId not found"},
+                }
+            )
+            continue
+        node_id = node.metadata.get("uaNodeId")
+        expanded_id = node.metadata.get("expandedNodeId")
+        if not isinstance(node_id, str) or not node_id:
+            items.append(
+                {
+                    "success": False,
+                    "elementId": element_id,
+                    "error": {"code": 404, "message": "OPC UA NodeId is not available in the cached model"},
+                }
+            )
+            continue
+        result: dict[str, Any] = {
+            "success": True,
+            "elementId": node.id,
+            "nodeId": node_id,
+            "name": node.name,
+            "kind": node.kind,
+        }
+        if isinstance(expanded_id, str) and expanded_id.startswith("nsu="):
+            result["expandedNodeId"] = expanded_id
+        items.append(result)
+    return {"success": all(item["success"] for item in items), "items": items}
+
+
+def _resolve_node_ids_to_element_ids(model: BuildResult, node_ids: list[Any]) -> dict[str, Any]:
+    items: list[dict[str, Any]] = []
+    for node_id in node_ids:
+        if not isinstance(node_id, str) or not node_id.strip():
+            items.append(
+                {
+                    "success": False,
+                    "inputNodeId": node_id,
+                    "error": {"code": 400, "message": "NodeId must be a non-empty string"},
+                }
+            )
+            continue
+        canonical_id = canonical_node_id(node_id, model.namespace_uri_by_index)
+        if canonical_id is None:
+            items.append(
+                {
+                    "success": False,
+                    "inputNodeId": node_id,
+                    "error": {"code": 400, "message": "Invalid OPC UA NodeId format"},
+                }
+            )
+            continue
+        element_id = model.element_id_by_expanded_node_id.get(canonical_id)
+        if element_id is None:
+            element_id = model.element_id_by_node_id.get(node_id.strip())
+        node = model.nodes_by_id.get(element_id) if element_id is not None else None
+        if node is None:
+            items.append(
+                {
+                    "success": False,
+                    "inputNodeId": node_id,
+                    "error": {"code": 404, "message": "NodeId not found in the cached model"},
+                }
+            )
+            continue
+        items.append(
+            {
+                "success": True,
+                "inputNodeId": node_id,
+                "elementId": node.id,
+                "name": node.name,
+                "kind": node.kind,
+            }
+        )
+    return {"success": all(item["success"] for item in items), "items": items}
+
+
 def _model_relationships(model: BuildResult, node: ModelNode) -> dict[str, list[str]]:
     relationships = model.relationships_by_id.get(node.id)
     if relationships is not None:
@@ -609,6 +750,20 @@ def _validate_model_tool_arguments(tool_name: str, arguments: Mapping[str, Any])
     missing = [field for field in required if field not in arguments]
     if missing:
         raise i3x_http_error(400, "Bad Request", f"Missing required arguments: {', '.join(missing)}")
+
+    batch_field = {
+        "resolveElementIdsToNodeIds": "elementIds",
+        "resolveNodeIdsToElementIds": "nodeIds",
+    }.get(tool_name)
+    if batch_field is not None:
+        values = arguments[batch_field]
+        if not isinstance(values, list) or not values or len(values) > MCP_ID_RESOLUTION_MAX_ITEMS:
+            raise i3x_http_error(
+                400,
+                "Bad Request",
+                f"{batch_field} must contain between 1 and {MCP_ID_RESOLUTION_MAX_ITEMS} items",
+            )
+        return
 
     for field in ("elementId", "rootElementId", "sourceElementId", "targetElementId"):
         if field in arguments and (not isinstance(arguments[field], str) or not arguments[field].strip()):
@@ -1027,13 +1182,38 @@ async def _invoke_model_tool(
     if not callable(model_provider):
         raise i3x_http_error(500, "Internal Error", "MCP model provider is not initialized")
     model: BuildResult = await model_provider(request)
-    handlers = {
-        "searchModelElements": _search_model_elements,
-        "getElementContext": _get_element_context,
-        "summarizeSubtree": _summarize_subtree,
-        "traceRelationshipPath": _trace_relationship_path,
-    }
-    body = handlers[tool_name](model, arguments)
+    if tool_name == "resolveElementIdsToNodeIds":
+        body = _resolve_element_ids_to_node_ids(model, arguments["elementIds"])
+    elif tool_name == "resolveNodeIdsToElementIds":
+        body = _resolve_node_ids_to_element_ids(model, arguments["nodeIds"])
+    else:
+        handlers = {
+            "searchModelElements": _search_model_elements,
+            "getElementContext": _get_element_context,
+            "summarizeSubtree": _summarize_subtree,
+            "traceRelationshipPath": _trace_relationship_path,
+        }
+        body = handlers[tool_name](model, arguments)
+    return _InternalASGIResponse(
+        status_code=200,
+        headers={"content-type": "application/json"},
+        body=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+    )
+
+
+async def _invoke_cached_identity_tool(
+    request: Request,
+    tool_name: str,
+    arguments: Mapping[str, Any],
+) -> _InternalASGIResponse:
+    _validate_model_tool_arguments(tool_name, arguments)
+    model = getattr(request.app.state, "model_cache", None)
+    if not isinstance(model, BuildResult):
+        raise i3x_http_error(503, "Service Unavailable", "Cached model is not available")
+    if tool_name == "resolveElementIdsToNodeIds":
+        body = _resolve_element_ids_to_node_ids(model, arguments["elementIds"])
+    else:
+        body = _resolve_node_ids_to_element_ids(model, arguments["nodeIds"])
     return _InternalASGIResponse(
         status_code=200,
         headers={"content-type": "application/json"},
@@ -1479,6 +1659,8 @@ async def invoke_mcp_tool(request: Request, tool: McpToolDefinition, arguments: 
                     limit=arguments.get("limit", 50),
                     offset=arguments.get("offset", 0),
                 )
+            elif tool.name in {"resolveElementIdsToNodeIds", "resolveNodeIdsToElementIds"}:
+                response = await _invoke_cached_identity_tool(request, tool.name, arguments)
             elif tool.name in MCP_MODEL_TOOL_SCHEMAS:
                 response = await _invoke_model_tool(request, tool.name, arguments)
             else:

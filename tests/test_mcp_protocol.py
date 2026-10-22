@@ -129,6 +129,13 @@ def test_structured_tool_results(
     assert tools["readValues"]["annotations"]["readOnlyHint"] is True
     assert tools["createSubscription"]["annotations"]["readOnlyHint"] is False
     assert tools["syncSubscription"]["annotations"]["readOnlyHint"] is False
+    for name in (
+        "searchModelElements",
+        "getElementContext",
+        "summarizeSubtree",
+        "traceRelationshipPath",
+    ):
+        assert tools[name]["annotations"]["readOnlyHint"] is True
     result = rpc(protocol_client, "tools/call", {"name": "readValues", "arguments": {"body": {}}})["result"]
     assert result["isError"] is is_error
     assert json.loads(result["content"][0]["text"]) == body

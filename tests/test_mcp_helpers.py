@@ -33,6 +33,8 @@ from i3x_server.mcp import (
     load_prompt_overrides,
     load_tool_overrides,
 )
+from i3x_server.schemas.i3x import ModelNode
+from i3x_server.schemas.state import BuildResult
 
 
 def _request() -> Request:
@@ -143,6 +145,10 @@ def test_build_mcp_tools_and_api_prefix_from_openapi() -> None:
         "getObjectsV1",
         "queryRelatedObjectsV1",
         "readContainerValues",
+        "searchModelElements",
+        "getElementContext",
+        "summarizeSubtree",
+        "traceRelationshipPath",
     }
     assert tools["getObject"].path_parameters == ("id",)
     assert tools["updateObject"].body_required is True
@@ -160,7 +166,135 @@ def test_build_mcp_tools_and_api_prefix_from_openapi() -> None:
     assert tools["readContainerValues"].input_schema["properties"]["limit"]["maximum"] == 50
     assert tools["readContainerValues"].annotations["readOnlyHint"] is True
     assert tools["readContainerValues"].annotations["destructiveHint"] is False
+    assert all(
+        tools[name].annotations["readOnlyHint"]
+        for name in (
+            "searchModelElements",
+            "getElementContext",
+            "summarizeSubtree",
+            "traceRelationshipPath",
+        )
+    )
     assert get_api_prefix(openapi) == "/api"
+
+
+@pytest.mark.asyncio
+async def test_cached_model_mcp_tools_search_context_subtree_and_path() -> None:
+    root = ModelNode(
+        id="asset-root",
+        name="Plant",
+        kind="asset",
+        source_node_id="ns=2;s=Plant",
+        children=["asset-machine"],
+        semantic_role="group",
+    )
+    machine = ModelNode(
+        id="asset-machine",
+        name="Mixer",
+        kind="asset",
+        source_node_id="ns=2;s=Mixer",
+        parent_id="asset-root",
+        children=["property-temperature"],
+        semantic_role="component",
+        relationships={
+            "HasParent": ["asset-root"],
+            "HasComponent": ["property-temperature"],
+            "FlowsTo": ["asset-root"],
+        },
+        metadata={"namespaceUri": "urn:plant", "appliedProfileIds": ["machinery"]},
+    )
+    temperature = ModelNode(
+        id="property-temperature",
+        name="Temperature",
+        kind="property",
+        type="Float",
+        source_node_id="ns=2;s=Temperature",
+        parent_id="asset-machine",
+        semantic_role="datapoint",
+        mapping_confidence="high",
+        metadata={"namespaceUri": "urn:plant", "description": "Mixer temperature"},
+    )
+    model = BuildResult(
+        nodes_by_id={node.id: node for node in (root, machine, temperature)},
+        root_ids=["asset-root"],
+        children_by_id={
+            "asset-root": ["asset-machine"],
+            "asset-machine": ["property-temperature"],
+            "property-temperature": [],
+        },
+        instances_by_type_id={},
+        property_to_node={"property-temperature": temperature.source_node_id},
+        action_to_method={},
+        hierarchy_children_by_id={"asset-root": ["asset-machine"]},
+        composition_children_by_id={"asset-machine": ["property-temperature"]},
+        hierarchy_parent_by_id={"asset-machine": "asset-root"},
+        composition_parent_by_id={"property-temperature": "asset-machine"},
+        relationships_by_id={node.id: node.relationships for node in (root, machine, temperature)},
+        semantic_role_by_id={
+            "asset-root": "group",
+            "asset-machine": "component",
+            "property-temperature": "datapoint",
+        },
+        mapping_confidence_by_id={"property-temperature": "high"},
+        applied_profile_ids_by_id={"asset-machine": ["machinery"]},
+        namespace_uri_by_id={
+            "asset-root": "urn:plant",
+            "asset-machine": "urn:plant",
+            "property-temperature": "urn:plant",
+        },
+    )
+    request = _request()
+
+    async def provide_model(_: Request) -> BuildResult:
+        return model
+
+    request.app.state.mcp_model_provider = provide_model
+    tools = build_mcp_tools({"paths": {}})
+
+    search = await invoke_mcp_tool(
+        request,
+        tools["searchModelElements"],
+        {"text": "temperature", "kind": "property"},
+    )
+    assert search["status_code"] == 200
+    assert search["body"]["total"] == 1
+    assert search["body"]["items"][0]["elementId"] == "property-temperature"
+    assert search["body"]["items"][0]["mappingConfidence"] == "high"
+
+    unfiltered_search = await invoke_mcp_tool(request, tools["searchModelElements"], {})
+    assert unfiltered_search["body"]["total"] == 3
+    assert unfiltered_search["body"]["returned"] == 3
+
+    context = await invoke_mcp_tool(
+        request,
+        tools["getElementContext"],
+        {"elementId": "asset-machine"},
+    )
+    assert context["body"]["ancestors"][0]["node"]["elementId"] == "asset-root"
+    assert context["body"]["parents"][0]["plane"] == "hierarchy"
+    assert context["body"]["children"]["composition"]["items"][0]["elementId"] == "property-temperature"
+    assert any(item["relationshipType"] == "FlowsTo" for item in context["body"]["relationships"]["items"])
+
+    subtree = await invoke_mcp_tool(
+        request,
+        tools["summarizeSubtree"],
+        {"rootElementId": "asset-root", "maxNodes": 2},
+    )
+    assert subtree["body"]["totalNodes"] == 2
+    assert subtree["body"]["truncated"] is True
+    assert subtree["body"]["tree"]["children"][0]["node"]["elementId"] == "asset-machine"
+
+    path = await invoke_mcp_tool(
+        request,
+        tools["traceRelationshipPath"],
+        {"sourceElementId": "asset-root", "targetElementId": "property-temperature"},
+    )
+    assert path["body"]["found"] is True
+    assert path["body"]["pathLength"] == 2
+    assert [step["relationship"]["plane"] for step in path["body"]["path"] if "relationship" in step] == [
+        "hierarchy",
+        "composition",
+    ]
 
 
 @pytest.mark.asyncio

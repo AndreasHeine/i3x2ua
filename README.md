@@ -378,6 +378,13 @@ execution failures use tool results. Notifications return `202` with no body.
 Standard `prompts/get` accepts string `arguments` and returns rendered `messages`;
 custom REST prompt helpers and `prompts/execute` retain their existing formats.
 
+The MCP catalog also includes four read-only, cached-model tools that compose
+semantic and relationship context rather than exposing individual REST calls:
+`searchModelElements`, `getElementContext`, `summarizeSubtree`, and
+`traceRelationshipPath`. They return model element IDs and the current model
+revision; subtree and path traversal are bounded by caller-supplied depth and
+size limits.
+
 MCP requests with an `Origin` must match a loopback request origin or an explicit origin
 in `I3X_CORS_ALLOWED_ORIGINS` (wildcards do not authorize MCP origins). Configure
 the external origin when deploying behind a reverse proxy. Authentication remains

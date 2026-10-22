@@ -472,7 +472,17 @@ def create_app() -> FastAPI:
             {"name": "Update", "description": "Write current or historical data to Objects."},
             {"name": "Subscribe", "description": "Subscribe to data changes for Objects."},
             {"name": "Diagnostics", "description": "Inspect model metrics and OPC UA connectivity."},
-            {"name": "MCP", "description": "Access Model Context Protocol tools and resources."},
+            {
+                "name": "MCP Protocol",
+                "description": ("The JSON-RPC endpoint for MCP requests. MCP clients send requests to POST /mcp."),
+            },
+            {
+                "name": "MCP Helpers",
+                "description": (
+                    "Local REST-style convenience endpoints for inspecting and invoking MCP tools, prompts, "
+                    "resources, and model roots. These are not MCP protocol routes; MCP clients should use POST /mcp."
+                ),
+            },
         ],
         lifespan=lifespan,
         generate_unique_id_function=_readable_operation_id,

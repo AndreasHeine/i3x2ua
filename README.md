@@ -358,11 +358,8 @@ Optional OPC UA diagnostic endpoints are exposed under `/ua`:
 
 Optional MCP endpoints are exposed only when `I3X_ENABLE_MCP=1`:
 
-- Streamable HTTP JSON-RPC entry point (`POST /mcp`; `GET /mcp` returns `405`)
-- tool catalog and REST tool call (`/mcp/tools`, `/mcp/call`)
-- prompt listing, definition, and execution (`/mcp/prompts`, `/mcp/prompts/{name}`, `/mcp/prompts/execute`)
-- resource listing and reading (`/mcp/resources`, `/mcp/resources/read`)
-- plant root listing (custom REST helper `/mcp/roots`, not MCP filesystem roots)
+- **MCP Protocol**: Streamable HTTP JSON-RPC entry point (`POST /mcp`; `GET /mcp` returns `405`). This is the MCP route clients should use.
+- **MCP Helpers**: Local REST-style convenience endpoints for the tool catalog and tool calls (`/mcp/tools`, `/mcp/call`), prompt listing/definition/execution, resource listing/reading, and plant roots (`/mcp/roots`). These are not MCP protocol routes.
 
 MCP targets protocol revision `2025-06-18`. It supports `initialize`, `ping`,
 `tools/list`, `tools/call`, `prompts/list`, `prompts/get`, `resources/list`,

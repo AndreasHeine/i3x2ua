@@ -2471,7 +2471,8 @@ def test_openapi_operations_are_grouped_by_workflow(client: TestClient) -> None:
         "Update",
         "Subscribe",
         "Diagnostics",
-        "MCP",
+        "MCP Protocol",
+        "MCP Helpers",
     ]
     for path, methods in generated["paths"].items():
         for method, operation in methods.items():
@@ -2479,8 +2480,10 @@ def test_openapi_operations_are_grouped_by_workflow(client: TestClient) -> None:
                 continue
             if path == "/v1/info":
                 expected_tag = "Info"
-            elif path.startswith("/mcp"):
-                expected_tag = "MCP"
+            elif path == "/mcp":
+                expected_tag = "MCP Protocol"
+            elif path.startswith("/mcp/"):
+                expected_tag = "MCP Helpers"
             elif path.startswith("/ua") or path.startswith("/model/"):
                 expected_tag = "Diagnostics"
             elif path.startswith("/v1/subscriptions"):

@@ -32,9 +32,9 @@
       "keywords": ["object details", "known elementId", "fetch object", "lookup"]
     },
     "getInfoV1": {
-      "description": "Return server version and capabilities. Use only for a server-information question, not to discover industrial assets or inspect model contents.",
+      "description": "Return server version and capabilities. Use only for a server-information question regarding i3X, not to discover industrial assets or inspect model contents.",
       "priority": "normal",
-      "keywords": ["server info", "version", "capabilities"]
+      "keywords": ["server info", "version", "capabilities", "i3x"]
     },
     "getModelMetricsV1": {
       "description": "Return aggregate model metrics. Use for counts or model-size questions; do not list objects just to count them. This does not identify individual assets or values.",

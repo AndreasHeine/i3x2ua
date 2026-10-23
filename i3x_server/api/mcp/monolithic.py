@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from typing_extensions import Never
 
 from i3x_server.errors import i3x_http_error
-from i3x_server.mcp import call_mcp_tool, invoke_mcp_tool
+from i3x_server.mcp.invocation import call_mcp_tool, invoke_mcp_tool
 from i3x_server.prompts.api import execute_prompt, get_prompt, list_prompt_metadata
 from i3x_server.prompts.registry import PromptRegistry
 from i3x_server.version import get_server_version
@@ -77,23 +77,12 @@ def _jsonrpc_error(result_id: Any, code: int, message: str, data: Any | None = N
     return {"jsonrpc": "2.0", "id": result_id, "error": error}
 
 
-def _jsonrpc_notification(method: str, params: Any | None = None) -> dict[str, Any]:
-    payload: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
-    if params is not None:
-        payload["params"] = params
-    return payload
-
-
 def _raise_invalid_tool(tool_name: str) -> Never:
     raise i3x_http_error(400, "Bad Request", f"Unknown tool {tool_name}")
 
 
 def _raise_invalid_resource(uri: str) -> Never:
     raise i3x_http_error(404, "Not Found", f"Unknown resource {uri}")
-
-
-def _raise_mcp_error(operation: str, cause: Exception) -> Never:
-    raise i3x_http_error(500, "Internal Server Error", f"MCP {operation} failed: {str(cause)}")
 
 
 def _tool_catalog(request: Request) -> list[dict[str, Any]]:

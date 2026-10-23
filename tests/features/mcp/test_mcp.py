@@ -6,10 +6,9 @@ from collections.abc import Mapping
 from typing import Any
 
 import pytest
-from fastapi.exceptions import HTTPException
 from fastapi.testclient import TestClient
 
-from i3x_server.mcp import _safe_internal_request_url, get_api_prefix
+from i3x_server.mcp import get_api_prefix
 from tests.conftest import fastapi_app
 
 
@@ -815,21 +814,6 @@ def test_mcp_call_rejects_unknown_tool(client: TestClient) -> None:
 def test_mcp_get_api_prefix_strips_host_parts() -> None:
     openapi_spec = {"servers": [{"url": "https://example.test/v1"}]}
     assert get_api_prefix(openapi_spec) == "/v1"
-
-
-@pytest.mark.parametrize("path", ["http://evil.example/pwn", "//evil.example/pwn"])
-def test_mcp_internal_request_url_rejects_external_hosts(path: str) -> None:
-    with pytest.raises(HTTPException) as exc_info:
-        _safe_internal_request_url(path)
-    detail = exc_info.value.detail
-    assert isinstance(detail, dict)
-    assert detail["error"]["message"] in {"Invalid MCP request path", "Invalid MCP tool path"}
-
-
-def test_mcp_internal_request_url_keeps_fixed_internal_host() -> None:
-    url = _safe_internal_request_url("/v1/namespaces")
-    assert url.host == "mcp.local"
-    assert str(url) == "http://mcp.local/v1/namespaces"
 
 
 def test_mcp_call_strips_host_from_runtime_api_prefix(client: TestClient) -> None:

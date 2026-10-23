@@ -9,11 +9,9 @@ from starlette.requests import Request
 
 from i3x_server.api.dependencies import get_model_query_service
 from i3x_server.application.dependencies import (
-    get_mcp_service,
     get_object_value_service,
     get_subscription_app_service,
 )
-from i3x_server.prompts.registry import PromptRegistry
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
 
@@ -64,18 +62,6 @@ async def test_api_and_application_dependency_factories() -> None:
     )
     assert sub_service.model is model
     assert sub_service.request is request
-
-
-def test_get_mcp_service_registry_type_guard() -> None:
-    request = _request()
-    request.app.state.mcp_prompts = {"not": "registry"}
-    service_without_registry = get_mcp_service(request)
-    assert service_without_registry.prompt_registry is None
-
-    registry = PromptRegistry({})
-    request.app.state.mcp_prompts = registry
-    service_with_registry = get_mcp_service(request)
-    assert service_with_registry.prompt_registry is registry
 
 
 def test_main_module_uses_create_app(monkeypatch: pytest.MonkeyPatch) -> None:

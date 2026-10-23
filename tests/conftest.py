@@ -499,7 +499,7 @@ def client_without_tool_overrides(monkeypatch: pytest.MonkeyPatch) -> Generator[
     os.environ["I3X_SKIP_OPCUA_CONNECT"] = "1"
     os.environ["I3X_ENABLE_WRITES"] = "0"
     os.environ["I3X_MCP_INCLUDE_OPCUA_METADATA"] = "1"
-    monkeypatch.setattr("i3x_server.mcp.load_tool_overrides", lambda *args, **kwargs: {})
+    monkeypatch.setattr("i3x_server.mcp.tool_definitions.load_tool_overrides", lambda *args, **kwargs: {})
     app = create_app()
     try:
         with TestClient(app) as test_client:

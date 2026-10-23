@@ -32,7 +32,7 @@ def test_native_telemetry_exports_http_spans_and_mcp_metrics() -> None:
         from opentelemetry.sdk.trace.export import SimpleSpanProcessor
         from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-        import i3x_server.mcp as mcp
+        import i3x_server.mcp.invocation as mcp
         from i3x_server.bootstrap.app_factory import create_app
 
         span_exporter = InMemorySpanExporter()

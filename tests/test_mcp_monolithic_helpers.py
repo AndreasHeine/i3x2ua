@@ -12,7 +12,6 @@ from starlette.requests import Request
 from i3x_server.api.mcp.monolithic import (
     _handle_jsonrpc,
     _jsonrpc_error,
-    _jsonrpc_notification,
     _jsonrpc_response,
     _prompt_registry,
     _read_resource_content,
@@ -51,7 +50,6 @@ class _Tool:
 def test_jsonrpc_payload_helpers() -> None:
     assert _jsonrpc_response(1, {"ok": True}) == {"jsonrpc": "2.0", "id": 1, "result": {"ok": True}}
     assert _jsonrpc_error(1, -1, "bad") == {"jsonrpc": "2.0", "id": 1, "error": {"code": -1, "message": "bad"}}
-    assert _jsonrpc_notification("notifications/test") == {"jsonrpc": "2.0", "method": "notifications/test"}
 
 
 def test_tool_and_resource_and_roots_catalogs(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -10,7 +10,7 @@ This document defines module ownership and dependency direction for the i3x2ua c
 graph LR
 	subgraph Inbound["Inbound Adapters (Driving)"]
 		REST["REST API\ni3x_server/api/*"]
-		MCP["MCP Entry\ni3x_server/mcp.py\napi/mcp/monolithic.py"]
+		MCP["MCP Adapter\ni3x_server/mcp/*\napi/mcp/*"]
 	end
 
 	subgraph Bootstrap["Composition Root"]
@@ -37,7 +37,8 @@ graph LR
 	REST --> APP_SVC
 	REST --> APP_DEP
 	REST --> APP_PORTS
-	MCP --> APP_SVC
+	MCP --> REST
+	MCP --> APP_DEP
 
 	BOOT --> REST
 	BOOT --> MCP
@@ -61,8 +62,8 @@ graph LR
 The project follows a layered architecture inside i3x_server:
 
 1. presentation
-- Responsibility: protocol-facing endpoints, request parsing, response shaping, protocol adapters (REST and MCP).
-- Current primary modules: i3x_server/api, i3x_server/mcp.py, i3x_server/api/v1/*_routes.py, i3x_server/api/v1/contracts.py, i3x_server/api/v1/*helpers.py, i3x_server/api/mcp/monolithic.py.
+- Responsibility: protocol-facing endpoints, request parsing, response shaping, and protocol adapters (REST and MCP). The MCP adapter dispatches tool calls to existing REST routes in-process and uses the application model provider for cached-model tools.
+- Current primary modules: i3x_server/api, i3x_server/mcp/*, i3x_server/api/v1/*_routes.py, i3x_server/api/v1/contracts.py, i3x_server/api/v1/*helpers.py, i3x_server/api/mcp/monolithic.py.
 
 2. application
 - Responsibility: use-case orchestration, coordination between services, cross-cutting workflow logic.
@@ -172,7 +173,7 @@ During migration, compatibility wrappers are expected:
 
 - i3x_server/api/v1/__init__.py is the v1 router aggregator
 - i3x_server/api/v1/monolithic.py is retained only as a compatibility surface for remaining direct imports/tests
-- i3x_server/api/mcp/__init__.py wraps i3x_server.api.mcp.monolithic exports
+- i3x_server/api/mcp/__init__.py wraps i3x_server.api.mcp.monolithic exports; the MCP protocol router is still monolithic and should be split into focused adapters before substantial feature growth
 
 For private internals, tests and monkeypatching must target source modules, not wrapper re-exports.
 
@@ -183,6 +184,8 @@ Soft limits:
 - Preferred: <= 400 lines per module
 - Warning zone: > 600 lines
 - Refactor required: > 900 lines unless strongly justified
+
+The MCP adapter is grouped under `i3x_server/mcp/`: invocation and in-process API dispatch live in `invocation.py`, OpenAPI tool definitions and overrides in `tool_definitions.py`, and cached-model tools in `model_tools.py`. HTTP and JSON-RPC route handlers remain under `i3x_server/api/mcp/`.
 
 If a module crosses 600 lines, add a follow-up issue or refactor note with an extraction plan.
 

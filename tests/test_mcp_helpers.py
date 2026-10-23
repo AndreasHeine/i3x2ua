@@ -21,7 +21,6 @@ from i3x_server.mcp import (
     _resolve_request_body_schema,
     _resolve_schema,
     _safe_api_prefix,
-    _safe_internal_request_url,
     _safe_path_parameter_value,
     _safe_request_path,
     _trace_log_fields,
@@ -59,9 +58,6 @@ def test_safe_prefix_and_path_helpers() -> None:
     assert _safe_path_parameter_value("id", "abc") == "abc"
     with pytest.raises(HTTPException):
         _safe_path_parameter_value("id", "../bad")
-
-    url = _safe_internal_request_url("/v1/objects")
-    assert str(url).startswith("http://mcp.local/")
 
 
 def test_resolve_schema_and_request_body_schema() -> None:
@@ -460,7 +456,7 @@ async def test_container_values_reads_only_descendant_properties_in_bounded_batc
         }
         return _InternalASGIResponse(200, {"content-type": "application/json"}, json.dumps(body).encode())
 
-    monkeypatch.setattr("i3x_server.mcp._invoke_internal_asgi", fake_internal_asgi)
+    monkeypatch.setattr("i3x_server.mcp.invocation._invoke_internal_asgi", fake_internal_asgi)
     response = await _invoke_container_values(request, container_id="memory", limit=50, offset=0)
     body = json.loads(response.body)
 
@@ -630,7 +626,7 @@ async def test_get_objects_defaults_to_root_discovery(monkeypatch: pytest.Monkey
             ),
         )
 
-    monkeypatch.setattr("i3x_server.mcp._invoke_internal_asgi", fake_invoke_internal_asgi)
+    monkeypatch.setattr("i3x_server.mcp.invocation._invoke_internal_asgi", fake_invoke_internal_asgi)
     tool = McpToolDefinition(
         name="getObjectsV1",
         description="Discover objects",
@@ -685,7 +681,7 @@ async def test_related_pagination_is_mcp_only(monkeypatch: pytest.MonkeyPatch) -
             body=json.dumps(response_body).encode(),
         )
 
-    monkeypatch.setattr("i3x_server.mcp._invoke_internal_asgi", fake_invoke_internal_asgi)
+    monkeypatch.setattr("i3x_server.mcp.invocation._invoke_internal_asgi", fake_invoke_internal_asgi)
     tool = McpToolDefinition(
         name="queryRelatedObjectsV1",
         description="Navigate related objects",

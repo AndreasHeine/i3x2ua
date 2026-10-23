@@ -36,7 +36,8 @@ from i3x_server.config.settings import Settings, settings
 from i3x_server.http_caching import MODEL_REVISION_HEADER, ModelRevisionMiddleware, NotModifiedError
 from i3x_server.infrastructure.opcua.client import OpcUaClient
 from i3x_server.infrastructure.subscriptions.service import SubscriptionService
-from i3x_server.mcp import build_mcp_tools, get_api_prefix, init_mcp_metrics, load_prompt_overrides
+from i3x_server.mcp.invocation import get_api_prefix, init_mcp_metrics
+from i3x_server.mcp.tool_definitions import build_mcp_tools, load_prompt_overrides
 from i3x_server.model.builder import ModelBuilder
 from i3x_server.prompts.registry import PromptRegistry
 from i3x_server.schemas.state import BuildResult

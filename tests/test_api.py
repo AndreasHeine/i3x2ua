@@ -11,7 +11,7 @@ from typing import Any, cast
 
 import pytest
 from asyncua import ua
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from jsonschema import Draft202012Validator
 
@@ -29,7 +29,7 @@ from i3x_server.infrastructure.opcua.client import (
     OpcUaSubscriptionCapabilities,
 )
 from i3x_server.infrastructure.subscriptions.service import SubscriptionService
-from i3x_server.mcp import _safe_internal_request_url, get_api_prefix, load_tool_overrides
+from i3x_server.mcp import load_tool_overrides
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
 
@@ -3482,26 +3482,6 @@ def test_mcp_call_supports_body_arguments(client: TestClient) -> None:
 def test_mcp_call_rejects_unknown_tool(client: TestClient) -> None:
     response = client.post("/mcp/call", json={"tool": "unknownTool", "arguments": {}})
     assert response.status_code == 400
-
-
-def test_mcp_get_api_prefix_strips_host_parts() -> None:
-    openapi_spec = {"servers": [{"url": "https://example.test/v1"}]}
-    assert get_api_prefix(openapi_spec) == "/v1"
-
-
-@pytest.mark.parametrize("path", ["http://evil.example/pwn", "//evil.example/pwn"])
-def test_mcp_internal_request_url_rejects_external_hosts(path: str) -> None:
-    with pytest.raises(HTTPException) as exc_info:
-        _safe_internal_request_url(path)
-    detail = exc_info.value.detail
-    assert isinstance(detail, dict)
-    assert detail["error"]["message"] in {"Invalid MCP request path", "Invalid MCP tool path"}
-
-
-def test_mcp_internal_request_url_keeps_fixed_internal_host() -> None:
-    url = _safe_internal_request_url("/v1/namespaces")
-    assert url.host == "mcp.local"
-    assert str(url) == "http://mcp.local/v1/namespaces"
 
 
 def test_mcp_call_strips_host_from_runtime_api_prefix(client: TestClient) -> None:

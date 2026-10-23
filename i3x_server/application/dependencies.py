@@ -14,7 +14,6 @@ from typing import cast
 from fastapi import Depends, Request
 
 from i3x_server.application.ports.subscription import SubscriptionServicePort
-from i3x_server.application.services.mcp import McpService
 from i3x_server.application.services.model_query import ModelQueryService
 from i3x_server.application.services.object_value import ObjectValueService
 from i3x_server.application.services.subscription import SubscriptionAppService
@@ -142,20 +141,3 @@ async def get_subscription_app_service(
         subscription_service=subscription_service,
         request=request,
     )
-
-
-def get_mcp_service(request: Request) -> McpService:
-    """Dependency function for McpService.
-
-    Args:
-        request: FastAPI request
-
-    Returns:
-        McpService instance
-    """
-    from i3x_server.prompts.registry import PromptRegistry
-
-    prompt_registry = getattr(request.app.state, "mcp_prompts", None)
-    if not isinstance(prompt_registry, PromptRegistry):
-        prompt_registry = None
-    return McpService(request=request, prompt_registry=prompt_registry)

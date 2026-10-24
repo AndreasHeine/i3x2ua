@@ -70,7 +70,8 @@ def test_frontend_inline_script_hashes_supports_script_tag_variants(tmp_path: An
 
 
 @pytest.mark.asyncio
-async def test_run_model_preload_success_sets_cache() -> None:
+@pytest.mark.parametrize("blocking", [False, True])
+async def test_run_model_preload_success_sets_cache(monkeypatch: pytest.MonkeyPatch, blocking: bool) -> None:
     model = BuildResult(
         nodes_by_id={},
         root_ids=[],
@@ -114,8 +115,39 @@ async def test_run_model_preload_success_sets_cache() -> None:
     app.state.opcua_client = _OpcUaClient()
     app.state.model_builder = _ModelBuilder()
     app.state.model_cache = None
-    await _run_model_preload(app)
-    assert app.state.model_cache is model
+    app.state.object_type_warm_task = None
+    warm_started = asyncio.Event()
+    allow_warm_finish = asyncio.Event()
+    warm_finished = asyncio.Event()
+
+    async def warm_context(warm_app: FastAPI, warm_model: BuildResult) -> None:
+        assert warm_app is app
+        assert warm_model is model
+        warm_started.set()
+        await allow_warm_finish.wait()
+        warm_finished.set()
+
+    monkeypatch.setattr("i3x_server.bootstrap.app_factory.settings.model_preload_blocking", blocking)
+    monkeypatch.setattr(app_factory, "_warm_object_type_context", warm_context)
+    preload_task = asyncio.create_task(_run_model_preload(app))
+    try:
+        await asyncio.wait_for(warm_started.wait(), timeout=2)
+        assert app.state.model_cache is model
+        assert preload_task.done() is not blocking
+        assert not warm_finished.is_set()
+        allow_warm_finish.set()
+        await asyncio.wait_for(preload_task, timeout=2)
+        if blocking:
+            assert warm_finished.is_set()
+            assert app.state.object_type_warm_task is None
+        else:
+            await asyncio.wait_for(app.state.object_type_warm_task, timeout=2)
+            assert warm_finished.is_set()
+    finally:
+        allow_warm_finish.set()
+        await preload_task
+        if app.state.object_type_warm_task is not None:
+            await app.state.object_type_warm_task
 
 
 @pytest.mark.asyncio

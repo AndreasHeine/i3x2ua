@@ -1116,7 +1116,7 @@ async def warm_object_type_context(
 ) -> _ObjectTypeContext:
     """Populate the object type context cache outside of a request.
 
-    Keeps the ~5s rebuild off the first request after startup and after each model refresh.
+    Blocking startup awaits this; background startup and model refreshes also use it.
     """
     return await _get_object_type_context(SimpleNamespace(app=app), model, opcua_client, allow_stale=False)
 

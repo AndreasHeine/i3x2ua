@@ -219,9 +219,11 @@ async def _run_model_preload(app: FastAPI) -> None:
             metrics.object_type_reads,
             metrics.object_type_count_last,
         )
-        # Scheduled separately: get_or_build_model awaits this task, and the warm-up must
-        # not hold early requests behind it once the model itself is ready.
-        app.state.object_type_warm_task = asyncio.create_task(_warm_object_type_context(app, preload))
+        if settings.model_preload_blocking:
+            await _warm_object_type_context(app, preload)
+        else:
+            # Keep background preload from holding model-only requests behind type warm-up.
+            app.state.object_type_warm_task = asyncio.create_task(_warm_object_type_context(app, preload))
     except Exception:
         logger.exception("Model preload failed")
         if settings.fail_startup_on_model_preload_error and settings.model_preload_blocking:

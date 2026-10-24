@@ -337,6 +337,13 @@ previous model. To fail startup on model-build errors, set both
 `I3X_MODEL_PRELOAD_BLOCKING=1` and `I3X_FAIL_STARTUP_ON_MODEL_PRELOAD_ERROR=1`
 with `I3X_MODEL_PRELOAD_ON_STARTUP=1`.
 
+With startup preload enabled, `I3X_MODEL_PRELOAD_BLOCKING=1` waits for both the
+model build and object-type context warm-up before completing application startup.
+With `I3X_MODEL_PRELOAD_BLOCKING=0` (the default), both run in the background;
+early model-dependent requests may wait for the model, and type-dependent requests
+may also wait for object-type warm-up. Object-type warm-up failures are logged and
+retried on demand by requests.
+
 Object-type discovery remains independent and is not restricted to these entrypoints.
 This setting scopes discovery, not authorization: forward hierarchical cross-links
 can lead into other branches or namespaces.

@@ -147,6 +147,14 @@ def test_build_mcp_tools_and_api_prefix_from_openapi() -> None:
         "getElementContext",
         "summarizeSubtree",
         "traceRelationshipPath",
+        "resolveBrowsePath",
+        "getBrowsePath",
+        "getInstancesOfType",
+        "getChildren",
+        "getCompositionProperties",
+        "findElementsByName",
+        "findElementsByNamespace",
+        "findElementsByRole",
     }
     assert tools["getObject"].path_parameters == ("id",)
     assert tools["updateObject"].body_required is True

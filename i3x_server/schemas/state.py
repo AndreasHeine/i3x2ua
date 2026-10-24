@@ -4,6 +4,20 @@ from i3x_server.schemas.i3x import ModelNode
 
 
 @dataclass(slots=True)
+class _ModelAccessIndex:
+    revision: str
+    ordered_ids: tuple[str, ...]
+    namespaces: dict[str, list[str]] = field(default_factory=dict)
+    roles: dict[str, list[str]] = field(default_factory=dict)
+    name_grams: dict[str, set[str]] = field(default_factory=dict)
+    children_by_plane: dict[str, dict[str, tuple[str, ...]]] = field(default_factory=dict)
+    paths: dict[tuple[str, ...], list[str]] | None = None
+    type_context_token: object | None = None
+    direct_instances: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    subtype_instances: dict[str, tuple[str, ...]] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
 class BuildResult:
     nodes_by_id: dict[str, ModelNode]
     root_ids: list[str]
@@ -36,6 +50,7 @@ class BuildResult:
     total_duration_s: float = 0.0
     build_completed_at_utc: str | None = None
     revision: str = ""
+    _model_access_index_cache: _ModelAccessIndex | None = field(default=None, init=False, repr=False, compare=False)
     _reverse_parent_index_cache: tuple[tuple[int, int], dict[str, str]] | None = field(
         default=None, init=False, repr=False, compare=False
     )

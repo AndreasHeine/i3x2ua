@@ -16,6 +16,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse, Response
 
 from i3x_server.errors import i3x_http_error
+from i3x_server.mcp.model_access import MCP_MODEL_ACCESS_SCHEMAS, invoke_model_access_tool
 from i3x_server.mcp.model_tools import (
     MCP_MODEL_TOOL_SCHEMAS,
     _get_element_context,
@@ -46,6 +47,7 @@ from i3x_server.mcp.tool_definitions import (
     load_prompt_overrides,
     load_tool_overrides,
 )
+from i3x_server.model.revision import model_revision
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
 
@@ -208,6 +210,31 @@ async def _invoke_cached_identity_tool(
         body = _resolve_element_ids_to_node_ids(model, arguments["elementIds"])
     else:
         body = _resolve_node_ids_to_element_ids(model, arguments["nodeIds"])
+    return _InternalASGIResponse(
+        status_code=200,
+        headers={"content-type": "application/json"},
+        body=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+    )
+
+
+async def _invoke_cached_model_access_tool(
+    request: Request,
+    tool_name: str,
+    arguments: Mapping[str, Any],
+) -> _InternalASGIResponse:
+    model = getattr(request.app.state, "model_cache", None)
+    if not isinstance(model, BuildResult):
+        raise i3x_http_error(503, "Service Unavailable", "Cached model is not available")
+    context = None
+    if tool_name == "getInstancesOfType":
+        from i3x_server.api.v1.objecttype_helpers import _ObjectTypeContext
+
+        cache = getattr(request.app.state, "object_type_context_cache", None)
+        if isinstance(cache, dict) and cache.get("model_token") == model_revision(model):
+            candidate = cache.get("context")
+            if isinstance(candidate, _ObjectTypeContext):
+                context = candidate
+    body = invoke_model_access_tool(model, tool_name, arguments, context)
     return _InternalASGIResponse(
         status_code=200,
         headers={"content-type": "application/json"},
@@ -589,6 +616,8 @@ async def invoke_mcp_tool(request: Request, tool: McpToolDefinition, arguments: 
                 )
             elif tool.name in {"resolveElementIdsToNodeIds", "resolveNodeIdsToElementIds"}:
                 response = await _invoke_cached_identity_tool(request, tool.name, arguments)
+            elif tool.name in MCP_MODEL_ACCESS_SCHEMAS:
+                response = await _invoke_cached_model_access_tool(request, tool.name, arguments)
             elif tool.name in MCP_MODEL_TOOL_SCHEMAS:
                 response = await _invoke_model_tool(request, tool.name, arguments)
             else:

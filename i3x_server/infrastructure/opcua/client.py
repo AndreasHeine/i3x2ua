@@ -297,7 +297,7 @@ class OpcUaClient:
             watchdog_intervall=float(self._connection_monitor_interval_seconds),
             reconnect_max_delay=self._reconnect_max_delay_seconds,
             reconnect_request_timeout=self._reconnect_request_timeout_seconds,
-            application_request_limit=min(16, self._browse_concurrency),
+            application_request_limit=self._browse_concurrency,
         )
         self._client.reconnected_callback = self._on_asyncua_reconnected
         self._client.application_uri = "urn:i3x2ua:opcua_client"

@@ -186,6 +186,34 @@ def test_build_mcp_tools_and_api_prefix_from_openapi() -> None:
     assert get_api_prefix(openapi) == "/api"
 
 
+def test_build_mcp_tools_excludes_configured_tools(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "i3x_server.mcp.tool_definitions.load_overrides",
+        lambda: {
+            "tools": {},
+            "prompts": {},
+            "excluded_tools": ["readContainerValues", "searchModelElements", "getObject"],
+        },
+    )
+    openapi = {
+        "paths": {
+            "/v1/object": {
+                "get": {
+                    "operationId": "getObject",
+                    "summary": "Get object",
+                }
+            }
+        }
+    }
+
+    tools = build_mcp_tools(openapi)
+
+    assert "readContainerValues" not in tools
+    assert "searchModelElements" not in tools
+    assert "getObject" not in tools
+    assert "getBrowsePath" in tools
+
+
 @pytest.mark.asyncio
 async def test_cached_model_mcp_tools_search_context_subtree_and_path() -> None:
     root = ModelNode(

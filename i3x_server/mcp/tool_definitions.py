@@ -273,8 +273,14 @@ def build_mcp_tools(
     openapi_spec: Mapping[str, Any],
     overrides: Mapping[str, Any] | None = None,
 ) -> dict[str, McpToolDefinition]:
+    excluded_tools: set[str] = set()
     if overrides is None:
-        overrides = load_tool_overrides()
+        configuration = load_overrides()
+        tool_overrides = configuration.get("tools", {})
+        excluded = configuration.get("excluded_tools", [])
+        if isinstance(excluded, list):
+            excluded_tools = {name for name in excluded if isinstance(name, str)}
+        overrides = tool_overrides if isinstance(tool_overrides, Mapping) else {}
 
     components = openapi_spec.get("components")
     if not isinstance(components, Mapping):
@@ -494,4 +500,4 @@ def build_mcp_tools(
                 else "normal"
             ),
         )
-    return tools
+    return {name: tool for name, tool in tools.items() if name not in excluded_tools}

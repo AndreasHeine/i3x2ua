@@ -136,8 +136,11 @@ i3x2ua loads tool and prompt overrides from `overrides/mcp_overrides.json`
 when the application starts. The repository's
 [`overrides/schema.json`](../overrides/schema.json) defines the accepted
 format. Keep both top-level `tools` and `prompts` objects in the file, and
-validate JSON syntax before restarting the server. In Docker Compose, the
-repository's `overrides` directory is mounted at `/app/overrides`.
+validate JSON syntax before restarting the server. Add tool names to the
+optional top-level `excluded_tools` array to omit them from MCP discovery and
+calls; names must match the MCP tool names exactly. This also applies to
+built-in cached-model tools. In Docker Compose, the repository's `overrides`
+directory is mounted at `/app/overrides`.
 
 Use the exact tool names as keys. Overrides apply to the REST-derived MCP tools.
 For example, this makes discovery guidance specific to finding and reading a

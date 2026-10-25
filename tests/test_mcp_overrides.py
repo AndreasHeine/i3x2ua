@@ -23,6 +23,7 @@ def test_load_overrides_applies_valid_payload(tmp_path: Path) -> None:
         "properties": {
             "tools": {"type": "object"},
             "prompts": {"type": "object"},
+            "excluded_tools": {"type": "array", "items": {"type": "string"}},
         },
         "required": ["tools", "prompts"],
         "additionalProperties": False,
@@ -35,6 +36,7 @@ def test_load_overrides_applies_valid_payload(tmp_path: Path) -> None:
                 "keywords": ["namespaces"],
             }
         },
+        "excluded_tools": ["getUaMetrics"],
         "prompts": {},
     }
 
@@ -44,6 +46,27 @@ def test_load_overrides_applies_valid_payload(tmp_path: Path) -> None:
     loaded = load_overrides(path=overrides_path, schema_path=schema_path)
 
     assert loaded == overrides
+
+
+def test_load_overrides_allows_omitted_excluded_tools(tmp_path: Path) -> None:
+    schema_path = tmp_path / "schema.json"
+    overrides_path = tmp_path / "mcp_overrides.json"
+    schema = {
+        "type": "object",
+        "properties": {
+            "tools": {"type": "object"},
+            "prompts": {"type": "object"},
+            "excluded_tools": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["tools", "prompts"],
+        "additionalProperties": False,
+    }
+    overrides = {"tools": {}, "prompts": {}}
+
+    _write_json(schema_path, schema)
+    _write_json(overrides_path, overrides)
+
+    assert load_overrides(path=overrides_path, schema_path=schema_path) == overrides
 
 
 def test_load_overrides_skips_invalid_payload_with_clear_log(

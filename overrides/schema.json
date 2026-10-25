@@ -13,6 +13,13 @@
         "$ref": "#/$defs/toolOverride"
       }
     },
+    "excluded_tools": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
     "prompts": {
       "type": "object",
       "additionalProperties": {

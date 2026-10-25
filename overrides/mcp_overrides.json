@@ -188,5 +188,6 @@
       "inputs": ["asset_id_or_namespace", "mapping_goal"],
       "template": "Review {{asset_id_or_namespace}} for this mapping goal: {{mapping_goal}}.\n\nFor an asset, start with getObjectsV1(root=true) if needed and navigate the relevant branch with queryRelatedObjectsV1. Do not enumerate all objects. Use getNamespacesV1 only when namespace alignment is part of the task. Use getObjectTypesV1 or getRelationshipTypesV1 only when the mapping goal requires vocabulary/schema details; prefer targeted query tools when exact IDs are known. Report only relevant existing objects, links, gaps, and a minimal mapping checklist."
     }
-  }
+  },
+  "excluded_tools": []
 }

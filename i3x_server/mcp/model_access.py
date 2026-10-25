@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any
 
 from jsonschema import Draft202012Validator
 
+from i3x_server.domain.utils import expanded_node_id
 from i3x_server.errors import i3x_http_error
 from i3x_server.model.revision import model_revision
 from i3x_server.schemas.state import BuildResult, _ModelAccessIndex
@@ -36,10 +37,23 @@ MCP_MODEL_ACCESS_SCHEMAS = {
         "oneOf": [{"required": ["path"]}, {"required": ["segments"]}],
     },
     "getBrowsePath": _schema({"elementId": _ID}, ["elementId"]),
-    "getInstancesOfType": _schema(
-        {"typeElementId": _ID, "includeSubtypes": {"type": "boolean", "default": True}, **_PAGE},
-        ["typeElementId"],
-    ),
+    "getInstancesOfType": {
+        **_schema(
+            {
+                "typeElementId": _ID,
+                "typeContextRevision": _ID,
+                "includeSubtypes": {"type": "boolean", "default": True},
+                **_PAGE,
+            },
+            ["typeElementId"],
+        ),
+        "allOf": [
+            {
+                "if": {"properties": {"offset": {"type": "integer", "minimum": 1}}, "required": ["offset"]},
+                "then": {"required": ["typeContextRevision"]},
+            }
+        ],
+    },
     "getChildren": _schema(
         {
             "elementId": _ID,
@@ -124,6 +138,21 @@ def _parent(model: BuildResult, element_id: str) -> str | None:
     )
 
 
+def _validate_parent_chains(model: BuildResult, parents: Mapping[str, str | None]) -> None:
+    validated: set[str] = set()
+    for element_id in model.nodes_by_id:
+        chain: list[str] = []
+        visiting: set[str] = set()
+        current: str | None = element_id
+        while current is not None and current not in validated:
+            if current not in model.nodes_by_id or current in visiting:
+                raise i3x_http_error(500, "Invalid Model", "Canonical parent chain contains a cycle or missing element")
+            visiting.add(current)
+            chain.append(current)
+            current = parents[current]
+        validated.update(chain)
+
+
 def _segments(model: BuildResult, element_id: str, known: dict[str, tuple[str, ...]] | None = None) -> tuple[str, ...]:
     chain: list[str] = []
     visited: set[str] = set()
@@ -165,7 +194,11 @@ def _type_indexes(model: BuildResult, index: _ModelAccessIndex, context: _Object
     aliases.update(context.source_type_to_element_id)
 
     def type_id(source: str) -> str | None:
-        return aliases.get(source) or context.source_type_to_element_id.get(source.lower())
+        resolved = aliases.get(source) or aliases.get(source.lower())
+        if resolved is not None:
+            return resolved
+        expanded = expanded_node_id(source, context.namespace_infos)
+        return aliases.get(expanded) or aliases.get(expanded.lower())
 
     parents: dict[str, str] = {}
     for info in context.object_types:
@@ -219,14 +252,30 @@ def invoke_model_access_tool(
     index = _index(model)
     result: dict[str, Any]
     if tool_name == "resolveBrowsePath":
-        if index.paths is None:
-            paths: dict[tuple[str, ...], list[str]] = {}
-            known: dict[str, tuple[str, ...]] = {}
+        if index.path_children is None:
+            path_children: dict[str | None, dict[str, list[str]]] = {}
+            parent_by_id: dict[str, str | None] = {}
             for element_id in index.ordered_ids:
-                paths.setdefault(_segments(model, element_id, known), []).append(element_id)
-            index.paths = paths
+                parent = _parent(model, element_id)
+                parent_by_id[element_id] = parent
+                path_children.setdefault(parent, {}).setdefault(model.nodes_by_id[element_id].name, []).append(
+                    element_id
+                )
+            _validate_parent_chains(model, parent_by_id)
+            index.path_children = {
+                parent: {name: tuple(children) for name, children in children_by_name.items()}
+                for parent, children_by_name in path_children.items()
+            }
         segments = tuple(arguments["segments"]) if "segments" in arguments else tuple(arguments["path"].split("/"))
-        matches = index.paths.get(segments, [])
+        parent_candidates: tuple[str | None, ...] = (None,)
+        matches: list[str] = []
+        for segment in segments:
+            matches = [
+                child for parent in parent_candidates for child in index.path_children.get(parent, {}).get(segment, ())
+            ]
+            if not matches:
+                break
+            parent_candidates = tuple(matches)
         if len(matches) > 1:
             raise i3x_http_error(409, "Ambiguous Path", "Browse path matches multiple elements; use an elementId")
         if not matches:
@@ -239,12 +288,19 @@ def invoke_model_access_tool(
             raise i3x_http_error(
                 503, "Service Unavailable", "Revision-matched cached object type context is unavailable"
             )
+        offset = arguments.get("offset", 0)
+        requested_context_revision = arguments.get("typeContextRevision")
+        if offset > 0 and requested_context_revision is None:
+            raise i3x_http_error(400, "Bad Request", "typeContextRevision is required when offset is greater than 0")
+        if requested_context_revision is not None and requested_context_revision != context.revision:
+            raise i3x_http_error(409, "Conflict", "Object type context changed; restart pagination from offset 0")
         _type_indexes(model, index, context)
         element_id = arguments["typeElementId"]
         if element_id not in index.direct_instances:
             raise i3x_http_error(404, "Not Found", f"Object type not found: {element_id}")
         instances = index.subtype_instances if arguments.get("includeSubtypes", True) else index.direct_instances
         result = _page(model, instances[element_id], arguments)
+        result["typeContextRevision"] = context.revision
     elif tool_name == "getChildren":
         element_id = arguments["elementId"]
         _require_element(model, element_id)

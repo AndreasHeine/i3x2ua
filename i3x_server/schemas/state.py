@@ -11,7 +11,7 @@ class _ModelAccessIndex:
     roles: dict[str, list[str]] = field(default_factory=dict)
     name_grams: dict[str, set[str]] = field(default_factory=dict)
     children_by_plane: dict[str, dict[str, tuple[str, ...]]] = field(default_factory=dict)
-    paths: dict[tuple[str, ...], list[str]] | None = None
+    path_children: dict[str | None, dict[str, tuple[str, ...]]] | None = None
     type_context_token: object | None = None
     direct_instances: dict[str, tuple[str, ...]] = field(default_factory=dict)
     subtype_instances: dict[str, tuple[str, ...]] = field(default_factory=dict)

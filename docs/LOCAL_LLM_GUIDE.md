@@ -209,9 +209,13 @@ including nested components, not hierarchy children. No tool returns live values
 `getInstancesOfType` includes subtypes by default and returns object instances,
 not variable properties or actions. It requires the already-warmed object-type
 context for the same model revision; an unavailable or stale context returns
-503 without refreshing it. Derived lookup indexes are scoped to the current
-model snapshot/revision and discarded with it. Name searches of at least three
-characters use a substring candidate index; shorter searches scan cached names.
+503 without refreshing it. Its results also contain `typeContextRevision`; pass
+that value as `typeContextRevision` whenever continuing pagination with
+`offset` greater than zero. If the type context has changed, the request returns
+409 and pagination should restart at offset zero. Derived lookup indexes are
+scoped to the current model snapshot/revision and discarded with it. Name
+searches of at least three characters use a substring candidate index; shorter
+searches scan cached names.
 
 ### What descriptions, keywords, priorities, and prompts do
 

@@ -11,8 +11,8 @@ from starlette.requests import Request
 
 from i3x_server.api.mcp.monolithic import router
 from i3x_server.api.v1.contracts import ObjectTypeResponse
-from i3x_server.api.v1.objecttype_helpers import _ObjectTypeContext
-from i3x_server.application.ports.opcua import OpcUaObjectTypeInfo
+from i3x_server.api.v1.objecttype_helpers import _object_type_context_revision, _ObjectTypeContext
+from i3x_server.application.ports.opcua import OpcUaNamespaceInfo, OpcUaObjectTypeInfo
 from i3x_server.mcp import build_mcp_tools, invoke_mcp_tool
 from i3x_server.mcp.model_access import MCP_MODEL_ACCESS_SCHEMAS, invoke_model_access_tool
 from i3x_server.mcp.model_tools import _validate_model_tool_arguments
@@ -95,6 +95,7 @@ def context() -> _ObjectTypeContext:
             for index, (info, element_id) in enumerate(zip(infos, ids, strict=True), 1)
         ],
         source_type_to_element_id={},
+        revision="type-context-v1",
     )
 
 
@@ -133,6 +134,9 @@ def test_invalid_parent_chains_fail_explicitly(model: BuildResult, parent: str) 
     with pytest.raises(HTTPException) as exc:
         invoke_model_access_tool(model, "getBrowsePath", {"elementId": "temp"})
     assert exc.value.status_code == 500
+    with pytest.raises(HTTPException) as exc:
+        invoke_model_access_tool(model, "resolveBrowsePath", {"path": "Machines"})
+    assert exc.value.status_code == 500
 
 
 def test_paths_support_deep_models_without_recursion(model: BuildResult) -> None:
@@ -148,6 +152,13 @@ def test_paths_support_deep_models_without_recursion(model: BuildResult) -> None
         invoke_model_access_tool(model, "resolveBrowsePath", {"segments": result["segments"]})["elementId"]
         == "deep-1099"
     )
+    access_index = model._model_access_index_cache
+    assert access_index is not None
+    path_children = access_index.path_children
+    assert path_children is not None
+    assert sum(len(children) for by_name in path_children.values() for children in by_name.values()) == len(
+        model.nodes_by_id
+    )
 
 
 def test_type_instances_are_deduplicated_sorted_and_subtype_aware(
@@ -156,6 +167,7 @@ def test_type_instances_are_deduplicated_sorted_and_subtype_aware(
     result = invoke_model_access_tool(model, "getInstancesOfType", {"typeElementId": "type-base", "limit": 2}, context)
     assert result == {
         "modelRevision": model_revision(model),
+        "typeContextRevision": context.revision,
         "total": 3,
         "returned": 2,
         "offset": 0,
@@ -166,9 +178,12 @@ def test_type_instances_are_deduplicated_sorted_and_subtype_aware(
         model, "getInstancesOfType", {"typeElementId": "type-base", "includeSubtypes": False}, context
     )
     assert direct["items"] == [["station-a", "Station"]]
-    assert invoke_model_access_tool(model, "getInstancesOfType", {"typeElementId": "type-base", "offset": 2}, context)[
-        "items"
-    ] == [["station-b", "Station"]]
+    assert invoke_model_access_tool(
+        model,
+        "getInstancesOfType",
+        {"typeElementId": "type-base", "offset": 2, "typeContextRevision": context.revision},
+        context,
+    )["items"] == [["station-b", "Station"]]
     empty = invoke_model_access_tool(model, "getInstancesOfType", {"typeElementId": "type-empty"}, context)
     assert empty["items"] == [] and empty["total"] == 0
     with pytest.raises(HTTPException) as exc:
@@ -197,6 +212,43 @@ def test_type_cycle_fails_and_context_replacement_rebuilds_indexes(
     assert exc.value.status_code == 500
 
 
+def test_type_instance_pagination_rejects_changed_context(model: BuildResult, context: _ObjectTypeContext) -> None:
+    first_page = invoke_model_access_tool(
+        model, "getInstancesOfType", {"typeElementId": "type-base", "limit": 1}, context
+    )
+    replacement = _ObjectTypeContext(
+        namespace_infos=context.namespace_infos,
+        object_types=context.object_types,
+        element_ids_by_node_id=context.element_ids_by_node_id,
+        items=context.items,
+        source_type_to_element_id=context.source_type_to_element_id,
+        revision="type-context-v2",
+    )
+    with pytest.raises(HTTPException) as exc:
+        invoke_model_access_tool(
+            model,
+            "getInstancesOfType",
+            {
+                "typeElementId": "type-base",
+                "offset": 1,
+                "typeContextRevision": first_page["typeContextRevision"],
+            },
+            replacement,
+        )
+    assert exc.value.status_code == 409
+
+
+def test_type_context_revision_covers_ancestry_and_aliases(context: _ObjectTypeContext) -> None:
+    original = _object_type_context_revision(context)
+    context.object_types[1].parent_node_id = "ns=2;i=3"
+    changed_ancestry = _object_type_context_revision(context)
+    context.source_type_to_element_id["nsu=urn:types;i=999"] = "type-base"
+    changed_aliases = _object_type_context_revision(context)
+
+    assert changed_ancestry != original
+    assert changed_aliases != changed_ancestry
+
+
 def test_type_aliases_and_index_only_instances(model: BuildResult, context: _ObjectTypeContext) -> None:
     context.source_type_to_element_id["nsu=urn:types;s=base"] = "type-base"
     model.nodes_by_id["other"].source_type_id = "nsu=urn:types;s=base"
@@ -210,6 +262,39 @@ def test_type_aliases_and_index_only_instances(model: BuildResult, context: _Obj
         ["station-a", "Station"],
         ["station-b", "Station"],
     ]
+
+
+def test_inferred_type_instance_lookup_normalizes_indexed_source_id(
+    model: BuildResult, context: _ObjectTypeContext
+) -> None:
+    inferred_item = ObjectTypeResponse(
+        elementId="type-inferred",
+        displayName="Inferred",
+        namespaceUri="urn:vendor",
+        sourceTypeId="nsu=urn:vendor;i=9001",
+        schema={},
+    )
+    context.namespace_infos = [
+        OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/", display_name="UA"),
+        OpcUaNamespaceInfo(uri="urn:unused", display_name="Unused"),
+        OpcUaNamespaceInfo(uri="urn:vendor", display_name="Vendor"),
+    ]
+    context.items.append(inferred_item)
+    context.source_type_to_element_id[inferred_item.sourceTypeId] = inferred_item.elementId
+    inferred_instance = ModelNode(
+        id="inferred-instance",
+        name="Inferred instance",
+        kind="asset",
+        source_node_id="inferred-instance-source",
+        source_type_id="ns=2;i=9001",
+    )
+    model.nodes_by_id[inferred_instance.id] = inferred_instance
+    model.instances_by_type_id["ns=2;i=9001"] = [inferred_instance.id]
+    model.revision = ""
+
+    result = invoke_model_access_tool(model, "getInstancesOfType", {"typeElementId": "type-inferred"}, context)
+
+    assert result["items"] == [["inferred-instance", "Inferred instance"]]
 
 
 @pytest.mark.parametrize(
@@ -348,6 +433,7 @@ def test_path_and_type_lookups_reuse_indexes_without_scanning_nodes(
         ("getChildren", {"elementId": "root", "offset": -1}),
         ("getChildren", {"elementId": "root", "limit": 101}),
         ("getChildren", {"elementId": "root", "unexpected": True}),
+        ("getInstancesOfType", {"typeElementId": "type-base", "offset": 1}),
         ("getCompositionProperties", {"elementIds": []}),
         ("getCompositionProperties", {"elementIds": ["root"] * 51}),
         ("getCompositionProperties", {"elementIds": [False]}),

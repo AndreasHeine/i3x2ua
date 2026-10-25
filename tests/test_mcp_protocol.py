@@ -53,6 +53,12 @@ def test_version_negotiation_and_ping(protocol_client: TestClient) -> None:
     assert result["protocolVersion"] == "2025-06-18"
     assert "roots" not in result["capabilities"]
     assert result["instructions"]
+    assert "getInfoV1 describes this i3X gateway" in result["instructions"]
+    assert "never label an i3X ElementId as an OPC UA NodeId" in result["instructions"]
+    assert "never claim the remote address space is complete" in result["instructions"]
+    assert "Classify each request as OPC UA endpoint, i3X mapped-model, or mixed analysis" in result["instructions"]
+    assert "i3x://guides/opcua-analysis" in result["instructions"]
+    assert "separately labeled fields" in result["instructions"]
     assert rpc(protocol_client, "ping")["result"] == {}
 
 
@@ -66,6 +72,20 @@ def test_standard_prompt_and_resource_contracts(protocol_client: TestClient) -> 
     assert invalid["error"]["code"] == -32602
     assert rpc(protocol_client, "resources/templates/list")["result"] == {"resourceTemplates": []}
     assert rpc(protocol_client, "roots/list")["error"]["code"] == -32601
+
+
+def test_analysis_guides_are_listed_and_readable(protocol_client: TestClient) -> None:
+    resources = rpc(protocol_client, "resources/list")["result"]["resources"]
+    by_uri = {resource["uri"]: resource for resource in resources}
+    opcua_uri = "i3x://guides/opcua-analysis"
+    i3x_uri = "i3x://guides/i3x-model-analysis"
+    assert by_uri[opcua_uri]["mimeType"] == "text/markdown"
+    assert by_uri[i3x_uri]["mimeType"] == "text/markdown"
+
+    opcua_content = rpc(protocol_client, "resources/read", {"uri": opcua_uri})["result"]["contents"][0]
+    i3x_content = rpc(protocol_client, "resources/read", {"uri": i3x_uri})["result"]["contents"][0]
+    assert "source NodeId returned or resolved" in opcua_content["text"]
+    assert "exact i3X ElementId returned by the tool" in i3x_content["text"]
 
 
 def test_http_contracts(protocol_client: TestClient) -> None:

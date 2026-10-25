@@ -2,67 +2,67 @@
   "$schema": "./schema.json",
   "tools": {
     "getObjectsV1": {
-      "description": "DISCOVERY: Start unknown-asset searches here. MCP defaults to root=true and returns at most 50 compact objects; follow pagination.nextOffset with the same filters if needed. Explicitly set root=false only when the user requests full-model enumeration. Then navigate from returned elementIds with queryRelatedObjectsV1. Never guess typeElementId values such as \"plc\"; filter only with an exact known type ID.",
+      "description": "DISCOVERY: Start unknown-asset searches here. MCP defaults to root=true and limit=50 (maximum 500); follow pagination.nextOffset with the same filters until there is no next page when the requested mapped-model scope must be enumerated. Results contain i3X ElementIds and display names and describe the i3X-mapped model, not necessarily every node on the upstream OPC UA server. Do not call these OPC UA NodeIds; use resolveElementIdsToNodeIds for source NodeIds and getBrowsePath for a mapped browse path. Set root=false only when the user explicitly requests full mapped-model enumeration. Navigate from returned ElementIds with queryRelatedObjectsV1. Never guess typeElementId values such as \"plc\"; filter only with an exact known type ID. State the enumerated scope and disclose truncation or unavailable coverage; never claim the remote address space is complete from this listing.",
       "priority": "high",
       "keywords": ["discover assets", "root assets", "entry point"]
     },
     "queryRelatedObjectsV1": {
-      "description": "NAVIGATION: Follow relationships from one or a few real elementIds returned by discovery. MCP returns at most 50 related objects per source; use body.offset with the same elementIds to continue. Follow only the relevant branch to connected equipment, components, properties, Memory, or DataBlocks. Leave relationshipType unset unless its exact value is known. Not a full-model search.",
+      "description": "NAVIGATION: Follow hierarchy, composition, and graph relationships from one or a few discovered i3X ElementIds. MCP defaults to 50 related objects per source (maximum 500); use body.offset with the same elementIds until there is no nextOffset. Results are mapped objects, not OPC UA NodeIds; use resolveElementIdsToNodeIds for source IDs. Follow only the relevant branch to connected equipment, components, properties, Memory, or DataBlocks. Leave relationshipType unset unless its exact value is known. This navigates the i3X-mapped model, not the full upstream OPC UA address space; report the scope actually traversed.",
       "priority": "high",
       "keywords": ["navigate", "related equipment", "components", "properties", "variables", "relationships", "children"]
     },
     "queryLastKnownValuesV1": {
-      "description": "READ CURRENT VALUES only after discovering the target property's exact elementId. Batch only a few relevant property IDs and use maxDepth=1. Do not read container objects that have no value. To read many properties under one known container without generating a long ID array, use readContainerValues. History is a separate tool.",
+      "description": "READ CURRENT VALUES only after discovering the target property's exact i3X ElementId; do not pass an OPC UA NodeId here. Batch only a few relevant property IDs and use maxDepth=1. Do not read container objects that have no value. To read many properties under one known container without generating a long ID array, use readContainerValues. History is a separate tool. Preserve value, quality, and source timestamp; a last-known value may be stale.",
       "priority": "high",
       "keywords": ["current value", "latest value", "read signal", "value", "quality", "timestamp"]
     },
     "readContainerValues": {
-      "description": "READ MANY CURRENT VALUES under one discovered container in one short tool call. Pass the exact containerId from discovery/navigation; the server finds descendant properties and reads at most 50 per page (default 50). Continue with offset when nextOffset is returned. Do not use on a plant root or broad asset unless the user requests all its values. Returns each property's name, ID, value, quality, and timestamp; it does not read container values or history.",
+      "description": "READ MANY CURRENT VALUES under one discovered container in one short tool call. Pass the exact containerId from discovery/navigation; the server finds descendant properties and reads up to 50 per page (50 maximum). When nextOffset is returned, pass it as offset to continue. Do not use on a plant root or broad asset unless the user requests all its values. Returns each property's name, ID, value, quality, and timestamp; it does not read container values or history.",
       "priority": "high",
       "keywords": ["read container values", "memory variables", "many signals", "bulk current values", "datablock values"]
     },
     "queryHistoricalValuesV1": {
-      "description": "READ HISTORY only when the user explicitly asks for a trend or past values. Supply known elementIds and a narrow startTime/endTime interval; use maxDepth=1 unless component history is specifically needed. MCP returns 100 samples per page; use body.offset to continue. For current state use queryLastKnownValuesV1.",
+      "description": "READ HISTORY only when the user asks for past values or a trend. Supply discovered i3X ElementIds (not OPC UA NodeIds) and a narrow startTime/endTime interval; use maxDepth=1 unless component history is needed. MCP defaults to 100 samples per page (maximum 500). Continue with body.offset using each successful result's result.pagination.nextOffset until that result has no nextOffset. A successful model lookup or history-capability declaration does not prove that a variable has stored history; inspect per-item failures. For current state use queryLastKnownValuesV1.",
       "priority": "normal",
       "keywords": ["history", "trend", "past values", "time range", "historical samples"]
     },
     "listObjectsByIdV1": {
-      "description": "Fetch specific objects by exact elementIds already returned by discovery or navigation. Keep the ID list narrow. Do not use this to discover assets or enumerate the model; start unknown searches with getObjectsV1(root=true).",
+      "description": "Fetch specific objects by exact i3X ElementIds already returned by discovery or navigation. Keep the ID list narrow. This is a lookup, not discovery; start unknown asset searches with getObjectsV1(root=true). Use getElementContext and resolveElementIdsToNodeIds when model context and source NodeId evidence are needed. A missing mapped result does not prove the node is absent from the remote OPC UA address space.",
       "priority": "normal",
       "keywords": ["object details", "known elementId", "fetch object", "lookup"]
     },
     "getInfoV1": {
-      "description": "Return server version and capabilities. Use only for a server-information question regarding i3X, not to discover industrial assets or inspect model contents.",
-      "priority": "normal",
-      "keywords": ["server info", "version", "capabilities", "i3x"]
+      "description": "GATEWAY INFO: Return metadata about this i3X API gateway, including its i3X version and capabilities. This is not the connected OPC UA server's product name, software version, or ServerStatus. For upstream server status use getUaStatus; for this gateway's connection state and configured endpoint use getUaConnection. For model-reported server identity, inspect a mapped OPC UA Server object instance whose type is the standard ServerType (ns=0;i=2004), then inspect its ServerStatus property. If it is absent from the mapped model, do not infer that the upstream server lacks it; use getUaStatus for a direct ServerStatus read.",
+      "priority": "low",
+      "keywords": ["i3x gateway info", "gateway version", "gateway capabilities"]
     },
     "getModelMetricsV1": {
-      "description": "Return aggregate model metrics. Use for counts or model-size questions; do not list objects just to count them. This does not identify individual assets or values.",
-      "priority": "normal",
+      "description": "Return aggregate counts and build/topology metrics for the current i3X-mapped model snapshot. Use for mapped-model size questions instead of listing objects just to count them. These are not remote-server totals and do not establish complete address-space coverage or capabilities. Label counts as mapped-model counts.",
+      "priority": "low",
       "keywords": ["model metrics", "model counts", "object count", "model size"]
     },
     "getModelNamespaceGapsV1": {
-      "description": "Report namespace mapping gaps. Use only to diagnose incomplete OPC UA namespace mapping, not for asset discovery or ordinary value lookup.",
+      "description": "Report gaps in mapping OPC UA namespace metadata into the current i3X model. Use only for mapping diagnostics. This does not discover assets or establish that unmapped remote nodes are absent.",
       "priority": "low",
       "keywords": ["namespace gaps", "mapping diagnostics", "missing namespace mapping"]
     },
     "getNamespacesV1": {
-      "description": "ADVANCED: List OPC UA namespaces only when the user asks about namespaces or when a specific mapping issue must be diagnosed. Do not start asset discovery here; use getObjectsV1(root=true). Namespace output may be lengthy.",
+      "description": "ADVANCED: List OPC UA namespace URIs reported by the connected upstream server, only when asked about namespaces or diagnosing a mapping issue. Namespace presence does not prove companion-specification conformance, node coverage, or support for every feature in that namespace. Do not start asset discovery here; use getObjectsV1(root=true). Namespace output may be lengthy.",
       "priority": "low",
       "keywords": ["namespace", "OPC UA namespace", "namespace mapping"]
     },
     "getObjectTypesV1": {
-      "description": "ADVANCED SCHEMA LOOKUP: Use only for explicit type/schema questions, not asset discovery. MCP returns compact type summaries in pages of 50; use pagination.nextOffset to continue and queryObjectTypesV1 for a selected schema. Find assets first with getObjectsV1(root=true), then navigate.",
+      "description": "ADVANCED SCHEMA LOOKUP: Use only for explicit type/schema questions, not asset discovery. MCP defaults to compact type summaries in pages of 50 (maximum 500); use pagination.nextOffset to continue and queryObjectTypesV1 for a selected schema. The catalog may include synthesized model types and is not a feature-support checklist. Find assets first with getObjectsV1(root=true), then navigate.",
       "priority": "low",
       "keywords": ["object type schema", "types", "type catalog", "model schema"]
     },
     "queryObjectTypesV1": {
-      "description": "Look up type schemas for exact elementIds when type details are required. Prefer a narrow lookup over getObjectTypesV1, which lists all types. Not for asset discovery or reading values.",
+      "description": "Look up type schemas for exact discovered type elementIds when type details are required. Prefer a narrow lookup over getObjectTypesV1, which lists the mapped type catalog. A type definition or namespace is not proof that all instances/features are present or conformant. Not for asset discovery or reading values.",
       "priority": "normal",
       "keywords": ["specific type schema", "known elementId", "object type details"]
     },
     "getRelationshipTypesV1": {
-      "description": "ADVANCED: Use only when the user asks for relationship vocabulary or a relationship name is needed but unavailable from navigation results. MCP returns compact entries in pages of 50; continue with pagination.nextOffset. Do not call before asset discovery.",
+      "description": "ADVANCED: Use only when the user asks for relationship vocabulary or a relationship name is needed but unavailable from navigation results. MCP defaults to compact entries in pages of 50 (maximum 500); continue with pagination.nextOffset. This returns i3X relationships and mapped graph relationship types, not every OPC UA ReferenceType. Do not call before asset discovery.",
       "priority": "low",
       "keywords": ["relationship type catalog", "relationship vocabulary", "relationship names"]
     },
@@ -72,52 +72,52 @@
       "keywords": ["specific relationship types", "known elementId", "relationship schema"]
     },
     "getUaStatus": {
-      "description": "Return OPC UA gateway status. Use only for a gateway health/status question; it does not describe connected industrial assets.",
-      "priority": "normal",
-      "keywords": ["OPC UA status", "gateway health", "connection state"]
+      "description": "UPSTREAM OPC UA SERVER: Directly read the standard ServerStatus variable from the connected remote endpoint (NodeId i=2256; Objects/Server/ServerStatus). This is remote-server status, not i3X gateway health. Prefer this when ServerStatus is requested but the mapped Server object/property is absent. Report returned fields as-is; a failed read does not prove the standard node is unsupported.",
+      "priority": "low",
+      "keywords": ["OPC UA server status", "remote server status", "ServerStatus"]
     },
     "getUaConnection": {
-      "description": "Return OPC UA connection details such as endpoint and connection age. Use for connectivity questions, not to identify PLCs represented in the information model.",
-      "priority": "normal",
+      "description": "GATEWAY CONNECTION: Return this i3X gateway's OPC UA client connection snapshot: state, configured remote endpoint URI, and time in that state. This describes the gateway-to-server link; it does not identify the remote server's product/version, uptime, or supported features. If only connectivity is known and ServerStatus could not be read, report this as connection evidence, not remote-server identity.",
+      "priority": "low",
       "keywords": ["OPC UA connection", "endpoint", "connectivity"]
     },
     "getUaLimits": {
-      "description": "Return OPC UA operational and subscription limits. Use only for capacity or protocol-limit questions.",
+      "description": "UPSTREAM CONNECTION LIMITS: Return the operational limits and subscription capability values reported by the connected OPC UA server through this gateway. Use for questions about these specific limits. Null or absent limits are unknown; listed limits do not establish full OPC UA specification conformance or unrelated feature support.",
       "priority": "low",
       "keywords": ["OPC UA limits", "capacity", "subscription limits"]
     },
     "getUaMetrics": {
-      "description": "Return OPC UA request and performance metrics. Use only for load, latency, or runtime-performance questions.",
+      "description": "GATEWAY CLIENT METRICS: Return OPC UA request counters observed by this i3X gateway client, including reads, writes, browses, history operations, and failures. These are gateway-observed counters, not server-wide diagnostics or proof that the remote server supports every counted operation.",
       "priority": "low",
       "keywords": ["OPC UA metrics", "latency", "performance", "load"]
     },
     "createSubscriptionV1": {
-      "description": "Create a value-monitoring subscription only when the user asks for ongoing monitoring. First discover the relevant property elementIds; subscribe only to those signals.",
-      "priority": "normal",
+      "description": "STATE-CHANGING: Create an ongoing value-monitoring subscription only when explicitly requested. First discover the exact property i3X ElementIds and select only relevant signals; do not use for one-time reads or infer that a subscription proves general server PubSub support. This creates gateway-managed monitoring state.",
+      "priority": "low",
       "keywords": ["create subscription", "monitor continuously", "subscribe to signal"]
     },
     "registerMonitoredItemsV1": {
-      "description": "Add known property elementIds to an existing subscription when ongoing monitoring is requested. Do not register container objects or guess IDs.",
-      "priority": "normal",
+      "description": "STATE-CHANGING: Add exact, previously discovered property i3X ElementIds to an existing gateway-managed subscription when explicitly requested. Do not pass OPC UA NodeIds, containers, or guessed IDs. This changes which values the subscription monitors; use queryLastKnownValuesV1 for a one-time read.",
+      "priority": "low",
       "keywords": ["add monitored signal", "register monitored item", "subscription"]
     },
     "removeMonitoredItemsV1": {
-      "description": "Remove specified monitored items from a subscription when requested. Use exact item IDs; do not use for reading values.",
-      "priority": "normal",
+      "description": "STATE-CHANGING: Remove specified monitored items from an existing subscription only when explicitly requested. Use the exact subscription and monitored-item identifiers from context; this stops those monitored updates and does not read values.",
+      "priority": "low",
       "keywords": ["remove monitored item", "unregister signal", "subscription"]
     },
     "syncSubscriptionV1": {
-      "description": "Fetch and acknowledge pending subscription updates when the user asks to sync or retrieve updates. Not for one-time current-value reads; use queryLastKnownValuesV1 for those.",
+      "description": "FETCH AND ACKNOWLEDGE: Retrieve pending updates for the identified gateway-managed subscription. Acknowledge only after the updates have been successfully retrieved and processed; do not acknowledge updates you have not incorporated into the answer/workflow. This is not a one-time current-value read; use queryLastKnownValuesV1 for that.",
       "priority": "low",
       "keywords": ["sync subscription", "pending updates", "subscription data"]
     },
     "deleteSubscriptionsV1": {
-      "description": "Delete specified subscriptions only when the user explicitly asks to stop/remove them. Confirm the target subscription IDs from context; this changes monitoring state.",
+      "description": "DESTRUCTIVE STATE CHANGE: Delete only the exact gateway-managed subscription IDs the user explicitly asked to stop/remove. Verify the target IDs from context first; deletion stops that subscription's monitoring. This does not delete an OPC UA server-side subscription outside this gateway's management.",
       "priority": "low",
       "keywords": ["delete subscription", "stop monitoring", "remove subscription"]
     },
     "listSubscriptionsV1": {
-      "description": "List or inspect subscriptions when the user asks about monitoring configuration or status. This does not discover industrial assets or read model values.",
+      "description": "List gateway-managed subscriptions to inspect their configuration/status when asked. This is not a complete inventory of every subscription or monitored item on the remote OPC UA server, and it does not discover assets or read current model values.",
       "priority": "low",
       "keywords": ["list subscriptions", "monitoring status", "subscription details"]
     }
@@ -126,7 +126,12 @@
     "industrial_discovery_workflow": {
       "description": "Find assets and answers using the smallest safe discovery path",
       "inputs": ["question"],
-      "template": "Answer this industrial-model question: {{question}}\n\nWorkflow:\n1. For an unknown asset, call getObjectsV1 with root=true. Never call getObjectsV1({}) or enumerate the full model.\n2. Identify the matching top-level asset from its name and returned details. Do not guess typeElementId or elementIds.\n3. Navigate only the relevant branch with queryRelatedObjectsV1 using returned elementIds. Repeat only when the target is deeper.\n4. For one or a few current values, find the named property and call queryLastKnownValuesV1 with exact elementIds and maxDepth=1. For many values under one known container, call readContainerValues with its exact containerId; do not generate a long ID array. Do not read container values.\n5. Use queryHistoricalValuesV1 only when history/trend is explicitly requested, with a narrow time interval.\n6. Avoid namespace/type catalogs unless the question explicitly concerns schemas or mapping.\n\nReturn the answer and identify missing data rather than broadening to a full-model scan."
+      "template": "Answer this industrial-model question: {{question}}\n\nKeep evidence sources distinct: getInfoV1 describes this i3X gateway; getUaStatus reads ServerStatus from the upstream OPC UA endpoint; getUaConnection describes the gateway's connection to that endpoint; model tools describe only the mapped model. Never infer remote product/version/features from gateway metadata, mapped-model counts, namespace names, or request counters.\n\nBefore drafting, maintain a compact evidence ledger: claim; exact tool result; scope; i3X ElementId; OPC UA source NodeId and mapped path if returned; evidence class (direct read, mapped-model presence, declared capability, or unknown). Do not cite an ID/path unless it was returned or resolved. Never label an i3X ElementId as an OPC UA NodeId.\n\nChoose tools by purpose: getObjectsV1(root=true) for unknown top-level assets; queryRelatedObjectsV1 to navigate known IDs; findElementsByName for display-name substrings; searchModelElements for focused metadata/type/role/namespace/relationship searches; getElementContext for one known element; getChildren for direct children on a selected plane; getCompositionProperties for recursive composition properties without values. Use getBrowsePath for mapped display paths and resolveElementIdsToNodeIds for source NodeIds. Do not make unfiltered searches expecting exhaustive results.\n\nFor values, first discover exact i3X property ElementIds. Use queryLastKnownValuesV1(maxDepth=1) for a few current values, readContainerValues for many descendant values under one known focused container, and queryHistoricalValuesV1 only for requested history. Check each item's success/error; preserve value, quality, timestamp, and state that last-known values may be stale. A history declaration does not prove stored history for a particular variable; a model action/alarm/property does not prove it is operational or safe to use.\n\nIf the user asks for \"all\", paginate to completion within each relevant tool's scope and report the scope, page completion, failures, and truncation. Clearly say \"all items returned in the i3X-mapped model\" when that is the scope; do not claim complete remote address-space coverage unless directly established. A namespace or type does not prove companion-specification conformance. Do not infer implementation library/version, writable control behavior, active alarms, or MES readiness without direct evidence.\n\nFinish every requested section or label it incomplete and explain why. Separate observations from recommendations; make recommendations conditional on evidence. Do not fill gaps with assumptions or silently convert failed lookups into absence."
+    },
+    "opcua_endpoint_analysis": {
+      "description": "Analyze the connected upstream OPC UA endpoint without confusing it with the i3X gateway or overclaiming specification support",
+      "inputs": ["question"],
+      "template": "Answer this upstream OPC UA endpoint question: {{question}}\n\nUse an evidence ledger for each factual claim: tool and exact returned field; evidence class (direct read, mapped-model presence, declared capability, or unknown); i3X ElementId; OPC UA source NodeId/path only if returned or resolved. Never substitute an ElementId, type NodeId, or guessed browse path for the instance's source NodeId.\n\nKeep sources separate: getInfoV1 is i3X gateway metadata; getUaStatus directly reads upstream ServerStatus (NodeId i=2256); getUaConnection is the gateway-to-endpoint connection state/URI; model searches, namespaces, types, and metrics cover only what is mapped or observed. None alone proves complete remote address-space visibility or overall feature support.\n\nFor Server identity, search the mapped model for a candidate Server object; inspect it with getElementContext and verify standard ServerType (NodeId i=2004) from returned source-type metadata. A name match is insufficient. Resolve source NodeIds with resolveElementIdsToNodeIds. If the verified mapped ServerStatus property exists and its value is requested, read its exact discovered i3X ElementId. If it is absent or unmapped, call getUaStatus; a failed call is not proof the standard node is unsupported. Use getUaConnection only as narrower evidence if the question is connectivity, never as remote identity evidence.\n\nFor \"all\" requests, paginate to completion within each tool's scope and label that scope; do not equate a complete mapped-model inventory with the complete remote server. Namespace presence, type definitions, action nodes, dictionary entries, or capability declarations do not establish conformance or successful operation. Do not infer implementation version, active alarms, per-variable history availability, writable control behavior, or MES readiness without direct evidence. State failed, missing, truncated, and unknown results explicitly. Finish requested sections or identify any incomplete section and why."
     },
     "inspect_asset": {
       "description": "Inspect one named asset and report its relevant structure or requested properties",

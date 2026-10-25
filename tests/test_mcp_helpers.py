@@ -172,6 +172,16 @@ def test_build_mcp_tools_and_api_prefix_from_openapi() -> None:
     assert tools["readContainerValues"].input_schema["properties"]["limit"]["maximum"] == 50
     assert tools["readContainerValues"].annotations["readOnlyHint"] is True
     assert tools["readContainerValues"].annotations["destructiveHint"] is False
+    assert "[i3X ElementId, display name]" in tools["getChildren"].description
+    assert "omitting text may return an arbitrary first page" in tools["searchModelElements"].description
+    assert (
+        "arbitrary first page"
+        in tools["searchModelElements"].input_schema["properties"]["text"]["description"]
+    )
+    assert (
+        "composition for components"
+        in tools["getChildren"].input_schema["properties"]["plane"]["description"]
+    )
     assert all(
         tools[name].annotations["readOnlyHint"]
         for name in (

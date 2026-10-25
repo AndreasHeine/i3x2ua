@@ -61,20 +61,33 @@ MCP_MODEL_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "text": {
                 "type": "string",
                 "description": (
-                    "Case-insensitive substring across cached names and metadata. "
-                    "When omitted, returns the first page of the model."
+                    "Focused case-insensitive substring search across cached names and metadata; useful terms "
+                    "include ServerStatus, Server, or an exact/partial asset name. Combine with exact filters "
+                    "when known. Omitting text returns an arbitrary first page, not a meaningful search."
                 ),
             },
-            "kind": {"type": "string", "enum": ["asset", "property", "action", "eventSource"]},
+            "kind": {
+                "type": "string",
+                "enum": ["asset", "property", "action", "eventSource"],
+                "description": "Filter by mapped model element kind.",
+            },
             "semanticRole": {
                 "type": "string",
                 "enum": ["asset", "group", "component", "datapoint", "property", "unknown"],
+                "description": "Filter by i3X semantic role; this is model classification, not an OPC UA NodeClass.",
             },
-            "namespaceUri": {"type": "string"},
-            "typeElementId": {"type": "string"},
-            "mappingConfidence": {"type": "string", "enum": ["high", "medium", "low"]},
-            "appliedProfileId": {"type": "string"},
-            "relationshipType": {"type": "string"},
+            "namespaceUri": {"type": "string", "description": "Filter by exact namespace URI in the mapped model."},
+            "typeElementId": {"type": "string", "description": "Filter by an exact discovered typeElementId."},
+            "mappingConfidence": {
+                "type": "string",
+                "enum": ["high", "medium", "low"],
+                "description": "Filter by the mapping confidence assigned by this gateway.",
+            },
+            "appliedProfileId": {"type": "string", "description": "Filter by an exact applied i3X profile ID."},
+            "relationshipType": {
+                "type": "string",
+                "description": "Filter by an exact mapped relationship type.",
+            },
             "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 25},
             "offset": {"type": "integer", "minimum": 0, "default": 0},
         },
@@ -83,7 +96,11 @@ MCP_MODEL_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     "getElementContext": {
         "type": "object",
         "properties": {
-            "elementId": {"type": "string", "minLength": 1},
+            "elementId": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Exact discovered i3X ElementId; this is not an OPC UA NodeId.",
+            },
             "ancestorDepth": {"type": "integer", "minimum": 0, "maximum": 32, "default": 3},
             "childLimit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100},
             "relationshipLimit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100},
@@ -97,7 +114,11 @@ MCP_MODEL_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     "summarizeSubtree": {
         "type": "object",
         "properties": {
-            "rootElementId": {"type": "string", "minLength": 1},
+            "rootElementId": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Exact discovered i3X ElementId for the mapped-model branch to summarize.",
+            },
             "maxDepth": {"type": "integer", "minimum": 0, "maximum": 32, "default": 4},
             "includeHierarchy": {"type": "boolean", "default": True},
             "includeComposition": {"type": "boolean", "default": True},

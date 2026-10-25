@@ -414,52 +414,67 @@ def build_mcp_tools(
     )
     model_tool_descriptions = {
         "resolveBrowsePath": (
-            "Resolve an exact root-inclusive path of cached display names to one element. "
-            "Pass path or segments (for names containing '/'). Duplicate paths return 409. No live OPC UA calls."
+            "Resolve an exact root-inclusive display-name path in the cached i3X-mapped model to one element. "
+            "Pass path or segments (for names containing '/'). Duplicate paths return 409. No live OPC UA browse."
         ),
         "getBrowsePath": (
-            "Get an element's canonical root-inclusive path and segments from cached hierarchy/composition parents. "
-            "No live OPC UA calls."
+            "Get a discovered element's canonical root-inclusive display-name path and segments from cached "
+            "hierarchy/composition parents. Use resolveElementIdsToNodeIds for its OPC UA source NodeId. "
+            "This is a cached mapping, not a live browse."
         ),
         "getInstancesOfType": (
-            "List cached object instances of a typeElementId, including subtypes by default. "
+            "List instances of a discovered typeElementId in the current cached i3X model, "
+            "including subtypes by default. "
             "Requires the revision-matched cached type context; never browses OPC UA. "
-            "Paginated [elementId, name] pairs."
+            "Returns paginated [elementId, name] pairs; this is not a live query of every remote server instance."
         ),
         "getChildren": (
-            "List direct cached children on hierarchy (default), composition, or outgoing graph plane. "
-            "Paginated [elementId, name] pairs without metadata or values; no live OPC UA calls."
+            "List direct children of one discovered element in the cached i3X model. Choose hierarchy (default) "
+            "for hierarchy children, composition for components, or graph for outgoing mapped relationships. "
+            "Returns paginated [i3X ElementId, display name] pairs only; use getElementContext for metadata or "
+            "resolveElementIdsToNodeIds for source NodeIds. No live OPC UA browse."
         ),
         "getCompositionProperties": (
-            "List all recursive composition properties beneath up to 50 cached objects, without values. "
-            "offset/limit apply independently to each object's properties. No hierarchy traversal or live OPC UA calls."
+            "List recursive descendant properties by composition only beneath up to 50 discovered i3X object "
+            "ElementIds; this does not traverse hierarchy or read values. offset/limit apply independently to each "
+            "object. Results cover the cached mapped model, not necessarily every remote variable."
         ),
         "findElementsByName": (
-            "Find cached elements by case-insensitive display-name substring only. "
-            "Returns paginated [elementId, name] pairs; no live OPC UA calls."
+            "Find cached mapped elements by case-insensitive display-name substring only. Use searchModelElements "
+            "for IDs, metadata, types, roles, namespaces, profiles, or relationships. Returns paginated "
+            "[i3X ElementId, display name] pairs; no live OPC UA calls."
         ),
         "findElementsByNamespace": (
-            "List cached elements belonging to an exact namespace URI as paginated [elementId, name] pairs. "
-            "No live OPC UA calls."
+            "List cached mapped elements belonging to an exact namespace URI as paginated "
+            "[i3X ElementId, display name] pairs. Namespace membership does not prove companion-specification "
+            "conformance. No live OPC UA calls."
         ),
         "findElementsByRole": (
-            "List cached elements of one semantic role as paginated [elementId, name] pairs. No live OPC UA calls."
+            "List cached mapped elements of one exact i3X semantic role (asset, group, component, datapoint, "
+            "property, or unknown) as paginated [i3X ElementId, display name] pairs. This is not an OPC UA "
+            "NodeClass filter. No live OPC UA calls."
         ),
         "resolveElementIdsToNodeIds": (
-            "Resolve cached i3X ElementIds to their OPC UA NodeIds and ExpandedNodeIds. "
-            "Uses only the current cached model and never contacts the OPC UA server."
+            "Translate exact discovered i3X ElementIds to their source OPC UA NodeIds and, when available, "
+            "ExpandedNodeIds. This maps cached identities; it does not verify live node existence or read values."
         ),
         "resolveNodeIdsToElementIds": (
-            "Resolve standard or expanded OPC UA NodeIds to cached i3X ElementIds. "
-            "Uses only the current cached model and never contacts the OPC UA server."
+            "Translate standard or expanded OPC UA NodeIds to matching cached i3X ElementIds. A missing match "
+            "means the node is not in this mapped model, not necessarily absent from the remote address space."
         ),
         "searchModelElements": (
-            "Search the cached model by name, ID, type, semantic role, namespace, profile, or relationship. "
-            "Returns matching element IDs and compact semantic context."
+            "Search only the current cached i3X-mapped model by name, ID, type, semantic role, namespace, profile, "
+            "or relationship. Use this for metadata/type/role searches; use findElementsByName for display-name-only "
+            "searches. Supply a focused text or exact filter; omitting text may return an arbitrary first page. "
+            "For OPC UA server identity, search for ServerStatus/Server and verify the candidate's standard "
+            "ServerType (ns=0;i=2004) through its context/source metadata. Use getElementContext for one candidate "
+            "and resolveElementIdsToNodeIds for the actual source NodeId. Results do not prove complete remote "
+            "address-space visibility."
         ),
         "getElementContext": (
             "Get one cached model element with bounded hierarchy ancestors, direct children, semantic metadata, "
-            "and direct relationships."
+            "source NodeId/type metadata, and direct relationships. This describes the cached mapping; it does not "
+            "browse or verify the live remote OPC UA address space."
         ),
         "summarizeSubtree": (
             "Return a bounded tree and kind/role counts for one cached model branch, keeping hierarchy and "

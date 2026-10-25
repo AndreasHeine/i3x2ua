@@ -80,6 +80,8 @@ def test_tool_and_resource_and_roots_catalogs(monkeypatch: pytest.MonkeyPatch) -
     request_with_prompts = _request({"mcp_prompts": prompt_registry})
     resources = _resource_catalog(request_with_prompts)
     assert any(item["uri"] == "i3x://prompts/p1" for item in resources)
+    assert any(item["uri"] == "i3x://guides/opcua-analysis" for item in resources)
+    assert any(item["uri"] == "i3x://guides/i3x-model-analysis" for item in resources)
 
     request_no_model = _request()
     assert _roots_catalog(request_no_model) == []
@@ -116,6 +118,9 @@ def test_read_resource_content_variants(tmp_path: Path, monkeypatch: pytest.Monk
     assert json.loads(openapi["text"]) == {"openapi": "3.1.0"}
     assert _read_resource_content(request, "i3x://mcp-overrides")["mimeType"] == "application/json"
     assert json.loads(_read_resource_content(request, "i3x://prompts/demo")["text"])["name"] == "demo"
+    guide = _read_resource_content(request, "i3x://guides/opcua-analysis")
+    assert guide["mimeType"] == "text/markdown"
+    assert "OPC UA endpoint analysis" in guide["text"]
 
     with pytest.raises(HTTPException):
         _read_resource_content(request, "i3x://unknown")

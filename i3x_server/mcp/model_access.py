@@ -29,18 +29,41 @@ MCP_MODEL_ACCESS_SCHEMAS = {
     "resolveBrowsePath": {
         **_schema(
             {
-                "path": {**_ID, "description": "Exact slash-separated cached display names, including the root."},
-                "segments": {"type": "array", "items": _ID, "minItems": 1},
+                "path": {
+                    **_ID,
+                    "description": (
+                        "Exact slash-separated display-name path in the cached mapped model, including the root."
+                    ),
+                },
+                "segments": {
+                    "type": "array",
+                    "items": _ID,
+                    "minItems": 1,
+                    "description": "Exact ordered display-name path segments; use when a name contains '/'.",
+                },
             },
             [],
         ),
         "oneOf": [{"required": ["path"]}, {"required": ["segments"]}],
     },
-    "getBrowsePath": _schema({"elementId": _ID}, ["elementId"]),
+    "getBrowsePath": _schema(
+        {
+            "elementId": {
+                **_ID,
+                "description": (
+                    "Exact discovered i3X ElementId; returns the cached model path and OPC UA source ID when available."
+                ),
+            }
+        },
+        ["elementId"],
+    ),
     "getInstancesOfType": {
         **_schema(
             {
-                "typeElementId": _ID,
+                "typeElementId": {
+                    **_ID,
+                    "description": "Exact discovered i3X typeElementId; do not guess or substitute a type name.",
+                },
                 "typeContextRevision": _ID,
                 "includeSubtypes": {"type": "boolean", "default": True},
                 **_PAGE,
@@ -56,22 +79,69 @@ MCP_MODEL_ACCESS_SCHEMAS = {
     },
     "getChildren": _schema(
         {
-            "elementId": _ID,
-            "plane": {"type": "string", "enum": ["hierarchy", "composition", "graph"], "default": "hierarchy"},
+            "elementId": {
+                **_ID,
+                "description": "Exact discovered i3X ElementId of the parent whose direct mapped children to list.",
+            },
+            "plane": {
+                "type": "string",
+                "enum": ["hierarchy", "composition", "graph"],
+                "default": "hierarchy",
+                "description": (
+                    "Choose hierarchy for organizational children, composition for components, or graph for "
+                    "outgoing non-hierarchical relationships. This returns direct children only."
+                ),
+            },
             **_PAGE,
         },
         ["elementId"],
     ),
     "getCompositionProperties": _schema(
         {
-            "elementIds": {"type": "array", "items": _ID, "minItems": 1, "maxItems": 50},
+            "elementIds": {
+                "type": "array",
+                "items": _ID,
+                "minItems": 1,
+                "maxItems": 50,
+                "description": (
+                    "One or more exact discovered i3X object ElementIds; properties are recursive by composition only."
+                ),
+            },
             **_PAGE,
         },
         ["elementIds"],
     ),
-    "findElementsByName": _schema({"text": _ID, **_PAGE}, ["text"]),
-    "findElementsByNamespace": _schema({"namespaceUri": _ID, **_PAGE}, ["namespaceUri"]),
-    "findElementsByRole": _schema({"semanticRole": {"type": "string", "enum": _ROLES}, **_PAGE}, ["semanticRole"]),
+    "findElementsByName": _schema(
+        {
+            "text": {
+                **_ID,
+                "description": "Case-insensitive substring of a mapped element's display name only.",
+            },
+            **_PAGE,
+        },
+        ["text"],
+    ),
+    "findElementsByNamespace": _schema(
+        {
+            "namespaceUri": {
+                **_ID,
+                "description": "Exact namespace URI to match in the cached mapped model.",
+            },
+            **_PAGE,
+        },
+        ["namespaceUri"],
+    ),
+    "findElementsByRole": _schema(
+        {
+            "semanticRole": {
+                "type": "string",
+                "enum": _ROLES,
+                "description": "Exact i3X semantic role, not an OPC UA NodeClass or companion specification.",
+            },
+            **_PAGE,
+        },
+        ["semanticRole"],
+    ),
 }
 _VALIDATORS = {name: Draft202012Validator(schema) for name, schema in MCP_MODEL_ACCESS_SCHEMAS.items()}
 

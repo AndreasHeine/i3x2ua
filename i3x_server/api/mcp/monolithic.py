@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 from typing_extensions import Never
 
 from i3x_server.errors import i3x_http_error
+from i3x_server.mcp.analysis_resources import MCP_ANALYSIS_RESOURCES, list_mcp_analysis_resources
 from i3x_server.mcp.invocation import call_mcp_tool, invoke_mcp_tool
 from i3x_server.prompts.api import execute_prompt, get_prompt, list_prompt_metadata
 from i3x_server.prompts.registry import PromptRegistry
@@ -23,14 +24,34 @@ router = APIRouter(prefix="/mcp")
 logger = logging.getLogger(__name__)
 MCP_PROTOCOL_VERSION = "2025-06-18"
 MCP_INSTRUCTIONS = (
-    "Discover elementIds before querying values. Value/history maxDepth traverses composition only, "
-    "not hierarchy: 1 reads only the object, 2 includes direct components, 0 is unlimited. "
-    "For many values below one known container, call readContainerValues with its exact containerId "
-    "instead of generating a long elementIds array. "
-    "Preserve value, quality, and source timestamp; latest known values need not be fresh. "
-    "Inspect per-item failures even when HTTP succeeds. PUT/write operations are REST-only. "
-    "Subscription tools change monitoring state; acknowledge only updates already processed. "
-    "Plant roots are available using getObjectsV1(root=true), not MCP filesystem roots."
+    "Keep evidence sources distinct: getInfoV1 describes this i3X gateway; getUaStatus reads "
+    "ServerStatus from the upstream OPC UA endpoint; getUaConnection describes this gateway's "
+    "connection to that endpoint; model tools describe only the mapped model. Never infer remote "
+    "server identity, full address-space visibility, or feature support from gateway metadata, model "
+    "counts, namespaces, or request counters. For upstream server identity/status, inspect a mapped "
+    "Server object instance of the standard ServerType (ns=0;i=2004) and its ServerStatus property "
+    "if present; otherwise use getUaStatus. If that read fails and only connectivity is relevant, "
+    "use getUaConnection and report only connection evidence. Use searchModelElements for focused "
+    "metadata/type/role searches, findElementsByName for display-name substrings, and getElementContext "
+    "to inspect one discovered i3X ElementId. Use resolveElementIdsToNodeIds for source NodeIds and "
+    "getBrowsePath for mapped paths; never label an i3X ElementId as an OPC UA NodeId. For exhaustive "
+    "requests, follow pagination to completion within the tool's scope and state that scope; never "
+    "claim the remote address space is complete from mapped-model results. Distinguish directly read "
+    "facts, mapped-model presence, declared capabilities, and unknowns. Discover exact elementIds before "
+    "querying values; never guess IDs. Value and history maxDepth traverse composition only, not "
+    "hierarchy: 1 reads only the requested object, 2 includes direct components, and 0 is unlimited. "
+    "For a few known properties, use queryLastKnownValuesV1; use queryHistoricalValuesV1 only when "
+    "history is requested. For many descendant properties under one known, non-broad container, use "
+    "readContainerValues with its exact containerId. It returns current values only, 50 per page; "
+    "follow nextOffset when returned. Preserve value, quality, and source timestamp; last-known "
+    "values may be stale. Check per-item success and errors even when the HTTP request succeeds. "
+    "PUT/write operations are not exposed as MCP tools. Subscription tools change monitoring state; "
+    "acknowledge only updates already processed. Use getObjectsV1(root=true) for plant discovery; "
+    "MCP roots are unrelated. Classify each request as OPC UA endpoint, i3X mapped-model, or mixed "
+    "analysis. When supported by the client, read the matching resource before analysis: "
+    "i3x://guides/opcua-analysis, i3x://guides/i3x-model-analysis, or both for mixed questions. "
+    "Report OPC UA NodeIds and i3X ElementIds in separately labeled fields; resolve source NodeIds "
+    "instead of guessing. If resources are unavailable, follow these inline scope and identifier rules."
 )
 
 
@@ -103,6 +124,7 @@ def _tool_catalog(request: Request) -> list[dict[str, Any]]:
 
 def _resource_catalog(request: Request) -> list[dict[str, Any]]:
     resources: list[dict[str, Any]] = [
+        *list_mcp_analysis_resources(),
         {
             "uri": "i3x://openapi",
             "name": "OpenAPI specification",
@@ -156,6 +178,14 @@ def _project_root() -> Path:
 
 def _read_resource_content(request: Request, uri: str) -> dict[str, Any]:
     project_root = _project_root()
+    if uri in MCP_ANALYSIS_RESOURCES:
+        resource = MCP_ANALYSIS_RESOURCES[uri]
+        return {
+            "uri": uri,
+            "mimeType": "text/markdown",
+            "text": resource["text"],
+        }
+
     if uri == "i3x://openapi":
         return {
             "uri": uri,

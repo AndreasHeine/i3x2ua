@@ -24,6 +24,8 @@ MCP_BODY_PAGINATED_TOOLS = {
 }
 
 MCP_CONTAINER_VALUES_TOOL = "readContainerValues"
+MCP_RESOURCE_LIST_TOOL = "listMcpResources"
+MCP_RESOURCE_READ_TOOL = "readMcpResource"
 MCP_CONTAINER_VALUES_BATCH_SIZE = 10
 MCP_CONTAINER_VALUES_MAX_NODES = 5000
 MCP_CONTAINER_VALUES_MAX_DEPTH = 32
@@ -188,6 +190,7 @@ class McpToolDefinition:
     def annotations(self) -> dict[str, bool]:
         read_only = (
             self.method == "GET"
+            or self.name in {MCP_RESOURCE_LIST_TOOL, MCP_RESOURCE_READ_TOOL}
             or self.path.endswith(
                 (
                     "/objects/list",
@@ -411,6 +414,40 @@ def build_mcp_tools(
         body_required=False,
         priority=str(override.get("priority") or "high"),
         keywords=tuple(str(keyword) for keyword in keywords if isinstance(keyword, str)),
+    )
+    tools[MCP_RESOURCE_READ_TOOL] = McpToolDefinition(
+        name=MCP_RESOURCE_READ_TOOL,
+        description=(
+            "Read an MCP resource by its exact URI when the client cannot call MCP resources/read directly. "
+            "Useful resources include i3x://guides/opcua-i3x-mapping, i3x://guides/opcua-analysis, "
+            "and i3x://guides/i3x-model-analysis. Only resources exposed by this server can be read."
+        ),
+        method="POST",
+        path="/mcp/resources/read",
+        input_schema={
+            "type": "object",
+            "properties": {"uri": {"type": "string", "minLength": 1}},
+            "required": ["uri"],
+            "additionalProperties": False,
+        },
+        path_parameters=(),
+        query_parameters=(),
+        body_required=False,
+        priority="high",
+    )
+    tools[MCP_RESOURCE_LIST_TOOL] = McpToolDefinition(
+        name=MCP_RESOURCE_LIST_TOOL,
+        description=(
+            "List MCP resources exposed by this server when the client cannot call MCP resources/list directly. "
+            "Use the returned exact URI with readMcpResource to read a resource."
+        ),
+        method="GET",
+        path="/mcp/resources",
+        input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+        path_parameters=(),
+        query_parameters=(),
+        body_required=False,
+        priority="high",
     )
     model_tool_descriptions = {
         "resolveBrowsePath": (

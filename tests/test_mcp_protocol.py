@@ -58,6 +58,7 @@ def test_version_negotiation_and_ping(protocol_client: TestClient) -> None:
     assert "never claim the remote address space is complete" in result["instructions"]
     assert "Classify each request as OPC UA endpoint, i3X mapped-model, or mixed analysis" in result["instructions"]
     assert "i3x://guides/opcua-analysis" in result["instructions"]
+    assert "i3x://guides/opcua-i3x-mapping" in result["instructions"]
     assert "separately labeled fields" in result["instructions"]
     assert rpc(protocol_client, "ping")["result"] == {}
 
@@ -79,13 +80,30 @@ def test_analysis_guides_are_listed_and_readable(protocol_client: TestClient) ->
     by_uri = {resource["uri"]: resource for resource in resources}
     opcua_uri = "i3x://guides/opcua-analysis"
     i3x_uri = "i3x://guides/i3x-model-analysis"
+    mapping_uri = "i3x://guides/opcua-i3x-mapping"
     assert by_uri[opcua_uri]["mimeType"] == "text/markdown"
     assert by_uri[i3x_uri]["mimeType"] == "text/markdown"
+    assert by_uri[mapping_uri]["mimeType"] == "text/markdown"
 
     opcua_content = rpc(protocol_client, "resources/read", {"uri": opcua_uri})["result"]["contents"][0]
     i3x_content = rpc(protocol_client, "resources/read", {"uri": i3x_uri})["result"]["contents"][0]
+    mapping_content = rpc(protocol_client, "resources/read", {"uri": mapping_uri})["result"]["contents"][0]
     assert "source NodeId returned or resolved" in opcua_content["text"]
     assert "exact i3X ElementId returned by the tool" in i3x_content["text"]
+    assert "NonHierarchicalReferences" in mapping_content["text"]
+    assert "`appliedProfileIds`" in mapping_content["text"]
+    assert "`resolveElementIdsToNodeIds`" in mapping_content["text"]
+    assert "Companion Specifications" in opcua_content["text"]
+    assert "Historical Access" in opcua_content["text"]
+    assert "Methods / Control" in opcua_content["text"]
+    assert "## Common Invalid Conclusions" in opcua_content["text"]
+    assert opcua_content["text"].count("**Invalid:**") >= 15
+    assert "## OPC UA Audit Mode" in opcua_content["text"]
+    for evidence_label in ("**observed**", "**inferred**", "**verified**", "**unknown**"):
+        assert evidence_label in opcua_content["text"]
+    assert "nextOffset" in i3x_content["text"]
+    assert "TypeDefinition ExpandedNodeId" in mapping_content["text"]
+    assert "not proof that a companion specification is implemented" in mapping_content["text"]
 
 
 def test_http_contracts(protocol_client: TestClient) -> None:
@@ -147,6 +165,8 @@ def test_structured_tool_results(
     monkeypatch.setattr("i3x_server.api.mcp.monolithic.invoke_mcp_tool", invoke)
     tools = {tool["name"]: tool for tool in rpc(protocol_client, "tools/list")["result"]["tools"]}
     assert tools["readValues"]["annotations"]["readOnlyHint"] is True
+    assert tools["readMcpResource"]["annotations"]["readOnlyHint"] is True
+    assert tools["listMcpResources"]["annotations"]["readOnlyHint"] is True
     assert tools["createSubscription"]["annotations"]["readOnlyHint"] is False
     assert tools["syncSubscription"]["annotations"]["readOnlyHint"] is False
     for name in (
@@ -161,6 +181,43 @@ def test_structured_tool_results(
     assert json.loads(result["content"][0]["text"]) == body
     assert result["structuredContent"] == {"statusCode": status, "body": body}
     validate(result["structuredContent"], tools["readValues"]["outputSchema"])
+
+
+def test_resource_can_be_read_through_tool(protocol_client: TestClient) -> None:
+    result = rpc(
+        protocol_client,
+        "tools/call",
+        {
+            "name": "readMcpResource",
+            "arguments": {"uri": "i3x://guides/opcua-i3x-mapping"},
+        },
+    )["result"]
+    assert result["isError"] is False
+    resource = result["structuredContent"]["body"]["contents"][0]
+    assert resource["uri"] == "i3x://guides/opcua-i3x-mapping"
+    assert resource["mimeType"] == "text/markdown"
+    assert "OPC UA to i3X mapping" in resource["text"]
+
+
+def test_resources_can_be_listed_through_tool(protocol_client: TestClient) -> None:
+    result = rpc(
+        protocol_client,
+        "tools/call",
+        {"name": "listMcpResources", "arguments": {}},
+    )["result"]
+    assert result["isError"] is False
+    listed = result["structuredContent"]["body"]["resources"]
+    mapping_resource = next(resource for resource in listed if resource["uri"] == "i3x://guides/opcua-i3x-mapping")
+    assert mapping_resource["mimeType"] == "text/markdown"
+
+
+def test_resource_read_tool_rejects_unknown_resources(protocol_client: TestClient) -> None:
+    result = rpc(
+        protocol_client,
+        "tools/call",
+        {"name": "readMcpResource", "arguments": {"uri": "i3x://unknown"}},
+    )["result"]
+    assert result["isError"] is True
 
 
 def test_mcp_object_and_value_results_are_compact() -> None:

@@ -64,6 +64,13 @@ Notes:
 4. Accept the trust prompt for this MCP server.
 
 After startup, VS Code discovers tools exposed by the i3x2ua MCP endpoint.
+The server also provides MCP resources with analysis guidance. For questions
+about how OPC UA is mapped to i3X, the relevant resource is
+`i3x://guides/opcua-i3x-mapping`; clients that support MCP resources can read it
+before answering. If the client can call tools but not MCP resource methods,
+call `listMcpResources` to discover available URIs, then call `readMcpResource`
+with the mapping guide URI. Ask about a specific live mapping to have the model
+inspect the element with the available MCP tools.
 
 ## 4. Enable Tools in Chat
 
@@ -80,6 +87,7 @@ Try prompts like:
 - "Get the current value for sensor-123."
 - "Query historical values for sensor-123 from 10:00 to 11:00 UTC."
 - "Create and sync a subscription for these object IDs."
+- "How does the Gateway map OPC UA references to i3X? Inspect a mapped example."
 
 Expected behavior:
 

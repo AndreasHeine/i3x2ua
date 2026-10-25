@@ -37,6 +37,7 @@ from i3x_server.mcp.tool_definitions import (
     MCP_CONTAINER_VALUES_TOOL,
     MCP_DEFAULT_PAGE_SIZE,
     MCP_PAGINATED_LIST_TOOLS,
+    MCP_RESOURCE_READ_TOOL,
     McpToolDefinition,
     _resolve_override_path,
     _resolve_request_body_schema,
@@ -539,6 +540,8 @@ async def invoke_mcp_tool(request: Request, tool: McpToolDefinition, arguments: 
                 allowed_arguments.update({"limit", "offset"})
             if tool.name == MCP_CONTAINER_VALUES_TOOL:
                 allowed_arguments.update({"containerId", "limit", "offset"})
+            if tool.name == MCP_RESOURCE_READ_TOOL:
+                allowed_arguments.add("uri")
             if tool.name in MCP_MODEL_TOOL_SCHEMAS:
                 allowed_arguments.update(MCP_MODEL_TOOL_SCHEMAS[tool.name].get("properties", {}))
             if tool.body_required or "body" in tool.input_schema.get("properties", {}):
@@ -596,6 +599,8 @@ async def invoke_mcp_tool(request: Request, tool: McpToolDefinition, arguments: 
                 query_params.setdefault("root", True)
 
             request_body = arguments.get("body") if "body" in arguments else None
+            if tool.name == MCP_RESOURCE_READ_TOOL:
+                request_body = {"uri": arguments["uri"]}
             body_page_size: int | None = None
             body_page_offset = 0
             if tool.name in MCP_BODY_PAGINATED_TOOLS and isinstance(request_body, dict):

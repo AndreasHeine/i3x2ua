@@ -6,6 +6,7 @@ from typing import Any
 
 from i3x_server.domain.utils import canonical_node_id
 from i3x_server.errors import i3x_http_error
+from i3x_server.mcp.model_access import MCP_MODEL_ACCESS_SCHEMAS, validate_model_access_arguments
 from i3x_server.model.revision import model_revision
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
@@ -27,6 +28,7 @@ MCP_MODEL_CONTEXT_MAX_ITEMS = 500
 MCP_MODEL_PATH_MAX_NODES = 5000
 MCP_ID_RESOLUTION_MAX_ITEMS = 500
 MCP_MODEL_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
+    **MCP_MODEL_ACCESS_SCHEMAS,
     "resolveElementIdsToNodeIds": {
         "type": "object",
         "properties": {
@@ -261,6 +263,9 @@ def _relationship_plane(relationship_type: str) -> str:
 
 
 def _validate_model_tool_arguments(tool_name: str, arguments: Mapping[str, Any]) -> None:
+    if tool_name in MCP_MODEL_ACCESS_SCHEMAS:
+        validate_model_access_arguments(tool_name, arguments)
+        return
     required = MCP_MODEL_TOOL_SCHEMAS[tool_name].get("required", [])
     missing = [field for field in required if field not in arguments]
     if missing:

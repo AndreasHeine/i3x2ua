@@ -8,6 +8,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from i3x_server.mcp.model_access import MCP_MODEL_ACCESS_SCHEMAS
 from i3x_server.mcp.model_tools import MCP_MODEL_TOOL_SCHEMAS
 
 logger = logging.getLogger(__name__)
@@ -206,7 +207,7 @@ class McpToolDefinition:
             "destructiveHint": not read_only
             and not (subscription_mutation and self.path.endswith(("/subscriptions", "/register"))),
             "idempotentHint": read_only,
-            "openWorldHint": True,
+            "openWorldHint": self.name not in MCP_MODEL_ACCESS_SCHEMAS,
         }
 
 
@@ -412,6 +413,38 @@ def build_mcp_tools(
         keywords=tuple(str(keyword) for keyword in keywords if isinstance(keyword, str)),
     )
     model_tool_descriptions = {
+        "resolveBrowsePath": (
+            "Resolve an exact root-inclusive path of cached display names to one element. "
+            "Pass path or segments (for names containing '/'). Duplicate paths return 409. No live OPC UA calls."
+        ),
+        "getBrowsePath": (
+            "Get an element's canonical root-inclusive path and segments from cached hierarchy/composition parents. "
+            "No live OPC UA calls."
+        ),
+        "getInstancesOfType": (
+            "List cached object instances of a typeElementId, including subtypes by default. "
+            "Requires the revision-matched cached type context; never browses OPC UA. "
+            "Paginated [elementId, name] pairs."
+        ),
+        "getChildren": (
+            "List direct cached children on hierarchy (default), composition, or outgoing graph plane. "
+            "Paginated [elementId, name] pairs without metadata or values; no live OPC UA calls."
+        ),
+        "getCompositionProperties": (
+            "List all recursive composition properties beneath up to 50 cached objects, without values. "
+            "offset/limit apply independently to each object's properties. No hierarchy traversal or live OPC UA calls."
+        ),
+        "findElementsByName": (
+            "Find cached elements by case-insensitive display-name substring only. "
+            "Returns paginated [elementId, name] pairs; no live OPC UA calls."
+        ),
+        "findElementsByNamespace": (
+            "List cached elements belonging to an exact namespace URI as paginated [elementId, name] pairs. "
+            "No live OPC UA calls."
+        ),
+        "findElementsByRole": (
+            "List cached elements of one semantic role as paginated [elementId, name] pairs. No live OPC UA calls."
+        ),
         "resolveElementIdsToNodeIds": (
             "Resolve cached i3X ElementIds to their OPC UA NodeIds and ExpandedNodeIds. "
             "Uses only the current cached model and never contacts the OPC UA server."
@@ -454,6 +487,9 @@ def build_mcp_tools(
                     "resolveNodeIdsToElementIds",
                     "searchModelElements",
                     "getElementContext",
+                    "resolveBrowsePath",
+                    "getBrowsePath",
+                    "getInstancesOfType",
                 }
                 else "normal"
             ),

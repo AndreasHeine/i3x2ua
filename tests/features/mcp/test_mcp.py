@@ -146,6 +146,10 @@ def _with_runtime_argument_overrides(
 
     if tool_name == "readContainerValues":
         result["containerId"] = "asset-root"
+    if tool_name == "resolveBrowsePath":
+        result["path"] = "Machine"
+    if tool_name == "getCompositionProperties":
+        result["elementIds"] = ["asset-root"]
     if "elementId" in result:
         result["elementId"] = "property-abc"
     if "element_id" in result:

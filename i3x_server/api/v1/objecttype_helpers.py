@@ -269,6 +269,7 @@ def _object_type_context_revision(context: _ObjectTypeContext) -> str:
                 (info.uri, info.display_name, info.namespace_version, info.server_uri)
                 for info in context.namespace_infos
             ),
+            _object_types_token(context.object_types),
             tuple(item.model_dump_json() for item in context.items),
             tuple(sorted(context.element_ids_by_node_id.items())),
             tuple(sorted(context.source_type_to_element_id.items())),

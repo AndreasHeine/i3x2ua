@@ -163,12 +163,59 @@ line-level temperature property:
 ```
 
 The cached-model tools (`searchModelElements`, `getElementContext`,
-`summarizeSubtree`, `traceRelationshipPath`, and the NodeId resolvers) currently
+`summarizeSubtree`, `traceRelationshipPath`, the compact model-access tools below,
+and the NodeId resolvers) currently
 use built-in descriptions; overrides do not replace those descriptions. For
 REST-derived tools such as `queryHistoricalValuesV1`, a maintenance-focused
 description can specify when history is warranted and require a bounded time
 range. Prefer clear selection criteria and safe limits over long descriptions
 containing every possible synonym.
+
+### Compact cached-model access
+
+These tools read only the in-memory model, never build or refresh it, and never
+contact OPC UA. They return `modelRevision`; do not combine pages from different
+revisions. If the model is not cached yet, they return 503 instead of triggering
+discovery.
+
+| Tool | Use |
+|---|---|
+| `resolveBrowsePath` | Resolve `{"path":"Machines/Line1/Station5/Temperature"}` directly to an element. |
+| `getBrowsePath` | Return the canonical path and segments for `{"elementId":"..."}`. |
+| `getInstancesOfType` | List instances for `{"typeElementId":"...","includeSubtypes":true}`. |
+| `getChildren` | List direct children for `{"elementId":"...","plane":"hierarchy"}`; also supports `composition` and outgoing `graph` neighbors. |
+| `getCompositionProperties` | List recursive composition properties for `{"elementIds":["...","..."]}`, without reading values. |
+| `findElementsByName` | Case-insensitive display-name substring search, e.g. `{"text":"Temperature"}`. Does not search metadata. |
+| `findElementsByNamespace` | List elements in an exact `namespaceUri`. |
+| `findElementsByRole` | List elements by `semanticRole`: `asset`, `group`, `component`, `datapoint`, `property`, or `unknown`. |
+
+Paths use exact, case-sensitive cached display names and include the root.
+Canonical paths prefer hierarchy parents, falling back to canonical/composition
+parents for composition-only elements. Supply exactly one of `path` or
+`segments`; use `{"segments":["Machines","Station5","Pressure/Flow"]}` when a
+name contains `/`. `getBrowsePath` returns both forms; use its segments for a
+lossless round trip. A missing path returns `found:false`; duplicate paths return
+409 rather than choosing an arbitrary element. Unknown element/type IDs return
+404. Invalid parent/type cycles return an explicit error.
+
+List tools accept `offset` (default 0) and `limit` (default 50, maximum 100).
+Results contain compact `[elementId, displayName]` pairs, sorted by case-folded
+display name then element ID, with `total`, `returned`, `offset`, and
+`nextOffset` when more results remain. `getCompositionProperties` accepts up to
+50 object IDs, deduplicates them, sorts them the same way, and applies pagination
+independently to each object's `properties` list. It follows composition only,
+including nested components, not hierarchy children. No tool returns live values.
+
+`getInstancesOfType` includes subtypes by default and returns object instances,
+not variable properties or actions. It requires the already-warmed object-type
+context for the same model revision; an unavailable or stale context returns
+503 without refreshing it. Its results also contain `typeContextRevision`; pass
+that value as `typeContextRevision` whenever continuing pagination with
+`offset` greater than zero. If the type context has changed, the request returns
+409 and pagination should restart at offset zero. Derived lookup indexes are
+scoped to the current model snapshot/revision and discarded with it. Name
+searches of at least three characters use a substring candidate index; shorter
+searches scan cached names.
 
 ### What descriptions, keywords, priorities, and prompts do
 

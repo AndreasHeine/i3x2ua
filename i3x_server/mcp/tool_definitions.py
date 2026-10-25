@@ -144,17 +144,6 @@ def load_prompt_overrides(
     return {}
 
 
-def load_feature_overrides(
-    path: str | Path = DEFAULT_MCP_OVERRIDES_PATH,
-    schema_path: str | Path = DEFAULT_MCP_OVERRIDES_SCHEMA_PATH,
-) -> dict[str, Any]:
-    overrides = load_overrides(path, schema_path)
-    features = overrides.get("features")
-    if isinstance(features, Mapping):
-        return dict(features)
-    return {}
-
-
 @dataclass(frozen=True, slots=True)
 class McpToolDefinition:
     name: str

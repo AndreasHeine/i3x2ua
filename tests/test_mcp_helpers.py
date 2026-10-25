@@ -27,7 +27,6 @@ from i3x_server.mcp import (
     build_mcp_tools,
     get_api_prefix,
     invoke_mcp_tool,
-    load_feature_overrides,
     load_overrides,
     load_prompt_overrides,
     load_tool_overrides,
@@ -559,7 +558,6 @@ def test_load_overrides_variants(tmp_path: Path) -> None:
                 "properties": {
                     "tools": {"type": "object"},
                     "prompts": {"type": "object"},
-                    "features": {"type": "object"},
                 },
                 "additionalProperties": True,
             }
@@ -572,7 +570,6 @@ def test_load_overrides_variants(tmp_path: Path) -> None:
             {
                 "tools": {"toolA": {"description": "A"}},
                 "prompts": {"promptA": {"description": "P", "inputs": ["x"], "template": "{{x}}"}},
-                "features": {"featureA": True},
             }
         ),
         encoding="utf-8",
@@ -582,7 +579,6 @@ def test_load_overrides_variants(tmp_path: Path) -> None:
     assert "tools" in loaded
     assert load_tool_overrides(overrides_path, schema_path) == {"toolA": {"description": "A"}}
     assert "promptA" in load_prompt_overrides(overrides_path, schema_path)
-    assert load_feature_overrides(overrides_path, schema_path) == {"featureA": True}
 
     missing = tmp_path / "missing.json"
     assert load_overrides(missing, schema_path) == {}

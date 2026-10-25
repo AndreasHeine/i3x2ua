@@ -61,7 +61,7 @@ def test_load_overrides_allows_omitted_excluded_tools(tmp_path: Path) -> None:
         "required": ["tools", "prompts"],
         "additionalProperties": False,
     }
-    overrides = {"tools": {}, "prompts": {}}
+    overrides: dict[str, Any] = {"tools": {}, "prompts": {}}
 
     _write_json(schema_path, schema)
     _write_json(overrides_path, overrides)

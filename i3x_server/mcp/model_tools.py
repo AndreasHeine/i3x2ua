@@ -60,15 +60,28 @@ MCP_MODEL_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         "properties": {
             "text": {
                 "type": "string",
+                "minLength": 1,
+                "pattern": r"\S",
                 "description": (
-                    "Case-insensitive substring across cached names and metadata. "
-                    "When omitted, returns the first page of the model."
+                    "Required specific text for a targeted lookup; case-insensitive substring across cached names "
+                    "and metadata. Broad terms do not provide complete discovery."
                 ),
             },
-            "kind": {"type": "string", "enum": ["asset", "property", "action", "eventSource"]},
+            "kind": {
+                "type": "string",
+                "enum": ["asset", "property", "action", "eventSource"],
+                "description": (
+                    "Exact kind filter; kinds do not capture every capability, so a filtered miss is not proof "
+                    "that an element or capability is absent."
+                ),
+            },
             "semanticRole": {
                 "type": "string",
                 "enum": ["asset", "group", "component", "datapoint", "property", "unknown"],
+                "description": (
+                    "Exact semantic-role filter; roles do not capture every capability, so a filtered miss is "
+                    "not proof that an element or capability is absent."
+                ),
             },
             "namespaceUri": {"type": "string"},
             "typeElementId": {"type": "string"},
@@ -78,6 +91,7 @@ MCP_MODEL_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 25},
             "offset": {"type": "integer", "minimum": 0, "default": 0},
         },
+        "required": ["text"],
         "additionalProperties": False,
     },
     "getElementContext": {
@@ -300,6 +314,8 @@ def _validate_model_tool_arguments(tool_name: str, arguments: Mapping[str, Any])
     ):
         if field in arguments and not isinstance(arguments[field], str):
             raise i3x_http_error(400, "Bad Request", f"{field} must be a string")
+    if tool_name == "searchModelElements" and not arguments["text"].strip():
+        raise i3x_http_error(400, "Bad Request", "text must be a non-empty targeted search term")
     for field in (
         "includeChildren",
         "includeRelationships",

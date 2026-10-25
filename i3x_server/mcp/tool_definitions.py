@@ -430,15 +430,20 @@ def build_mcp_tools(
             "offset/limit apply independently to each object's properties. No hierarchy traversal or live OPC UA calls."
         ),
         "findElementsByName": (
-            "Find cached elements by case-insensitive display-name substring only. "
-            "Returns paginated [elementId, name] pairs; no live OPC UA calls."
-        ),
-        "findElementsByNamespace": (
-            "List cached elements belonging to an exact namespace URI as paginated [elementId, name] pairs. "
+            "NOT FOR MODEL DISCOVERY OR INVENTORY. Use only as a last-resort lookup for a specific likely name "
+            "after searchModelElements or focused path/child traversal fails. Matches cached display-name "
+            "substrings only, not metadata. Results are paginated cache matches; do not page through broad results. "
             "No live OPC UA calls."
         ),
+        "findElementsByNamespace": (
+            "NOT FOR MODEL DISCOVERY OR INVENTORY. Use only as a last-resort lookup for a specific target when "
+            "the exact namespace URI is known and focused searchModelElements or path/child traversal fails. "
+            "Results are paginated cache matches; do not page through broad results. No live OPC UA calls."
+        ),
         "findElementsByRole": (
-            "List cached elements of one semantic role as paginated [elementId, name] pairs. No live OPC UA calls."
+            "NOT FOR MODEL DISCOVERY OR INVENTORY. Use only as a last-resort lookup for a specific target when "
+            "its semantic role is known and focused searchModelElements or path/child traversal fails. "
+            "Results are paginated cache matches; do not page through broad results. No live OPC UA calls."
         ),
         "resolveElementIdsToNodeIds": (
             "Resolve cached i3X ElementIds to their OPC UA NodeIds and ExpandedNodeIds. "
@@ -449,8 +454,11 @@ def build_mcp_tools(
             "Uses only the current cached model and never contacts the OPC UA server."
         ),
         "searchModelElements": (
-            "Search the cached model by name, ID, type, semantic role, namespace, profile, or relationship. "
-            "Returns matching element IDs and compact semantic context."
+            "TARGETED LOOKUP ONLY; NOT FOR MODEL DISCOVERY OR INVENTORY. Requires specific non-empty text; "
+            "filter-only or empty-text listing is rejected. Search cached names and metadata for a likely target. "
+            "Filters narrow results and classification fields (kind/semanticRole) do not represent every capability; "
+            "for example, an asset may also support events. A filtered miss does not prove absence. Results are "
+            "paginated; do not page through broad matches."
         ),
         "getElementContext": (
             "Get one cached model element with bounded hierarchy ancestors, direct children, semantic metadata, "

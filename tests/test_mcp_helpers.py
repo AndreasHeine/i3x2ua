@@ -155,6 +155,13 @@ def test_build_mcp_tools_and_api_prefix_from_openapi() -> None:
         "findElementsByNamespace",
         "findElementsByRole",
     }
+    for name in ("findElementsByName", "findElementsByNamespace", "findElementsByRole"):
+        description = tools[name].description.lower()
+        assert "not for model discovery or inventory" in description
+        assert "do not page through broad results" in description
+    search_description = tools["searchModelElements"].description.lower()
+    assert "not for model discovery or inventory" in search_description
+    assert "filtered miss does not" in search_description
     assert tools["getObject"].path_parameters == ("id",)
     assert tools["updateObject"].body_required is True
     assert tools["getObjectsV1"].input_schema["properties"]["limit"] == {
@@ -400,9 +407,10 @@ async def test_cached_model_mcp_tools_search_context_subtree_and_path() -> None:
     assert search["body"]["items"][0]["mappingConfidence"] == "high"
     assert search["body"]["items"][0]["writable"] is True
 
-    unfiltered_search = await invoke_mcp_tool(request, tools["searchModelElements"], {})
-    assert unfiltered_search["body"]["total"] == 3
-    assert unfiltered_search["body"]["returned"] == 3
+    for arguments in ({}, {"text": ""}, {"text": "  ", "kind": "asset"}):
+        with pytest.raises(HTTPException) as exc:
+            await invoke_mcp_tool(request, tools["searchModelElements"], arguments)
+        assert exc.value.status_code == 400
 
     context = await invoke_mcp_tool(
         request,

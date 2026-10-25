@@ -188,9 +188,21 @@ discovery.
 | `getInstancesOfType` | List instances for `{"typeElementId":"...","includeSubtypes":true}`. |
 | `getChildren` | List direct children for `{"elementId":"...","plane":"hierarchy"}`; also supports `composition` and outgoing `graph` neighbors. |
 | `getCompositionProperties` | List recursive composition properties for `{"elementIds":["...","..."]}`, without reading values. |
-| `findElementsByName` | Case-insensitive display-name substring search, e.g. `{"text":"Temperature"}`. Does not search metadata. |
-| `findElementsByNamespace` | List elements in an exact `namespaceUri`. |
-| `findElementsByRole` | List elements by `semanticRole`: `asset`, `group`, `component`, `datapoint`, `property`, or `unknown`. |
+| `findElementsByName` | Last-resort lookup for a specific likely name after focused search or traversal fails; matches display-name substrings only. |
+| `findElementsByNamespace` | Last-resort lookup for a specific target when its exact `namespaceUri` is already known. |
+| `findElementsByRole` | Last-resort lookup for a specific target when its `semanticRole` is already known. |
+
+Do not use the `findElements...` tools for model discovery or inventory. They only
+match one criterion against the cached model and return paginated pairs; a page
+is not a complete inventory, and paging through broad matches can consume context
+without reliably finding the intended element. `searchModelElements` is also a
+targeted lookup, not an exhaustive discovery tool: its filters narrow the result
+set, and `kind` or `semanticRole` reflects only one classification, not every
+capability (for example, an asset may also support events). A filtered miss
+does not prove the element or capability is absent. It requires non-empty
+targeted search text; filter-only or empty-text listing is rejected. Prefer
+focused path/child traversal for navigation, then use searches to locate a
+specific target; do not page through broad matches.
 
 Paths use exact, case-sensitive cached display names and include the root.
 Canonical paths prefer hierarchy parents, falling back to canonical/composition

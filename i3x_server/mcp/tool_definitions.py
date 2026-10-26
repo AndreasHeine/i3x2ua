@@ -473,28 +473,38 @@ def build_mcp_tools(
         ),
     }
     for name, input_schema in MCP_MODEL_TOOL_SCHEMAS.items():
+        override = overrides.get(name, {}) if isinstance(overrides, Mapping) else {}
+        if not isinstance(override, Mapping):
+            override = {}
+        keywords = override.get("keywords", [])
+        if not isinstance(keywords, list):
+            keywords = []
         tools[name] = McpToolDefinition(
             name=name,
-            description=model_tool_descriptions[name],
+            description=str(override.get("description") or model_tool_descriptions[name]),
             method="GET",
             path=f"/mcp/model/{name}",
             input_schema=input_schema,
             path_parameters=(),
             query_parameters=(),
             body_required=False,
-            priority=(
-                "high"
-                if name
-                in {
-                    "resolveElementIdsToNodeIds",
-                    "resolveNodeIdsToElementIds",
-                    "searchModelElements",
-                    "getElementContext",
-                    "resolveBrowsePath",
-                    "getBrowsePath",
-                    "getInstancesOfType",
-                }
-                else "normal"
+            priority=str(
+                override.get("priority")
+                or (
+                    "high"
+                    if name
+                    in {
+                        "resolveElementIdsToNodeIds",
+                        "resolveNodeIdsToElementIds",
+                        "searchModelElements",
+                        "getElementContext",
+                        "resolveBrowsePath",
+                        "getBrowsePath",
+                        "getInstancesOfType",
+                    }
+                    else "normal"
+                )
             ),
+            keywords=tuple(str(keyword) for keyword in keywords if isinstance(keyword, str)),
         )
     return {name: tool for name, tool in tools.items() if name not in excluded_tools}

@@ -220,6 +220,26 @@ def test_build_mcp_tools_excludes_configured_tools(monkeypatch: pytest.MonkeyPat
     assert "getBrowsePath" in tools
 
 
+def test_build_mcp_tools_applies_overrides_to_cached_model_tools() -> None:
+    tools = build_mcp_tools(
+        {"paths": {}},
+        overrides={
+            "searchModelElements": {
+                "description": "Find a specific element for this deployment.",
+                "priority": "low",
+                "keywords": ["deployment lookup"],
+            }
+        },
+    )
+
+    assert tools["searchModelElements"].description == "Find a specific element for this deployment."
+    assert tools["searchModelElements"].priority == "low"
+    assert tools["searchModelElements"].keywords == ("deployment lookup",)
+    assert tools["getBrowsePath"].description.startswith("Get an element's canonical")
+    assert tools["getBrowsePath"].priority == "high"
+    assert tools["getBrowsePath"].keywords == ()
+
+
 @pytest.mark.asyncio
 async def test_cached_model_mcp_tools_search_context_subtree_and_path() -> None:
     root = ModelNode(

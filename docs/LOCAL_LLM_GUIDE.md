@@ -142,9 +142,12 @@ calls; names must match the MCP tool names exactly. This also applies to
 built-in cached-model tools. In Docker Compose, the repository's `overrides`
 directory is mounted at `/app/overrides`.
 
-Use the exact tool names as keys. Overrides apply to the REST-derived MCP tools.
-For example, this makes discovery guidance specific to finding and reading a
-line-level temperature property:
+Use the exact tool names as keys. Overrides apply to REST-derived tools,
+`readContainerValues`, and cached-model tools such as `searchModelElements`,
+`getElementContext`, and `getBrowsePath`. For each tool, `description` is
+required; `priority` and `keywords` are optional. Omitted fields retain their
+built-in defaults. For example, this makes discovery guidance specific to
+finding and reading a line-level temperature property:
 
 ```json
 {
@@ -165,14 +168,10 @@ line-level temperature property:
 }
 ```
 
-The cached-model tools (`searchModelElements`, `getElementContext`,
-`summarizeSubtree`, `traceRelationshipPath`, the compact model-access tools below,
-and the NodeId resolvers) currently
-use built-in descriptions; overrides do not replace those descriptions. For
-REST-derived tools such as `queryHistoricalValuesV1`, a maintenance-focused
-description can specify when history is warranted and require a bounded time
-range. Prefer clear selection criteria and safe limits over long descriptions
-containing every possible synonym.
+For REST-derived tools such as `queryHistoricalValuesV1`, a
+maintenance-focused description can specify when history is warranted and
+require a bounded time range. Prefer clear selection criteria and safe limits
+over long descriptions containing every possible synonym.
 
 ### Compact cached-model access
 

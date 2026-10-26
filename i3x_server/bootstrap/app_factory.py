@@ -24,7 +24,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipMiddleware
 
-from i3x_server.api.mcp import router as mcp_router
+from i3x_server.api.mcp import create_fastmcp_server, router as mcp_router
 from i3x_server.api.openapi import DocumentedFastAPI
 from i3x_server.api.ua import router as ua_router
 from i3x_server.api.v1 import router as v1_router
@@ -387,8 +387,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.mcp_prompts = PromptRegistry.load_from_overrides(
             prompt_overrides,
         )
+        app.state.fastmcp = create_fastmcp_server(app)
         logger.info(
-            "MCP prompt registry loaded from overrides count=%d",
+            "MCP prompt registry loaded count=%d (FastMCP server active)",
             len(app.state.mcp_prompts.list_metadata()),
         )
     if skip_connect:

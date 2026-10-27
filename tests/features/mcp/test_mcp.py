@@ -456,8 +456,9 @@ def test_mcp_support_is_disabled_by_default(client_without_mcp: TestClient) -> N
     assert not any(path.startswith("/mcp") for path in openapi["paths"])
 
 
-def test_mcp_endpoint_rejects_get_stream(client: TestClient) -> None:
-    assert client.get("/mcp").status_code == 405
+def test_mcp_get_requires_sse_accept_and_session(client: TestClient) -> None:
+    assert client.get("/mcp").status_code == 406
+    assert client.get("/mcp", headers={"Accept": "text/event-stream"}).status_code == 400
 
 
 def test_mcp_initialize_request(client: TestClient) -> None:

@@ -78,10 +78,7 @@ def test_http_contracts(protocol_client: TestClient) -> None:
     assert notification.status_code == 202
     assert notification.content == b""
     assert protocol_client.get("/mcp").status_code == 406
-    assert (
-        protocol_client.get("/mcp", headers={"Accept": "text/event-stream"}).status_code
-        == 400
-    )
+    assert protocol_client.get("/mcp", headers={"Accept": "text/event-stream"}).status_code == 400
     assert protocol_client.post("/mcp", content="{").json()["error"]["code"] == -32700
     assert (
         protocol_client.post("/mcp", json=[{"jsonrpc": "2.0", "id": 1, "method": "ping"}]).json()["error"]["code"]
@@ -117,12 +114,15 @@ def test_sse_session_notifications_and_cleanup(protocol_client: TestClient) -> N
     ) as stream:
         assert stream.status_code == 200
         assert stream.headers["content-type"].startswith("text/event-stream")
-        assert publish_mcp_notification(
-            app,
-            session_id,
-            "notifications/message",
-            {"level": "info", "data": "connected"},
-        ) == 1
+        assert (
+            publish_mcp_notification(
+                app,
+                session_id,
+                "notifications/message",
+                {"level": "info", "data": "connected"},
+            )
+            == 1
+        )
         lines = iter(stream.iter_lines())
         assert next(lines) == "event: message"
         assert json.loads(next(lines).removeprefix("data: ")) == {

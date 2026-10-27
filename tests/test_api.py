@@ -29,7 +29,7 @@ from i3x_server.infrastructure.opcua.client import (
     OpcUaSubscriptionCapabilities,
 )
 from i3x_server.infrastructure.subscriptions.service import SubscriptionService
-from i3x_server.mcp import load_tool_overrides
+from i3x_server.mcp import load_overrides, load_tool_overrides
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
 
@@ -2613,6 +2613,13 @@ def test_openapi_conditional_get_matches_runtime(client: TestClient, path: str) 
     assert conditional.content == b""
     assert conditional.headers["etag"] == response.headers["etag"]
     tools = client.get("/mcp/tools").json()["tools"]
+    excluded_tools = load_overrides().get("excluded_tools", [])
+    excluded_tools = (
+        {name for name in excluded_tools if isinstance(name, str)} if isinstance(excluded_tools, list) else set()
+    )
+    if operation["operationId"] in excluded_tools:
+        assert operation["operationId"] not in tools
+        return
     assert "If-None-Match" not in tools[operation["operationId"]]["inputSchema"]["properties"]
 
 
@@ -2850,6 +2857,10 @@ def test_mcp_tool_input_schemas_match_openapi_contract(client: TestClient) -> No
     openapi = client.get("/openapi.json").json()
     tools_payload = client.get("/mcp/tools").json()
     tools = tools_payload["tools"]
+    excluded_tools = load_overrides().get("excluded_tools", [])
+    excluded_tools = (
+        {name for name in excluded_tools if isinstance(name, str)} if isinstance(excluded_tools, list) else set()
+    )
 
     components = openapi.get("components", {})
     assert isinstance(components, Mapping)
@@ -2870,6 +2881,9 @@ def test_mcp_tool_input_schemas_match_openapi_contract(client: TestClient) -> No
             if not isinstance(operation_id, str) or path.endswith("/subscriptions/stream"):
                 continue
             if method.upper() == "PUT":
+                continue
+            if operation_id in excluded_tools:
+                assert operation_id not in tools
                 continue
 
             assert operation_id in tools, f"Missing MCP tool for operationId={operation_id}"

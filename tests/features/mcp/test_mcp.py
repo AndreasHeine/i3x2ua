@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from i3x_server.mcp import get_api_prefix
+from i3x_server.mcp import get_api_prefix, load_overrides
 from tests.conftest import fastapi_app
 
 
@@ -207,6 +207,10 @@ def test_mcp_tool_input_schemas_match_openapi_contract(client: TestClient) -> No
     openapi = client.get("/openapi.json").json()
     tools_payload = client.get("/mcp/tools").json()
     tools = tools_payload["tools"]
+    excluded_tools = load_overrides().get("excluded_tools", [])
+    excluded_tools = (
+        {name for name in excluded_tools if isinstance(name, str)} if isinstance(excluded_tools, list) else set()
+    )
 
     components = openapi.get("components", {})
     assert isinstance(components, Mapping)
@@ -227,6 +231,9 @@ def test_mcp_tool_input_schemas_match_openapi_contract(client: TestClient) -> No
             if not isinstance(operation_id, str) or path.endswith("/subscriptions/stream"):
                 continue
             if method.upper() == "PUT":
+                continue
+            if operation_id in excluded_tools:
+                assert operation_id not in tools
                 continue
 
             assert operation_id in tools, f"Missing MCP tool for operationId={operation_id}"

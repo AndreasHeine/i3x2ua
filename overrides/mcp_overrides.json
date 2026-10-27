@@ -36,16 +36,6 @@
       "priority": "normal",
       "keywords": ["server info", "version", "capabilities", "i3x"]
     },
-    "getModelMetricsV1": {
-      "description": "Return aggregate model metrics. Use for counts or model-size questions; do not list objects just to count them. This does not identify individual assets or values.",
-      "priority": "normal",
-      "keywords": ["model metrics", "model counts", "object count", "model size"]
-    },
-    "getModelNamespaceGapsV1": {
-      "description": "Report namespace mapping gaps. Use only to diagnose incomplete OPC UA namespace mapping, not for asset discovery or ordinary value lookup.",
-      "priority": "low",
-      "keywords": ["namespace gaps", "mapping diagnostics", "missing namespace mapping"]
-    },
     "getNamespacesV1": {
       "description": "ADVANCED: List OPC UA namespaces only when the user asks about namespaces or when a specific mapping issue must be diagnosed. Do not start asset discovery here; use getObjectsV1(root=true). Namespace output may be lengthy.",
       "priority": "low",
@@ -70,26 +60,6 @@
       "description": "Look up relationship types for exact elementIds when relationship schema details are explicitly needed. Prefer this narrow lookup over getRelationshipTypesV1. Not a substitute for navigating actual relationships with queryRelatedObjectsV1.",
       "priority": "low",
       "keywords": ["specific relationship types", "known elementId", "relationship schema"]
-    },
-    "getUaStatus": {
-      "description": "Return OPC UA gateway status. Use only for a gateway health/status question; it does not describe connected industrial assets.",
-      "priority": "normal",
-      "keywords": ["OPC UA status", "gateway health", "connection state"]
-    },
-    "getUaConnection": {
-      "description": "Return OPC UA connection details such as endpoint and connection age. Use for connectivity questions, not to identify PLCs represented in the information model.",
-      "priority": "normal",
-      "keywords": ["OPC UA connection", "endpoint", "connectivity"]
-    },
-    "getUaLimits": {
-      "description": "Return OPC UA operational and subscription limits. Use only for capacity or protocol-limit questions.",
-      "priority": "low",
-      "keywords": ["OPC UA limits", "capacity", "subscription limits"]
-    },
-    "getUaMetrics": {
-      "description": "Return OPC UA request and performance metrics. Use only for load, latency, or runtime-performance questions.",
-      "priority": "low",
-      "keywords": ["OPC UA metrics", "latency", "performance", "load"]
     },
     "createSubscriptionV1": {
       "description": "Create a value-monitoring subscription only when the user asks for ongoing monitoring. First discover the relevant property elementIds; subscribe only to those signals.",
@@ -189,5 +159,12 @@
       "template": "Review {{asset_id_or_namespace}} for this mapping goal: {{mapping_goal}}.\n\nFor an asset, start with getObjectsV1(root=true) if needed and navigate the relevant branch with queryRelatedObjectsV1. Do not enumerate all objects. Use getNamespacesV1 only when namespace alignment is part of the task. Use getObjectTypesV1 or getRelationshipTypesV1 only when the mapping goal requires vocabulary/schema details; prefer targeted query tools when exact IDs are known. Report only relevant existing objects, links, gaps, and a minimal mapping checklist."
     }
   },
-  "excluded_tools": []
+  "excluded_tools": [
+    "getUaStatus",
+    "getUaConnection",
+    "getUaLimits",
+    "getUaMetrics",
+    "getModelNamespaceGapsV1",
+    "getModelMetricsV1"
+  ]
 }

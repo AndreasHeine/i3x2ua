@@ -2563,6 +2563,10 @@ def test_openapi_validation_and_streaming_contracts(client: TestClient) -> None:
     partial_schema = document["components"]["schemas"]["PartialSyncResponse"]
     assert set(partial_schema["required"]) == {"success", "result", "responseDetail"}
     assert document["paths"]["/mcp"]["post"]["responses"]["202"]["content"] == {}
+    assert (
+        document["paths"]["/mcp"]["get"]["responses"]["200"]["content"]["text/event-stream"]["schema"]
+        == {"type": "string"}
+    )
     assert "securitySchemes" not in document["components"]
     assert document["info"]["contact"]["url"].startswith("https://")
     assert document["externalDocs"]["url"].startswith("https://")

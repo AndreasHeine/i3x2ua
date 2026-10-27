@@ -182,7 +182,7 @@ I3X_ENABLE_MCP=1 uv run uvicorn i3x_server.main:app --host 0.0.0.0 --port 8000
 
 ### MCP Endpoints
 
-- **Transport**: `POST /mcp` uses Streamable HTTP with JSON responses and revision `2025-06-18`. `GET /mcp` returns `405`; legacy SSE discovery is not supported. List-changed notifications are not supported; prompt overrides load at startup.
+- **Transport**: `POST /mcp` uses Streamable HTTP with JSON responses and revision `2025-06-18`; `GET /mcp` opens a session-scoped SSE stream for server notifications. Initialize returns `Mcp-Session-Id`; use `DELETE /mcp` to close the session. List-changed notifications are not currently emitted; prompt overrides load at startup.
 - **Tool listing**: `GET /mcp/tools` — Returns tool catalog in REST format.
 - **Tool calling**: `POST /mcp/call` — REST-style tool invocation.
 - **Prompt listing**: `GET /mcp/prompts` — Returns prompt metadata.

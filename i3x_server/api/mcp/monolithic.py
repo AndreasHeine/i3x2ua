@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlsplit
+from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi import APIRouter, FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from jsonschema import Draft202012Validator
 from pydantic import BaseModel, Field
 from typing_extensions import Never
@@ -32,6 +35,54 @@ MCP_INSTRUCTIONS = (
     "Subscription tools change monitoring state; acknowledge only updates already processed. "
     "Plant roots are available using getObjectsV1(root=true), not MCP filesystem roots."
 )
+MCP_SESSION_HEADER = "Mcp-Session-Id"
+MCP_SSE_KEEPALIVE_SECONDS = 15
+
+
+@dataclass(slots=True)
+class McpTransportSession:
+    streams: set[asyncio.Queue[dict[str, Any] | None]] = field(default_factory=set)
+
+
+def publish_mcp_notification(
+    app: FastAPI,
+    session_id: str,
+    method: str,
+    params: dict[str, Any] | None = None,
+) -> int:
+    if not method.startswith("notifications/") or len(method) == len("notifications/"):
+        raise ValueError("MCP server notifications must use a notifications/ method")
+    sessions = getattr(app.state, "mcp_transport_sessions", {})
+    session = sessions.get(session_id) if isinstance(sessions, dict) else None
+    if not isinstance(session, McpTransportSession):
+        return 0
+    message: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
+    if params is not None:
+        message["params"] = params
+    for stream in tuple(session.streams):
+        stream.put_nowait(message)
+    return len(session.streams)
+
+
+def _mcp_sessions(request: Request) -> dict[str, McpTransportSession]:
+    sessions = getattr(request.app.state, "mcp_transport_sessions", None)
+    if not isinstance(sessions, dict):
+        sessions = {}
+        request.app.state.mcp_transport_sessions = sessions
+    return sessions
+
+
+def _origin_is_allowed(request: Request) -> bool:
+    origin = request.headers.get("origin")
+    if origin is None:
+        return True
+    allowed_origins = getattr(request.app.state, "mcp_allowed_origins", [])
+    same_local_origin = origin == str(request.base_url).rstrip("/") and urlsplit(origin).hostname in {
+        "localhost",
+        "127.0.0.1",
+        "::1",
+    }
+    return same_local_origin or (origin != "*" and origin in allowed_origins)
 
 
 class McpCallRequest(BaseModel):
@@ -514,6 +565,80 @@ async def list_roots(request: Request) -> dict[str, Any]:
     return {"roots": _roots_catalog(request)}
 
 
+@router.get(
+    "",
+    tags=["MCP Protocol"],
+    responses={
+        200: {
+            "description": "Session-scoped server-sent event stream.",
+            "content": {"text/event-stream": {"schema": {"type": "string"}}},
+        },
+        400: {"description": "Missing MCP session identifier."},
+        404: {"description": "Unknown MCP session."},
+        406: {"description": "The Accept header must include text/event-stream."},
+    },
+)
+async def mcp_get(request: Request) -> Response:
+    if not _origin_is_allowed(request):
+        return JSONResponse(status_code=403, content=_jsonrpc_error(None, -32600, "Origin not allowed"))
+    accepted_types = {
+        item.split(";", maxsplit=1)[0].strip().lower() for item in request.headers.get("accept", "").split(",")
+    }
+    if "text/event-stream" not in accepted_types:
+        return JSONResponse(status_code=406, content=_jsonrpc_error(None, -32600, "Accept: text/event-stream required"))
+
+    session_id = request.headers.get(MCP_SESSION_HEADER)
+    if not session_id:
+        return JSONResponse(status_code=400, content=_jsonrpc_error(None, -32600, "Mcp-Session-Id required"))
+    session = _mcp_sessions(request).get(session_id)
+    if session is None:
+        return JSONResponse(status_code=404, content=_jsonrpc_error(None, -32600, "Unknown MCP session"))
+
+    stream: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+    session.streams.add(stream)
+
+    async def event_stream() -> AsyncIterator[str]:
+        try:
+            while True:
+                try:
+                    message = await asyncio.wait_for(stream.get(), timeout=MCP_SSE_KEEPALIVE_SECONDS)
+                except TimeoutError:
+                    if await request.is_disconnected():
+                        break
+                    yield ": keepalive\n\n"
+                    continue
+                if message is None:
+                    break
+                yield f"event: message\ndata: {json.dumps(message, ensure_ascii=False)}\n\n"
+        finally:
+            session.streams.discard(stream)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            MCP_SESSION_HEADER: session_id,
+        },
+    )
+
+
+@router.delete("", tags=["MCP Protocol"], status_code=200)
+async def mcp_delete(request: Request) -> Response:
+    if not _origin_is_allowed(request):
+        return JSONResponse(status_code=403, content=_jsonrpc_error(None, -32600, "Origin not allowed"))
+    session_id = request.headers.get(MCP_SESSION_HEADER)
+    if not session_id:
+        return JSONResponse(status_code=400, content=_jsonrpc_error(None, -32600, "Mcp-Session-Id required"))
+    session = _mcp_sessions(request).pop(session_id, None)
+    if session is None:
+        return JSONResponse(status_code=404, content=_jsonrpc_error(None, -32600, "Unknown MCP session"))
+    for stream in tuple(session.streams):
+        stream.put_nowait(None)
+    return Response(status_code=200)
+
+
 @router.post(
     "",
     tags=["MCP Protocol"],
@@ -563,19 +688,15 @@ async def list_roots(request: Request) -> dict[str, Any]:
     },
 )
 async def mcp_post(request: Request) -> Response:
-    origin = request.headers.get("origin")
-    allowed_origins = getattr(request.app.state, "mcp_allowed_origins", [])
-    if origin is not None:
-        same_local_origin = origin == str(request.base_url).rstrip("/") and urlsplit(origin).hostname in {
-            "localhost",
-            "127.0.0.1",
-            "::1",
-        }
-        if not same_local_origin and (origin == "*" or origin not in allowed_origins):
-            return JSONResponse(status_code=403, content=_jsonrpc_error(None, -32600, "Origin not allowed"))
+    if not _origin_is_allowed(request):
+        return JSONResponse(status_code=403, content=_jsonrpc_error(None, -32600, "Origin not allowed"))
     protocol_version = request.headers.get("mcp-protocol-version")
     if protocol_version is not None and protocol_version != MCP_PROTOCOL_VERSION:
         return JSONResponse(status_code=400, content=_jsonrpc_error(None, -32600, "Unsupported protocol version"))
+    session_id = request.headers.get(MCP_SESSION_HEADER)
+    sessions = _mcp_sessions(request)
+    if session_id is not None and session_id not in sessions:
+        return JSONResponse(status_code=404, content=_jsonrpc_error(None, -32600, "Unknown MCP session"))
     try:
         message = await request.json()
     except (ValueError, UnicodeDecodeError):
@@ -589,6 +710,13 @@ async def mcp_post(request: Request) -> Response:
     except Exception:
         logger.exception("MCP request failed method=%s", message.get("method"))
         response = _jsonrpc_error(message.get("id"), -32603, "Internal error") if "id" in message else None
+    response_headers: dict[str, str] = {}
+    if message.get("method") == "initialize" and response is not None and "result" in response:
+        session_id = uuid4().hex
+        sessions[session_id] = McpTransportSession()
+        response_headers[MCP_SESSION_HEADER] = session_id
+    elif session_id is not None and message.get("method") == "notifications/initialized":
+        response_headers[MCP_SESSION_HEADER] = session_id
     if response is None:
-        return Response(status_code=202)
-    return JSONResponse(content=response)
+        return Response(status_code=202, headers=response_headers)
+    return JSONResponse(content=response, headers=response_headers)

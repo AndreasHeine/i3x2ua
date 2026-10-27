@@ -14,6 +14,8 @@ from i3x_server.api.mcp.monolithic import (
     MCP_IDENTITY_GUIDE_URI,
     MCP_MAPPING_GUIDE,
     MCP_MAPPING_GUIDE_URI,
+    MCP_MODEL_OVERVIEW_URI,
+    MCP_ROOT_RESOURCE_PREFIX,
     _handle_jsonrpc,
     _jsonrpc_error,
     _jsonrpc_response,
@@ -103,6 +105,23 @@ def test_tool_and_resource_and_roots_catalogs(monkeypatch: pytest.MonkeyPatch) -
         {"uri": "i3x://roots/root-1", "name": "Root 1"},
         {"uri": "i3x://roots/root-missing", "name": "root-missing"},
     ]
+    resources = _resource_catalog(request_roots)
+    resource_uris = {resource["uri"] for resource in resources}
+    assert MCP_MODEL_OVERVIEW_URI in resource_uris
+    assert f"{MCP_ROOT_RESOURCE_PREFIX}root-1" in resource_uris
+    assert f"{MCP_ROOT_RESOURCE_PREFIX}root-missing" not in resource_uris
+
+    root_content = json.loads(_read_resource_content(request_roots, f"{MCP_ROOT_RESOURCE_PREFIX}root-1")["text"])
+    assert root_content["elementId"] == "root-1"
+    assert root_content["displayName"] == "Root 1"
+    assert _read_resource_content(request_no_model, MCP_MODEL_OVERVIEW_URI)["mimeType"] == "application/json"
+    overview = json.loads(_read_resource_content(request_roots, MCP_MODEL_OVERVIEW_URI)["text"])
+    assert overview["modelAvailable"] is True
+    assert overview["summary"]["rootCount"] == 1
+    assert overview["roots"][0]["uri"] == f"{MCP_ROOT_RESOURCE_PREFIX}root-1"
+
+    with pytest.raises(HTTPException):
+        _read_resource_content(request_roots, f"{MCP_ROOT_RESOURCE_PREFIX}not-a-root")
 
 
 def test_prompt_registry_type_guard() -> None:

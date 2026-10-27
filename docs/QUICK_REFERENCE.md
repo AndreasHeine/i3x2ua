@@ -190,6 +190,7 @@ I3X_ENABLE_MCP=1 uv run uvicorn i3x_server.main:app --host 0.0.0.0 --port 8000
 - **Prompt execution**: `POST /mcp/prompts/execute` — Renders and executes prompt templates.
 - **Resource listing**: `GET /mcp/resources` — Returns MCP resources.
 - **Resource reading**: `POST /mcp/resources/read` — Reads a resource by URI.
+- **Model resources**: `i3x://model/overview` summarizes the current model; `i3x://roots/{elementId}` exposes a readable summary of each model root.
 - **OPC UA/i3X mapping guides**: `i3x://opcua-to-i3x-mapping` explains graph mapping; `i3x://element-id-and-type-id` explains i3X identifiers and OPC UA NodeId hashing.
 - **Plant root listing**: `GET /mcp/roots` — Custom helper for plant roots, not MCP filesystem roots.
 - **JSON-RPC**: `POST /mcp` — Standard JSON-RPC 2.0 interface.

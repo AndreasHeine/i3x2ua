@@ -42,6 +42,8 @@ MCP_CACHEABLE_RESULT_METHODS = {
 }
 MCP_MAPPING_GUIDE_URI = "i3x://opcua-to-i3x-mapping"
 MCP_IDENTITY_GUIDE_URI = "i3x://element-id-and-type-id"
+MCP_MODEL_OVERVIEW_URI = "i3x://model/overview"
+MCP_ROOT_RESOURCE_PREFIX = "i3x://roots/"
 MCP_MAPPING_GUIDE = """# OPC UA to i3X mapping guide
 
 i3x2ua converts the connected OPC UA address space into an i3X graph. Treat
@@ -357,6 +359,12 @@ def _tool_catalog(request: Request) -> list[dict[str, Any]]:
 def _resource_catalog(request: Request) -> list[dict[str, Any]]:
     resources: list[dict[str, Any]] = [
         {
+            "uri": MCP_MODEL_OVERVIEW_URI,
+            "name": "i3X model overview",
+            "description": "Current model summary, element counts, relationship counts, and navigation guidance.",
+            "mimeType": "application/json",
+        },
+        {
             "uri": MCP_MAPPING_GUIDE_URI,
             "name": "OPC UA to i3X mapping guide",
             "description": (
@@ -387,6 +395,21 @@ def _resource_catalog(request: Request) -> list[dict[str, Any]]:
             "mimeType": "application/json",
         },
     ]
+
+    model_cache = getattr(request.app.state, "model_cache", None)
+    root_nodes = getattr(model_cache, "nodes_by_id", {})
+    for root in _roots_catalog(request):
+        root_id = root["uri"].removeprefix(MCP_ROOT_RESOURCE_PREFIX)
+        if not isinstance(root_nodes, Mapping) or root_id not in root_nodes:
+            continue
+        resources.append(
+            {
+                "uri": root["uri"],
+                "name": root["name"],
+                "description": "Top-level i3X model element. Read this resource for a summary and navigation hints.",
+                "mimeType": "application/json",
+            }
+        )
 
     for prompt in list_prompt_metadata(_prompt_registry(request)):
         resources.append(
@@ -425,8 +448,145 @@ def _project_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
 
+def _model_overview_content(request: Request) -> dict[str, Any]:
+    model = getattr(request.app.state, "model_cache", None)
+    nodes_by_id = getattr(model, "nodes_by_id", None)
+    root_ids = getattr(model, "root_ids", None)
+    if not isinstance(nodes_by_id, Mapping) or not isinstance(root_ids, list):
+        overview: dict[str, Any] = {
+            "modelAvailable": False,
+            "message": "The i3X model has not been built or loaded yet.",
+            "navigation": (
+                "Use getObjectsV1(root=true) to discover model roots, then queryRelatedObjectsV1 or "
+                "getChildren to navigate the model."
+            ),
+        }
+    else:
+        nodes = [node for node in nodes_by_id.values() if node is not None]
+        kind_counts: dict[str, int] = {}
+        for node in nodes:
+            kind = getattr(node, "kind", None)
+            if isinstance(kind, str):
+                kind_counts[kind] = kind_counts.get(kind, 0) + 1
+
+        edge_counts: dict[str, int] = {}
+        for plane, attribute in (
+            ("hierarchy", "hierarchy_children_by_id"),
+            ("composition", "composition_children_by_id"),
+            ("graph", "graph_related_by_id"),
+        ):
+            edges_by_id = getattr(model, attribute, {})
+            edge_counts[plane] = (
+                sum(len(edges) for edges in edges_by_id.values()) if isinstance(edges_by_id, Mapping) else 0
+            )
+
+        root_summaries: list[dict[str, Any]] = []
+        for root_id in root_ids:
+            node = nodes_by_id.get(root_id) if isinstance(root_id, str) else None
+            if node is None:
+                continue
+            root_summaries.append(
+                {
+                    "uri": f"{MCP_ROOT_RESOURCE_PREFIX}{root_id}",
+                    "elementId": root_id,
+                    "displayName": getattr(node, "name", root_id),
+                    "kind": getattr(node, "kind", "unknown"),
+                    "typeElementId": (
+                        getattr(node, "type", None)
+                        or getattr(node, "source_type_id", None)
+                        or getattr(node, "kind", "unknown")
+                    ),
+                    "namespaceUri": getattr(model, "namespace_uri_by_id", {}).get(root_id)
+                    if isinstance(getattr(model, "namespace_uri_by_id", {}), Mapping)
+                    else None,
+                }
+            )
+
+        overview = {
+            "modelAvailable": True,
+            "revision": getattr(model, "revision", ""),
+            "buildCompletedAtUtc": getattr(model, "build_completed_at_utc", None),
+            "summary": {
+                "totalElements": len(nodes),
+                "rootCount": len(root_summaries),
+                "elementsByKind": dict(sorted(kind_counts.items())),
+                "relationshipEdges": edge_counts,
+            },
+            "roots": root_summaries,
+            "navigation": (
+                "Start from a listed root or read its i3x://roots/{elementId} resource for a summary. "
+                "Use getChildren or queryRelatedObjectsV1 to navigate relevant branches. "
+                "Use searchModelElements or findElementsByName when the target is unknown. "
+                "Read values only after discovering the exact property elementId; value/history maxDepth "
+                "traverses composition, not hierarchy."
+            ),
+        }
+
+    return {
+        "uri": MCP_MODEL_OVERVIEW_URI,
+        "mimeType": "application/json",
+        "text": json.dumps(overview, ensure_ascii=False),
+    }
+
+
+def _root_resource_content(request: Request, uri: str) -> dict[str, Any]:
+    root_id = uri.removeprefix(MCP_ROOT_RESOURCE_PREFIX)
+    model = getattr(request.app.state, "model_cache", None)
+    nodes_by_id = getattr(model, "nodes_by_id", None)
+    root_ids = getattr(model, "root_ids", None)
+    if not root_id or not isinstance(root_ids, list) or root_id not in root_ids or not isinstance(nodes_by_id, Mapping):
+        _raise_invalid_resource(uri)
+
+    node = nodes_by_id.get(root_id)
+    if node is None:
+        _raise_invalid_resource(uri)
+
+    namespace_uri_by_id = getattr(model, "namespace_uri_by_id", {})
+    summary = {
+        "elementId": root_id,
+        "displayName": getattr(node, "name", root_id),
+        "kind": getattr(node, "kind", "unknown"),
+        "semanticRole": getattr(model, "semantic_role_by_id", {}).get(
+            root_id,
+            getattr(node, "semantic_role", "unknown"),
+        )
+        if isinstance(getattr(model, "semantic_role_by_id", {}), Mapping)
+        else getattr(node, "semantic_role", "unknown"),
+        "typeElementId": getattr(node, "type", None)
+        or getattr(node, "source_type_id", None)
+        or getattr(node, "kind", "unknown"),
+        "namespaceUri": namespace_uri_by_id.get(root_id) if isinstance(namespace_uri_by_id, Mapping) else None,
+        "relationshipCounts": {
+            plane: len(getattr(model, attribute, {}).get(root_id, []))
+            if isinstance(getattr(model, attribute, {}), Mapping)
+            else 0
+            for plane, attribute in (
+                ("hierarchyChildren", "hierarchy_children_by_id"),
+                ("compositionChildren", "composition_children_by_id"),
+                ("graphRelations", "graph_related_by_id"),
+            )
+        },
+        "navigation": (
+            "Use getChildren or queryRelatedObjectsV1 with this elementId to explore connected elements. "
+            "For values, discover exact property elementIds first; hierarchy traversal does not imply "
+            "value/history traversal."
+        ),
+    }
+    return {
+        "uri": uri,
+        "mimeType": "application/json",
+        "text": json.dumps(summary, ensure_ascii=False),
+    }
+
+
 def _read_resource_content(request: Request, uri: str) -> dict[str, Any]:
     project_root = _project_root()
+    if uri == MCP_MODEL_OVERVIEW_URI:
+        return _model_overview_content(request)
+
+    if uri.startswith(MCP_ROOT_RESOURCE_PREFIX):
+        return _root_resource_content(request, uri)
+
     if uri == MCP_MAPPING_GUIDE_URI:
         return {
             "uri": uri,

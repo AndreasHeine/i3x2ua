@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 import time
 from collections.abc import Generator, Mapping
@@ -3234,6 +3235,8 @@ def test_mcp_resources_list_rest(client: TestClient) -> None:
     resources = payload["resources"]
     assert any(item["uri"] == "i3x://openapi" for item in resources)
     assert any(item["uri"] == "i3x://mcp-overrides" for item in resources)
+    assert any(item["uri"] == "i3x://model/overview" for item in resources)
+    assert any(item["uri"] == "i3x://roots/asset-root" for item in resources)
 
 
 def test_mcp_resource_read_rest(client: TestClient) -> None:
@@ -3244,6 +3247,25 @@ def test_mcp_resource_read_rest(client: TestClient) -> None:
     assert len(contents) == 1
     assert contents[0]["uri"] == "i3x://openapi"
     assert contents[0]["mimeType"] == "application/json"
+
+
+def test_mcp_model_overview_and_root_resources_read_rest(client: TestClient) -> None:
+    overview_response = client.post("/mcp/resources/read", json={"uri": "i3x://model/overview"})
+    assert overview_response.status_code == 200
+    overview_content = overview_response.json()["contents"][0]
+    assert overview_content["mimeType"] == "application/json"
+    overview = json.loads(overview_content["text"])
+    assert overview["modelAvailable"] is True
+    assert overview["summary"]["rootCount"] > 0
+    assert any(root["uri"] == "i3x://roots/asset-root" for root in overview["roots"])
+
+    root_response = client.post("/mcp/resources/read", json={"uri": "i3x://roots/asset-root"})
+    assert root_response.status_code == 200
+    root_content = root_response.json()["contents"][0]
+    assert root_content["mimeType"] == "application/json"
+    root = json.loads(root_content["text"])
+    assert root["elementId"] == "asset-root"
+    assert root["displayName"]
 
 
 def test_mcp_roots_list_rest(client: TestClient) -> None:

@@ -40,6 +40,108 @@ MCP_CACHEABLE_RESULT_METHODS = {
     "resources/templates/list",
     "resources/read",
 }
+MCP_MAPPING_GUIDE_URI = "i3x://opcua-to-i3x-mapping"
+MCP_IDENTITY_GUIDE_URI = "i3x://element-id-and-type-id"
+MCP_MAPPING_GUIDE = """# OPC UA to i3X mapping guide
+
+i3x2ua converts the connected OPC UA address space into an i3X graph. Treat
+`elementId` and relationship IDs as opaque identifiers; use the IDs returned by
+the server rather than deriving or guessing them.
+
+## Nodes and types
+
+- OPC UA instance nodes are exposed as i3X objects. Variables represent values
+  and properties in the model; ObjectTypes describe the schema of those objects.
+- `elementId` is generated deterministically from the expanded OPC UA NodeId,
+  using the namespace URI rather than a session-specific namespace index.
+- `typeElementId` links an object to its i3X ObjectType. OPC UA type-definition
+  and DataType identities are preserved in metadata such as `sourceTypeId`,
+  `uaTypeNodeId`, and `namespaceUri`.
+- A missing type is synthesized from available DataType metadata when possible;
+  otherwise an `UnknownType` placeholder preserves the unresolved reference.
+
+## References become three relationship planes
+
+- **Hierarchy** represents structural parent/child organization, such as
+  `Plant -> Line -> Pump`. `Organizes` and hierarchical references generally
+  map here. Parent selection is deterministic.
+- **Composition** represents parts or properties belonging to an object, such
+  as `Pump -> Temperature`. `HasProperty` maps here. `HasComponent` and
+  `HasOrderedComponent` map Variable targets to composition; non-Variable
+  targets map to hierarchy.
+- **Graph** preserves non-hierarchical links between objects. OPC UA
+  `NonHierarchicalReferences` and their subtypes map here; graph links do not
+  determine object parents.
+
+Reference classification follows the OPC UA reference type's supertype chain.
+If a reference type cannot be classified, it is retained as a graph
+relationship. `HasTypeDefinition` and `HasSubtype` describe type metadata, not
+instance-to-instance edges. Built-in i3X relationships express hierarchy and
+composition; discovered graph relationship names come from OPC UA
+ReferenceType BrowseNames.
+
+## Reading the graph
+
+Start with `getObjectsV1` to discover real object IDs, then use
+`queryRelatedObjectsV1` to navigate hierarchy, composition, and graph links.
+Value and history reads recurse through composition only: hierarchy navigation
+does not implicitly read values from descendants. Use `maxDepth=1` for the
+selected object, `maxDepth=2` for direct composition children, and `maxDepth=0`
+for unlimited composition traversal.
+"""
+MCP_IDENTITY_GUIDE = """# i3X ElementId and type identifiers
+
+## Keep the identifiers distinct
+
+- **`elementId`** identifies one i3X element (an object instance or an
+  ObjectType). For an object instance, use it to fetch or navigate that exact
+  node. It is an i3X identifier, not the OPC UA NodeId.
+- **`typeElementId`** on an object identifies the i3X type associated with that
+  instance. Use it to find the corresponding ObjectType in the i3X type
+  catalog. It is a reference to an i3X type, not a second ID for the instance.
+- **`sourceTypeId`** is OPC UA provenance metadata, not an i3X type identifier.
+  For Objects it normally records the OPC UA TypeDefinition NodeId; for
+  Variables, the mapped `typeElementId` is based on the OPC UA DataType.
+  `uaTypeNodeId` also records the source TypeDefinition when present.
+- **OPC UA `NodeId` / `ExpandedNodeId`** identifies the source node in the OPC
+  UA address space. The raw NodeId is retained as `metadata.uaNodeId`; its
+  expanded form is retained as `metadata.expandedNodeId`.
+
+ObjectTypes also have their own i3X `elementId`. An object's `typeElementId`
+refers to that ID. A type's OPC UA identity is exposed separately as its
+`sourceTypeId` and OPC UA schema metadata; do not substitute that provenance
+value for the i3X `typeElementId`.
+
+## How object instance elementIds are generated
+
+The mapper first converts the source NodeId to an ExpandedNodeId using the
+server's OPC UA namespace table:
+
+1. Replace `ns=N` with the namespace URI, yielding `nsu=<namespace-uri>`.
+   Namespace index zero uses `http://opcfoundation.org/UA/`. For example,
+   `ns=2;s=Pump-17` becomes
+   `nsu=urn:example:plant;s=Pump-17` when namespace index 2 resolves to
+   `urn:example:plant`.
+2. Keep the identifier type and value (`i=` numeric, `s=` string, `g=` GUID,
+   or `b=` ByteString) as part of the expanded string.
+3. Compute SHA-1 over the UTF-8 bytes of that expanded string and take the
+   first 16 lowercase hexadecimal characters.
+4. Prefix the digest with the i3X kind and a hyphen:
+   `<kind>-<digest>`. OPC UA Objects map to `asset`, Variables to `property`,
+   Methods to `action`, and event-notifier nodes to `eventSource`.
+
+Thus the example ID is `asset-<first-16-hex-digits-of-SHA1-of-the-expanded-string>`.
+The hash input is the expanded NodeId string, not the BrowseName, DisplayName,
+TypeDefinition, or raw namespace-index NodeId. Resolving the namespace URI
+before hashing keeps the ID stable when OPC UA namespace indexes change
+between connections. If a namespace index cannot be resolved, the mapper
+retains the original NodeId string, so that stability guarantee cannot be
+made for that unresolved namespace.
+
+Use IDs returned by the server rather than calculating or guessing them.
+Type IDs may be synthesized from OPC UA type metadata and are not necessarily
+generated by the same instance-node hashing rule.
+"""
 MCP_INSTRUCTIONS = (
     "Discover elementIds before querying values. Value/history maxDepth traverses composition only, "
     "not hierarchy: 1 reads only the object, 2 includes direct components, 0 is unlimited. "
@@ -255,6 +357,24 @@ def _tool_catalog(request: Request) -> list[dict[str, Any]]:
 def _resource_catalog(request: Request) -> list[dict[str, Any]]:
     resources: list[dict[str, Any]] = [
         {
+            "uri": MCP_MAPPING_GUIDE_URI,
+            "name": "OPC UA to i3X mapping guide",
+            "description": (
+                "Short guide to how OPC UA nodes and references map into i3X objects, types, "
+                "Hierarchy, Composition, and Graph relationships."
+            ),
+            "mimeType": "text/markdown",
+        },
+        {
+            "uri": MCP_IDENTITY_GUIDE_URI,
+            "name": "i3X ElementId and type IDs",
+            "description": (
+                "Explains elementId, typeElementId, and sourceTypeId, including how OPC UA NodeIds "
+                "become stable i3X instance IDs."
+            ),
+            "mimeType": "text/markdown",
+        },
+        {
             "uri": "i3x://openapi",
             "name": "OpenAPI specification",
             "description": "Server OpenAPI JSON document",
@@ -307,6 +427,20 @@ def _project_root() -> Path:
 
 def _read_resource_content(request: Request, uri: str) -> dict[str, Any]:
     project_root = _project_root()
+    if uri == MCP_MAPPING_GUIDE_URI:
+        return {
+            "uri": uri,
+            "mimeType": "text/markdown",
+            "text": MCP_MAPPING_GUIDE,
+        }
+
+    if uri == MCP_IDENTITY_GUIDE_URI:
+        return {
+            "uri": uri,
+            "mimeType": "text/markdown",
+            "text": MCP_IDENTITY_GUIDE,
+        }
+
     if uri == "i3x://openapi":
         return {
             "uri": uri,

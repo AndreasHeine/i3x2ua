@@ -10,6 +10,10 @@ from fastapi import FastAPI, HTTPException
 from starlette.requests import Request
 
 from i3x_server.api.mcp.monolithic import (
+    MCP_IDENTITY_GUIDE,
+    MCP_IDENTITY_GUIDE_URI,
+    MCP_MAPPING_GUIDE,
+    MCP_MAPPING_GUIDE_URI,
     _handle_jsonrpc,
     _jsonrpc_error,
     _jsonrpc_response,
@@ -80,6 +84,12 @@ def test_tool_and_resource_and_roots_catalogs(monkeypatch: pytest.MonkeyPatch) -
     request_with_prompts = _request({"mcp_prompts": prompt_registry})
     resources = _resource_catalog(request_with_prompts)
     assert any(item["uri"] == "i3x://prompts/p1" for item in resources)
+    mapping_guide = next(item for item in resources if item["uri"] == MCP_MAPPING_GUIDE_URI)
+    assert mapping_guide["mimeType"] == "text/markdown"
+    assert "Composition" in mapping_guide["description"]
+    identity_guide = next(item for item in resources if item["uri"] == MCP_IDENTITY_GUIDE_URI)
+    assert identity_guide["mimeType"] == "text/markdown"
+    assert "elementId" in identity_guide["description"]
 
     request_no_model = _request()
     assert _roots_catalog(request_no_model) == []
@@ -114,6 +124,15 @@ def test_read_resource_content_variants(tmp_path: Path, monkeypatch: pytest.Monk
 
     openapi = _read_resource_content(request, "i3x://openapi")
     assert json.loads(openapi["text"]) == {"openapi": "3.1.0"}
+    mapping_guide = _read_resource_content(request, MCP_MAPPING_GUIDE_URI)
+    assert mapping_guide["mimeType"] == "text/markdown"
+    assert mapping_guide["text"] == MCP_MAPPING_GUIDE
+    assert "Plant -> Line -> Pump" in mapping_guide["text"]
+    identity_guide = _read_resource_content(request, MCP_IDENTITY_GUIDE_URI)
+    assert identity_guide["mimeType"] == "text/markdown"
+    assert identity_guide["text"] == MCP_IDENTITY_GUIDE
+    assert "first 16 lowercase hexadecimal characters" in identity_guide["text"]
+    assert "ns=2;s=Pump-17" in identity_guide["text"]
     assert _read_resource_content(request, "i3x://mcp-overrides")["mimeType"] == "application/json"
     assert json.loads(_read_resource_content(request, "i3x://prompts/demo")["text"])["name"] == "demo"
 

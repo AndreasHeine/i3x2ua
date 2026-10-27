@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from jsonschema import validate
 
 from i3x_server.api.mcp.monolithic import (
+    MCP_IDENTITY_GUIDE_URI,
     MCP_META_CLIENT_CAPABILITIES,
     MCP_META_PROTOCOL_VERSION,
     MCP_PROTOCOL_VERSION,
@@ -157,6 +158,32 @@ def test_modern_discovery_and_requests_are_stateless(protocol_client: TestClient
         assert result["resultType"] == "complete"
         assert result["ttlMs"] == 0
         assert result["cacheScope"] == "private"
+    mapping_guide = next(
+        resource for resource in resources_result["resources"] if resource["uri"] == "i3x://opcua-to-i3x-mapping"
+    )
+    assert mapping_guide["mimeType"] == "text/markdown"
+    identity_guide = next(
+        resource for resource in resources_result["resources"] if resource["uri"] == MCP_IDENTITY_GUIDE_URI
+    )
+    assert identity_guide["mimeType"] == "text/markdown"
+
+    read_result = modern_rpc(
+        protocol_client,
+        "resources/read",
+        {"uri": mapping_guide["uri"]},
+    ).json()["result"]
+    assert read_result["contents"][0]["mimeType"] == "text/markdown"
+    assert "Composition" in read_result["contents"][0]["text"]
+    assert read_result["ttlMs"] == 0
+    assert read_result["cacheScope"] == "private"
+
+    identity_result = modern_rpc(
+        protocol_client,
+        "resources/read",
+        {"uri": identity_guide["uri"]},
+    ).json()["result"]
+    assert "typeElementId" in identity_result["contents"][0]["text"]
+    assert "SHA-1" in identity_result["contents"][0]["text"]
 
 
 def test_modern_protocol_validation_errors(protocol_client: TestClient) -> None:

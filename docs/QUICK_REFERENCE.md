@@ -176,13 +176,13 @@ I3X_ENABLE_MCP=1 uv run uvicorn i3x_server.main:app --host 0.0.0.0 --port 8000
 | Prompt discovery and execution | ✅ Supported | `prompts/list`, `prompts/get`, `prompts/execute` via JSON-RPC and REST. |
 | Resource listing and reading | ✅ Supported | `resources/list`, `resources/read` via JSON-RPC and REST. |
 | Plant root listing | Custom REST | `/mcp/roots`; use object discovery for plant roots, not MCP filesystem `roots/list`. |
-| JSON-RPC batch requests | Not supported | Protocol revision `2025-06-18` accepts one message per POST. |
+| JSON-RPC batch requests | Not supported | Supported protocol revisions accept one message per POST. |
 | Update/write operations | REST-only optional | `PUT` routes are intentionally excluded from MCP tools. Use REST writes with `I3X_ENABLE_WRITES=1`. |
 | Server-Sent Event streaming | ✅ Available | Via REST `/v1/subscriptions/stream` endpoint. |
 
 ### MCP Endpoints
 
-- **Transport**: `POST /mcp` uses Streamable HTTP with JSON responses and revision `2025-06-18`. `GET /mcp` returns `405`; legacy SSE discovery is not supported. List-changed notifications are not supported; prompt overrides load at startup.
+- **Transport**: Legacy clients negotiate `2025-03-26`, `2025-06-18`, or `2025-11-25` through `initialize` and may use session-scoped SSE. Modern `2026-07-28` clients send per-request metadata and HTTP headers and do not need a session. List-changed notifications are not currently emitted; prompt overrides load at startup.
 - **Tool listing**: `GET /mcp/tools` — Returns tool catalog in REST format.
 - **Tool calling**: `POST /mcp/call` — REST-style tool invocation.
 - **Prompt listing**: `GET /mcp/prompts` — Returns prompt metadata.
@@ -190,6 +190,8 @@ I3X_ENABLE_MCP=1 uv run uvicorn i3x_server.main:app --host 0.0.0.0 --port 8000
 - **Prompt execution**: `POST /mcp/prompts/execute` — Renders and executes prompt templates.
 - **Resource listing**: `GET /mcp/resources` — Returns MCP resources.
 - **Resource reading**: `POST /mcp/resources/read` — Reads a resource by URI.
+- **Model resources**: `i3x://model/overview` summarizes the current model; `i3x://roots/{elementId}` exposes a readable summary of each model root.
+- **OPC UA/i3X mapping guides**: `i3x://opcua-to-i3x-mapping` explains graph mapping; `i3x://element-id-and-type-id` explains i3X identifiers and OPC UA NodeId hashing.
 - **Plant root listing**: `GET /mcp/roots` — Custom helper for plant roots, not MCP filesystem roots.
 - **JSON-RPC**: `POST /mcp` — Standard JSON-RPC 2.0 interface.
 
@@ -201,9 +203,9 @@ Tools advertise annotations and an output schema for
 `structuredContent: {"statusCode": ..., "body": ...}`. JSON text content remains
 available. `isError` flags HTTP failures and per-item failures, preserving all
 item results. Argument errors use `-32602`; missing resources use `-32002`.
-Notifications return HTTP `202` without a body. Unsupported initialization
-versions negotiate to `2025-06-18`; unsupported `MCP-Protocol-Version` headers
-return HTTP `400`. Origin-bearing requests require a same-origin loopback URL or an
+Notifications return HTTP `202` without a body. Unsupported legacy initialization
+versions negotiate to `2025-11-25`; unsupported modern versions return HTTP `400`
+with `-32022`. Origin-bearing requests require a same-origin loopback URL or an
 explicit `I3X_CORS_ALLOWED_ORIGINS` entry; `*` does not authorize MCP origins.
 
 ### With Authentication (BasicAuth + HTTPS)

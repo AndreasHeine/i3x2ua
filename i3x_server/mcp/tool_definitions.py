@@ -168,7 +168,10 @@ class McpToolDefinition:
     def output_schema(self) -> dict[str, Any]:
         return {
             "type": "object",
-            "properties": {"statusCode": {"type": "integer"}, "body": {}},
+            "properties": {
+                "statusCode": {"type": "integer"},
+                "body": {"type": "object", "additionalProperties": True},
+            },
             "required": ["statusCode", "body"],
             "additionalProperties": False,
         }

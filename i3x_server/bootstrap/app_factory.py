@@ -25,6 +25,8 @@ from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipMiddleware
 
 from i3x_server.api.mcp import create_fastmcp_server, router as mcp_router
+from i3x_server.api.mcp import router as mcp_router
+from i3x_server.api.mcp.monolithic import shutdown_mcp_transport
 from i3x_server.api.openapi import DocumentedFastAPI
 from i3x_server.api.ua import router as ua_router
 from i3x_server.api.v1 import router as v1_router
@@ -343,6 +345,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     def _early_shutdown() -> None:
         """Called from the asyncio event loop when a termination signal fires."""
         _sub_svc.initiate_shutdown()
+        shutdown_mcp_transport(app)
 
     def _make_chained(sig: int) -> None:
         _old = signal.getsignal(sig)

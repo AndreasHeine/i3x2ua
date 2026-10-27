@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 import time
 from collections.abc import Generator, Mapping
@@ -29,7 +30,7 @@ from i3x_server.infrastructure.opcua.client import (
     OpcUaSubscriptionCapabilities,
 )
 from i3x_server.infrastructure.subscriptions.service import SubscriptionService
-from i3x_server.mcp import load_tool_overrides
+from i3x_server.mcp import load_overrides, load_tool_overrides
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
 
@@ -2563,6 +2564,9 @@ def test_openapi_validation_and_streaming_contracts(client: TestClient) -> None:
     partial_schema = document["components"]["schemas"]["PartialSyncResponse"]
     assert set(partial_schema["required"]) == {"success", "result", "responseDetail"}
     assert document["paths"]["/mcp"]["post"]["responses"]["202"]["content"] == {}
+    assert document["paths"]["/mcp"]["get"]["responses"]["200"]["content"]["text/event-stream"]["schema"] == {
+        "type": "string"
+    }
     assert "securitySchemes" not in document["components"]
     assert document["info"]["contact"]["url"].startswith("https://")
     assert document["externalDocs"]["url"].startswith("https://")
@@ -2610,6 +2614,13 @@ def test_openapi_conditional_get_matches_runtime(client: TestClient, path: str) 
     assert conditional.content == b""
     assert conditional.headers["etag"] == response.headers["etag"]
     tools = client.get("/mcp/tools").json()["tools"]
+    excluded_tools = load_overrides().get("excluded_tools", [])
+    excluded_tools = (
+        {name for name in excluded_tools if isinstance(name, str)} if isinstance(excluded_tools, list) else set()
+    )
+    if operation["operationId"] in excluded_tools:
+        assert operation["operationId"] not in tools
+        return
     assert "If-None-Match" not in tools[operation["operationId"]]["inputSchema"]["properties"]
 
 
@@ -2847,6 +2858,10 @@ def test_mcp_tool_input_schemas_match_openapi_contract(client: TestClient) -> No
     openapi = client.get("/openapi.json").json()
     tools_payload = client.get("/mcp/tools").json()
     tools = tools_payload["tools"]
+    excluded_tools = load_overrides().get("excluded_tools", [])
+    excluded_tools = (
+        {name for name in excluded_tools if isinstance(name, str)} if isinstance(excluded_tools, list) else set()
+    )
 
     components = openapi.get("components", {})
     assert isinstance(components, Mapping)
@@ -2867,6 +2882,9 @@ def test_mcp_tool_input_schemas_match_openapi_contract(client: TestClient) -> No
             if not isinstance(operation_id, str) or path.endswith("/subscriptions/stream"):
                 continue
             if method.upper() == "PUT":
+                continue
+            if operation_id in excluded_tools:
+                assert operation_id not in tools
                 continue
 
             assert operation_id in tools, f"Missing MCP tool for operationId={operation_id}"
@@ -3129,8 +3147,9 @@ def test_mcp_support_is_disabled_by_default(client_without_mcp: TestClient) -> N
     assert not any(path.startswith("/mcp") for path in openapi["paths"])
 
 
-def test_mcp_endpoint_rejects_get_stream(client: TestClient) -> None:
-    assert client.get("/mcp").status_code == 405
+def test_mcp_get_requires_sse_accept_and_session(client: TestClient) -> None:
+    assert client.get("/mcp").status_code == 406
+    assert client.get("/mcp", headers={"Accept": "text/event-stream"}).status_code == 400
 
 
 def test_mcp_initialize_request(client: TestClient) -> None:
@@ -3216,6 +3235,8 @@ def test_mcp_resources_list_rest(client: TestClient) -> None:
     resources = payload["resources"]
     assert any(item["uri"] == "i3x://openapi" for item in resources)
     assert any(item["uri"] == "i3x://mcp-overrides" for item in resources)
+    assert any(item["uri"] == "i3x://model/overview" for item in resources)
+    assert any(item["uri"] == "i3x://roots/asset-root" for item in resources)
 
 
 def test_mcp_resource_read_rest(client: TestClient) -> None:
@@ -3226,6 +3247,25 @@ def test_mcp_resource_read_rest(client: TestClient) -> None:
     assert len(contents) == 1
     assert contents[0]["uri"] == "i3x://openapi"
     assert contents[0]["mimeType"] == "application/json"
+
+
+def test_mcp_model_overview_and_root_resources_read_rest(client: TestClient) -> None:
+    overview_response = client.post("/mcp/resources/read", json={"uri": "i3x://model/overview"})
+    assert overview_response.status_code == 200
+    overview_content = overview_response.json()["contents"][0]
+    assert overview_content["mimeType"] == "application/json"
+    overview = json.loads(overview_content["text"])
+    assert overview["modelAvailable"] is True
+    assert overview["summary"]["rootCount"] > 0
+    assert any(root["uri"] == "i3x://roots/asset-root" for root in overview["roots"])
+
+    root_response = client.post("/mcp/resources/read", json={"uri": "i3x://roots/asset-root"})
+    assert root_response.status_code == 200
+    root_content = root_response.json()["contents"][0]
+    assert root_content["mimeType"] == "application/json"
+    root = json.loads(root_content["text"])
+    assert root["elementId"] == "asset-root"
+    assert root["displayName"]
 
 
 def test_mcp_roots_list_rest(client: TestClient) -> None:

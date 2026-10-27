@@ -26,9 +26,9 @@ Verify the OpenAPI endpoint and MCP tool catalog:
 - `http://127.0.0.1:8000/mcp/tools`
 
 If `/mcp` returns `404`, MCP is not enabled in the server process.
-An enabled `/mcp` returns `405` to a browser GET; this is expected. Configure
-VS Code with the `/mcp` URL below: it uses POST-based Streamable HTTP with
-protocol revision `2025-06-18`, not legacy SSE discovery.
+Configure VS Code with the `/mcp` URL below. The endpoint supports legacy
+initialization-based revisions `2025-03-26`, `2025-06-18`, and `2025-11-25`,
+as well as the stateless per-request protocol `2026-07-28`.
 
 ## 2. Add the MCP Server in VS Code
 

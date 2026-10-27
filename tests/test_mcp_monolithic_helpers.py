@@ -10,6 +10,12 @@ from fastapi import FastAPI, HTTPException
 from starlette.requests import Request
 
 from i3x_server.api.mcp.monolithic import (
+    MCP_IDENTITY_GUIDE,
+    MCP_IDENTITY_GUIDE_URI,
+    MCP_MAPPING_GUIDE,
+    MCP_MAPPING_GUIDE_URI,
+    MCP_MODEL_OVERVIEW_URI,
+    MCP_ROOT_RESOURCE_PREFIX,
     _handle_jsonrpc,
     _jsonrpc_error,
     _jsonrpc_response,
@@ -80,6 +86,12 @@ def test_tool_and_resource_and_roots_catalogs(monkeypatch: pytest.MonkeyPatch) -
     request_with_prompts = _request({"mcp_prompts": prompt_registry})
     resources = _resource_catalog(request_with_prompts)
     assert any(item["uri"] == "i3x://prompts/p1" for item in resources)
+    mapping_guide = next(item for item in resources if item["uri"] == MCP_MAPPING_GUIDE_URI)
+    assert mapping_guide["mimeType"] == "text/markdown"
+    assert "Composition" in mapping_guide["description"]
+    identity_guide = next(item for item in resources if item["uri"] == MCP_IDENTITY_GUIDE_URI)
+    assert identity_guide["mimeType"] == "text/markdown"
+    assert "elementId" in identity_guide["description"]
 
     request_no_model = _request()
     assert _roots_catalog(request_no_model) == []
@@ -93,6 +105,23 @@ def test_tool_and_resource_and_roots_catalogs(monkeypatch: pytest.MonkeyPatch) -
         {"uri": "i3x://roots/root-1", "name": "Root 1"},
         {"uri": "i3x://roots/root-missing", "name": "root-missing"},
     ]
+    resources = _resource_catalog(request_roots)
+    resource_uris = {resource["uri"] for resource in resources}
+    assert MCP_MODEL_OVERVIEW_URI in resource_uris
+    assert f"{MCP_ROOT_RESOURCE_PREFIX}root-1" in resource_uris
+    assert f"{MCP_ROOT_RESOURCE_PREFIX}root-missing" not in resource_uris
+
+    root_content = json.loads(_read_resource_content(request_roots, f"{MCP_ROOT_RESOURCE_PREFIX}root-1")["text"])
+    assert root_content["elementId"] == "root-1"
+    assert root_content["displayName"] == "Root 1"
+    assert _read_resource_content(request_no_model, MCP_MODEL_OVERVIEW_URI)["mimeType"] == "application/json"
+    overview = json.loads(_read_resource_content(request_roots, MCP_MODEL_OVERVIEW_URI)["text"])
+    assert overview["modelAvailable"] is True
+    assert overview["summary"]["rootCount"] == 1
+    assert overview["roots"][0]["uri"] == f"{MCP_ROOT_RESOURCE_PREFIX}root-1"
+
+    with pytest.raises(HTTPException):
+        _read_resource_content(request_roots, f"{MCP_ROOT_RESOURCE_PREFIX}not-a-root")
 
 
 def test_prompt_registry_type_guard() -> None:
@@ -114,6 +143,15 @@ def test_read_resource_content_variants(tmp_path: Path, monkeypatch: pytest.Monk
 
     openapi = _read_resource_content(request, "i3x://openapi")
     assert json.loads(openapi["text"]) == {"openapi": "3.1.0"}
+    mapping_guide = _read_resource_content(request, MCP_MAPPING_GUIDE_URI)
+    assert mapping_guide["mimeType"] == "text/markdown"
+    assert mapping_guide["text"] == MCP_MAPPING_GUIDE
+    assert "Plant -> Line -> Pump" in mapping_guide["text"]
+    identity_guide = _read_resource_content(request, MCP_IDENTITY_GUIDE_URI)
+    assert identity_guide["mimeType"] == "text/markdown"
+    assert identity_guide["text"] == MCP_IDENTITY_GUIDE
+    assert "first 16 lowercase hexadecimal characters" in identity_guide["text"]
+    assert "ns=2;s=Pump-17" in identity_guide["text"]
     assert _read_resource_content(request, "i3x://mcp-overrides")["mimeType"] == "application/json"
     assert json.loads(_read_resource_content(request, "i3x://prompts/demo")["text"])["name"] == "demo"
 
@@ -139,7 +177,7 @@ async def test_handle_jsonrpc_core_branches(monkeypatch: pytest.MonkeyPatch) -> 
         {"jsonrpc": "2.0", "id": 2, "method": "initialize", "params": {"protocolVersion": "v"}},
     )
     assert initialized is not None
-    assert initialized["result"]["protocolVersion"] == "2025-06-18"
+    assert initialized["result"]["protocolVersion"] == "2025-11-25"
 
     unexpected_request = await _handle_jsonrpc(
         request, {"jsonrpc": "2.0", "id": 3, "method": "notifications/initialized"}

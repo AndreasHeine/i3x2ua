@@ -13,6 +13,7 @@ from i3x_server.api.mcp.monolithic import (
     _compact_tool_body,
     publish_mcp_notification,
     router,
+    shutdown_mcp_transport,
 )
 from i3x_server.mcp import build_mcp_tools
 from i3x_server.prompts.registry import PromptDefinition, PromptRegistry
@@ -138,6 +139,33 @@ def test_sse_session_notifications_and_cleanup(protocol_client: TestClient) -> N
     assert session_id not in app.state.mcp_transport_sessions
     assert not session.streams
     assert publish_mcp_notification(app, session_id, "notifications/message") == 0
+
+
+def test_sse_stream_closes_on_transport_shutdown(protocol_client: TestClient) -> None:
+    initialized = protocol_client.post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {"protocolVersion": "2025-06-18"},
+        },
+    )
+    session_id = initialized.headers[MCP_SESSION_HEADER]
+    app = cast(FastAPI, protocol_client.app)
+    session = app.state.mcp_transport_sessions[session_id]
+
+    with protocol_client.stream(
+        "GET",
+        "/mcp",
+        headers={"Accept": "text/event-stream", MCP_SESSION_HEADER: session_id},
+    ) as stream:
+        assert stream.status_code == 200
+        shutdown_mcp_transport(app)
+        assert list(stream.iter_lines()) == []
+
+    assert app.state.mcp_transport_sessions == {}
+    assert not session.streams
 
 
 @pytest.mark.parametrize("origin, expected", [("https://evil.example", 403), ("https://trusted.example", 200)])

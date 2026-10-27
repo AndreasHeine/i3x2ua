@@ -64,6 +64,17 @@ def publish_mcp_notification(
     return len(session.streams)
 
 
+def shutdown_mcp_transport(app: FastAPI) -> None:
+    sessions = getattr(app.state, "mcp_transport_sessions", {})
+    if not isinstance(sessions, dict):
+        return
+    for session in sessions.values():
+        if isinstance(session, McpTransportSession):
+            for stream in tuple(session.streams):
+                stream.put_nowait(None)
+    sessions.clear()
+
+
 def _mcp_sessions(request: Request) -> dict[str, McpTransportSession]:
     sessions = getattr(request.app.state, "mcp_transport_sessions", None)
     if not isinstance(sessions, dict):

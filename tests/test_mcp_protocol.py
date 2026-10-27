@@ -127,6 +127,10 @@ def test_structured_tool_results(
     monkeypatch.setattr("i3x_server.api.mcp.monolithic.invoke_mcp_tool", invoke)
     tools = {tool["name"]: tool for tool in rpc(protocol_client, "tools/list")["result"]["tools"]}
     assert tools["readValues"]["annotations"]["readOnlyHint"] is True
+    assert tools["readValues"]["outputSchema"]["properties"]["body"] == {
+        "type": "object",
+        "additionalProperties": True,
+    }
     assert tools["createSubscription"]["annotations"]["readOnlyHint"] is False
     assert tools["syncSubscription"]["annotations"]["readOnlyHint"] is False
     for name in (

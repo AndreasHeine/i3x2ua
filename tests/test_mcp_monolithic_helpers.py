@@ -139,7 +139,7 @@ async def test_handle_jsonrpc_core_branches(monkeypatch: pytest.MonkeyPatch) -> 
         {"jsonrpc": "2.0", "id": 2, "method": "initialize", "params": {"protocolVersion": "v"}},
     )
     assert initialized is not None
-    assert initialized["result"]["protocolVersion"] == "2025-06-18"
+    assert initialized["result"]["protocolVersion"] == "2025-11-25"
 
     unexpected_request = await _handle_jsonrpc(
         request, {"jsonrpc": "2.0", "id": 3, "method": "notifications/initialized"}

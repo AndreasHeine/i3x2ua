@@ -365,15 +365,32 @@ Optional OPC UA diagnostic endpoints are exposed under `/ua`:
 
 Optional MCP endpoints are exposed only when `I3X_ENABLE_MCP=1`:
 
-- **MCP Streamable HTTP endpoint**: accepts JSON-RPC requests at `POST /mcp` and returns JSON responses. `GET /mcp` opens a session-scoped SSE stream for server-to-client messages. Initialization returns `Mcp-Session-Id`; clients can close a session with `DELETE /mcp`. Existing POST clients that do not send session headers remain supported.
+- **MCP endpoint**: accepts JSON-RPC requests at `POST /mcp`. Legacy clients may use session-scoped SSE with `GET /mcp`; initialization returns `Mcp-Session-Id`, which can be closed with `DELETE /mcp`. Modern `2026-07-28` requests are stateless.
 - **MCP Helpers**: Local REST-style convenience endpoints for the tool catalog and tool calls (`/mcp/tools`, `/mcp/call`), prompt listing/definition/execution, resource listing/reading, and plant roots (`/mcp/roots`). These are not MCP protocol routes.
 
-MCP targets protocol revision `2025-06-18`. It supports `initialize`, `ping`,
-`tools/list`, `tools/call`, `prompts/list`, `prompts/get`, `resources/list`,
-`resources/read`, and `resources/templates/list` (currently empty). Unsupported
-versions negotiate back to `2025-06-18`; subsequent requests may specify
-`MCP-Protocol-Version: 2025-06-18`. Explicit unsupported HTTP version headers
-are rejected with `400`. JSON-RPC batch arrays are not supported by this revision.
+MCP supports legacy initialization-based clients using `2025-03-26`,
+`2025-06-18`, and `2025-11-25`, as well as stateless per-request clients using
+`2026-07-28`.
+Legacy `initialize` requests negotiate the requested version when supported
+and otherwise fall back to `2025-11-25`. For `2026-07-28`, every request must
+include the protocol version and client capabilities in `params._meta`, plus
+the matching `MCP-Protocol-Version` and `Mcp-Method` HTTP headers; calls to
+`tools/call`, `prompts/get`, and `resources/read` also require a matching
+`Mcp-Name` header. `server/discover` reports modern protocol support. Unsupported
+modern versions return `400` with `UnsupportedProtocolVersion`; JSON-RPC batch
+arrays are not supported.
+
+Modern clients can discover the supported current protocol and server
+capabilities before making tool requests:
+
+```bash
+curl -i http://127.0.0.1:8000/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'MCP-Protocol-Version: 2026-07-28' \
+  -H 'Mcp-Method: server/discover' \
+  --data '{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}'
+```
+
 The SSE stream sends `event: message` events and periodic keep-alives. Server
 code can publish a JSON-RPC notification to connected clients with
 `publish_mcp_notification(app, session_id, method, params)` from

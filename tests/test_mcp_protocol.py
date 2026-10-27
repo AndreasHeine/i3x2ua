@@ -9,7 +9,11 @@ from fastapi.testclient import TestClient
 from jsonschema import validate
 
 from i3x_server.api.mcp.monolithic import (
+    MCP_META_CLIENT_CAPABILITIES,
+    MCP_META_PROTOCOL_VERSION,
+    MCP_PROTOCOL_VERSION,
     MCP_SESSION_HEADER,
+    MCP_SUPPORTED_PROTOCOL_VERSIONS,
     _compact_tool_body,
     publish_mcp_notification,
     router,
@@ -54,12 +58,168 @@ def rpc(client: TestClient, method: str, params: Any = None) -> dict[str, Any]:
     return payload
 
 
+def modern_rpc(
+    client: TestClient,
+    method: str,
+    params: dict[str, Any] | None = None,
+    *,
+    protocol_version: str = MCP_PROTOCOL_VERSION,
+) -> Any:
+    request_params = dict(params or {})
+    request_params["_meta"] = {
+        MCP_META_PROTOCOL_VERSION: protocol_version,
+        MCP_META_CLIENT_CAPABILITIES: {},
+    }
+    headers = {
+        "MCP-Protocol-Version": protocol_version,
+        "Mcp-Method": method,
+    }
+    if method in {"tools/call", "prompts/get"} and isinstance(request_params.get("name"), str):
+        headers["Mcp-Name"] = request_params["name"]
+    elif method == "resources/read" and isinstance(request_params.get("uri"), str):
+        headers["Mcp-Name"] = request_params["uri"]
+    return client.post(
+        "/mcp",
+        headers=headers,
+        json={"jsonrpc": "2.0", "id": 1, "method": method, "params": request_params},
+    )
+
+
 def test_version_negotiation_and_ping(protocol_client: TestClient) -> None:
     result = rpc(protocol_client, "initialize", {"protocolVersion": "2099-01-01"})["result"]
-    assert result["protocolVersion"] == "2025-06-18"
+    assert result["protocolVersion"] == "2025-11-25"
     assert "roots" not in result["capabilities"]
     assert result["instructions"]
     assert rpc(protocol_client, "ping")["result"] == {}
+
+
+@pytest.mark.parametrize("version", ["2025-03-26", "2025-06-18", "2025-11-25"])
+def test_legacy_version_negotiation_preserves_supported_version(protocol_client: TestClient, version: str) -> None:
+    result = rpc(protocol_client, "initialize", {"protocolVersion": version})["result"]
+    assert result["protocolVersion"] == version
+
+
+def test_legacy_session_enforces_negotiated_version(protocol_client: TestClient) -> None:
+    initialized = protocol_client.post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {"protocolVersion": "2025-11-25"},
+        },
+    )
+    session_id = initialized.headers[MCP_SESSION_HEADER]
+    request = {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/list",
+    }
+
+    accepted = protocol_client.post(
+        "/mcp",
+        headers={MCP_SESSION_HEADER: session_id, "MCP-Protocol-Version": "2025-11-25"},
+        json=request,
+    )
+    assert accepted.status_code == 200
+
+    rejected = protocol_client.post(
+        "/mcp",
+        headers={MCP_SESSION_HEADER: session_id, "MCP-Protocol-Version": "2025-06-18"},
+        json=request,
+    )
+    assert rejected.status_code == 400
+
+
+def test_modern_discovery_and_requests_are_stateless(protocol_client: TestClient) -> None:
+    discovery_response = modern_rpc(protocol_client, "server/discover")
+    assert discovery_response.status_code == 200
+    discovery = discovery_response.json()["result"]
+    assert discovery["supportedVersions"] == list(MCP_SUPPORTED_PROTOCOL_VERSIONS)
+    assert discovery["capabilities"] == {"tools": {}, "prompts": {}, "resources": {}}
+    assert discovery["resultType"] == "complete"
+    assert discovery["_meta"][MCP_META_PROTOCOL_VERSION] == MCP_PROTOCOL_VERSION
+    assert "io.modelcontextprotocol/serverInfo" in discovery["_meta"]
+
+    tools_response = modern_rpc(protocol_client, "tools/list")
+    assert tools_response.status_code == 200
+    tools_result = tools_response.json()["result"]
+    assert tools_result["tools"]
+    assert tools_result["resultType"] == "complete"
+    assert tools_result["ttlMs"] == 0
+    assert tools_result["cacheScope"] == "private"
+    assert tools_result["_meta"][MCP_META_PROTOCOL_VERSION] == MCP_PROTOCOL_VERSION
+
+    prompts_result = modern_rpc(protocol_client, "prompts/list").json()["result"]
+    resources_result = modern_rpc(protocol_client, "resources/list").json()["result"]
+    templates_result = modern_rpc(protocol_client, "resources/templates/list").json()["result"]
+    for result in (prompts_result, resources_result, templates_result):
+        assert result["resultType"] == "complete"
+        assert result["ttlMs"] == 0
+        assert result["cacheScope"] == "private"
+
+
+def test_modern_protocol_validation_errors(protocol_client: TestClient) -> None:
+    missing_metadata = protocol_client.post(
+        "/mcp",
+        headers={"MCP-Protocol-Version": MCP_PROTOCOL_VERSION, "Mcp-Method": "tools/list"},
+        json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+    )
+    assert missing_metadata.status_code == 400
+    assert missing_metadata.json()["error"]["code"] == -32602
+
+    mismatch = protocol_client.post(
+        "/mcp",
+        headers={
+            "MCP-Protocol-Version": MCP_PROTOCOL_VERSION,
+            "Mcp-Method": "ping",
+        },
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/list",
+            "params": {
+                "_meta": {
+                    MCP_META_PROTOCOL_VERSION: MCP_PROTOCOL_VERSION,
+                    MCP_META_CLIENT_CAPABILITIES: {},
+                }
+            },
+        },
+    )
+    assert mismatch.status_code == 400
+    assert mismatch.json()["error"]["code"] == -32020
+
+    name_mismatch = protocol_client.post(
+        "/mcp",
+        headers={
+            "MCP-Protocol-Version": MCP_PROTOCOL_VERSION,
+            "Mcp-Method": "tools/call",
+            "Mcp-Name": "otherTool",
+        },
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "readValues",
+                "arguments": {"body": {}},
+                "_meta": {
+                    MCP_META_PROTOCOL_VERSION: MCP_PROTOCOL_VERSION,
+                    MCP_META_CLIENT_CAPABILITIES: {},
+                },
+            },
+        },
+    )
+    assert name_mismatch.status_code == 400
+    assert name_mismatch.json()["error"]["code"] == -32020
+
+    unsupported_version = modern_rpc(protocol_client, "tools/list", protocol_version="2099-01-01")
+    assert unsupported_version.status_code == 400
+    assert unsupported_version.json()["error"]["code"] == -32022
+    assert unsupported_version.json()["error"]["data"] == {
+        "supported": list(MCP_SUPPORTED_PROTOCOL_VERSIONS),
+        "requested": "2099-01-01",
+    }
 
 
 def test_standard_prompt_and_resource_contracts(protocol_client: TestClient) -> None:
@@ -227,6 +387,17 @@ def test_structured_tool_results(
     assert json.loads(result["content"][0]["text"]) == body
     assert result["structuredContent"] == {"statusCode": status, "body": body}
     validate(result["structuredContent"], tools["readValues"]["outputSchema"])
+
+    modern_call = modern_rpc(
+        protocol_client,
+        "tools/call",
+        {"name": "readValues", "arguments": {"body": {}}},
+    )
+    assert modern_call.status_code == 200
+    modern_result = modern_call.json()["result"]
+    assert modern_result["resultType"] == "complete"
+    assert modern_result["_meta"][MCP_META_PROTOCOL_VERSION] == MCP_PROTOCOL_VERSION
+    assert modern_result["isError"] is is_error
 
 
 def test_mcp_object_and_value_results_are_compact() -> None:

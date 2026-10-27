@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
 import logging
 from collections.abc import AsyncIterator, Mapping
@@ -24,7 +26,20 @@ from i3x_server.version import get_server_version
 
 router = APIRouter(prefix="/mcp")
 logger = logging.getLogger(__name__)
-MCP_PROTOCOL_VERSION = "2025-06-18"
+MCP_PROTOCOL_VERSION = "2026-07-28"
+MCP_LEGACY_PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26")
+MCP_LEGACY_PROTOCOL_VERSION = MCP_LEGACY_PROTOCOL_VERSIONS[0]
+MCP_SUPPORTED_MODERN_PROTOCOL_VERSIONS = (MCP_PROTOCOL_VERSION,)
+MCP_SUPPORTED_PROTOCOL_VERSIONS = (MCP_PROTOCOL_VERSION, *MCP_LEGACY_PROTOCOL_VERSIONS)
+MCP_META_PROTOCOL_VERSION = "io.modelcontextprotocol/protocolVersion"
+MCP_META_CLIENT_CAPABILITIES = "io.modelcontextprotocol/clientCapabilities"
+MCP_CACHEABLE_RESULT_METHODS = {
+    "tools/list",
+    "prompts/list",
+    "resources/list",
+    "resources/templates/list",
+    "resources/read",
+}
 MCP_INSTRUCTIONS = (
     "Discover elementIds before querying values. Value/history maxDepth traverses composition only, "
     "not hierarchy: 1 reads only the object, 2 includes direct components, 0 is unlimited. "
@@ -41,6 +56,7 @@ MCP_SSE_KEEPALIVE_SECONDS = 15
 
 @dataclass(slots=True)
 class McpTransportSession:
+    protocol_version: str = MCP_LEGACY_PROTOCOL_VERSION
     streams: set[asyncio.Queue[dict[str, Any] | None]] = field(default_factory=set)
 
 
@@ -137,6 +153,79 @@ def _jsonrpc_error(result_id: Any, code: int, message: str, data: Any | None = N
     if data is not None:
         error["data"] = data
     return {"jsonrpc": "2.0", "id": result_id, "error": error}
+
+
+def _decode_modern_header_value(value: str) -> str | None:
+    prefix = "=?base64?"
+    if not value.startswith(prefix) or not value.endswith("?="):
+        return value
+    try:
+        return base64.b64decode(value[len(prefix) : -2], validate=True).decode("utf-8")
+    except (binascii.Error, UnicodeDecodeError):
+        return None
+
+
+def _modern_request_error(request: Request, message: Mapping[str, Any]) -> dict[str, Any] | None:
+    params = message.get("params")
+    metadata = params.get("_meta") if isinstance(params, Mapping) else None
+    metadata = metadata if isinstance(metadata, Mapping) else {}
+    protocol_version = metadata.get(MCP_META_PROTOCOL_VERSION)
+    protocol_header = request.headers.get("mcp-protocol-version")
+    method = message.get("method")
+    method_header = request.headers.get("mcp-method")
+    name_header = request.headers.get("mcp-name")
+    request_id = message.get("id")
+
+    def header_mismatch(detail: str) -> dict[str, Any]:
+        return _jsonrpc_error(request_id, -32020, f"HeaderMismatch: {detail}")
+
+    if not isinstance(protocol_version, str) or not isinstance(metadata.get(MCP_META_CLIENT_CAPABILITIES), dict):
+        return _jsonrpc_error(request_id, -32602, "Missing or invalid per-request MCP metadata")
+    if protocol_header is None or protocol_header != protocol_version:
+        return header_mismatch("MCP-Protocol-Version does not match request metadata")
+    if not isinstance(method, str) or method_header != method:
+        return header_mismatch("Mcp-Method does not match request method")
+
+    params = params if isinstance(params, Mapping) else {}
+    expected_name: Any = None
+    if method in {"tools/call", "prompts/get"}:
+        expected_name = params.get("name")
+    elif method == "resources/read":
+        expected_name = params.get("uri")
+    if isinstance(expected_name, str):
+        decoded_name = _decode_modern_header_value(name_header) if name_header is not None else None
+        if decoded_name != expected_name:
+            return header_mismatch("Mcp-Name does not match request name")
+    elif name_header is not None:
+        return header_mismatch("Mcp-Name is not applicable to this method")
+
+    if protocol_version not in MCP_SUPPORTED_MODERN_PROTOCOL_VERSIONS:
+        return _jsonrpc_error(
+            request_id,
+            -32022,
+            "Unsupported protocol version",
+            {
+                "supported": list(MCP_SUPPORTED_PROTOCOL_VERSIONS),
+                "requested": protocol_version,
+            },
+        )
+    return None
+
+
+def _add_modern_response_metadata(response: dict[str, Any], method: str) -> dict[str, Any]:
+    result = response.get("result")
+    if not isinstance(result, dict):
+        return response
+    result.setdefault("resultType", "complete")
+    if method in MCP_CACHEABLE_RESULT_METHODS:
+        result.setdefault("ttlMs", 0)
+        result.setdefault("cacheScope", "private")
+    metadata = result.get("_meta")
+    if not isinstance(metadata, dict):
+        metadata = {}
+        result["_meta"] = metadata
+    metadata[MCP_META_PROTOCOL_VERSION] = MCP_PROTOCOL_VERSION
+    return response
 
 
 def _raise_invalid_tool(tool_name: str) -> Never:
@@ -405,10 +494,14 @@ async def _handle_jsonrpc(request: Request, message: dict[str, Any]) -> dict[str
     if method == "initialize":
         if not isinstance(params, dict) or not isinstance(params.get("protocolVersion"), str):
             return _jsonrpc_error(message_id, -32602, "protocolVersion must be a string")
+        requested_version = params["protocolVersion"]
+        negotiated_version = (
+            requested_version if requested_version in MCP_LEGACY_PROTOCOL_VERSIONS else MCP_LEGACY_PROTOCOL_VERSION
+        )
         return _jsonrpc_response(
             message_id,
             {
-                "protocolVersion": MCP_PROTOCOL_VERSION,
+                "protocolVersion": negotiated_version,
                 "serverInfo": {"name": "i3x", "version": get_server_version()},
                 "capabilities": {
                     "tools": {"listChanged": False},
@@ -416,6 +509,28 @@ async def _handle_jsonrpc(request: Request, message: dict[str, Any]) -> dict[str
                     "resources": {"listChanged": False},
                 },
                 "instructions": MCP_INSTRUCTIONS,
+            },
+        )
+
+    if method == "server/discover":
+        return _jsonrpc_response(
+            message_id,
+            {
+                "supportedVersions": list(MCP_SUPPORTED_PROTOCOL_VERSIONS),
+                "capabilities": {
+                    "tools": {},
+                    "prompts": {},
+                    "resources": {},
+                },
+                "_meta": {
+                    "io.modelcontextprotocol/serverInfo": {
+                        "name": "i3x",
+                        "version": get_server_version(),
+                    }
+                },
+                "instructions": MCP_INSTRUCTIONS,
+                "ttlMs": 3_600_000,
+                "cacheScope": "public",
             },
         )
 
@@ -701,13 +816,6 @@ async def mcp_delete(request: Request) -> Response:
 async def mcp_post(request: Request) -> Response:
     if not _origin_is_allowed(request):
         return JSONResponse(status_code=403, content=_jsonrpc_error(None, -32600, "Origin not allowed"))
-    protocol_version = request.headers.get("mcp-protocol-version")
-    if protocol_version is not None and protocol_version != MCP_PROTOCOL_VERSION:
-        return JSONResponse(status_code=400, content=_jsonrpc_error(None, -32600, "Unsupported protocol version"))
-    session_id = request.headers.get(MCP_SESSION_HEADER)
-    sessions = _mcp_sessions(request)
-    if session_id is not None and session_id not in sessions:
-        return JSONResponse(status_code=404, content=_jsonrpc_error(None, -32600, "Unknown MCP session"))
     try:
         message = await request.json()
     except (ValueError, UnicodeDecodeError):
@@ -716,15 +824,58 @@ async def mcp_post(request: Request) -> Response:
     if not isinstance(message, dict):
         return JSONResponse(content=_jsonrpc_error(None, -32600, "Invalid Request"))
 
+    params = message.get("params")
+    metadata = params.get("_meta") if isinstance(params, dict) else None
+    metadata = metadata if isinstance(metadata, dict) else {}
+    protocol_version = request.headers.get("mcp-protocol-version")
+    modern_request = (
+        protocol_version == MCP_PROTOCOL_VERSION
+        or MCP_META_PROTOCOL_VERSION in metadata
+        or message.get("method") == "server/discover"
+        or (protocol_version is not None and protocol_version not in MCP_LEGACY_PROTOCOL_VERSIONS)
+    )
+    if modern_request:
+        validation_error = _modern_request_error(request, message)
+        if validation_error is not None:
+            return JSONResponse(status_code=400, content=validation_error)
+        if message.get("method") == "initialize":
+            return JSONResponse(
+                status_code=400,
+                content=_jsonrpc_error(message.get("id"), -32601, "Method not found: initialize"),
+            )
+        modern = True
+        session_id = None
+        sessions = _mcp_sessions(request)
+    else:
+        modern = False
+        if protocol_version is not None and protocol_version not in MCP_LEGACY_PROTOCOL_VERSIONS:
+            return JSONResponse(
+                status_code=400,
+                content=_jsonrpc_error(None, -32600, "Unsupported protocol version"),
+            )
+        session_id = request.headers.get(MCP_SESSION_HEADER)
+        sessions = _mcp_sessions(request)
+        if session_id is not None and session_id not in sessions:
+            return JSONResponse(status_code=404, content=_jsonrpc_error(None, -32600, "Unknown MCP session"))
+        if session_id is not None and protocol_version is not None:
+            if protocol_version != sessions[session_id].protocol_version:
+                return JSONResponse(
+                    status_code=400,
+                    content=_jsonrpc_error(None, -32600, "MCP protocol version does not match session"),
+                )
+
     try:
         response = await _handle_jsonrpc(request, message)
     except Exception:
         logger.exception("MCP request failed method=%s", message.get("method"))
         response = _jsonrpc_error(message.get("id"), -32603, "Internal error") if "id" in message else None
+    if modern and response is not None and "result" in response:
+        response = _add_modern_response_metadata(response, message["method"])
     response_headers: dict[str, str] = {}
-    if message.get("method") == "initialize" and response is not None and "result" in response:
+    if not modern and message.get("method") == "initialize" and response is not None and "result" in response:
         session_id = uuid4().hex
-        sessions[session_id] = McpTransportSession()
+        negotiated_version = response["result"].get("protocolVersion", MCP_LEGACY_PROTOCOL_VERSION)
+        sessions[session_id] = McpTransportSession(protocol_version=negotiated_version)
         response_headers[MCP_SESSION_HEADER] = session_id
     elif session_id is not None and message.get("method") == "notifications/initialized":
         response_headers[MCP_SESSION_HEADER] = session_id

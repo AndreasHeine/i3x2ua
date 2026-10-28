@@ -13,6 +13,7 @@ focused modules:
   - router.py → route composition
 """
 
+from i3x_server.api.mcp.fastmcp_server import create_fastmcp_server, mount_fastmcp
 from i3x_server.api.mcp.monolithic import router
 
-__all__ = ["router"]
+__all__ = ["router", "create_fastmcp_server", "mount_fastmcp"]

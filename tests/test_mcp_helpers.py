@@ -31,6 +31,7 @@ from i3x_server.mcp import (
     load_prompt_overrides,
     load_tool_overrides,
 )
+from i3x_server.mcp.model_tools import MCP_MODEL_TOOL_SCHEMAS
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
 
@@ -39,6 +40,11 @@ def _request() -> Request:
     app = FastAPI()
     app.state.mcp_api_prefix = ""
     return Request({"type": "http", "app": app, "headers": []})
+
+
+def _configured_excluded_tools() -> set[str]:
+    excluded = load_overrides().get("excluded_tools", [])
+    return {name for name in excluded if isinstance(name, str)} if isinstance(excluded, list) else set()
 
 
 def test_safe_prefix_and_path_helpers() -> None:
@@ -134,50 +140,46 @@ def test_build_mcp_tools_and_api_prefix_from_openapi() -> None:
         },
     }
     tools = build_mcp_tools(openapi)
-    assert set(tools.keys()) == {
+    expected_tools = {
         "getObject",
         "updateObject",
         "getObjectsV1",
         "queryRelatedObjectsV1",
         "readContainerValues",
-        "resolveElementIdsToNodeIds",
-        "resolveNodeIdsToElementIds",
-        "searchModelElements",
-        "getElementContext",
-        "summarizeSubtree",
-        "traceRelationshipPath",
-        "resolveBrowsePath",
-        "getBrowsePath",
-        "getInstancesOfType",
-        "getChildren",
-        "getCompositionProperties",
-        "findElementsByName",
-        "findElementsByNamespace",
-        "findElementsByRole",
     }
+    expected_tools.update(MCP_MODEL_TOOL_SCHEMAS)
+    assert set(tools) == expected_tools - _configured_excluded_tools()
     for name in ("findElementsByName", "findElementsByNamespace", "findElementsByRole"):
+        if name not in tools:
+            continue
         description = tools[name].description.lower()
         assert "not for model discovery or inventory" in description
         assert "do not page through broad results" in description
-    search_description = tools["searchModelElements"].description.lower()
-    assert "not for model discovery or inventory" in search_description
-    assert "filtered miss does not" in search_description
-    assert tools["getObject"].path_parameters == ("id",)
-    assert tools["updateObject"].body_required is True
-    assert tools["getObjectsV1"].input_schema["properties"]["limit"] == {
-        "type": "integer",
-        "minimum": 1,
-        "maximum": 500,
-    }
-    assert tools["queryRelatedObjectsV1"].input_schema["properties"]["body"]["properties"]["limit"] == {
-        "type": "integer",
-        "minimum": 1,
-        "maximum": 500,
-    }
-    assert tools["readContainerValues"].input_schema["required"] == ["containerId"]
-    assert tools["readContainerValues"].input_schema["properties"]["limit"]["maximum"] == 50
-    assert tools["readContainerValues"].annotations["readOnlyHint"] is True
-    assert tools["readContainerValues"].annotations["destructiveHint"] is False
+    if "searchModelElements" in tools:
+        search_description = tools["searchModelElements"].description.lower()
+        assert "not for model discovery or inventory" in search_description
+        assert "filtered miss does not" in search_description
+    if "getObject" in tools:
+        assert tools["getObject"].path_parameters == ("id",)
+    if "updateObject" in tools:
+        assert tools["updateObject"].body_required is True
+    if "getObjectsV1" in tools:
+        assert tools["getObjectsV1"].input_schema["properties"]["limit"] == {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500,
+        }
+    if "queryRelatedObjectsV1" in tools:
+        assert tools["queryRelatedObjectsV1"].input_schema["properties"]["body"]["properties"]["limit"] == {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500,
+        }
+    if "readContainerValues" in tools:
+        assert tools["readContainerValues"].input_schema["required"] == ["containerId"]
+        assert tools["readContainerValues"].input_schema["properties"]["limit"]["maximum"] == 50
+        assert tools["readContainerValues"].annotations["readOnlyHint"] is True
+        assert tools["readContainerValues"].annotations["destructiveHint"] is False
     assert all(
         tools[name].annotations["readOnlyHint"]
         for name in (
@@ -188,6 +190,7 @@ def test_build_mcp_tools_and_api_prefix_from_openapi() -> None:
             "resolveElementIdsToNodeIds",
             "resolveNodeIdsToElementIds",
         )
+        if name in tools
     )
     assert get_api_prefix(openapi) == "/api"
 

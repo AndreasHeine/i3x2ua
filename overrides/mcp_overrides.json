@@ -165,16 +165,6 @@
     "getUaLimits",
     "getUaMetrics",
     "getModelNamespaceGapsV1",
-    "getModelMetricsV1",
-    "searchModelElements",
-    "getElementContext",
-    "summarizeSubtree",
-    "traceRelationshipPath",
-    "getInstancesOfType",
-    "getChildren",
-    "getCompositionProperties",
-    "findElementsByName",
-    "findElementsByNamespace",
-    "findElementsByRole"
+    "getModelMetricsV1"
   ]
 }

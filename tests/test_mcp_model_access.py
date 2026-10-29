@@ -13,7 +13,7 @@ from i3x_server.api.mcp.monolithic import router
 from i3x_server.api.v1.contracts import ObjectTypeResponse
 from i3x_server.api.v1.objecttype_helpers import _object_type_context_revision, _ObjectTypeContext
 from i3x_server.application.ports.opcua import OpcUaNamespaceInfo, OpcUaObjectTypeInfo
-from i3x_server.mcp import build_mcp_tools, invoke_mcp_tool
+from i3x_server.mcp import build_mcp_tools, invoke_mcp_tool, load_overrides
 from i3x_server.mcp.model_access import MCP_MODEL_ACCESS_SCHEMAS, invoke_model_access_tool
 from i3x_server.mcp.model_tools import _validate_model_tool_arguments
 from i3x_server.model.revision import model_revision
@@ -30,6 +30,12 @@ _ACCESS_ARGUMENTS: dict[str, dict[str, Any]] = {
     "findElementsByNamespace": {"namespaceUri": "urn:machines"},
     "findElementsByRole": {"semanticRole": "datapoint"},
 }
+
+
+def _configured_access_tool_names() -> set[str]:
+    excluded = load_overrides().get("excluded_tools", [])
+    excluded_names = {name for name in excluded if isinstance(name, str)} if isinstance(excluded, list) else set()
+    return set(MCP_MODEL_ACCESS_SCHEMAS) - excluded_names
 
 
 class _ForbiddenLiveAccess:
@@ -479,12 +485,18 @@ async def test_all_access_tools_are_registered_read_only_and_never_build_or_cont
     app.state.opcua_client = _ForbiddenLiveAccess()
     request = Request({"type": "http", "app": app, "headers": []})
     tools = build_mcp_tools({"paths": {}})
+    access_tool_names = _configured_access_tool_names()
+    assert access_tool_names == set(MCP_MODEL_ACCESS_SCHEMAS).intersection(tools)
     for name, schema in MCP_MODEL_ACCESS_SCHEMAS.items():
         Draft202012Validator.check_schema(schema)
+        if name not in access_tool_names:
+            continue
         assert tools[name].input_schema == schema
         assert tools[name].annotations["readOnlyHint"] is True
         assert tools[name].annotations["destructiveHint"] is False
         assert tools[name].annotations["openWorldHint"] is False
+        if name not in _ACCESS_ARGUMENTS:
+            continue
         response = await invoke_mcp_tool(request, tools[name], _ACCESS_ARGUMENTS[name])
         assert response["status_code"] == 200
         assert response["body"]["modelRevision"] == model_revision(model)
@@ -497,16 +509,19 @@ async def test_missing_or_stale_cached_context_never_refreshes(model: BuildResul
     app.state.mcp_model_provider = AsyncMock(side_effect=AssertionError("Must not build a model"))
     request = Request({"type": "http", "app": app, "headers": []})
     tools = build_mcp_tools({"paths": {}})
-    for name, arguments in _ACCESS_ARGUMENTS.items():
+    registered_argument_names = set(_ACCESS_ARGUMENTS).intersection(tools)
+    for name in registered_argument_names:
+        arguments = _ACCESS_ARGUMENTS[name]
         with pytest.raises(HTTPException) as exc:
             await invoke_mcp_tool(request, tools[name], arguments)
         assert exc.value.status_code == 503
     app.state.model_cache = model
-    for cache in (None, {"model_token": "old", "context": context}, {"model_token": model_revision(model)}):
-        app.state.object_type_context_cache = cache
-        with pytest.raises(HTTPException) as exc:
-            await invoke_mcp_tool(request, tools["getInstancesOfType"], {"typeElementId": "type-base"})
-        assert exc.value.status_code == 503
+    if "getInstancesOfType" in registered_argument_names:
+        for cache in (None, {"model_token": "old", "context": context}, {"model_token": model_revision(model)}):
+            app.state.object_type_context_cache = cache
+            with pytest.raises(HTTPException) as exc:
+                await invoke_mcp_tool(request, tools["getInstancesOfType"], {"typeElementId": "type-base"})
+            assert exc.value.status_code == 503
     app.state.mcp_model_provider.assert_not_called()
 
 
@@ -520,8 +535,10 @@ def test_model_access_json_rpc_preserves_compact_payloads(model: BuildResult, co
     app.state.model_builder = _ForbiddenLiveAccess()
     with TestClient(app) as client:
         listed = client.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"}).json()
-        assert set(_ACCESS_ARGUMENTS).issubset({tool["name"] for tool in listed["result"]["tools"]})
-        for name, arguments in _ACCESS_ARGUMENTS.items():
+        registered_argument_names = set(_ACCESS_ARGUMENTS).intersection(app.state.mcp_tools)
+        assert registered_argument_names.issubset({tool["name"] for tool in listed["result"]["tools"]})
+        for name in registered_argument_names:
+            arguments = _ACCESS_ARGUMENTS[name]
             response = client.post(
                 "/mcp",
                 json={

@@ -256,6 +256,21 @@ generated from the available asyncua structure definition/registry and include
 their fields, including nested structures. Custom scalar DataTypes use their
 resolved `HasSubtype` hierarchy to find a standard scalar ancestor.
 
+For a referenced DataType published as a standalone synthetic ObjectType entry,
+the DataType does not specify the ValueRank of each Variable that uses it. When
+the DataType schema can be resolved, the entry therefore describes the accepted
+value shapes with `oneOf`: null, one scalar/structured value, or an array of
+those values. For example, the standard `Number` DataType (`i=26`) produces
+`oneOf: [{type: null}, {type: number}, {type: array, items: {type: number}}]`.
+This is a value-shape union, not the encoding of an OPC UA `Variant` object.
+
+An ObjectType member is different: its own ValueRank determines whether that
+member's schema is scalar or an array. For example, a scalar member of type
+`Number` has `type: number`, while an array member has `type: array` and numeric
+`items`; the member schema is not automatically wrapped in the standalone
+DataType's nullable/scalar/array `oneOf`. Unresolved and generic fallback
+DataType entries may use their documented fallback shapes instead of this union.
+
 - `Number`, `Float`, and `Double` map to JSON Schema `number`.
 - `Integer`, `UInteger`, concrete integer types, and `Enumeration` map to `integer`.
 - `Boolean` maps to `boolean`; `DateTime` maps to `string` with `date-time` format.

@@ -48,6 +48,12 @@ Argument JSON Schemas permit both arrays and null for `ArrayDimensions`.
   instead; stability across namespace-index changes is not guaranteed in that case.
 - This is the identity of an individual source node. It is not the identity of
   that node's type.
+- The `<kind>` prefix is the mapped i3X node kind: OPC UA `Object` maps to
+  `asset`, `Variable` to `property`, and `Method` to `action`. A node with
+  `EventNotifier` set maps to `eventSource` regardless of NodeClass; any other
+  unrecognized NodeClass defaults to `asset`. For example,
+  `eventSource-80bf303db7d51082` identifies an event-source instance, with the
+  suffix derived from its source NodeId.
 
 2. Object instance `typeElementId`
 - The i3X type reference used by clients.
@@ -230,32 +236,49 @@ value recursion.
 
 ## Current Output Shape
 
-### Scalar Datatypes in ObjectType JSON Schemas
+### ObjectType and DataType JSON Schemas
 
-Standard OPC UA scalar datatypes are resolved using their namespace-zero
-identity. Compact (`i=26`), indexed (`ns=0;i=26`), expanded
-(`nsu=http://opcfoundation.org/UA/;i=26`), and named (`Number`) representations
-produce the same scalar schema.
+`GET /v1/objecttypes` returns schemas for discovered OPC UA ObjectTypes and may
+also include synthetic ObjectType entries for DataTypes referenced by mapped
+instances. This does not imply that every OPC UA DataType is published as a
+separate top-level entry.
+
+An OPC UA ObjectType schema describes an object: its members become JSON Schema
+properties, its `HasSubtype` lineage is represented through local `$defs` and
+`allOf`, and members with a mandatory modelling rule are required. A member's
+schema is derived from its OPC UA DataType and structure/value metadata; declared
+array rank makes it an array whose `items` use the corresponding scalar or
+structured schema.
+
+DataType schemas are also resolved when describing members and when creating a
+synthetic type entry for a referenced DataType. Structured DataTypes are
+generated from the available asyncua structure definition/registry and include
+their fields, including nested structures. Custom scalar DataTypes use their
+resolved `HasSubtype` hierarchy to find a standard scalar ancestor.
 
 - `Number`, `Float`, and `Double` map to JSON Schema `number`.
 - `Integer`, `UInteger`, concrete integer types, and `Enumeration` map to `integer`.
 - `Boolean` maps to `boolean`; `DateTime` maps to `string` with `date-time` format.
-- Declared arrays apply the scalar mapping to their `items`.
+- These scalar rules apply to the datatype value; when used by an array member,
+  the scalar schema is placed under `items`.
 
 Numeric identifiers in custom namespaces must not be interpreted as built-in
 datatypes merely because their identifier matches a namespace-zero type.
-For custom DataTypes, ObjectType schema generation resolves the `HasSubtype`
-hierarchy and uses the nearest concrete namespace-zero scalar ancestor when one
-is available. Integer-derived aliases retain the built-in integer range
-constraints (for example, `Byte` is `0..255` and `UInt16` is `0..65535`).
-The DataType's own expanded NodeId remains in member metadata.
-Missing or unresolved scalar datatypes use an unconstrained schema (`{}`),
-accepting any JSON value, including null. Known string datatypes remain `string`.
-Arrays of unresolved datatypes retain `type: array` with `items: {}`. Member
-metadata and mandatory modelling rules are preserved. Unconstrained datatype
-schemas are not wrapped in nullable/array `oneOf` branches, which would overlap.
-If hierarchy lookup fails, the existing unresolved-type fallback remains in
-effect; custom namespace identifiers are never guessed from their numeric part.
+The custom scalar resolver uses the nearest concrete namespace-zero scalar
+ancestor when available. Integer-derived aliases retain the built-in integer
+range constraints (for example, `Byte` is `0..255` and `UInt16` is
+`0..65535`). When OPC UA schema annotations are enabled, a member's own expanded
+DataType NodeId is retained as `x-opcua-dataTypeId`.
+
+The unconstrained fallback (`{}`) applies to an ObjectType member whose scalar
+DataType is missing or unresolved; it accepts any JSON value, including null.
+Known string datatypes remain `string`. An unresolved array member retains
+`type: array` with `items: {}`. Member metadata and mandatory modelling rules
+are preserved. These member fallbacks are not the same as standalone synthetic
+DataType entries: those entries use a resolved scalar/structured schema when
+available, otherwise a generic, opaque, or unknown-type fallback schema. If
+custom DataType hierarchy lookup fails, custom namespace identifiers are never
+guessed from their numeric part.
 
 The internal mapped `ModelNode` currently carries the following fields in code.
 This is not the public v1 object-instance response shape:

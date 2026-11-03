@@ -42,23 +42,34 @@ Argument JSON Schemas permit both arrays and null for `ArrayDimensions`.
 - Must be unique within the i3X address space.
 - Generated as `<kind>-SHA1(ExpandedNodeId)[:16]`, where the ExpandedNodeId
   uses the namespace URI (`nsu=...`) rather than a session-specific namespace
-  index (`ns=N`).
+  index (`ns=N`) when the namespace can be resolved.
+- Namespace-zero NodeIds always expand to `http://opcfoundation.org/UA/`.
+  If a nonzero namespace index cannot be resolved, the original NodeId is hashed
+  instead; stability across namespace-index changes is not guaranteed in that case.
 
 2. Object instance `typeElementId`
 - The i3X type reference used by clients.
 - Should resolve to an entry in `GET /objecttypes` when the type catalog is
   available.
-- For OPC UA Variables in this implementation, this is derived from the Variable `DataType` and normalized to expanded NodeId form (`nsu=...;i=...`, `nsu=...;s=...`, ...).
+- For Variable-backed properties, the Variable `DataType` is normalized to
+  expanded NodeId form when possible, then resolved to the matching ObjectType's
+  `elementId` through its `sourceTypeId`. The expanded DataType NodeId is the
+  fallback when no matching catalog entry exists, not necessarily the returned
+  `typeElementId`.
+- Other instances resolve their `TypeDefinition` to the corresponding ObjectType
+  `elementId`, falling back to the expanded source type NodeId. Missing type
+  definitions and null type NodeIds use the generated `UnknownType` identifier.
 
 3. Object instance metadata `sourceTypeId`
 - Provenance reference to the source-system type identity.
 - For OPC UA, this is derived from `TypeDefinition` when available, otherwise from source node identity.
 - Always normalized to expanded NodeId form when possible.
 
-4. Object instance metadata `namespaceUri`
+4. Internal model metadata `namespaceUri`
 - Namespace URI of the source node.
-- Canonicalized from the namespace table returned by `GET /namespaces` when
-  available.
+- Resolved from the namespace table returned by `GET /namespaces` when available.
+- This is internal model metadata, not a field in the public v1 object-instance
+  metadata response.
 
 5. Object instance metadata `typeNamespaceUri`
 - Namespace URI of the type definition that `typeElementId` points to.
@@ -89,7 +100,7 @@ Argument JSON Schemas permit both arrays and null for `ArrayDimensions`.
 - Current values: `high | medium | low`.
 - Used as an explainability hint for profile-driven and generic mappings.
 
-11. Object instance `appliedProfileIds`
+11. Internal model metadata `appliedProfileIds`
 - Ordered list of profile ids matched against the resolved instance type and
   its `HasSubtype` ancestry.
 - A specialized profile must match its configured type namespace fragment and,
@@ -233,7 +244,8 @@ schemas are not wrapped in nullable/array `oneOf` branches, which would overlap.
 If hierarchy lookup fails, the existing unresolved-type fallback remains in
 effect; custom namespace identifiers are never guessed from their numeric part.
 
-The mapped i3X object currently carries the following fields in code:
+The internal mapped `ModelNode` currently carries the following fields in code.
+This is not the public v1 object-instance response shape:
 
 - `id`
 - `name`
@@ -249,12 +261,31 @@ The mapped i3X object currently carries the following fields in code:
 - `relationships`
 - `metadata`
 
-The `metadata` map is currently used to preserve:
+The internal `metadata` map always contains:
 
-- `uaNodeId`
-- `uaTypeNodeId`
-- `namespaceUri`
-- `appliedProfileIds`
+- `uaNodeId`: original source NodeId.
+- `expandedNodeId`: namespace-URI identity used for hashing, or the original
+  NodeId when expansion is unavailable.
+- `uaTypeNodeId`: original TypeDefinition NodeId, or null.
+- `namespaceUri`: resolved source namespace URI, or null.
+- `appliedProfileIds`: ordered list of matched profile IDs.
+
+When the corresponding source attributes are available, it also contains:
+
+- `description`
+- `accessLevel`
+- `userAccessLevel`
+- `writable`: derived from the `CurrentWrite` bit (`0x02`) of `userAccessLevel`.
+- `executable`
+- `userExecutable`
+
+Public v1 object-instance responses instead expose `elementId`, `displayName`,
+`typeElementId`, `parentId`, `isComposition`, `isExtended` (currently false), and
+optional `metadata`. With `includeMetadata=true`, that metadata is built
+separately with `typeNamespaceUri`, `sourceTypeId`, `description`,
+`compositionParentId`, and `relationships`; the internal metadata map is not
+copied into it. If no nonempty source description is available, the response uses
+`Derived from model node <name>`.
 
 ## maxDepth Semantics (Hierarchy vs Composition)
 

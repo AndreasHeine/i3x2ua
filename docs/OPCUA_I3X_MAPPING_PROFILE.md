@@ -46,19 +46,32 @@ Argument JSON Schemas permit both arrays and null for `ArrayDimensions`.
 - Namespace-zero NodeIds always expand to `http://opcfoundation.org/UA/`.
   If a nonzero namespace index cannot be resolved, the original NodeId is hashed
   instead; stability across namespace-index changes is not guaranteed in that case.
+- This is the identity of an individual source node. It is not the identity of
+  that node's type.
 
 2. Object instance `typeElementId`
 - The i3X type reference used by clients.
-- Should resolve to an entry in `GET /objecttypes` when the type catalog is
-  available.
-- For Variable-backed properties, the Variable `DataType` is normalized to
-  expanded NodeId form when possible, then resolved to the matching ObjectType's
-  `elementId` through its `sourceTypeId`. The expanded DataType NodeId is the
-  fallback when no matching catalog entry exists, not necessarily the returned
-  `typeElementId`.
-- Other instances resolve their `TypeDefinition` to the corresponding ObjectType
-  `elementId`, falling back to the expanded source type NodeId. Missing type
-  definitions and null type NodeIds use the generated `UnknownType` identifier.
+- The v1 objects endpoint resolves this through the object-type context, using
+  the matching ObjectType `elementId` where available. Referenced types absent
+  from the upstream type catalog are normally added to that context as
+  synthesized datatype, generic, or `UnknownType` entries.
+- For Variable-backed properties, the Variable `DataType` is normalized to an
+  expanded NodeId form when possible and matched against ObjectType
+  `sourceTypeId`. Other instances use their `TypeDefinition` NodeId to find the
+  corresponding ObjectType `elementId`.
+- If object-type context resolution fails for the objects request, the endpoint
+  falls back to the expanded DataType NodeId for properties, or the expanded
+  `TypeDefinition` NodeId for other instances. A missing or null type identity
+  uses the generated `UnknownType` identifier instead.
+- ObjectType `elementId` values are generated separately from instance
+  `elementId` values. Listed and synthesized ObjectTypes use the form
+  `urn:<server>:objecttype:<namespace>:v-<namespace-version>:<name>:<source-id>`,
+  with each component normalized to a lowercase alphanumeric/hyphen token.
+  The source ID component comes from the ObjectType NodeId (or the synthesized
+  type's source DataType NodeId); the name is its BrowseName or inferred display
+  name. Thus `typeElementId` normally points to an ObjectType `elementId`, not
+  to a hash of the instance NodeId. The expanded source type NodeId is a
+  fallback only when the object-type context cannot be resolved.
 
 3. Object instance metadata `sourceTypeId`
 - Provenance reference to the source-system type identity.

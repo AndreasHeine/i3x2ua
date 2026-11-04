@@ -165,6 +165,21 @@
     "getUaLimits",
     "getUaMetrics",
     "getModelNamespaceGapsV1",
-    "getModelMetricsV1"
+    "getModelMetricsV1",
+    "searchModelElements",
+    "findElementsByName",
+    "findElementsByNamespace",
+    "findElementsByRole",
+    "summarizeSubtree",
+    "traceRelationshipPath",
+    "getCompositionProperties",
+    "getElementContext",
+    "getInstancesOfType",
+    "createSubscriptionV1",
+    "registerMonitoredItemsV1",
+    "removeMonitoredItemsV1",
+    "syncSubscriptionV1",
+    "listSubscriptionsV1",
+    "deleteSubscriptionsV1"
   ]
 }

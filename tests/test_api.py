@@ -2854,6 +2854,11 @@ def _operation_id_for(client: TestClient, method: str, path: str) -> str:
     return operation_id
 
 
+def _configured_excluded_tools() -> set[str]:
+    excluded = load_overrides().get("excluded_tools", [])
+    return {name for name in excluded if isinstance(name, str)} if isinstance(excluded, list) else set()
+
+
 def test_mcp_tool_input_schemas_match_openapi_contract(client: TestClient) -> None:
     openapi = client.get("/openapi.json").json()
     tools_payload = client.get("/mcp/tools").json()
@@ -2995,6 +3000,25 @@ def test_mcp_subscription_tools_runtime_lifecycle(client: TestClient) -> None:
     sync_tool = _operation_id_for(client, "POST", "/v1/subscriptions/sync")
     unregister_tool = _operation_id_for(client, "POST", "/v1/subscriptions/unregister")
     delete_tool = _operation_id_for(client, "POST", "/v1/subscriptions/delete")
+    subscription_tools = {
+        create_subscription_tool,
+        register_tool,
+        list_tool,
+        sync_tool,
+        unregister_tool,
+        delete_tool,
+    }
+    excluded_subscription_tools = subscription_tools & _configured_excluded_tools()
+    if excluded_subscription_tools:
+        live_tools = client.get("/mcp/tools").json()["tools"]
+        assert all(tool_name not in live_tools for tool_name in excluded_subscription_tools)
+        blocked_response = client.post(
+            "/mcp/call",
+            json={"tool": sorted(excluded_subscription_tools)[0], "arguments": {}},
+        )
+        assert blocked_response.status_code == 400
+        assert "Unknown tool" in blocked_response.text
+        return
 
     create_response = client.post(
         "/mcp/call",
@@ -3125,11 +3149,16 @@ def test_path_style_history_routes_are_not_registered(client: TestClient) -> Non
 def test_mcp_tool_overrides_match_live_tools(client: TestClient) -> None:
     overrides = load_tool_overrides()
     tools = client.get("/mcp/tools").json()["tools"]
+    excluded_tools = _configured_excluded_tools()
 
-    unknown_overrides = sorted(set(overrides) - set(tools))
+    active_overrides = set(overrides) - excluded_tools
+    unknown_overrides = sorted(active_overrides - set(tools))
     assert unknown_overrides == []
 
     for tool_name, override in overrides.items():
+        if tool_name in excluded_tools:
+            assert tool_name not in tools
+            continue
         tool = tools[tool_name]
         assert tool["description"] == override["description"]
         assert tool["priority"] == override.get("priority", "normal")

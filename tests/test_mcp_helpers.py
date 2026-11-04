@@ -350,7 +350,7 @@ async def test_cached_model_mcp_tools_search_context_subtree_and_path() -> None:
         pytest.fail("Identity resolution must not request or build a model")
 
     identity_request.app.state.mcp_model_provider = forbid_model_build
-    tools = build_mcp_tools({"paths": {}})
+    tools = build_mcp_tools({"paths": {}}, overrides={})
 
     resolved_elements = await invoke_mcp_tool(
         identity_request,

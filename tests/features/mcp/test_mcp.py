@@ -192,6 +192,11 @@ def _operation_id_for(client: TestClient, method: str, path: str) -> str:
     return operation_id
 
 
+def _configured_excluded_tools() -> set[str]:
+    excluded = load_overrides().get("excluded_tools", [])
+    return {name for name in excluded if isinstance(name, str)} if isinstance(excluded, list) else set()
+
+
 def test_openapi_json_is_source_of_truth(client: TestClient) -> None:
     response = client.get("/openapi.json")
     assert response.status_code == 200
@@ -344,6 +349,25 @@ def test_mcp_subscription_tools_runtime_lifecycle(client: TestClient) -> None:
     sync_tool = _operation_id_for(client, "POST", "/v1/subscriptions/sync")
     unregister_tool = _operation_id_for(client, "POST", "/v1/subscriptions/unregister")
     delete_tool = _operation_id_for(client, "POST", "/v1/subscriptions/delete")
+    subscription_tools = {
+        create_subscription_tool,
+        register_tool,
+        list_tool,
+        sync_tool,
+        unregister_tool,
+        delete_tool,
+    }
+    excluded_subscription_tools = subscription_tools & _configured_excluded_tools()
+    if excluded_subscription_tools:
+        live_tools = client.get("/mcp/tools").json()["tools"]
+        assert all(tool_name not in live_tools for tool_name in excluded_subscription_tools)
+        blocked_response = client.post(
+            "/mcp/call",
+            json={"tool": sorted(excluded_subscription_tools)[0], "arguments": {}},
+        )
+        assert blocked_response.status_code == 400
+        assert "Unknown tool" in blocked_response.text
+        return
 
     create_response = client.post(
         "/mcp/call",

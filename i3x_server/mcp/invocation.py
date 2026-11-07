@@ -171,23 +171,26 @@ async def _invoke_model_tool(
     tool_name: str,
     arguments: Mapping[str, Any],
 ) -> _InternalASGIResponse:
+    """Run a composite model tool against the cached model only.
+
+    The documented behaviour (`docs/MCP_SERVER_GUIDE.md` "Cached-model tools vs REST tools",
+    README) is that these tools never contact OPC UA and never rebuild the model. The
+    application model provider would start a full address-space browse on a cache miss and
+    retry it on every call while the endpoint is down; a missing cache is answered with 503,
+    exactly like the cached identity and access tools. Identity tools never reach this
+    function - dispatch routes them to `_invoke_cached_identity_tool` first.
+    """
     _validate_model_tool_arguments(tool_name, arguments)
-    model_provider = getattr(request.app.state, "mcp_model_provider", None)
-    if not callable(model_provider):
-        raise i3x_http_error(500, "Internal Error", "MCP model provider is not initialized")
-    model: BuildResult = await model_provider(request)
-    if tool_name == "resolveElementIdsToNodeIds":
-        body = _resolve_element_ids_to_node_ids(model, arguments["elementIds"])
-    elif tool_name == "resolveNodeIdsToElementIds":
-        body = _resolve_node_ids_to_element_ids(model, arguments["nodeIds"])
-    else:
-        handlers = {
-            "searchModelElements": _search_model_elements,
-            "getElementContext": _get_element_context,
-            "summarizeSubtree": _summarize_subtree,
-            "traceRelationshipPath": _trace_relationship_path,
-        }
-        body = handlers[tool_name](model, arguments)
+    model = getattr(request.app.state, "model_cache", None)
+    if not isinstance(model, BuildResult):
+        raise i3x_http_error(503, "Service Unavailable", "Cached model is not available")
+    handlers = {
+        "searchModelElements": _search_model_elements,
+        "getElementContext": _get_element_context,
+        "summarizeSubtree": _summarize_subtree,
+        "traceRelationshipPath": _trace_relationship_path,
+    }
+    body = handlers[tool_name](model, arguments)
     return _InternalASGIResponse(
         status_code=200,
         headers={"content-type": "application/json"},

@@ -467,7 +467,9 @@ semantic and relationship context rather than exposing individual REST calls:
 `searchModelElements`, `getElementContext`, `summarizeSubtree`, and
 `traceRelationshipPath`. They return model element IDs and the current model
 revision; subtree and path traversal are bounded by caller-supplied depth and
-size limits.
+size limits. Like the identity and model-access tools, they never start a model
+build or contact OPC UA; when the cached model is not available they answer
+`503` instead of starting discovery.
 `resolveElementIdsToNodeIds` and `resolveNodeIdsToElementIds` provide batch
 identity translation using indexes built with the cached model. They return
 per-item results and never establish an OPC UA connection or invoke OPC UA

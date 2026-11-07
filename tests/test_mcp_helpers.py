@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import FastAPI, HTTPException
@@ -403,18 +404,15 @@ async def test_cached_model_mcp_tools_search_context_subtree_and_path() -> None:
         namespace_uri_by_index={2: "urn:plant"},
     )
     request = _request()
-
-    async def provide_model(_: Request) -> BuildResult:
-        return model
-
-    request.app.state.mcp_model_provider = provide_model
+    request.app.state.model_cache = model
     identity_request = _request()
     identity_request.app.state.model_cache = model
 
     async def forbid_model_build(_: Request) -> BuildResult:
-        pytest.fail("Identity resolution must not request or build a model")
+        pytest.fail("Cached-model tools must not request or build a model")
 
-    identity_request.app.state.mcp_model_provider = forbid_model_build
+    request.app.state.mcp_model_provider = AsyncMock(side_effect=forbid_model_build)
+    identity_request.app.state.mcp_model_provider = AsyncMock(side_effect=forbid_model_build)
     tools = build_mcp_tools({"paths": {}}, overrides={})
 
     resolved_elements = await invoke_mcp_tool(
@@ -484,6 +482,17 @@ async def test_cached_model_mcp_tools_search_context_subtree_and_path() -> None:
         )
     assert unavailable.value.status_code == 503
 
+    # A cache miss must answer 503 for every cached-model tool instead of starting discovery.
+    for tool_name, arguments in (
+        ("searchModelElements", {"text": "temperature"}),
+        ("getElementContext", {"elementId": "asset-machine"}),
+        ("summarizeSubtree", {"rootElementId": "asset-root"}),
+        ("traceRelationshipPath", {"sourceElementId": "asset-root", "targetElementId": "asset-machine"}),
+    ):
+        with pytest.raises(HTTPException) as unavailable:
+            await invoke_mcp_tool(missing_cache_request, tools[tool_name], arguments)
+        assert unavailable.value.status_code == 503
+
     search = await invoke_mcp_tool(
         request,
         tools["searchModelElements"],
@@ -537,6 +546,9 @@ async def test_cached_model_mcp_tools_search_context_subtree_and_path() -> None:
         "hierarchy",
         "composition",
     ]
+
+    request.app.state.mcp_model_provider.assert_not_awaited()
+    identity_request.app.state.mcp_model_provider.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -62,7 +62,7 @@ graph LR
 The project follows a layered architecture inside i3x_server:
 
 1. presentation
-- Responsibility: protocol-facing endpoints, request parsing, response shaping, and protocol adapters (REST and MCP). The MCP adapter dispatches tool calls to existing REST routes in-process and uses the application model provider for cached-model tools.
+- Responsibility: protocol-facing endpoints, request parsing, response shaping, and protocol adapters (REST and MCP). The MCP adapter dispatches tool calls to existing REST routes in-process. Cached-model tools read the cached model directly and answer 503 when it is not built yet; they never start a model build or contact OPC UA. Only `readContainerValues` uses the application model provider, because it fetches live values from OPC UA.
 - Current primary modules: i3x_server/api, i3x_server/mcp/*, i3x_server/api/v1/*_routes.py, i3x_server/api/v1/contracts.py, i3x_server/api/v1/*helpers.py, i3x_server/api/mcp/monolithic.py.
 
 2. application

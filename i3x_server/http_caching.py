@@ -22,6 +22,7 @@ REVISIONS_SCOPE_KEY = "i3x.revisions"
 MODEL_PART = "model"
 NAMESPACES_PART = "namespaces"
 OBJECT_TYPES_PART = "objecttypes"
+REPRESENTATION_PART = "representation"
 _ETAG_ENABLED = "_etag"
 _NOT_CACHEABLE = "_not_cacheable"
 _BODY_HEADERS = ("content-length", "content-type", "content-encoding")
@@ -53,6 +54,13 @@ def mark_not_cacheable(request: Any) -> None:
 def enable_etag(request: Request) -> None:
     """Route dependency that opts a GET endpoint into ETag / conditional GET handling."""
     record_revision(request, _ETAG_ENABLED, "1")
+    # The ETag validates a *representation*, not only the underlying data revisions: the path
+    # and query (filters, ``includeMetadata``, ``limit``) select different representations.
+    # Without this part, revalidating a different URL would answer 304 and keep stale bytes.
+    representation = request.url.path
+    if request.url.query:
+        representation = f"{representation}?{request.url.query}"
+    record_revision(request, REPRESENTATION_PART, content_revision([representation]))
 
 
 def content_revision(values: Iterable[object]) -> str:

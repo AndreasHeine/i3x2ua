@@ -7,8 +7,10 @@ delivery (sync polling and SSE streaming).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
+from contextlib import suppress
 from typing import Literal, NoReturn, TypedDict
 
 from fastapi import HTTPException, Request
@@ -350,7 +352,11 @@ class SubscriptionAppService:
                 last_sequence = int(updates[-1].sequence_number)
                 yield {"kind": "updates", "updates": updates}
         finally:
-            await self.subscription_service.deactivate_stream(subscription_id, stream_generation)
+            # A client disconnect cancels this generator while the finally runs. Without a shield the
+            # deactivation itself is cancelled, leaving ``stream_connected`` set until the TTL expires
+            # (``POST /subscriptions/sync`` then answers 400 "Subscription stream is active").
+            with suppress(asyncio.CancelledError):
+                await asyncio.shield(self.subscription_service.deactivate_stream(subscription_id, stream_generation))
 
     async def delete_subscriptions(
         self,

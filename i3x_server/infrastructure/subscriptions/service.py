@@ -43,6 +43,33 @@ def _signal_from_data_value(data_value: Any) -> _ValueSignal:
     return _ValueSignal(quality=quality, timestamp=timestamp)
 
 
+# OPC UA service result codes that report a *subscription/session* limit, not a rejection of this
+# single monitored item (OPC UA Part 4, service result codes). Only these justify backing off native
+# admissions service-wide; an unsupported node must degrade that node alone to polling.
+_SUBSCRIPTION_LEVEL_STATUS_CODES = frozenset(
+    {
+        0x80770000,  # BadTooManySubscriptions
+        0x80560000,  # BadTooManySessions
+        0x80DB0000,  # BadTooManyMonitoredItems
+        0x80280000,  # BadSubscriptionIdInvalid
+    }
+)
+
+
+def _status_code_of(exc: BaseException) -> int | None:
+    """The OPC UA status code of an upstream failure.
+
+    ``asyncua.ua.uaerrors.UaStatusCodeError`` exposes ``code`` as an ``int``; the runtime deliberately
+    stays free of an asyncua import, so the code is read structurally.
+    """
+    code = getattr(exc, "code", None)
+    return code if isinstance(code, int) else None
+
+
+def _is_subscription_level_failure(exc: BaseException) -> bool:
+    return _status_code_of(exc) in _SUBSCRIPTION_LEVEL_STATUS_CODES
+
+
 def _stream_debug_enabled() -> bool:
     return get_settings().debug_subscription_stream
 
@@ -237,6 +264,10 @@ class SubscriptionService:
         self._dropped_datachange_events = 0
         self._event_loop: asyncio.AbstractEventLoop | None = None
         self._shutdown_event: asyncio.Event = asyncio.Event()
+        # Set by ``close()``: background tasks must never be resurrected afterwards, otherwise a
+        # post-close operation (TTL sweep, datachange callback, reconnect) restarts them against an
+        # already disconnecting client.
+        self._closed = False
         self._reconnect_listener = self._handle_client_reconnect
         self._opcua_client.add_reconnect_listener(self._reconnect_listener)
 
@@ -406,6 +437,10 @@ class SubscriptionService:
         state.last_activity_monotonic = self._now_monotonic()
 
     def _ensure_cleanup_task(self) -> None:
+        if self._closed:
+            # ``close()`` already tore the runtime down; a late call (TTL sweep, datachange callback,
+            # reconnect, sync after shutdown) must not resurrect background tasks.
+            return
         if self._cleanup_task is None or self._cleanup_task.done():
             self._cleanup_task = asyncio.create_task(self._cleanup_loop())
         if self._datachange_task is None or self._datachange_task.done():
@@ -451,6 +486,9 @@ class SubscriptionService:
         notification handlers. Only items it could not restore are re-admitted here; a bin
         whose subscription is gone is dropped and its nodes are re-admitted.
         """
+        if self._closed:
+            # The service is shutting down; re-admitting against a disconnecting client would leak tasks.
+            return
         dead_bins: list[_ManagedBin] = []
         lost_node_ids: list[str] = []
         async with self._lock:
@@ -516,6 +554,7 @@ class SubscriptionService:
         # any cleanup so that HTTP connections can be closed while Uvicorn is
         # still in its "Waiting for connections to close" phase.
         self._shutdown_event.set()
+        self._closed = True
         async with self._lock:
             subscriptions = list(self._subscriptions.values())
 
@@ -782,6 +821,9 @@ class SubscriptionService:
                 return None
 
             if state.stream_connected and not allow_when_stream_active:
+                # Keep the TTL refreshed: a client polling while a stream is open is still active,
+                # otherwise the subscription expires mid-stream (400 "stream is active" until TTL).
+                self._touch(state)
                 return SubscriptionSyncResult(updates=[], stream_active=True)
 
             if acknowledge_sequence == -1:
@@ -909,15 +951,21 @@ class SubscriptionService:
         # replacing Uvicorn's own SIGINT/SIGTERM handling.
         _wakeup = asyncio.ensure_future(wait_event.wait())
         _abort = asyncio.ensure_future(self._shutdown_event.wait())
-        done, _pending = await asyncio.wait(
-            {_wakeup, _abort},
-            timeout=timeout_seconds,
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        for _task in (_wakeup, _abort):
-            _task.cancel()
+        try:
+            done, _pending = await asyncio.wait(
+                {_wakeup, _abort},
+                timeout=timeout_seconds,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            # ``asyncio.wait`` does not cancel the futures it leaves pending - and it also does not
+            # cancel them when *this* coroutine is cancelled (client disconnect, shutdown). Both
+            # futures must be cancelled and awaited here, otherwise every SSE stream leaks two
+            # orphaned tasks ("Task was destroyed but it is pending").
+            _wakeup.cancel()
+            _abort.cancel()
             with suppress(asyncio.CancelledError):
-                await _task
+                await asyncio.gather(_wakeup, _abort, return_exceptions=True)
 
         if self._shutdown_event.is_set():
             # Server is shutting down; tell the SSE generator to close gracefully.
@@ -1173,6 +1221,10 @@ class SubscriptionService:
         return max(0.1, min(self._native_timeout_refresh_max_seconds, target_interval_seconds))
 
     async def _start_node_monitor_runtime(self, monitor: _NodeMonitor) -> None:
+        if self._closed:
+            # Shutdown in progress: do not open OPC UA subscriptions against a disconnecting client.
+            return
+
         if self._now_monotonic() < self._native_backoff_until_monotonic:
             await self._start_polling_node_monitor(monitor)
             return
@@ -1180,13 +1232,25 @@ class SubscriptionService:
         caps = await self._opcua_client.get_subscription_capabilities()
         try:
             acquired = await self._acquire_native_bin_slot(monitor, caps)
-        except Exception:
-            logger.exception(
-                "Native OPC UA monitor failed for node_id=%s; backing off native admissions for %.1fs",
-                monitor.node_id,
-                self._native_backoff_seconds,
-            )
-            self._native_backoff_until_monotonic = self._now_monotonic() + self._native_backoff_seconds
+        except Exception as exc:
+            if _is_subscription_level_failure(exc):
+                # The server reported a subscription/session limit: retrying every node right away
+                # would fail identically, so native admissions pause service-wide.
+                logger.exception(
+                    "Native OPC UA monitor failed for node_id=%s (subscription-level status code); "
+                    "backing off native admissions for %.1fs",
+                    monitor.node_id,
+                    self._native_backoff_seconds,
+                )
+                self._native_backoff_until_monotonic = self._now_monotonic() + self._native_backoff_seconds
+            else:
+                # A per-item rejection (unsupported node, invalid id, ...) only degrades this node.
+                # Other nodes must keep monitoring natively instead of a service-wide backoff.
+                logger.warning(
+                    "Native OPC UA monitor rejected for node_id=%s (status code=%s); this node falls back to polling",
+                    monitor.node_id,
+                    _status_code_of(exc),
+                )
             acquired = False
 
         if not acquired:
@@ -1266,6 +1330,11 @@ class SubscriptionService:
         finally:
             # Admissions that reserved a slot in this bin must not wait for a create that never succeeds.
             placeholder.ready.set()
+            if failed and ua_subscription is not None:
+                # The create succeeded but the item add raised: asyncua has no registry of the
+                # subscription, so it would keep publishing (and hold a session slot) forever.
+                with suppress(Exception):
+                    await self._opcua_client.delete_subscription(ua_subscription)
             async with self._lock:
                 reserved_bin = self._bins.get(placeholder.bin_id)
                 if reserved_bin is not None:

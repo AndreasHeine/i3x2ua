@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+from contextlib import suppress
 from types import SimpleNamespace
 from typing import cast
 
@@ -539,3 +541,57 @@ async def test_iter_stream_events_emits_connected_keepalive_updates_close() -> N
     assert kinds == ["connected", "keepalive", "updates", "close"]
     assert len(events[2]["updates"]) == 1
     assert port.deactivated == [("sub-1", 3)]
+
+
+@pytest.mark.asyncio
+async def test_iter_stream_events_deactivates_stream_when_cancelled() -> None:
+    """A client disconnect must still deactivate the stream (M10).
+
+    Without a shield the ``finally`` coroutine is cancelled together with the generator, leaving
+    ``stream_connected`` set until the TTL expires - ``POST /subscriptions/sync`` then answers
+    400 "Subscription stream is active" for a stream that is long gone.
+    """
+    port = _FakeSubscriptionPort()
+    port.active_sequence = [True]
+    never_returns = asyncio.Event()
+
+    async def blocking_wait_for_updates(
+        client_id: str | None,
+        subscription_id: str,
+        after_sequence: int,
+        timeout_seconds: float,
+    ) -> list[SubscriptionUpdate] | None:
+        del client_id, subscription_id, after_sequence, timeout_seconds
+        await never_returns.wait()
+        return None
+
+    port.wait_for_updates = blocking_wait_for_updates  # type: ignore[method-assign]
+    service = SubscriptionAppService(
+        cast(OpcUaClientProtocol, SimpleNamespace()),
+        _model(),
+        cast(SubscriptionServicePort, port),
+    )
+
+    async def consume() -> None:
+        async for _event in service.iter_stream_events(
+            subscription_id="sub-1",
+            client_id="client-1",
+            stream_generation=5,
+            acknowledged_updates=[],
+            acknowledge_sequence=0,
+            timeout_seconds=0.1,
+        ):
+            pass
+
+    task = asyncio.create_task(consume())
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
+
+    # The shielded deactivation runs to completion even though the generator was cancelled.
+    for _ in range(20):
+        if port.deactivated:
+            break
+        await asyncio.sleep(0.01)
+    assert port.deactivated == [("sub-1", 5)]

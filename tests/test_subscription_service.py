@@ -3,12 +3,15 @@ from __future__ import annotations
 import asyncio
 import gc
 import weakref
+from contextlib import suppress
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
 from asyncua import ua
+from asyncua.ua.status_codes import StatusCodes
+from asyncua.ua.uaerrors import UaStatusCodeError
 
 from i3x_server.infrastructure.opcua.client import (
     OpcUaClientProtocol,
@@ -1290,7 +1293,7 @@ async def test_native_admission_failure_backs_off_to_polling() -> None:
     class _FailingCreateClient(FakeOpcUaClient):
         async def create_datachange_subscription(self, publishing_interval_ms: float, handler: Any) -> Any:
             del publishing_interval_ms, handler
-            raise RuntimeError("simulated ServiceFault: BadTooManySubscriptions")
+            raise _status_error("BadTooManySubscriptions")
 
     client = _FailingCreateClient()
     service = SubscriptionService(
@@ -1323,6 +1326,131 @@ async def test_native_admission_failure_backs_off_to_polling() -> None:
     async with service._lock:
         assert service._node_monitors["ns=2;s=Pressure"].mode == "polling"
     assert attempts_before == 0
+
+    await service.close()
+
+
+def _status_error(status_name: str) -> UaStatusCodeError:
+    code = getattr(StatusCodes, status_name)
+    value = int(code.value) if hasattr(code, "value") else int(code)
+    return UaStatusCodeError(value)  # type: ignore[no-untyped-call]
+
+
+@pytest.mark.asyncio
+async def test_per_item_rejection_degrades_only_that_node_and_cleans_up_subscription() -> None:
+    """A rejected monitored item must not back off the whole service and must not leak its subscription.
+
+    ``subscribe_data_changes`` raises ``UaStatusCodeError`` for an unsupported node after the OPC UA
+    subscription already exists: asyncua keeps no registry of it, so it has to be deleted here, and the
+    remaining nodes must keep monitoring natively.
+    """
+
+    class _RejectingAddClient(FakeOpcUaClient):
+        rejected_node_ids: set[str]
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.rejected_node_ids = {"ns=2;s=Temperature"}
+
+        async def subscribe_data_changes(self, subscription: Any, node_ids: list[str]) -> int | list[int]:
+            if node_ids[0] in self.rejected_node_ids:
+                raise _status_error("BadNotSupported")
+            return await super().subscribe_data_changes(subscription, node_ids)
+
+    client = _RejectingAddClient()
+    service = SubscriptionService(
+        cast(OpcUaClientProtocol, client),
+        interval_seconds=1,
+        seed_initial_values=False,
+        native_backoff_seconds=60.0,
+    )
+    created = await service.create_subscription(client_id="c1", display_name=None)
+    model = _model()
+    assert await service.register_items("c1", created.subscription_id, ["prop-a"], max_depth=0, model=model) is True
+
+    async with service._lock:
+        assert service._node_monitors["ns=2;s=Temperature"].mode == "polling"
+        assert not service._bins
+    # The subscription created for the rejected item was deleted again.
+    assert len(client.deleted_subscriptions) == 1
+    # A per-item rejection is not a session-level limit: no service-wide backoff.
+    assert service._native_backoff_until_monotonic == 0.0
+
+    # Other nodes still go native - the rejection must not degrade them for 60s.
+    assert await service.register_items("c1", created.subscription_id, ["prop-b"], max_depth=0, model=model) is True
+    async with service._lock:
+        assert service._node_monitors["ns=2;s=Pressure"].mode == "native"
+        assert client.create_subscription_calls == 2
+
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_wait_for_updates_cancels_its_futures_on_client_disconnect() -> None:
+    """Disconnecting an SSE stream must not leave the wakeup/abort futures pending."""
+
+    client = FakeOpcUaClient()
+    service = SubscriptionService(cast(OpcUaClientProtocol, client), interval_seconds=1, seed_initial_values=False)
+    model = _model()
+    created = await service.create_subscription(client_id="c1", display_name=None)
+    assert await service.register_items("c1", created.subscription_id, ["prop-a"], max_depth=0, model=model) is True
+
+    baseline = len(asyncio.all_tasks())
+    wait_task = asyncio.create_task(
+        service.wait_for_updates("c1", created.subscription_id, after_sequence=0, timeout_seconds=30)
+    )
+    await asyncio.sleep(0.05)
+    wait_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await wait_task
+
+    # No orphaned futures: only the service's own background tasks remain.
+    assert len(asyncio.all_tasks()) == baseline
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_close_prevents_resurrecting_background_tasks() -> None:
+    """Post-close calls must not restart the background runtime against a disconnecting client."""
+
+    client = FakeOpcUaClient()
+    service = SubscriptionService(cast(OpcUaClientProtocol, client), interval_seconds=1)
+    await service.close()
+
+    service._ensure_cleanup_task()
+    assert service._cleanup_task is None
+    assert service._datachange_task is None
+    assert service._node_datachange_task is None
+    assert service._shared_polling_task is None
+
+    # Reconnect callbacks and sync after close must be no-ops rather than re-admitting nodes.
+    await service._handle_client_reconnect()
+    assert client.create_subscription_calls == 0
+    assert await service.sync("c1", "sub-does-not-exist", acknowledge_sequence=None) is None
+
+
+@pytest.mark.asyncio
+async def test_sync_with_active_stream_refreshes_ttl() -> None:
+    """Polling while a stream is open keeps the subscription alive instead of expiring it."""
+
+    client = FakeOpcUaClient()
+    service = SubscriptionService(cast(OpcUaClientProtocol, client), interval_seconds=1, ttl_seconds=1)
+    model = _model()
+    created = await service.create_subscription(client_id="c1", display_name=None)
+    assert await service.register_items("c1", created.subscription_id, ["prop-a"], max_depth=0, model=model) is True
+    generation = await service.activate_stream("c1", created.subscription_id)
+    assert generation is not None
+
+    async with service._lock:
+        state = service._subscriptions[created.subscription_id]
+        before = state.last_activity_monotonic
+
+    result = await service.sync("c1", created.subscription_id, acknowledge_sequence=None)
+    assert result is not None
+    assert result.stream_active is True
+
+    async with service._lock:
+        assert service._subscriptions[created.subscription_id].last_activity_monotonic > before
 
     await service.close()
 

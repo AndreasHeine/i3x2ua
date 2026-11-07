@@ -60,6 +60,9 @@ COPY --from=builder /app/.venv /app/.venv
 COPY i3x_server /app/i3x_server
 COPY --from=builder /app/dist /app/dist
 COPY static /app/static
+# MCP tool/prompt overrides are resolved relative to /app/overrides; without this the
+# shipped image silently runs with the built-in definitions.
+COPY overrides /app/overrides
 RUN printf "%s\n" "${BUILD_VERSION}" > /app/server-version.txt \
     && chown app:app /app/server-version.txt
 

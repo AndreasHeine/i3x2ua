@@ -10,7 +10,7 @@ from copy import deepcopy
 from dataclasses import MISSING, fields, is_dataclass
 from datetime import datetime
 from enum import Enum
-from types import ModuleType
+from types import ModuleType, UnionType
 from typing import Any, cast, get_args, get_origin
 
 from asyncua import ua
@@ -294,7 +294,11 @@ def _schema_for_member(
         registry,
     )
     if member.node_class.lower() == "object":
-        schema: dict[str, Any] = {"type": "object"}
+        # An Object member is structured, but that must not discard its resolved DataType schema or
+        # its ValueRank shape: an object member with ValueRank -2/-3/>=1 carries array values.
+        schema = dict(resolved_schema) if resolved_schema is not None else (structured_schema or {"type": "object"})
+        if _member_is_array(member):
+            schema = {"type": "array", "items": schema}
     elif resolved_schema is not None:
         schema = dict(resolved_schema)
         if _member_is_array(member):
@@ -572,10 +576,16 @@ def _is_extension_variant(variant_type: str | None) -> bool:
 
 
 def _member_is_array(member: OpcUaObjectTypeMemberInfo) -> bool | None:
+    """Whether the member must be modelled as an array.
+
+    ``ValueRank >= 1`` is a fixed-dimension array. ``-2`` (OneOrMoreDimensions) and ``-3``
+    (ScalarOrOneDimension) explicitly allow array values, so modelling them as scalars would reject
+    legitimate arrays (OPC UA Part 8, ValueRank enumeration).
+    """
     if getattr(member, "is_array", None) is True:
         return True
     value_rank = getattr(member, "value_rank", None)
-    if isinstance(value_rank, int) and value_rank >= 1:
+    if isinstance(value_rank, int) and (value_rank >= 1 or value_rank in (-2, -3)):
         return True
     return getattr(member, "is_array", None)
 
@@ -932,9 +942,12 @@ def _schema_for_annotation(annotation: Any, registry: _SchemaRegistry) -> dict[s
         item_annotation = args[0] if args else Any
         return {"type": "array", "items": _schema_for_annotation(item_annotation, registry)}
 
-    if origin is not None and args:
+    if origin is typing.Union or origin is UnionType:
         non_none_args = [arg for arg in args if arg is not type(None)]
+        if not non_none_args:
+            return {"type": "null"}
         if len(non_none_args) == 1 and len(non_none_args) != len(args):
+            # Optional[X]: one type plus None, expressed as a nullable type rather than an anyOf.
             nested = _schema_for_annotation(non_none_args[0], registry)
             nested_type = nested.get("type")
             if isinstance(nested_type, str):
@@ -942,6 +955,12 @@ def _schema_for_annotation(annotation: Any, registry: _SchemaRegistry) -> dict[s
             elif isinstance(nested_type, list) and "null" not in nested_type:
                 nested["type"] = [*nested_type, "null"]
             return nested
+        # A genuine union (``Union[int, str]``) must stay a union: collapsing it to a single type -
+        # or to the generic string fallback below - rejects values the server legitimately allows.
+        return {"anyOf": [_schema_for_annotation(arg, registry) for arg in args]}
+
+    if annotation is type(None):
+        return {"type": "null"}
 
     if isinstance(annotation, str):
         return _schema_for_annotation_string(annotation, registry)
@@ -1752,7 +1771,17 @@ def _definition_name(
     item: OpcUaObjectTypeInfo,
     element_ids_by_node_id: Mapping[str, str],
 ) -> str:
-    return element_ids_by_node_id.get(item.node_id, f"unresolved-objecttype:{item.browse_name.lower()}")
+    """Definition name for an ancestor ObjectType.
+
+    An unresolved ancestor must be keyed by its node id, not only by BrowseName: ObjectTypes in
+    different namespaces can share a BrowseName, and one of them is frequently a subtype of the other.
+    A shared name makes ``set_definition`` overwrite one schema, and both ``allOf`` entries then point
+    at the surviving schema - write validation would check the wrong required fields and types.
+    """
+    element_id = element_ids_by_node_id.get(item.node_id)
+    if element_id:
+        return element_id
+    return f"unresolved-objecttype:{item.browse_name.lower()}-{_def_key(item.node_id)}"
 
 
 def _expanded_node_id(node_id: str, namespace_infos: list[OpcUaNamespaceInfo]) -> str:

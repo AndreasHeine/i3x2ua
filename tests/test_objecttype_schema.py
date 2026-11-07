@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import types
+import typing
 from copy import deepcopy
 from dataclasses import dataclass, field, make_dataclass
 from types import SimpleNamespace
@@ -1125,3 +1126,211 @@ def test_dedupe_defs_rewrites_local_refs_to_first_definition() -> None:
     assert set(schema["$defs"].keys()) == {"Alpha", "Wrapper"}
     assert schema["allOf"][0]["$ref"] == "#/$defs/Alpha"
     assert schema["$defs"]["Wrapper"]["properties"]["nested"]["$ref"] == "#/$defs/Alpha"
+
+
+def _namespace_infos() -> list[OpcUaNamespaceInfo]:
+    return [
+        OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/", display_name="UA"),
+        OpcUaNamespaceInfo(uri="urn:namespace-a", display_name="NamespaceA"),
+        OpcUaNamespaceInfo(uri="urn:namespace-b", display_name="NamespaceB"),
+    ]
+
+
+def test_same_browse_name_ancestors_keep_separate_definitions() -> None:
+    """Ancestors sharing a BrowseName must not share one ``$defs`` entry (M12).
+
+    Two ObjectTypes in different namespaces can have the same BrowseName, and one is commonly a
+    subtype of the other. Keying an unresolved ancestor by BrowseName alone made ``set_definition``
+    overwrite the ancestor's schema, so both ``allOf`` entries pointed at the descendant's schema and
+    write validation checked the wrong required fields.
+    """
+    base = OpcUaObjectTypeInfo(
+        node_id="ns=3;i=1000",
+        parent_node_id="ns=2;i=1000",
+        browse_name="SharedBase",
+        display_name="SharedBase (namespace B)",
+        properties={"Beta": "ns=0;i=6"},
+        members=[
+            OpcUaObjectTypeMemberInfo(
+                node_id="ns=3;i=2001",
+                browse_name="Beta",
+                display_name="Beta",
+                description=None,
+                node_class="Variable",
+                data_type="ns=0;i=6",
+                modelling_rule="Mandatory",
+                value=None,
+            )
+        ],
+    )
+    parent = OpcUaObjectTypeInfo(
+        node_id="ns=2;i=1000",
+        parent_node_id=None,
+        browse_name="SharedBase",
+        display_name="SharedBase (namespace A)",
+        properties={"Alpha": "ns=0;i=6"},
+        members=[
+            OpcUaObjectTypeMemberInfo(
+                node_id="ns=2;i=2001",
+                browse_name="Alpha",
+                display_name="Alpha",
+                description=None,
+                node_class="Variable",
+                data_type="ns=0;i=6",
+                modelling_rule="Mandatory",
+                value=None,
+            )
+        ],
+    )
+    derived = OpcUaObjectTypeInfo(
+        node_id="ns=2;i=3000",
+        parent_node_id="ns=3;i=1000",
+        browse_name="DerivedType",
+        display_name="DerivedType",
+        properties={"Gamma": "ns=0;i=6"},
+        members=[
+            OpcUaObjectTypeMemberInfo(
+                node_id="ns=2;i=3001",
+                browse_name="Gamma",
+                display_name="Gamma",
+                description=None,
+                node_class="Variable",
+                data_type="ns=0;i=6",
+                modelling_rule="Mandatory",
+                value=None,
+            )
+        ],
+    )
+
+    schema = build_object_type_schema(
+        derived,
+        {base.node_id: base, parent.node_id: parent, derived.node_id: derived},
+        {derived.node_id: "derived-type"},
+        _namespace_infos(),
+    )
+
+    definition_names = list(schema["$defs"])
+    assert len(definition_names) == 3, definition_names
+    ref_names = [entry["$ref"].split("#/$defs/", 1)[1] for entry in schema["allOf"]]
+    assert len(set(ref_names)) == 3, ref_names
+
+    # Both ancestors contribute their mandatory fields.
+    assert schema["required"] == ["Alpha", "Beta", "Gamma"]
+    validator = Draft202012Validator(schema)
+    assert not validator.is_valid({"Alpha": 1, "Gamma": 1})
+    assert not validator.is_valid({"Beta": 1, "Gamma": 1})
+    assert validator.is_valid({"Alpha": 1, "Beta": 1, "Gamma": 1})
+
+
+@pytest.mark.parametrize("value_rank", [-2, -3])
+def test_one_or_more_dimension_value_rank_is_modelled_as_array(value_rank: int) -> None:
+    """ValueRank -2 (OneOrMoreDimensions) and -3 (ScalarOrOneDimension) allow array values."""
+    member = OpcUaObjectTypeMemberInfo(
+        node_id="ns=2;i=2000",
+        browse_name="Values",
+        display_name="Values",
+        description=None,
+        node_class="Variable",
+        data_type="ns=0;i=6",
+        modelling_rule="Optional",
+        value=None,
+        value_rank=value_rank,
+    )
+    item = OpcUaObjectTypeInfo(
+        node_id="ns=2;i=1000",
+        parent_node_id=None,
+        browse_name="DimensionedType",
+        display_name="DimensionedType",
+        properties={"Values": "ns=0;i=6"},
+        members=[member],
+    )
+    schema = build_object_type_schema(
+        item,
+        {item.node_id: item},
+        {item.node_id: "dimensioned-type"},
+        _namespace_infos(),
+    )
+
+    prop = schema["properties"]["Values"]
+    assert prop["type"] == "array"
+    assert prop["items"] == {"type": "integer"}
+    assert prop["x-opcua-valueRank"] == value_rank
+    validator = Draft202012Validator(schema)
+    assert validator.is_valid({"Values": [1, 2]})
+
+
+def test_object_member_keeps_resolved_datatype_schema_and_array_shape() -> None:
+    """A NodeClass ``Object`` member must not discard its DataType schema or its ValueRank shape."""
+    members = [
+        OpcUaObjectTypeMemberInfo(
+            node_id="ns=2;i=2000",
+            browse_name="ScalarObject",
+            display_name="ScalarObject",
+            description=None,
+            node_class="Object",
+            data_type="ns=2;i=3001",
+            modelling_rule="Optional",
+            value=None,
+            value_rank=-1,
+        ),
+        OpcUaObjectTypeMemberInfo(
+            node_id="ns=2;i=2001",
+            browse_name="ObjectList",
+            display_name="ObjectList",
+            description=None,
+            node_class="Object",
+            data_type="ns=2;i=3001",
+            modelling_rule="Optional",
+            value=None,
+            value_rank=-2,
+        ),
+    ]
+    item = OpcUaObjectTypeInfo(
+        node_id="ns=2;i=1000",
+        parent_node_id=None,
+        browse_name="ObjectMemberType",
+        display_name="ObjectMemberType",
+        properties={member.browse_name: member.data_type for member in members},
+        members=members,
+    )
+    schema = build_object_type_schema(
+        item,
+        {item.node_id: item},
+        {item.node_id: "object-member-type"},
+        _namespace_infos(),
+        resolved_data_type_schemas={"nsu=urn:namespace-b;i=3001": {"type": "integer", "minimum": 0}},
+    )
+
+    assert schema["properties"]["ScalarObject"]["type"] == "integer"
+    assert schema["properties"]["ScalarObject"]["minimum"] == 0
+    assert schema["properties"]["ObjectList"]["type"] == "array"
+    assert schema["properties"]["ObjectList"]["items"] == {"type": "integer", "minimum": 0}
+    validator = Draft202012Validator(schema)
+    assert validator.is_valid({"ScalarObject": 7, "ObjectList": [0, 1]})
+    assert not validator.is_valid({"ScalarObject": -1})
+    assert not validator.is_valid({"ObjectList": [7, "text"]})
+
+
+@pytest.mark.parametrize(
+    ("annotation", "expected"),
+    [
+        # ``X | Y`` yields ``types.UnionType``; ``typing.Union[...]`` yields ``typing.Union`` - both
+        # appear in annotations coming from asyncua dataclasses and pydantic models.
+        (int | str, {"anyOf": [{"type": "integer"}, {"type": "string"}]}),
+        (typing.Union[int, str], {"anyOf": [{"type": "integer"}, {"type": "string"}]}),  # noqa: UP007
+        (int | None, {"type": ["integer", "null"]}),
+        (
+            int | str | None,
+            {"anyOf": [{"type": "integer"}, {"type": "string"}, {"type": "null"}]},
+        ),
+        (type(None), {"type": "null"}),
+        (
+            list[int | str],
+            {"type": "array", "items": {"anyOf": [{"type": "integer"}, {"type": "string"}]}},
+        ),
+    ],
+)
+def test_annotation_unions_keep_all_members(annotation: Any, expected: dict[str, Any]) -> None:
+    """``Union[int, str]`` must stay a union instead of collapsing to the string fallback."""
+    registry = objecttype_schema._SchemaRegistry()
+    assert objecttype_schema._schema_for_annotation(annotation, registry) == expected

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from contextlib import suppress
 from dataclasses import asdict, fields, is_dataclass
 from datetime import datetime, timezone
@@ -827,14 +828,16 @@ class OpcUaClient:
                 continue
 
             nodes = [node for node, _ in filtered_entries]
-            node_infos, all_refs, browsed = await asyncio.gather(
-                self._read_node_infos_limited(filtered_entries),
-                self._browse_references_descriptions(
-                    nodes,
-                    max_nodes_per_browse=max_nodes_per_browse,
-                    reference_type_id=ObjectIds.References,
-                ),
-                self._browse_children_descriptions(nodes, max_nodes_per_browse),
+            node_infos, all_refs, browsed = await _gather_cancelled_on_failure(
+                [
+                    self._read_node_infos_limited(filtered_entries),
+                    self._browse_references_descriptions(
+                        nodes,
+                        max_nodes_per_browse=max_nodes_per_browse,
+                        reference_type_id=ObjectIds.References,
+                    ),
+                    self._browse_children_descriptions(nodes, max_nodes_per_browse),
+                ]
             )
             output.extend(node_infos)
 
@@ -1108,7 +1111,7 @@ class OpcUaClient:
                     )
                     return None
 
-        raw = await asyncio.gather(*[worker(node, parent_node_id) for node, parent_node_id in entries])
+        raw = await _gather_cancelled_on_failure([worker(node, parent_node_id) for node, parent_node_id in entries])
         return [item for item in raw if item is not None]
 
     async def _read_attribute_batch(self, nodes: list[Any], attr: AttributeIds) -> list[ua.DataValue]:
@@ -1156,7 +1159,7 @@ class OpcUaClient:
             async with semaphore:
                 return await self._read_attribute_pairs_batch(batch)
 
-        batch_values = await asyncio.gather(*(read_batch(batch) for batch in batches))
+        batch_values = await _gather_cancelled_on_failure([read_batch(batch) for batch in batches])
         return [value for values in batch_values for value in values]
 
     async def _read_attribute_pairs_batch(
@@ -1415,7 +1418,9 @@ class OpcUaClient:
             capability_values = await self._read_attribute_pairs([(node, AttributeIds.Value) for node in nodes])
         except Exception:
             logger.debug("OPC UA subscription capability batch read failed endpoint=%s", self._endpoint, exc_info=True)
-            fallback_values = await asyncio.gather(*(self._read_positive_int(node_id) for node_id in node_ids))
+            fallback_values = await _gather_cancelled_on_failure(
+                [self._read_positive_int(node_id) for node_id in node_ids]
+            )
             values_by_node_id = dict(zip(node_ids, fallback_values, strict=True))
         else:
             values_by_node_id = {}
@@ -1905,8 +1910,8 @@ class OpcUaClient:
                     ),
                 )
 
-        return await asyncio.gather(
-            *[
+        return await _gather_cancelled_on_failure(
+            [
                 worker(
                     parent_id,
                     node_id,
@@ -2658,7 +2663,7 @@ class OpcUaClient:
                 return batch_values_by_node_id
 
         try:
-            batch_results = await asyncio.gather(*(read_history_batch(batch) for batch in history_batches))
+            batch_results = await _gather_cancelled_on_failure([read_history_batch(batch) for batch in history_batches])
             for batch_values in batch_results:
                 values_by_node_id.update(batch_values)
         except Exception:
@@ -2988,6 +2993,25 @@ def _chunked_nodes(values: list[Any], size: int) -> list[list[Any]]:
     return [values[idx : idx + size] for idx in range(0, len(values), size)]
 
 
+async def _gather_cancelled_on_failure(awaitables: Sequence[Awaitable[Any]]) -> list[Any]:
+    """Run awaitables concurrently and cancel every sibling when one of them fails.
+
+    ``asyncio.gather`` leaves the remaining tasks running after the first failure - they keep
+    issuing requests against a session that a browse or read error may already be tearing down,
+    and an aborted model build can therefore still mutate connection state. Cancelling and
+    awaiting the siblings before re-raising keeps the failure path deterministic (the same pattern
+    ``_read_data_values_per_node`` already uses for its batches).
+    """
+    tasks: list[asyncio.Task[Any]] = [asyncio.ensure_future(awaitable) for awaitable in awaitables]
+    try:
+        return list(await asyncio.gather(*tasks))
+    except BaseException:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
+
+
 def _assert_file_exists(path: Path, label: str) -> None:
     if not path.is_file():
         raise FileNotFoundError(f"{label} not found: {path}")
@@ -2996,6 +3020,11 @@ def _assert_file_exists(path: Path, label: str) -> None:
 def _to_json_compatible(value: Any) -> Any:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        # Raw ByteString members must use the same base64 convention as every other byte payload
+        # in this gateway (write path ``history.py``/``common_helpers.py``); ``str(value)`` would
+        # publish a Python repr such as ``"b'\\xff\\x00'"``.
+        return base64.b64encode(bytes(value)).decode("ascii")
     if isinstance(value, datetime):
         return value.isoformat()
     if is_dataclass(value):

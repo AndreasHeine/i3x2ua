@@ -60,6 +60,17 @@ def test_v1_history_query_includes_component_histories_when_depth_allows(client:
     app.state.model_cache.composition_children_by_id["asset-root"] = [property_id]
     app.state.model_cache.composition_children_by_id[child_asset_id] = [child_prop_id]
 
+    # ChildProp has history data, but it hangs on a hierarchical child (HasChildren):
+    # composition recursion must not collect it via the parent (spec :1111/:1924).
+    app.state.opcua_client.history_values["ns=2;s=ChildProp"] = [
+        SimpleNamespace(
+            Value=SimpleNamespace(Value=5.0),
+            StatusCode=SimpleNamespace(name="Good"),
+            SourceTimestamp=datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc),
+            ServerTimestamp=None,
+        )
+    ]
+
     response = client.post(
         "/v1/objects/history",
         json={

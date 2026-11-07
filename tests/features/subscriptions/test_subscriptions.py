@@ -8,7 +8,7 @@ import time
 from fastapi.testclient import TestClient
 
 from i3x_server.schemas.i3x import ModelNode
-from tests.conftest import fastapi_app
+from tests.conftest import assert_documented_response, fastapi_app
 
 
 def test_v1_subscription_lifecycle(client: TestClient) -> None:
@@ -313,6 +313,7 @@ def test_v1_subscription_sync_returns_206_on_overflow(client: TestClient) -> Non
     assert isinstance(payload["result"], list)
     assert payload["responseDetail"]["status"] == 206
     assert "Dropped sequence numbers" in payload["responseDetail"]["detail"]
+    assert_documented_response(client, "post", "/v1/subscriptions/sync", 206, payload)
 
 
 def test_v1_subscription_sync_last_sequence_number_minus_one_clears_pending_updates(client: TestClient) -> None:

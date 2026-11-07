@@ -19,6 +19,7 @@ from typing import Any, cast
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from jsonschema import Draft202012Validator
 
 from i3x_server.bootstrap.app_factory import create_app
 from i3x_server.infrastructure.opcua.client import (
@@ -258,6 +259,10 @@ class FakeOpcUaClient:
             return "SessionDiagnosticsDataType"
         if node_id == "ns=0;i=96":
             return "RolePermissionType"
+        if node_id == "nsu=http://example.com/custom;i=900001":
+            return "CustomNetworkAddressType"
+        if node_id == "nsu=http://example.com/custom;i=900002":
+            return "CustomMachineStateType"
         return None
 
     async def read_values(self, node_ids: list[str]) -> list[Any]:
@@ -525,3 +530,13 @@ def client_without_tool_overrides(monkeypatch: pytest.MonkeyPatch) -> Generator[
             os.environ.pop("I3X_MCP_INCLUDE_OPCUA_METADATA", None)
         else:
             os.environ["I3X_MCP_INCLUDE_OPCUA_METADATA"] = previous_mcp_include_opcua_metadata
+
+
+def assert_documented_response(client: TestClient, method: str, path: str, status: int, payload: Any) -> None:
+    """Validate a runtime payload against the response schema documented in ``/openapi.json``."""
+    document = client.get("/openapi.json").json()
+    schema = document["paths"][path][method]["responses"][str(status)]["content"]["application/json"]["schema"]
+    Draft202012Validator(
+        {**schema, "components": document["components"]},
+        format_checker=Draft202012Validator.FORMAT_CHECKER,
+    ).validate(payload)

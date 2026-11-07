@@ -205,8 +205,6 @@ def test_openapi_json_is_source_of_truth(client: TestClient) -> None:
     assert isinstance(generated, dict)
     assert isinstance(generated.get("paths"), dict)
 
-    assert isinstance(generated.get("paths"), dict)
-
 
 def test_mcp_tool_input_schemas_match_openapi_contract(client: TestClient) -> None:
     openapi = client.get("/openapi.json").json()
@@ -575,6 +573,8 @@ def test_mcp_resources_list_rest(client: TestClient) -> None:
     resources = payload["resources"]
     assert any(item["uri"] == "i3x://openapi" for item in resources)
     assert any(item["uri"] == "i3x://mcp-overrides" for item in resources)
+    assert any(item["uri"] == "i3x://model/overview" for item in resources)
+    assert any(item["uri"] == "i3x://roots/asset-root" for item in resources)
 
 
 def test_mcp_resource_read_rest(client: TestClient) -> None:

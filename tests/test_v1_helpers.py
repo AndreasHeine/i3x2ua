@@ -374,6 +374,7 @@ def test_standard_ua_datatype_scalar_schema_detection() -> None:
 
 
 def test_generic_object_type_from_source_type_id() -> None:
+    """Generic inference and the live BrowseName lookup live in ``objecttype_helpers`` (source module)."""
     infos = [
         OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/", display_name="UA"),
         OpcUaNamespaceInfo(uri="http://example.com/custom", display_name="Custom"),
@@ -386,7 +387,7 @@ def test_generic_object_type_from_source_type_id() -> None:
     client = cast(Any, _NoopClient())
 
     standard = asyncio.run(
-        v1._generic_object_type_from_source_type_id(
+        objecttype_helpers._generic_object_type_from_source_type_id(
             "nsu=http://opcfoundation.org/UA/;i=865",
             infos,
             client,
@@ -399,7 +400,7 @@ def test_generic_object_type_from_source_type_id() -> None:
     assert standard.schema_["type"] == "object"
 
     custom = asyncio.run(
-        v1._generic_object_type_from_source_type_id(
+        objecttype_helpers._generic_object_type_from_source_type_id(
             "nsu=http://example.com/custom;s=Vendor.TypeA",
             infos,
             client,

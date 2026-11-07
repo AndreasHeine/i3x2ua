@@ -51,9 +51,10 @@ from i3x_server.api.v1.contracts import (
 )
 from i3x_server.api.v1.objecttype_helpers import (
     _datatype_object_type_from_source_type_id,
+    _generic_object_type_from_source_type_id,
+    _live_type_name_lookup_max_per_request,
     _opaque_datatype_object_type_from_source_type_id,
     _scalar_schema_for_standard_ua_datatype_node_id,
-    _standard_ua_type_name,
 )
 from i3x_server.api.v1.write_validation import WriteValidationError, WriteValueValidator
 from i3x_server.application.ports.opcua import (
@@ -94,23 +95,6 @@ __all__ = [
 
 def _runtime_settings() -> Settings:
     return get_settings()
-
-
-_ENABLE_LIVE_TYPE_NAME_LOOKUP: bool = _runtime_settings().enable_type_browsename_lookup
-_LIVE_TYPE_NAME_LOOKUP_TIMEOUT_S: float = _runtime_settings().type_browsename_lookup_timeout_s
-_LIVE_TYPE_NAME_LOOKUP_MAX_PER_REQUEST: int = _runtime_settings().type_browsename_lookup_max
-
-
-def _live_type_name_lookup_enabled() -> bool:
-    return _ENABLE_LIVE_TYPE_NAME_LOOKUP
-
-
-def _live_type_name_lookup_timeout_seconds() -> float:
-    return _LIVE_TYPE_NAME_LOOKUP_TIMEOUT_S
-
-
-def _live_type_name_lookup_max_per_request() -> int:
-    return _LIVE_TYPE_NAME_LOOKUP_MAX_PER_REQUEST
 
 
 def _stream_debug_enabled() -> bool:
@@ -1214,18 +1198,6 @@ def _is_builtin_ua_datatype_node_id(element_id: str) -> bool:
     return 1 <= identifier <= 25
 
 
-def _is_standard_ua_namespace_node_id(element_id: str) -> bool:
-    expanded_match = re.match(r"^nsu=([^;]+);", element_id, flags=re.IGNORECASE)
-    if expanded_match is not None:
-        namespace_uri = expanded_match.group(1).rstrip("/").lower()
-        return namespace_uri == "http://opcfoundation.org/ua"
-
-    indexed_match = re.match(r"^ns=(\d+);", element_id, flags=re.IGNORECASE)
-    if indexed_match is None:
-        return False
-    return int(indexed_match.group(1)) == 0
-
-
 def _collect_referenced_type_element_ids(
     model: BuildResult,
     namespace_infos: list[OpcUaNamespaceInfo],
@@ -1592,79 +1564,6 @@ def _synthetic_object_types_from_structure_defs(
             )
 
     return list(synthetic_by_source_type_id.values())
-
-
-async def _generic_object_type_from_source_type_id(
-    source_type_id: str,
-    namespace_infos: list[OpcUaNamespaceInfo],
-    opcua_client: OpcUaClientProtocol,
-    browse_name_cache: dict[str, str | None],
-    lookup_budget: dict[str, int],
-) -> ObjectTypeResponse | None:
-    expanded_match = re.match(r"^nsu=([^;]+);([isgb])=(.+)$", source_type_id, flags=re.IGNORECASE)
-    if expanded_match is None:
-        return None
-
-    namespace_uri = expanded_match.group(1)
-    identifier_kind = expanded_match.group(2).lower()
-    identifier_value = expanded_match.group(3)
-
-    display_name: str | None = None
-    if identifier_kind == "i":
-        standard_name = _standard_ua_type_name(source_type_id)
-        if standard_name and "_" not in standard_name:
-            display_name = standard_name
-    elif identifier_kind == "s":
-        token = identifier_value.rsplit("/", 1)[-1].rsplit(".", 1)[-1]
-        token = token.strip()
-        if token:
-            display_name = token
-
-    if not display_name:
-        display_name = f"InferredType_{identifier_kind}_{identifier_value}"
-
-    if (
-        _live_type_name_lookup_enabled()
-        and display_name.startswith("InferredType_")
-        and identifier_kind == "i"
-        and lookup_budget.get("remaining", 0) > 0
-    ):
-        lookup_node_id = source_type_id
-        if _is_standard_ua_namespace_node_id(source_type_id):
-            lookup_node_id = f"ns=0;i={identifier_value}"
-        resolved_name = browse_name_cache.get(lookup_node_id)
-        if resolved_name is None:
-            browse_name_reader = getattr(opcua_client, "read_browse_name", None)
-            if callable(browse_name_reader):
-                lookup_budget["remaining"] = max(0, lookup_budget.get("remaining", 0) - 1)
-                try:
-                    resolved_name = await asyncio.wait_for(
-                        browse_name_reader(lookup_node_id),
-                        timeout=_live_type_name_lookup_timeout_seconds(),
-                    )
-                except Exception:
-                    resolved_name = None
-            browse_name_cache[lookup_node_id] = resolved_name
-        if isinstance(resolved_name, str) and resolved_name.strip():
-            display_name = resolved_name.strip()
-
-    canonical_namespace_uri = _canonical_namespace_uri(namespace_uri, namespace_infos)
-    schema_payload = {
-        "type": "object",
-        "title": display_name,
-        "description": "Generic placeholder schema inferred from source type ID",
-        "x-opcua-nodeId": source_type_id,
-        "x-opcua-displayName": display_name,
-    }
-    if not _include_mcp_opcua_metadata():
-        schema_payload = remove_opcua_schema_fields(schema_payload)
-    return ObjectTypeResponse(
-        elementId=_virtual_element_id(canonical_namespace_uri, display_name, source_type_id, namespace_infos),
-        displayName=display_name,
-        namespaceUri=canonical_namespace_uri,
-        sourceTypeId=source_type_id,
-        schema=schema_payload,
-    )
 
 
 def _require_client_id(client_id: str | None, endpoint: str) -> str:

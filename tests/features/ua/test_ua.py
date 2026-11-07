@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from tests.conftest import fastapi_app
 
 
-def test_ua_state(client: TestClient) -> None:
+def test_ua_status(client: TestClient) -> None:
     response = client.get("/ua/status")
     assert response.status_code == 200
     payload = response.json()

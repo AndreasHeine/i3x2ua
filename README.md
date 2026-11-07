@@ -386,7 +386,7 @@ A response served from a stale cache keeps the older ETag, so clients pick up th
 
 Optional OPC UA diagnostic endpoints are exposed under `/ua`:
 
-- client state and connectivity (`/ua/state`, `/ua/connection`)
+- client state and connectivity (`/ua/status`, `/ua/connection`)
 - session limits and metrics (`/ua/limits`, `/ua/metrics`)
 
 Optional MCP endpoints are exposed only when `I3X_ENABLE_MCP=1`:

@@ -254,13 +254,17 @@ async def query_last_known_values_v1(
 
     values_by_node_id: dict[str, Any] = {}
     if node_ids:
+        # The same node can appear twice (repeated elementId, or a property that is also a
+        # composition child of another requested element). Reading it twice doubles upstream
+        # traffic for one shared value; history dedups the same way.
+        unique_node_ids = list(dict.fromkeys(node_ids))
         try:
-            raw_data_values = await opcua_client.read_data_values(node_ids)
-            if len(raw_data_values) != len(node_ids):
+            raw_data_values = await opcua_client.read_data_values(unique_node_ids)
+            if len(raw_data_values) != len(unique_node_ids):
                 raise RuntimeError(
-                    f"OPC UA read returned {len(raw_data_values)} values for {len(node_ids)} requested nodes"
+                    f"OPC UA read returned {len(raw_data_values)} values for {len(unique_node_ids)} requested nodes"
                 )
-            values_by_node_id = dict(zip(node_ids, raw_data_values, strict=True))
+            values_by_node_id = dict(zip(unique_node_ids, raw_data_values, strict=True))
         except Exception as exc:
             _raise_opcua_error("read values", exc)
 

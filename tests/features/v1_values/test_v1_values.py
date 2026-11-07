@@ -179,6 +179,66 @@ def test_v1_value_max_depth_counts_composition_levels(client: TestClient) -> Non
         assert "hier-child" not in components
 
 
+def test_v1_value_query_dedups_repeated_element_ids(client: TestClient) -> None:
+    """A repeated elementId must not double the upstream read (history dedups node ids the same way)."""
+    requested: list[list[str]] = []
+
+    async def read_data_values(node_ids: list[str]) -> list[Any]:
+        requested.append(list(node_ids))
+        return [
+            SimpleNamespace(
+                Value=SimpleNamespace(Value=23.5),
+                StatusCode=SimpleNamespace(name="Good", is_good=lambda: True),
+                SourceTimestamp=datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc),
+                ServerTimestamp=None,
+            )
+            for _ in node_ids
+        ]
+
+    fastapi_app(client).state.opcua_client.read_data_values = read_data_values
+
+    response = client.post(
+        "/v1/objects/value",
+        json={"elementIds": ["property-abc", "property-abc"], "maxDepth": 1},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert requested == [["ns=2;s=Temperature"]]
+    assert [item["result"]["value"] for item in payload["results"]] == [23.5, 23.5]
+    assert_documented_response(client, "post", "/v1/objects/value", 200, payload)
+
+
+def test_v1_value_query_dedups_nodes_shared_by_several_elements(client: TestClient) -> None:
+    """A property that is also a composition child of another requested element is read once."""
+    app = fastapi_app(client)
+    add_composition_depth_chain(app)
+    requested: list[list[str]] = []
+
+    async def read_data_values(node_ids: list[str]) -> list[Any]:
+        requested.append(list(node_ids))
+        return [
+            SimpleNamespace(
+                Value=SimpleNamespace(Value=float(len(node_ids))),
+                StatusCode=SimpleNamespace(name="Good", is_good=lambda: True),
+                SourceTimestamp=datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc),
+                ServerTimestamp=None,
+            )
+            for _ in node_ids
+        ]
+
+    app.state.opcua_client.read_data_values = read_data_values
+
+    response = client.post(
+        "/v1/objects/value",
+        json={"elementIds": ["asset-root", "comp-prop"], "maxDepth": 2},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert requested == [["ns=2;s=CompositionProp", "ns=2;s=MidProp"]]
+    assert payload["results"][0]["result"]["components"]["comp-prop"]["value"] == 2.0
+    assert payload["results"][1]["result"]["value"] == 2.0
+
+
 def test_v1_value_depth_cap_returns_206_with_response_detail(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

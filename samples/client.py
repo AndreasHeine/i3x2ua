@@ -14,17 +14,17 @@ this project's OPC UA-backed implementation):
                                         schema property names via displayName
 
 Usage:
-    python client.py --base-url http://127.0.0.1:8000
+    python client.py --base-url http://127.0.0.1:8000/v1
 
     # HTTPS with a self-signed cert behind an nginx basic-auth proxy:
     python client.py --base-url https://127.0.0.1:8443 --insecure \\
         --username admin --password pw1
 
 Options:
-    --base-url URL          i3X server base URL (default: http://127.0.0.1:8000)
+    --base-url URL          i3X server base URL (default: http://127.0.0.1:8000/v1)
     --max-nodes N            Cap on total discovered objects (default: 200)
-    --max-depth N            Cap on BFS levels traversed from the roots (default:
-                              unlimited). Use alongside --max-nodes on large
+    --max-depth N            Cap on BFS levels traversed from the roots (default: 1).
+                              Use alongside --max-nodes on large
                               address spaces to bound both breadth and depth.
     --type-element-id ID     Skip the tree walk entirely and fetch only instances
                               of this typeElementId - the fast path when the type

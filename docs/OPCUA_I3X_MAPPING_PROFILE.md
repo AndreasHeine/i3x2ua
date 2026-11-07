@@ -418,13 +418,22 @@ means the write itself is not offered and returns `501`
 to the HistoryUpdate route (see Historical Updates), so an unsupported access read
 stays an item-level upstream failure instead of claiming service-wide unavailability.
 
+Current-value writes send quality and source timestamp as `DataValue` fields and verify
+them with a read-back. If the read-back does not match the submitted quality or source
+timestamp, the item reports an item-level `502` whose detail states the outcome is
+uncertain rather than successful. If the access check reports the target as not
+writable but the submitted value, quality, and source timestamp exactly match the
+current state, the item is a successful no-op (`success: true`) and no write is sent
+upstream.
+
 ## Historical Updates
 
 `PUT /v1/objects/history` accepts `{"updates": [{"elementId": "...", "value":
 {"value": 19.5, "quality": "Good", "timestamp": "2026-01-01T10:00:00Z"}}]}`.
-All three VQT fields are required. Timestamps must be RFC 3339 UTC with a `Z`
-suffix (case-insensitive); timezone offsets, including `+00:00`, are rejected.
-Extra fractional digits beyond microsecond precision are accepted only when all
+All three VQT fields are required. Timestamps must be RFC 3339 date-times with a
+timezone: a UTC `Z` suffix (case-insensitive) or an explicit offset. Timezone
+offsets, including `+00:00` and non-UTC offsets, are accepted and normalized to
+UTC. Extra fractional digits beyond microsecond precision are accepted only when all
 are zero, preserving the instant exactly without rounding or substituting the
 current time. Null values require `Bad` or `GoodNoData`, and both qualities require
 null. Null is accepted only if the published ObjectType schema permits it.

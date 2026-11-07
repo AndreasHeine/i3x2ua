@@ -248,6 +248,10 @@ curl http://localhost:8000/mcp/prompts        # prompt names and descriptions
 # or read the resource i3x://mcp-overrides through MCP
 ```
 
+`i3x://mcp-overrides` returns the raw file contents. If the file is invalid, the runtime
+ignores it and serves the default catalog, so the resource can differ from the effective
+configuration; `GET /mcp/tools` always shows the effective catalog.
+
 ---
 
 ## 5. Turning misbehaving tools off

@@ -9,7 +9,7 @@ Files:
 
 OPC UA compatibility profile used by this sample certificate:
 
-- Subject Alternative Name (SAN) includes application URI: `urn:example.org:FreeOpcUa:opcua-asyncio`
+- Subject Alternative Name (SAN) includes application URI: `urn:i3x2ua:opcua_client` (the application URI the gateway declares in `i3x_server/infrastructure/opcua/client.py`)
 - SAN includes DNS names: `localhost` and the local host name
 - Key Usage includes: `digitalSignature`, `nonRepudiation/contentCommitment`, `keyEncipherment`, `dataEncipherment`
 - Extended Key Usage (EKU) includes: `clientAuth` and `serverAuth`

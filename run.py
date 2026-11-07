@@ -54,7 +54,7 @@ if __name__ == "__main__":
         reload_default = "1"
     reload_enabled = os.getenv("I3X_RELOAD", reload_default).strip().lower() in {"1", "true", "yes", "on"}
     requested_loop = os.getenv("I3X_UVICORN_LOOP", "").strip().lower()
-    # uvicorn 0.41 imports uvicorn.loops (which imports uvloop) for several
+    # uvicorn imports uvicorn.loops (which imports uvloop) for several
     # loop options. On Windows, forcing "none" avoids uvloop import failures.
     if os.name == "nt":
         uvicorn_loop = "none"

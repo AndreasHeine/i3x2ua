@@ -425,7 +425,10 @@ def _resource_catalog(request: Request) -> list[dict[str, Any]]:
         {
             "uri": "i3x://mcp-overrides",
             "name": "MCP overrides",
-            "description": "Runtime MCP tool, prompt, and feature overrides",
+            "description": (
+                "Raw contents of overrides/mcp_overrides.json. An invalid file is ignored by the runtime, "
+                "so the effective catalog may differ from these contents"
+            ),
             "mimeType": "application/json",
         },
     ]

@@ -181,7 +181,7 @@ Important:
 
 When generating your own OPC UA client certificate, include at least:
 
-- SAN application URI compatible with your client application identity (for `asyncua` default, `urn:example.org:FreeOpcUa:opcua-asyncio`)
+- SAN application URI matching the application URI the gateway declares: `urn:i3x2ua:opcua_client` (`scripts/generate_opcua_client_cert.py` defaults to it). The `asyncua` library default `urn:example.org:FreeOpcUa:opcua-asyncio` does not match this gateway, which sets `application_uri = "urn:i3x2ua:opcua_client"`.
 - SAN DNS entries for `localhost` and host name(s) used by deployment
 - Key Usage: `digitalSignature`, `nonRepudiation/contentCommitment`, `keyEncipherment`, `dataEncipherment`
 - EKU: `clientAuth` (and optionally `serverAuth` for broader compatibility)

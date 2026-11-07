@@ -193,9 +193,11 @@ If a module crosses 600 lines, add a follow-up issue or refactor note with an ex
 
 Feature tests should live under tests/features/<feature_name>/ and map to runtime ownership:
 
-- API presentation behavior: tests/features/*
-- application service behavior: tests/application/* (as introduced)
-- infrastructure adapter behavior: tests/infrastructure/* (as introduced)
+- API presentation behavior: tests/features/* (app, errors, mcp, subscriptions, ua, v1_*)
+- application service behavior: flat modules under tests/ named `test_*_service.py`
+  (a dedicated `tests/application/` directory is not present)
+- infrastructure adapter behavior: flat modules under tests/ named `test_opcua_*.py`
+  (a dedicated `tests/infrastructure/` directory is not present)
 
 ## Change Safety Checklist
 

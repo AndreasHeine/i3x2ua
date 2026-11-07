@@ -33,6 +33,10 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
+        with:
+          # A dispatched build must publish the code of the tag it names, not the default branch:
+          # otherwise the image is built from master but tagged and stamped with the older release.
+          ref: ${{ github.event.inputs.tag || github.ref }}
 
       - name: Log in to GitHub Container Registry
         if: ${{ github.event_name != 'pull_request' }}

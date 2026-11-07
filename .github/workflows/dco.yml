@@ -46,26 +46,37 @@ jobs:
 
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
             range="${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
+            echo "Checking commit range: ${range}"
+            mapfile -t commits < <(git rev-list --no-merges "${range}")
           else
             before="${{ github.event.before }}"
-            if [[ -z "${before}" || "${before}" == "0000000000000000000000000000000000000000" ]]; then
-              range="${{ github.sha }}"
-            else
+            if [[ -n "${before}" && "${before}" != "0000000000000000000000000000000000000000" ]]; then
               range="${before}..${{ github.sha }}"
+              echo "Checking commit range: ${range}"
+              mapfile -t commits < <(git rev-list --no-merges "${range}")
+            else
+              # A first push or a force push has no boundary ("before" is zero). A bare range would
+              # list every ancestor of the branch, so historic unsigned commits would fail the
+              # check regardless of the new ones. Only the commits carried by the event are new;
+              # the push payload lists at most the last 20 commits.
+              echo "No push boundary available; checking the commits carried by the event."
+              mapfile -t commits < <(jq -r '.commits[] | .id' "${GITHUB_EVENT_PATH}")
             fi
           fi
 
-          echo "Checking commit range: ${range}"
-
-          mapfile -t commits < <(git rev-list --no-merges "${range}")
-
           if [[ ${#commits[@]} -eq 0 ]]; then
-            echo "No non-merge commits to verify."
+            echo "No commits to verify."
             exit 0
           fi
 
           failed=0
           for sha in "${commits[@]}"; do
+            # Merge commits carry no trailer of their own (the pushed PR commits are checked separately).
+            if [[ "$(git rev-list --parents -n 1 "${sha}" | wc -w)" -gt 2 ]]; then
+              echo "Skipping merge commit ${sha}"
+              continue
+            fi
+
             author_name="$(git log -1 --pretty=%an "${sha}")"
             author_email="$(git log -1 --pretty=%ae "${sha}")"
 

@@ -46,7 +46,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: "3.14"
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v8.2.0
@@ -70,7 +70,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: "3.14"
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v8.2.0
@@ -83,6 +83,10 @@ jobs:
       - name: Run Ruff
         run: uv run ruff check .
 
+      - name: Check formatting
+        # docs/architecture.md promises "ruff check and format pass"; only the lint ran.
+        run: uv run ruff format --check .
+
   mypy:
     name: MyPy
     runs-on: ubuntu-24.04
@@ -94,7 +98,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: "3.14"
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v8.2.0
@@ -111,6 +115,11 @@ jobs:
     name: Pytest + Coverage
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      # 3.14 is the lower bound of requires-python, 3.15 is what the image ships (python:3.15.2-alpine).
+      matrix:
+        python-version: ["3.14", "3.15"]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -133,7 +142,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v8.2.0
@@ -158,5 +167,5 @@ jobs:
       - name: Upload coverage XML
         uses: actions/upload-artifact@v7
         with:
-          name: coverage-xml
+          name: coverage-xml-${{ matrix.python-version }}
           path: coverage.xml

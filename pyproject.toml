@@ -63,6 +63,9 @@ omit = [
 
 [tool.ruff]
 line-length = 120
+# Deliberately the lowest supported interpreter, not the shipped 3.15: a newer target activates
+# UP017/UP035/UP043/UP046/UP047 (110 findings) and, with ruff 0.17, mis-formats
+# `except (A, B):` under a py314 target. The CI jobs pin the interpreter itself to 3.14/3.15.
 target-version = "py310"
 extend-exclude = ["i3X"]
 
@@ -71,7 +74,7 @@ select = ["E", "F", "I", "UP", "B", "ASYNC"]
 ignore = ["B008"]
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.14"
 strict = true
 ignore_missing_imports = true
 explicit_package_bases = true

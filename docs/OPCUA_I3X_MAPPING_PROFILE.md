@@ -393,6 +393,31 @@ values fail with 400. Local schema references are supported, but external refere
 are rejected and schemas are never downloaded during validation. Bulk routes
 report these failures per item.
 
+## Write Error Classification
+
+Failures raised by the upstream server are classified by the OPC UA status code
+carried by the exception, never by exception text (text depends on the asyncua
+version and its language). The classification applies to both bulk write routes
+and stays item-level inside the bulk envelope:
+
+| OPC UA code | HTTP | Error class |
+|---|---|---|
+| `BadNodeIdUnknown` | 404 | `node_not_found` |
+| `BadUserAccessDenied` | 403 | `unauthorized_by_opcua_server` |
+| `BadNotWritable` | 403 | `target_not_writable` |
+| `BadTypeMismatch`, `BadOutOfRange`, `BadInvalidArgument` | 400 | `bad_type_or_range` |
+| `BadSessionClosed`, `BadSessionIdInvalid`, `BadSecureChannelClosed`, `BadConnectionClosed`, `BadServerHalted` | 502 | `session_or_transport_failure` |
+| Any other status code | 502 | `opcua_write_failed` |
+| No status code, transport failure | 502 | `session_or_transport_failure` |
+
+Request- and target-level rejections must not be reported as gateway failures:
+clients retry 502, and retrying a permanently wrong request never succeeds.
+On current-value writes an explicit `BadServiceUnsupported` or `BadNotImplemented`
+means the write itself is not offered and returns `501`
+(`write_not_supported_by_opcua_server`). On historical writes that decision belongs
+to the HistoryUpdate route (see Historical Updates), so an unsupported access read
+stays an item-level upstream failure instead of claiming service-wide unavailability.
+
 ## Historical Updates
 
 `PUT /v1/objects/history` accepts `{"updates": [{"elementId": "...", "value":

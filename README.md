@@ -488,6 +488,7 @@ MCP write policy: `PUT` routes are intentionally excluded from MCP tool generati
 - Current-value updates use a VQT: `value` is required and must conform to the ObjectType schema; optional `quality` defaults to `Good` and optional RFC 3339 `timestamp` defaults to server time.
 - Historical updates insert or replace records by source timestamp and require a complete VQT. `Bad` and `GoodNoData` require a null value, and null requires one of those qualities plus schema-declared nullability.
 - The implementation validates writes against the target's published ObjectType JSON Schema. Invalid values fail with 400; missing or invalid schemas fail with 502.
+- Upstream write failures are classified by the OPC UA status code carried by the exception, not by exception text: `BadNodeIdUnknown` maps to an item-level `404 node_not_found`, user-access denial to `403 unauthorized_by_opcua_server`, a non-writable target to `403 target_not_writable`, type/range/argument rejections to `400 bad_type_or_range`, and session, secure-channel, connection, and server-halted codes to the retryable `502 session_or_transport_failure`. Any other server rejection is reported as `502 opcua_write_failed` rather than as gateway transport trouble. On current-value writes an explicit `BadServiceUnsupported` or `BadNotImplemented` returns `501 write_not_supported_by_opcua_server`; historical writes keep their own service-wide `BadServiceUnsupported` handling.
 
 ### OPC UA gateway integration constraints
 

@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from time import perf_counter
 from typing import Any
 
+from asyncua.ua.status_codes import StatusCodes
 from fastapi import APIRouter, Request
 from typing_extensions import Never
 
@@ -183,30 +184,76 @@ def _decode_bytestring_write_value(value: Any, variant_type: str | None) -> Any:
         raise ValueError("Invalid base64 ByteString") from exc
 
 
-def _classify_write_error(exc: Exception) -> tuple[int, str]:
-    text = str(exc).lower()
-    if "baduseraccessdenied" in text or "access denied" in text or "permission" in text:
-        return 403, "unauthorized_by_opcua_server"
-    if "badnotwritable" in text or "not writable" in text:
-        return 403, "target_not_writable"
-    if "badtype" in text or "mismatch" in text or "outofrange" in text:
-        return 400, "bad_type_or_range"
-    reconnect_markers = (
-        "connection is closed",
-        "connection is not open",
-        "connection reset",
-        "broken pipe",
-        "socket",
-        "transport closed",
-        "timed out",
-        "timeout",
-        "badsessionclosed",
-        "badsessionidinvalid",
-        "badsecurechannelclosed",
-    )
-    if any(marker in text for marker in reconnect_markers):
+def _write_status_code(exc: BaseException) -> int | None:
+    """Raw OPC UA status code carried by an exception, ``None`` when it carries none."""
+    code = getattr(exc, "code", None)
+    if isinstance(code, int):
+        return code
+    value = getattr(code, "value", None)
+    return value if isinstance(value, int) else None
+
+
+# Stable OPC UA status codes for write failures. Classification is code-based: exception text
+# depends on the asyncua version and its language, and matching on it reported an upstream-deleted
+# node or a rejected write as retryable gateway trouble (502 ``session_or_transport_failure``).
+# Codes describing the request or the target must not be reported as gateway failures, because
+# clients retry 502 and would retry a permanently wrong request.
+_WRITE_STATUS_CLASSIFICATION: dict[int, tuple[int, str]] = {
+    StatusCodes.BadNodeIdUnknown: (404, "node_not_found"),
+    StatusCodes.BadUserAccessDenied: (403, "unauthorized_by_opcua_server"),
+    StatusCodes.BadNotWritable: (403, "target_not_writable"),
+    StatusCodes.BadTypeMismatch: (400, "bad_type_or_range"),
+    StatusCodes.BadOutOfRange: (400, "bad_type_or_range"),
+    StatusCodes.BadInvalidArgument: (400, "bad_type_or_range"),
+    StatusCodes.BadSessionClosed: (502, "session_or_transport_failure"),
+    StatusCodes.BadSessionIdInvalid: (502, "session_or_transport_failure"),
+    StatusCodes.BadSecureChannelClosed: (502, "session_or_transport_failure"),
+    StatusCodes.BadConnectionClosed: (502, "session_or_transport_failure"),
+    StatusCodes.BadServerHalted: (502, "session_or_transport_failure"),
+}
+
+# An unsupported *service* is reported as "this write is not available" (501) only when the failure
+# refers to the write itself, i.e. current values. For historical writes the route decides per
+# attempt whether the HistoryUpdate service is genuinely unavailable, so an unsupported access-read
+# stays an upstream failure (502) instead of claiming service-wide unavailability.
+_WRITE_UNSUPPORTED_STATUS_CODES = frozenset({StatusCodes.BadServiceUnsupported, StatusCodes.BadNotImplemented})
+
+# Fallback for exceptions without a status code (asyncua socket/transport failures). ``TimeoutError``
+# is a subclass of ``OSError`` since Python 3.11, so asyncio timeouts are covered by the isinstance
+# check; the markers catch error types that expose neither a code nor an OSError.
+_TRANSPORT_FAILURE_MARKERS: tuple[str, ...] = (
+    "connection is closed",
+    "connection is not open",
+    "connection reset",
+    "broken pipe",
+    "transport closed",
+    "timed out",
+    "timeout",
+)
+
+
+def _classify_write_error(exc: Exception, *, service_unsupported_is_write_unavailable: bool = False) -> tuple[int, str]:
+    """Map an upstream write failure to an HTTP status and error class.
+
+    ``service_unsupported_is_write_unavailable`` is set by the current-value path, where a
+    ``BadServiceUnsupported``/``BadNotImplemented`` rejection means the write itself is not offered.
+    """
+    status_code = _write_status_code(exc)
+    if status_code is not None:
+        if status_code in _WRITE_UNSUPPORTED_STATUS_CODES:
+            if service_unsupported_is_write_unavailable:
+                return 501, "write_not_supported_by_opcua_server"
+            return 502, "opcua_write_failed"
+        mapped = _WRITE_STATUS_CLASSIFICATION.get(status_code)
+        if mapped is not None:
+            return mapped
+        # Any other rejection is an OPC UA server failure, not a gateway transport problem.
+        return 502, "opcua_write_failed"
+    if isinstance(exc, OSError):
         return 502, "session_or_transport_failure"
-    return 502, "session_or_transport_failure"
+    if any(marker in str(exc).lower() for marker in _TRANSPORT_FAILURE_MARKERS):
+        return 502, "session_or_transport_failure"
+    return 502, "opcua_write_failed"
 
 
 def _raise_write_error(status_code: int, error_class: str) -> Never:
@@ -294,7 +341,7 @@ async def _write_object_value_by_element_id(
     try:
         writable, user_writable = await opcua_client.read_write_access(target_node_id)
     except Exception as exc:
-        status_code, error_class = _classify_write_error(exc)
+        status_code, error_class = _classify_write_error(exc, service_unsupported_is_write_unavailable=True)
         diagnostics["exception"] = str(exc)
         return False, status_code, error_class, diagnostics
 
@@ -313,7 +360,7 @@ async def _write_object_value_by_element_id(
         variant_type = await opcua_client.read_variant_type(target_node_id)
         diagnostics["resolvedVariantType"] = variant_type
     except Exception as exc:
-        status_code, error_class = _classify_write_error(exc)
+        status_code, error_class = _classify_write_error(exc, service_unsupported_is_write_unavailable=True)
         diagnostics["exception"] = str(exc)
         return False, status_code, error_class, diagnostics
 
@@ -340,7 +387,7 @@ async def _write_object_value_by_element_id(
         diagnostics["exception"] = str(exc)
         return False, 502, str(exc), diagnostics
     except Exception as exc:
-        status_code, error_class = _classify_write_error(exc)
+        status_code, error_class = _classify_write_error(exc, service_unsupported_is_write_unavailable=True)
         diagnostics["exception"] = str(exc)
         return False, status_code, error_class, diagnostics
 

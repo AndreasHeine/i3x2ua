@@ -94,12 +94,11 @@ def test_v1_history_max_depth_counts_composition_levels(client: TestClient) -> N
     add_composition_depth_chain(app)
 
     expected_by_depth = {
+        1: set(),
         2: {"comp-prop", "mid-prop"},
         3: {"comp-prop", "mid-prop", "deep-prop"},
         0: {"comp-prop", "mid-prop", "deep-prop"},
     }
-    # `maxDepth = 1` on a composition root has no own history source, so it currently fails
-    # item-level with "Object history not found" (SF2 - spec requires GoodNoData); covered in 4.3.
     for depth, expected_ids in expected_by_depth.items():
         response = client.post(
             "/v1/objects/history",
@@ -122,6 +121,75 @@ def test_v1_history_max_depth_counts_composition_levels(client: TestClient) -> N
         for entry in components.values():
             assert len(entry["values"]) == 1
             assert entry["values"][0]["quality"] == "Good"
+
+
+def test_v1_history_without_stored_data_returns_goodnodata(client: TestClient) -> None:
+    """Spec :1294: a platform without stored history answers the range with GoodNoData, not an error."""
+    app = fastapi_app(client)
+    app.state.opcua_client.history_values = {}
+
+    response = client.post(
+        "/v1/objects/history",
+        json={
+            "elementIds": ["property-abc"],
+            "startTime": "2026-01-01T00:00:00Z",
+            "endTime": "2026-01-02T00:00:00Z",
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    item = payload["results"][0]
+    assert item["success"] is True
+    assert item["result"]["isComposition"] is False
+    assert item["result"]["values"] == [{"value": None, "quality": "GoodNoData", "timestamp": "2026-01-02T00:00:00Z"}]
+
+
+def test_v1_history_composition_root_without_own_history_still_succeeds(client: TestClient) -> None:
+    """`maxDepth = 1` on a container is a valid query; absence of history is not an item error."""
+    app = fastapi_app(client)
+    app.state.opcua_client.history_values = {}
+
+    response = client.post(
+        "/v1/objects/history",
+        json={
+            "elementIds": ["asset-root"],
+            "startTime": "2026-01-01T00:00:00Z",
+            "endTime": "2026-01-02T00:00:00Z",
+            "maxDepth": 1,
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    result = payload["results"][0]["result"]
+    assert result["values"] == [{"value": None, "quality": "GoodNoData", "timestamp": "2026-01-02T00:00:00Z"}]
+    assert result.get("components") is None
+
+
+def test_v1_history_component_without_data_reports_goodnodata_per_component(client: TestClient) -> None:
+    app = fastapi_app(client)
+    add_composition_depth_chain(app)
+    app.state.opcua_client.history_values = {"ns=2;s=CompositionProp": []}
+
+    response = client.post(
+        "/v1/objects/history",
+        json={
+            "elementIds": ["asset-root"],
+            "startTime": "2026-01-01T00:00:00Z",
+            "endTime": "2026-01-02T00:00:00Z",
+            "maxDepth": 2,
+        },
+    )
+    assert response.status_code == 200
+    result = response.json()["results"][0]["result"]
+    assert set(result["components"]) == {"comp-prop", "mid-prop"}
+    assert result["components"]["comp-prop"]["values"] == [
+        {"value": None, "quality": "GoodNoData", "timestamp": "2026-01-02T00:00:00Z"}
+    ]
+    assert result["components"]["mid-prop"]["values"] == [
+        {"value": None, "quality": "GoodNoData", "timestamp": "2026-01-02T00:00:00Z"}
+    ]
 
 
 def test_v1_history_query_serializes_binary_values(client: TestClient) -> None:

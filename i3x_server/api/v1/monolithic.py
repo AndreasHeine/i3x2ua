@@ -140,6 +140,9 @@ def _server_name_from_openapi(default_name: str = "The i3X API Gateway for OPC U
 
 
 def _supported_capabilities(history_update_supported: bool | None = None) -> ServerCapabilities:
+    # `query.history` is honest: POST /objects/history is always implemented (spec :1294 makes the
+    # endpoint a MUST) and answers a range without stored samples with GoodNoData, so the
+    # declaration does not depend on whether the upstream server happens to store history.
     return ServerCapabilities(
         query=QueryCapabilities(history=True),
         update=UpdateCapabilities(
@@ -977,18 +980,28 @@ def _build_historical_value_result(
     root_source_nodes: list[ModelNode],
     component_nodes: list[ModelNode],
     values_by_node_id: dict[str, list[Any]],
+    end_time: datetime | None = None,
 ) -> HistoricalValueResult:
-    """Build HistoricalValueResult from collected source nodes and values."""
+    """Build HistoricalValueResult from collected source nodes and values.
+
+    A range without any stored samples is answered with a single `GoodNoData` record instead of an
+    item-level error (i3X spec IMPLEMENTATION_GUIDE.md:1294 - "return `GoodNoData` for the requested
+    range"; null values must carry `Bad`/`GoodNoData`, `:1163-1168`).
+    """
     values: list[VQT] = []
     for source_node in root_source_nodes:
         raw_values = values_by_node_id.get(source_node.source_node_id, [])
         values.extend(_to_vqt_from_history_value(item) for item in raw_values)
+    if not values:
+        values.append(_history_no_data_vqt(end_time))
     values.sort(key=lambda item: item.timestamp)
 
     components: dict[str, HistoricalValueResult] = {}
     for component_node in component_nodes:
         raw_values = values_by_node_id.get(component_node.source_node_id, [])
         component_values = [_to_vqt_from_history_value(item) for item in raw_values]
+        if not component_values:
+            component_values.append(_history_no_data_vqt(end_time))
         component_values.sort(key=lambda item: item.timestamp)
         components[component_node.id] = HistoricalValueResult(
             isComposition=bool(_composition_children_for_node(model, component_node)),
@@ -1000,6 +1013,17 @@ def _build_historical_value_result(
         values=values,
         components=components or None,
     )
+
+
+def _history_no_data_vqt(end_time: datetime | None) -> VQT:
+    """Sample for a history interval the platform has no data for.
+
+    The timestamp is the end of the requested range when that lies in the past, otherwise the
+    current time - the record must sit inside the interval the client asked for.
+    """
+    now = datetime.now(timezone.utc)
+    timestamp = min(now, end_time) if end_time is not None else now
+    return VQT(value=None, quality="GoodNoData", timestamp=_format_utc_timestamp(timestamp))
 
 
 def _vqt_from_any(value: Any) -> VQT:

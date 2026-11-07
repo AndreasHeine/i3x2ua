@@ -267,11 +267,11 @@ async def query_historical_values_v1(
             continue
 
         node, root_source_nodes, component_nodes = match
-        if not root_source_nodes and not component_nodes:
-            results.append(_bulk_result_error(element_id, "Object history not found"))
-            continue
-
-        result = _build_historical_value_result(model, node, root_source_nodes, component_nodes, values_by_node_id)
+        # A missing history is a platform condition, not an API error: the endpoint is a MUST and
+        # answers the requested range with GoodNoData (spec :1294). Only unknown elementIds fail.
+        result = _build_historical_value_result(
+            model, node, root_source_nodes, component_nodes, values_by_node_id, end_time
+        )
         results.append(_bulk_result_success(element_id, result))
 
     logger.info(

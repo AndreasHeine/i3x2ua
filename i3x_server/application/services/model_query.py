@@ -94,6 +94,9 @@ def _build_server_info(
         serverVersion=server_version or get_server_version(),
         serverName=server_name or server_name_from_openapi(),
         capabilities=ServerCapabilities(
+            # Honest declaration: the history endpoint is always implemented and never errors on a
+            # range without stored samples (GoodNoData), unlike update.history, which depends on the
+            # upstream server actually exposing history writes (spec :599-601, :1294).
             query={"history": True},
             update={
                 "current": writes_enabled,

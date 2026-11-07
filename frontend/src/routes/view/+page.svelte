@@ -17,7 +17,16 @@
   const load = async (endpoint) => {
     try {
       const response = await fetch(endpoint, { cache: 'no-store' });
-      const payload = await response.json();
+      // fetch() does not reject on HTTP errors, and the error envelope
+      // {"success": false, "error": {...}, "responseDetail": {...}} has no "result", so
+      // serialising payload.result alone showed a literal "undefined" for e.g. a 502 from
+      // /ua/status while the error styling stayed off.
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || payload?.success !== true) {
+        output = `Error ${response.status}: ${payload?.error?.message || payload?.responseDetail?.detail || 'No error detail in response'}`;
+        isError = true;
+        return;
+      }
       output = JSON.stringify(payload.result, null, 2);
       isError = false;
     } catch (error) {

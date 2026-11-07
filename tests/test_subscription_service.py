@@ -575,20 +575,129 @@ async def test_can_open_new_bin_limits_and_helpers() -> None:
         service._bins["bin-existing"] = _ManagedBin(
             bin_id="bin-existing",
             ua_subscription=object(),
-            capacity=1,
+            capacity=2,
             node_handles={"ns=2;s=Existing": 1},
         )
 
     caps = OpcUaSubscriptionCapabilities(
         max_monitored_items_per_call=1,
-        max_subscriptions=1,
-        max_monitored_items=2,
-        max_subscriptions_per_session=1,
-        max_monitored_items_per_subscription=1,
+        max_subscriptions=2,
+        max_monitored_items=3,
+        max_subscriptions_per_session=2,
+        max_monitored_items_per_subscription=2,
     )
-    assert await service._can_open_new_bin(caps) is False
+    # The check is synchronous: it runs inside ``self._lock`` while an admission selects a bin.
+    assert service._can_open_new_bin(caps) is True
+    assert (
+        service._can_open_new_bin(
+            OpcUaSubscriptionCapabilities(
+                max_monitored_items_per_call=1,
+                max_subscriptions=1,
+                max_monitored_items=3,
+                max_subscriptions_per_session=2,
+                max_monitored_items_per_subscription=2,
+            )
+        )
+        is False
+    )
+    # An admission whose round-trip is still in flight already consumes the monitored-item budget.
+    service._bins["bin-existing"].pending_adds = 2
+    assert service._can_open_new_bin(caps) is False
+
     assert _min_positive(None, 0, -1) is None
     assert _min_positive(None, 5, 2) == 2
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_native_admissions_run_network_calls_concurrently() -> None:
+    """Admission selection must not hold its lock across the OPC UA round-trip (M9).
+
+    ``FakeOpcUaClient`` only lets a monitored-item add return once a second add has arrived, so an
+    admission that serialized its network work would deadlock: the first registration would never
+    finish and never reach the second. Bin packing must still hold - one create for both nodes.
+    """
+
+    class ConcurrentAddClient(FakeOpcUaClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.add_arrivals = 0
+            self.all_arrived = asyncio.Event()
+
+        async def subscribe_data_changes(self, subscription: Any, node_ids: list[str]) -> list[int]:
+            del subscription
+            self.add_arrivals += 1
+            if self.add_arrivals >= 2:
+                self.all_arrived.set()
+            await self.all_arrived.wait()
+            handles: list[int] = []
+            for _ in node_ids:
+                self.subscribe_calls += 1
+                handles.append(self.subscribe_calls)
+            return handles
+
+    client = ConcurrentAddClient()
+    service = SubscriptionService(
+        cast(OpcUaClientProtocol, client),
+        interval_seconds=1,
+        seed_initial_values=False,
+        max_concurrent_native_admissions=2,
+    )
+    model = _model()
+    sub_a = await service.create_subscription(client_id="client-a", display_name="parallel-a")
+    sub_b = await service.create_subscription(client_id="client-b", display_name="parallel-b")
+
+    registered = await asyncio.wait_for(
+        asyncio.gather(
+            service.register_items("client-a", sub_a.subscription_id, ["prop-a"], max_depth=0, model=model),
+            service.register_items("client-b", sub_b.subscription_id, ["prop-b"], max_depth=0, model=model),
+        ),
+        timeout=5,
+    )
+    # ``gather`` returns a list at runtime; the typeshed stub declares a tuple.
+    assert list(registered) == [True, True]
+    assert client.add_arrivals == 2
+    assert client.create_subscription_calls == 1
+
+    async with service._lock:
+        # Both nodes share one bin, and the in-flight reservations were released after the round-trips.
+        assert len(service._bins) == 1
+        bin_ = next(iter(service._bins.values()))
+        assert set(bin_.node_handles.keys()) == {"ns=2;s=Temperature", "ns=2;s=Pressure"}
+        assert bin_.pending_adds == 0
+
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_stale_monitored_item_cleanup_does_not_hold_the_lock() -> None:
+    """A failed/stale admission cleanup must not block fan-out or sync for a full round-trip (M9)."""
+    client = FakeOpcUaClient()
+    gate = asyncio.Event()
+
+    async def slow_unsubscribe_data_changes(subscription: Any, handles: list[int]) -> None:
+        client.unsubscribed_calls.append((subscription, list(handles)))
+        await gate.wait()
+
+    client.unsubscribe_data_changes = slow_unsubscribe_data_changes  # type: ignore[method-assign]
+
+    service = SubscriptionService(cast(OpcUaClientProtocol, client), interval_seconds=1, seed_initial_values=False)
+    model = _model()
+    created = await service.create_subscription(client_id="c1", display_name="stale")
+    assert await service.register_items("c1", created.subscription_id, ["prop-a"], max_depth=0, model=model) is True
+    target_bin = next(iter(service._bins.values()))
+
+    # A monitor that no longer exists: the item has to be unsubscribed, but outside the lock.
+    monitor = _NodeMonitor(node_id="ns=2;s=Pressure")
+    add_task = asyncio.create_task(service._add_node_to_bin(monitor, target_bin))
+    await asyncio.sleep(0.05)
+
+    synced = await asyncio.wait_for(service.sync("c1", created.subscription_id, acknowledge_sequence=None), timeout=0.5)
+    assert synced is not None
+
+    gate.set()
+    assert await add_task is False
+    assert client.unsubscribed_calls
     await service.close()
 
 

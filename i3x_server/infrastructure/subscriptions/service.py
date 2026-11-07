@@ -133,6 +133,12 @@ class _ManagedBin:
     capacity: int
     node_handles: dict[str, int] = field(default_factory=dict)
     native_refresh_interval_seconds: float | None = None
+    # Slots reserved by an admission whose network round-trip is still in flight, so parallel
+    # admissions cannot all reserve the last capacity slot of the same bin.
+    pending_adds: int = 0
+    # Set once ``ua_subscription`` exists. A bin registered before its create returned is a
+    # placeholder: concurrent admissions reserve slots in it and wait here instead of opening more bins.
+    ready: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 class _DataChangeHandler:
@@ -449,6 +455,9 @@ class SubscriptionService:
         lost_node_ids: list[str] = []
         async with self._lock:
             for bin_id, bin_ in list(self._bins.items()):
+                if bin_.ua_subscription is None:
+                    # Placeholder whose create round-trip is still in flight; its owner re-syncs it.
+                    continue
                 handles = self._opcua_client.get_monitored_item_handles(bin_.ua_subscription, list(bin_.node_handles))
                 missing = [node_id for node_id in bin_.node_handles if handles is None or node_id not in handles]
                 if handles:
@@ -573,13 +582,16 @@ class SubscriptionService:
         )
         async with self._lock:
             self._subscriptions[subscription_id] = state
+            # Snapshot inside the lock: ``register_items`` mutates ``state.monitored_objects`` and a
+            # detail built after release can race with it ("dictionary changed size during iteration").
+            detail = self._to_detail(state)
         logger.info(
             "Subscription created subscription_id=%s client_id=%s display_name=%s",
             subscription_id,
             client_id,
             display_name,
         )
-        return self._to_detail(state)
+        return detail
 
     async def list_subscriptions(
         self,
@@ -591,11 +603,11 @@ class SubscriptionService:
                 values = list(self._subscriptions.values())
             else:
                 values = [item for item in self._subscriptions.values() if item.client_id == client_id]
-
-        if subscription_ids is not None:
-            allowed = set(subscription_ids)
-            values = [item for item in values if item.subscription_id in allowed]
-        return [self._to_detail(item) for item in values]
+            if subscription_ids is not None:
+                allowed = set(subscription_ids)
+                values = [item for item in values if item.subscription_id in allowed]
+            # Snapshot inside the lock for the same reason as ``create_subscription``.
+            return [self._to_detail(item) for item in values]
 
     async def get_subscription(self, subscription_id: str) -> SubscriptionDetail | None:
         async with self._lock:
@@ -1113,10 +1125,14 @@ class SubscriptionService:
         if should_stop:
             await self._stop_node_monitor_runtime(monitor)
 
-    async def _can_open_new_bin(self, caps: OpcUaSubscriptionCapabilities) -> bool:
-        async with self._lock:
-            bin_count = len(self._bins)
-            total_monitored = sum(len(bin_.node_handles) for bin_ in self._bins.values())
+    def _can_open_new_bin(self, caps: OpcUaSubscriptionCapabilities) -> bool:
+        """Whether a further native bin may be opened. Must be called while holding ``self._lock``.
+
+        Reserved slots from in-flight admissions count towards the monitored-item budget, so the cap
+        stays exact while network round-trips run concurrently.
+        """
+        bin_count = len(self._bins)
+        total_monitored = sum(len(bin_.node_handles) + bin_.pending_adds for bin_ in self._bins.values())
 
         if caps.max_subscriptions is not None and bin_count + 1 > caps.max_subscriptions:
             return False
@@ -1177,25 +1193,46 @@ class SubscriptionService:
             await self._start_polling_node_monitor(monitor)
 
     async def _acquire_native_bin_slot(self, monitor: _NodeMonitor, caps: OpcUaSubscriptionCapabilities) -> bool:
-        """Pack monitor.node_id into an existing bin with spare capacity, or open a new one."""
+        """Reserve a bin under the admission lock, then run the OPC UA round-trip outside it.
+
+        Selection stays serialized so concurrent admissions *pack* into one bin instead of opening
+        several: when no bin has spare capacity a placeholder bin is registered here and reserved with
+        ``pending_adds``; the round-trips themselves run under ``_native_admission_semaphore``. That
+        makes ``max_concurrent_native_admissions`` effective - it used to be nested inside the selection
+        lock, so at most one admission could ever be in flight.
+        """
         async with self._native_bin_admission_lock:
             capacity = _min_positive(caps.max_monitored_items_per_subscription)
             effective_capacity = capacity or _DEFAULT_BIN_CAPACITY
 
             async with self._lock:
                 if caps.max_monitored_items is not None:
-                    total_monitored = sum(len(bin_.node_handles) for bin_ in self._bins.values())
+                    total_monitored = sum(len(bin_.node_handles) + bin_.pending_adds for bin_ in self._bins.values())
                     if total_monitored + 1 > caps.max_monitored_items:
                         return False
-                target_bin = next((b for b in self._bins.values() if len(b.node_handles) < b.capacity), None)
+                target_bin = next(
+                    (
+                        bin_
+                        for bin_ in self._bins.values()
+                        if len(bin_.node_handles) + bin_.pending_adds < bin_.capacity
+                    ),
+                    None,
+                )
+                opening = target_bin is None
+                if target_bin is None:
+                    if not self._can_open_new_bin(caps):
+                        return False
+                    target_bin = _ManagedBin(
+                        bin_id=f"bin-{uuid4()}",
+                        ua_subscription=None,
+                        capacity=effective_capacity,
+                    )
+                    self._bins[target_bin.bin_id] = target_bin
+                target_bin.pending_adds += 1
 
-            if target_bin is not None:
-                return await self._add_node_to_bin(monitor, target_bin)
-
-            if not await self._can_open_new_bin(caps):
-                return False
-
-            return await self._open_new_bin(monitor, effective_capacity)
+        if opening:
+            return await self._open_new_bin(monitor, target_bin)
+        return await self._add_node_to_bin(monitor, target_bin)
 
     async def _subscribe_single_node(self, ua_subscription: Any, node_id: str) -> int | None:
         handles = await self._opcua_client.subscribe_data_changes(ua_subscription, [node_id])
@@ -1205,59 +1242,111 @@ class SubscriptionService:
             handle = handles
         return _to_client_handle(handle)
 
-    async def _open_new_bin(self, monitor: _NodeMonitor, capacity: int) -> bool:
-        bin_id = f"bin-{uuid4()}"
-        async with self._native_admission_semaphore:
-            handler = _NodeDataChangeHandler(self, bin_id)
-            ua_subscription = await self._opcua_client.create_datachange_subscription(
-                publishing_interval_ms=float(self._interval_seconds * 1000),
-                handler=handler,
-            )
-            handle = await self._subscribe_single_node(ua_subscription, monitor.node_id)
+    async def _open_new_bin(self, monitor: _NodeMonitor, placeholder: _ManagedBin) -> bool:
+        """Fill the placeholder bin that ``_acquire_native_bin_slot`` reserved with an OPC UA subscription."""
+        ua_subscription: Any = None
+        handle: int | None = None
+        failed = False
+        try:
+            async with self._native_admission_semaphore:
+                handler = _NodeDataChangeHandler(self, placeholder.bin_id)
+                ua_subscription = await self._opcua_client.create_datachange_subscription(
+                    publishing_interval_ms=float(self._interval_seconds * 1000),
+                    handler=handler,
+                )
+                placeholder.native_refresh_interval_seconds = self._compute_native_refresh_interval_seconds(
+                    ua_subscription
+                )
+                placeholder.ua_subscription = ua_subscription
+                placeholder.ready.set()
+                handle = await self._subscribe_single_node(ua_subscription, monitor.node_id)
+        except Exception:
+            failed = True
+            raise
+        finally:
+            # Admissions that reserved a slot in this bin must not wait for a create that never succeeds.
+            placeholder.ready.set()
+            async with self._lock:
+                reserved_bin = self._bins.get(placeholder.bin_id)
+                if reserved_bin is not None:
+                    reserved_bin.pending_adds = max(0, reserved_bin.pending_adds - 1)
+                    if failed and not reserved_bin.node_handles:
+                        del self._bins[placeholder.bin_id]
+
         if handle is None:
             with suppress(Exception):
                 await self._opcua_client.delete_subscription(ua_subscription)
+            async with self._lock:
+                reserved_bin = self._bins.get(placeholder.bin_id)
+                if reserved_bin is not None and not reserved_bin.node_handles:
+                    del self._bins[placeholder.bin_id]
             return False
 
+        stale_subscription: Any = None
         async with self._lock:
             live = self._node_monitors.get(monitor.node_id)
-            if live is None or live is not monitor:
-                # Monitor was released concurrently (no subscribers left); undo the create.
-                await self._opcua_client.delete_subscription(ua_subscription)
-                return False
-            new_bin = _ManagedBin(bin_id=bin_id, ua_subscription=ua_subscription, capacity=capacity)
-            new_bin.node_handles[monitor.node_id] = handle
-            new_bin.native_refresh_interval_seconds = self._compute_native_refresh_interval_seconds(ua_subscription)
-            self._bins[bin_id] = new_bin
-            live.bin_id = bin_id
-            live.mode = "native"
-            live.native_refresh_interval_seconds = new_bin.native_refresh_interval_seconds
+            if live is None or live is not monitor or self._bins.get(placeholder.bin_id) is None:
+                # Monitor released concurrently (no subscribers left), or the placeholder was reclaimed.
+                stale_subscription = ua_subscription
+            else:
+                placeholder.node_handles[monitor.node_id] = handle
+                live.bin_id = placeholder.bin_id
+                live.mode = "native"
+                live.native_refresh_interval_seconds = placeholder.native_refresh_interval_seconds
+
+        if stale_subscription is not None:
+            # Delete outside the lock so a slow round-trip never blocks fan-out, sync, or SSE delivery.
+            await self._opcua_client.delete_subscription(stale_subscription)
+            return False
+
         logger.info(
             "Node monitor bin opened bin_id=%s node_id=%s capacity=%d",
-            bin_id,
+            placeholder.bin_id,
             monitor.node_id,
-            capacity,
+            placeholder.capacity,
         )
         return True
 
     async def _add_node_to_bin(self, monitor: _NodeMonitor, target_bin: _ManagedBin) -> bool:
-        async with self._native_admission_semaphore:
-            handle = await self._subscribe_single_node(target_bin.ua_subscription, monitor.node_id)
+        handle: int | None = None
+        try:
+            if not target_bin.ready.is_set():
+                # The bin is still being created: wait outside the semaphore and outside any lock.
+                await target_bin.ready.wait()
+            async with self._native_admission_semaphore:
+                ua_subscription = target_bin.ua_subscription
+                if ua_subscription is None:
+                    # The creating admission failed; this node falls back to polling.
+                    return False
+                handle = await self._subscribe_single_node(ua_subscription, monitor.node_id)
+        finally:
+            async with self._lock:
+                reserved_bin = self._bins.get(target_bin.bin_id)
+                if reserved_bin is not None:
+                    reserved_bin.pending_adds = max(0, reserved_bin.pending_adds - 1)
         if handle is None:
             return False
 
+        stale: tuple[Any, int] | None = None
         async with self._lock:
             live = self._node_monitors.get(monitor.node_id)
             live_bin = self._bins.get(target_bin.bin_id)
             if live is None or live is not monitor or live_bin is None:
                 # Monitor released concurrently, or the bin was reclaimed/closed under us.
-                with suppress(Exception):
-                    await self._opcua_client.unsubscribe_data_changes(target_bin.ua_subscription, [handle])
-                return False
-            live_bin.node_handles[monitor.node_id] = handle
-            live.bin_id = live_bin.bin_id
-            live.mode = "native"
-            live.native_refresh_interval_seconds = live_bin.native_refresh_interval_seconds
+                stale = (target_bin.ua_subscription, handle)
+            else:
+                live_bin.node_handles[monitor.node_id] = handle
+                live.bin_id = live_bin.bin_id
+                live.mode = "native"
+                live.native_refresh_interval_seconds = live_bin.native_refresh_interval_seconds
+
+        if stale is not None:
+            # Cleanup must not run while the lock is held: it would block every other path
+            # (fan-out, sync, SSE delivery) for a full upstream round-trip.
+            with suppress(Exception):
+                await self._opcua_client.unsubscribe_data_changes(stale[0], [stale[1]])
+            return False
+
         logger.info(
             "Node monitor added to bin bin_id=%s node_id=%s size=%d/%d",
             target_bin.bin_id,

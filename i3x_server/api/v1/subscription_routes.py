@@ -176,7 +176,6 @@ async def stream_subscription_v1(
     )
     client_id = stream_session["clientId"]
     stream_generation = stream_session["streamGeneration"]
-    scope_relaxed = stream_session["scopeRelaxed"]
     acknowledged = stream_session["acknowledged"]
 
     if _stream_debug_enabled():
@@ -186,12 +185,6 @@ async def stream_subscription_v1(
             body.subscriptionId,
             None,
         )
-        if scope_relaxed:
-            logger.warning(
-                "Stream activation recovered with relaxed client scope client_id=%s subscription_id=%s",
-                client_id,
-                body.subscriptionId,
-            )
         logger.info(
             "Subscription stream activated client_id=%s subscription_id=%s generation=%s initial_updates=%s",
             client_id,

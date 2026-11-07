@@ -289,8 +289,9 @@ class ObjectValueService:
             if current_node is None:
                 continue
 
-            # Get composition children (properties)
-            for child_id in self.model.children_by_id.get(node_id, []):
+            # Composition children only: HasChildren objects are independent (i3X spec
+            # IMPLEMENTATION_GUIDE.md:1111/:1924) and must not be read via the parent.
+            for child_id in self.model.composition_child_ids(node_id):
                 child = self.model.nodes_by_id.get(child_id)
                 if child is None:
                     continue
@@ -329,7 +330,7 @@ class ObjectValueService:
             if current_node is None:
                 continue
 
-            for child_id in self.model.children_by_id.get(current_id, []):
+            for child_id in self.model.composition_child_ids(current_id):
                 queue.append((child_id, depth + 1))
 
         return results

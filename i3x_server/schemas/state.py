@@ -55,6 +55,25 @@ class BuildResult:
         default=None, init=False, repr=False, compare=False
     )
 
+    def composition_child_ids(self, node_id: str) -> list[str]:
+        """Composition (``HasComponent``) children of a node.
+
+        Recursion for value/history/monitoring follows only this plane: hierarchical children
+        (``HasChildren``) are independent objects and must never be collected via the parent.
+        Falls back to property-kind children of ``children_by_id`` when the composition plane was
+        not populated (partial/older model states).
+        """
+        children = self.composition_children_by_id.get(node_id)
+        if children is not None:
+            return [child_id for child_id in children if isinstance(child_id, str)]
+        return [
+            child_id
+            for child_id in self.children_by_id.get(node_id, [])
+            if isinstance(child_id, str)
+            and self.nodes_by_id.get(child_id) is not None
+            and self.nodes_by_id[child_id].kind == "property"
+        ]
+
 
 @dataclass(slots=True)
 class AppState:

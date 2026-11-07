@@ -147,6 +147,10 @@ def _model() -> BuildResult:
         nodes_by_id={root.id: root, child.id: child, prop_a.id: prop_a, prop_b.id: prop_b},
         root_ids=[root.id],
         children_by_id={root.id: [prop_a.id, child.id], child.id: [prop_b.id], prop_a.id: [], prop_b.id: []},
+        # Relationship planes per i3X spec: prop-a is a composition child of the root,
+        # asset-child is a hierarchical child (independent, never collected via the parent).
+        hierarchy_children_by_id={root.id: [child.id]},
+        composition_children_by_id={root.id: [prop_a.id], child.id: [prop_b.id]},
         instances_by_type_id={},
         property_to_node={prop_a.id: prop_a.source_node_id, prop_b.id: prop_b.source_node_id},
         action_to_method={},
@@ -198,7 +202,10 @@ async def test_sync_acknowledge_sequence_removes_returned_updates() -> None:
     subscription_id = created.subscription_id
 
     model = _model()
-    assert await service.register_items("c1", subscription_id, ["asset-root"], max_depth=2, model=model) is True
+    assert (
+        await service.register_items("c1", subscription_id, ["asset-root", "asset-child"], max_depth=2, model=model)
+        is True
+    )
 
     first = await service.sync("c1", subscription_id, acknowledge_sequence=0)
     assert first is not None
@@ -767,9 +774,11 @@ def test_collect_property_source_mappings_depth_limit() -> None:
         max_depth=0,
     )
     assert set(mappings_depth1.values()) == {"prop-a"}
-    assert mappings_unbounded == {
-        "ns=2;s=Temperature": "prop-a",
-        "ns=2;s=Pressure": "prop-b",
+    # Spec: recursion follows HasComponent only, so a hierarchical child's property is
+    # never collected through the parent — even with unbounded depth.
+    assert mappings_unbounded == {"ns=2;s=Temperature": "prop-a"}
+    assert service._collect_property_source_mappings(model, model.nodes_by_id["asset-child"], max_depth=1) == {
+        "ns=2;s=Pressure": "prop-b"
     }
 
 
@@ -836,7 +845,10 @@ async def test_distinct_nodes_are_packed_into_one_bin() -> None:
     subscription_id = created.subscription_id
     model = _model()
 
-    assert await service.register_items("c1", subscription_id, ["asset-root"], max_depth=2, model=model) is True
+    assert (
+        await service.register_items("c1", subscription_id, ["asset-root", "asset-child"], max_depth=2, model=model)
+        is True
+    )
 
     # Two distinct properties (prop-a, prop-b) resolved to two node monitors, but only
     # one native OPC UA subscription (bin) was opened since the fake server's capacity
@@ -965,7 +977,10 @@ async def test_bin_overflow_opens_second_bin() -> None:
     subscription_id = created.subscription_id
     model = _model()
 
-    assert await service.register_items("c1", subscription_id, ["asset-root"], max_depth=2, model=model) is True
+    assert (
+        await service.register_items("c1", subscription_id, ["asset-root", "asset-child"], max_depth=2, model=model)
+        is True
+    )
 
     # Capacity of 1 monitored item per bin forces the two distinct nodes into two bins.
     assert client.create_subscription_calls == 2
@@ -1009,12 +1024,68 @@ async def test_bin_reclaimed_when_last_node_released_others_kept() -> None:
 
 
 @pytest.mark.asyncio
+async def test_concurrent_register_unregister_leaves_no_orphan_monitor() -> None:
+    """Applied-vs-desired reconciliation must survive concurrent churn on the same subscription."""
+    client = FakeOpcUaClient()
+    service = SubscriptionService(cast(OpcUaClientProtocol, client), interval_seconds=1, seed_initial_values=False)
+    created = await service.create_subscription(client_id="c1", display_name=None)
+    subscription_id = created.subscription_id
+    model = _model()
+
+    await asyncio.gather(
+        service.register_items("c1", subscription_id, ["prop-a"], max_depth=0, model=model),
+        service.unregister_items("c1", subscription_id, ["prop-a"], model=model),
+        service.register_items("c1", subscription_id, ["prop-b"], max_depth=0, model=model),
+        service.unregister_items("c1", subscription_id, ["prop-b"], model=model),
+    )
+
+    async with service._lock:
+        state = service._subscriptions[subscription_id]
+        assert state.monitored_node_ids == set()
+        # Every acquisition was reconciled again, so nothing is left applied.
+        assert state.applied_node_ids == set()
+        assert service._node_monitors == {}
+
+    await service.delete_subscriptions("c1", [subscription_id])
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_delete_releases_applied_nodes_outside_the_desired_set() -> None:
+    """Deletion must release nodes that were acquired but no longer desired."""
+    client = FakeOpcUaClient()
+    service = SubscriptionService(cast(OpcUaClientProtocol, client), interval_seconds=1, seed_initial_values=False)
+    created = await service.create_subscription(client_id="c1", display_name=None)
+    subscription_id = created.subscription_id
+    model = _model()
+    assert await service.register_items("c1", subscription_id, ["prop-a"], max_depth=0, model=model) is True
+
+    async with service._lock:
+        state = service._subscriptions[subscription_id]
+        # Simulate the divergent state the old snapshot-based diff could produce.
+        state.monitored_node_ids = set()
+        state.applied_node_ids = {"ns=2;s=Temperature"}
+
+    await service.delete_subscriptions("c1", [subscription_id])
+
+    async with service._lock:
+        assert service._node_monitors == {}
+    await service.close()
+
+
+@pytest.mark.asyncio
 async def test_reconnect_keeps_restored_bin_and_adopts_new_server_handles() -> None:
     client = FakeOpcUaClient()
     service = SubscriptionService(cast(OpcUaClientProtocol, client), interval_seconds=1, seed_initial_values=False)
     created = await service.create_subscription(client_id="c1", display_name=None)
     model = _model()
-    assert await service.register_items("c1", created.subscription_id, ["asset-root"], max_depth=2, model=model)
+    assert await service.register_items(
+        "c1",
+        created.subscription_id,
+        ["asset-root", "asset-child"],
+        max_depth=2,
+        model=model,
+    )
 
     async with service._lock:
         bin_ = next(iter(service._bins.values()))
@@ -1038,7 +1109,13 @@ async def test_reconnect_readmits_items_asyncua_could_not_restore() -> None:
     service = SubscriptionService(cast(OpcUaClientProtocol, client), interval_seconds=1, seed_initial_values=False)
     created = await service.create_subscription(client_id="c1", display_name=None)
     model = _model()
-    assert await service.register_items("c1", created.subscription_id, ["asset-root"], max_depth=2, model=model)
+    assert await service.register_items(
+        "c1",
+        created.subscription_id,
+        ["asset-root", "asset-child"],
+        max_depth=2,
+        model=model,
+    )
 
     async with service._lock:
         old_bin = next(iter(service._bins.values()))

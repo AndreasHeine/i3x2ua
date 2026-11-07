@@ -69,6 +69,10 @@ def _model() -> BuildResult:
             prop_a.id: [],
             prop_b.id: [],
         },
+        # Relationship planes per i3X spec: prop-a is a composition child of the root,
+        # child_asset is a hierarchical child (independent, never read via the parent).
+        hierarchy_children_by_id={root.id: [child_asset.id]},
+        composition_children_by_id={root.id: [prop_a.id], child_asset.id: [prop_b.id]},
         instances_by_type_id={},
         property_to_node={prop_a.id: prop_a.source_node_id, prop_b.id: prop_b.source_node_id},
         action_to_method={},
@@ -136,7 +140,11 @@ async def test_get_current_value_includes_components_when_depth_allows() -> None
     service = _Service(cast(OpcUaClientProtocol, object()), _model())
     result = await service.get_current_value("asset-root", max_depth=3)
     assert result["value"] == "asset-root"
-    assert set(result["components"].keys()) == {"prop-a", "prop-b"}
+    # Composition only: the hierarchical child's property is never included via the parent.
+    assert set(result["components"].keys()) == {"prop-a"}
+
+    child_result = await service.get_current_value("asset-child", max_depth=2)
+    assert set(child_result["components"].keys()) == {"prop-b"}
 
 
 @pytest.mark.asyncio
@@ -165,7 +173,16 @@ async def test_get_history_collects_components_for_composition_nodes() -> None:
         max_depth=3,
     )
     assert result["values"][0]["value"] == "asset-root"
-    assert set(result["components"].keys()) == {"prop-a", "prop-b"}
+    # Composition only; hierarchical children are queried independently.
+    assert set(result["components"].keys()) == {"prop-a"}
+
+    child_result = await service.get_history(
+        "asset-child",
+        "2026-01-01T00:00:00Z",
+        "2026-01-01T01:00:00Z",
+        max_depth=2,
+    )
+    assert set(child_result["components"].keys()) == {"prop-b"}
 
 
 @pytest.mark.asyncio

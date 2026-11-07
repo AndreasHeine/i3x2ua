@@ -83,6 +83,10 @@ def test_v1_subscription_register_defaults_to_one_composition_level(client: Test
     model.children_by_id["asset-child"] = ["property-def"]
     model.children_by_id["property-def"] = []
     model.children_by_id["asset-root"] = ["property-abc", "action-def", "asset-child"]
+    # Relationship planes (i3X spec): asset-child is a hierarchical child (independent object),
+    # property-def is a composition child of asset-child.
+    model.hierarchy_children_by_id["asset-root"] = ["asset-child"]
+    model.composition_children_by_id["asset-child"] = ["property-def"]
     model.property_to_node["property-def"] = "ns=2;s=Pressure"
     app.state.opcua_client.values["ns=2;s=Pressure"] = 17.5
 
@@ -122,6 +126,7 @@ def test_v1_subscription_register_defaults_to_one_composition_level(client: Test
     ).json()
     assert details["results"][0]["result"]["monitoredObjects"][0]["maxDepth"] == 1
 
+    # Unbounded composition depth still never follows HasChildren (spec :1111/:1924).
     register_all = client.post(
         "/v1/subscriptions/register",
         json={
@@ -138,7 +143,26 @@ def test_v1_subscription_register_defaults_to_one_composition_level(client: Test
     )
     assert synced_all.status_code == 200
     all_element_ids = {item["elementId"] for batch in synced_all.json()["result"] for item in batch["updates"]}
-    assert {"property-abc", "property-def"}.issubset(all_element_ids)
+    assert "property-abc" in all_element_ids
+    assert "property-def" not in all_element_ids
+
+    # A hierarchical child is monitored by registering it on its own.
+    register_child = client.post(
+        "/v1/subscriptions/register",
+        json={
+            "clientId": client_id,
+            "subscriptionId": subscription_id,
+            "elementIds": ["asset-child"],
+        },
+    )
+    assert register_child.status_code == 200
+    synced_child = client.post(
+        "/v1/subscriptions/sync",
+        json={"clientId": client_id, "subscriptionId": subscription_id},
+    )
+    assert synced_child.status_code == 200
+    child_element_ids = {item["elementId"] for batch in synced_child.json()["result"] for item in batch["updates"]}
+    assert "property-def" in child_element_ids
 
     deleted = client.post(
         "/v1/subscriptions/delete",

@@ -44,7 +44,6 @@ class StreamSessionDto(TypedDict):
     clientId: str
     subscriptionId: str
     streamGeneration: int
-    scopeRelaxed: bool
     acknowledged: SubscriptionSyncResultPort
 
 
@@ -209,27 +208,22 @@ class SubscriptionAppService:
                 )
 
             normalized_client_id = client_id.strip()
+            # Strict client scope: a subscription owned by another client must not be
+            # activated or drained from this request (cross-client update leakage).
             stream_generation = await self.subscription_service.activate_stream(
                 client_id=normalized_client_id,
                 subscription_id=subscription_id,
             )
-            scope_relaxed = False
             if stream_generation is None:
-                stream_generation = await self.subscription_service.activate_stream(
-                    client_id=None,
-                    subscription_id=subscription_id,
+                raise i3x_http_error(
+                    404,
+                    "NotFound",
+                    "Subscription not found",
+                    {"subscriptionId": subscription_id},
                 )
-                if stream_generation is None:
-                    raise i3x_http_error(
-                        404,
-                        "NotFound",
-                        "Subscription not found",
-                        {"subscriptionId": subscription_id},
-                    )
-                scope_relaxed = True
 
             acknowledged = await self.subscription_service.sync(
-                client_id=None if scope_relaxed else normalized_client_id,
+                client_id=normalized_client_id,
                 subscription_id=subscription_id,
                 acknowledge_sequence=acknowledge_sequence,
                 allow_when_stream_active=True,
@@ -246,7 +240,6 @@ class SubscriptionAppService:
                 "clientId": normalized_client_id,
                 "subscriptionId": subscription_id,
                 "streamGeneration": stream_generation,
-                "scopeRelaxed": scope_relaxed,
                 "acknowledged": acknowledged,
             }
         except Exception as exc:

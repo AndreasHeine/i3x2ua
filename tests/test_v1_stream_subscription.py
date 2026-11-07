@@ -172,7 +172,7 @@ async def test_stream_subscription_sends_initial_payload_then_close() -> None:
 @pytest.mark.asyncio
 async def test_stream_subscription_keepalive_and_update_flow() -> None:
     service = _FakeSubscriptionService()
-    service.activate_returns = [None, 7]
+    service.activate_returns = [7]
     service.sync_result = SubscriptionSyncResult(updates=[])
     service.active_sequence = [True, True, False]
     service.wait_returns = [

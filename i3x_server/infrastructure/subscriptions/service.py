@@ -64,6 +64,7 @@ class _SubscriptionState:
     display_name: str | None
     monitored_objects: dict[str, int]
     monitored_node_ids: set[str] = field(default_factory=set)
+    applied_node_ids: set[str] = field(default_factory=set)
     node_to_element_id: dict[str, str] = field(default_factory=dict)
     handle_to_node_id: dict[int, str] = field(default_factory=dict)
     last_values_by_node_id: dict[str, Any] = field(default_factory=dict)
@@ -654,7 +655,7 @@ class SubscriptionService:
             }
             self._touch(state)
 
-        await self._apply_monitored_node_diff(subscription_id, previous_node_ids, monitored_node_ids)
+        await self._apply_monitored_node_diff(subscription_id)
         logger.info(
             "Subscription monitored items updated subscription_id=%s requested=%d total_objects=%d "
             "monitored_nodes=%d previous_monitored_nodes=%d max_depth=%d",
@@ -702,7 +703,7 @@ class SubscriptionService:
             }
             self._touch(state)
 
-        await self._apply_monitored_node_diff(subscription_id, previous_node_ids, monitored_node_ids)
+        await self._apply_monitored_node_diff(subscription_id)
         logger.info(
             "Subscription monitored items removed subscription_id=%s requested=%d total_objects=%d "
             "monitored_nodes=%d previous_monitored_nodes=%d",
@@ -976,26 +977,41 @@ class SubscriptionService:
             # Removed self._touch(state) to ensure server notifications don't keep stale subscriptions alive.
             # Only client activity (sync, wait_for_updates) should refresh the TTL.
 
-    async def _apply_monitored_node_diff(
-        self,
-        subscription_id: str,
-        previous_node_ids: set[str],
-        new_node_ids: set[str],
-    ) -> None:
-        """Reconcile a subscription's monitored nodes against the shared node registry."""
-        removed = previous_node_ids - new_node_ids
-        added = new_node_ids - previous_node_ids
+    async def _apply_monitored_node_diff(self, subscription_id: str) -> None:
+        """Reconcile the shared node registry against the subscription's *current* desired set.
+
+        Recomputed under the lock from ``applied_node_ids`` (what is actually monitored), so a
+        concurrent register/unregister cannot leave an acquired node that the final desired set
+        no longer contains. Network calls happen outside the lock.
+        """
+        async with self._lock:
+            state = self._subscriptions.get(subscription_id)
+            if state is None:
+                return
+            desired = set(state.monitored_node_ids)
+            removed = state.applied_node_ids - desired
+            added = desired - state.applied_node_ids
+            state.applied_node_ids = desired
 
         for node_id in removed:
             await self._release_node_monitor(node_id, subscription_id)
         for node_id in added:
             await self._acquire_node_monitor(node_id, subscription_id)
 
+        async with self._lock:
+            vanished = self._subscriptions.get(subscription_id) is None
+        if vanished:
+            # Subscription was deleted while the diff was in flight: undo the acquisitions.
+            for node_id in added:
+                await self._release_node_monitor(node_id, subscription_id)
+            return
+
         await self._update_subscription_mode(subscription_id)
         await self._seed_initial_updates(subscription_id)
 
     async def _release_all_nodes(self, state: _SubscriptionState) -> None:
-        for node_id in list(state.monitored_node_ids):
+        # Release everything that was ever acquired, not just the final desired set.
+        for node_id in list(state.applied_node_ids | state.monitored_node_ids):
             await self._release_node_monitor(node_id, state.subscription_id)
         async with self._lock:
             state.mode = "idle"
@@ -1420,7 +1436,9 @@ class SubscriptionService:
             if depth_limit != 0 and depth >= depth_limit:
                 continue
 
-            for child_id in model.children_by_id.get(node.id, []):
+            # Spec: recursion follows HasComponent only; hierarchical children (HasChildren)
+            # are independent objects and must never be monitored via the parent.
+            for child_id in model.composition_child_ids(node.id):
                 queue.append((child_id, depth + 1))
 
         return result

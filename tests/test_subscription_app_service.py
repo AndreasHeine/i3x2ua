@@ -49,6 +49,8 @@ class _FakeSubscriptionPort:
         self.register_result = True
         self.unregister_result = True
         self.activate_returns: list[int | None] = [1]
+        self.activate_clients: list[str | None] = []
+        self.sync_clients: list[str | None] = []
         self.sync_result: SubscriptionSyncResult | None = None
         self.active_sequence: list[bool] = [False]
         self.wait_returns: list[list[SubscriptionUpdate] | None] = []
@@ -63,7 +65,8 @@ class _FakeSubscriptionPort:
         self.list_error: Exception | None = None
 
     async def activate_stream(self, client_id: str | None, subscription_id: str) -> int | None:
-        del client_id, subscription_id
+        del subscription_id
+        self.activate_clients.append(client_id)
         return self.activate_returns.pop(0) if self.activate_returns else None
 
     async def create_subscription(self, client_id: str | None, display_name: str | None = None) -> SubscriptionDetail:
@@ -97,7 +100,8 @@ class _FakeSubscriptionPort:
         acknowledge_sequence: int | None = None,
         allow_when_stream_active: bool = False,
     ) -> SubscriptionSyncResult | None:
-        del client_id, subscription_id, acknowledge_sequence, allow_when_stream_active
+        del subscription_id, acknowledge_sequence, allow_when_stream_active
+        self.sync_clients.append(client_id)
         if self.sync_error:
             raise self.sync_error
         return self.sync_result
@@ -421,9 +425,9 @@ async def test_list_subscription_items_with_missing_requested_id() -> None:
 
 
 @pytest.mark.asyncio
-async def test_begin_stream_session_success_and_relaxed_scope() -> None:
+async def test_begin_stream_session_success() -> None:
     port = _FakeSubscriptionPort()
-    port.activate_returns = [None, 7]
+    port.activate_returns = [7]
     port.sync_result = SubscriptionSyncResult(updates=[])
     service = SubscriptionAppService(
         cast(OpcUaClientProtocol, SimpleNamespace()),
@@ -441,8 +445,34 @@ async def test_begin_stream_session_success_and_relaxed_scope() -> None:
     assert session["clientId"] == "client-1"
     assert session["subscriptionId"] == "sub-1"
     assert session["streamGeneration"] == 7
-    assert session["scopeRelaxed"] is True
     assert session["acknowledged"].updates == []
+    assert port.activate_clients == ["client-1"]
+    assert port.sync_clients == ["client-1"]
+
+
+@pytest.mark.asyncio
+async def test_begin_stream_session_does_not_relax_client_scope() -> None:
+    """A scoped activation miss must not fall back to an unscoped activation (cross-client leak)."""
+    port = _FakeSubscriptionPort()
+    port.activate_returns = [None]
+    port.sync_result = SubscriptionSyncResult(updates=[])
+    service = SubscriptionAppService(
+        cast(OpcUaClientProtocol, SimpleNamespace()),
+        _model(),
+        cast(SubscriptionServicePort, port),
+        request=_request(),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await service.begin_stream_session(
+            subscription_id="sub-1",
+            client_id="client-1",
+            acknowledge_sequence=2,
+        )
+
+    assert exc_info.value.status_code == 404
+    assert port.activate_clients == ["client-1"]
+    assert port.sync_clients == []
 
 
 @pytest.mark.asyncio

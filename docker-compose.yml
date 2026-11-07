@@ -130,6 +130,9 @@ services:
       - CHOWN
       - SETGID
       - SETUID
+      # The nginx master runs as root and binds :80/:443; cap_drop: ALL removes the
+      # capability required for privileged ports, so it must be added back explicitly.
+      - NET_BIND_SERVICE
     security_opt:
       - no-new-privileges:true
     pids_limit: 128

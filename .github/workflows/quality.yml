@@ -144,7 +144,9 @@ jobs:
         run: uv sync --extra otel --group dev --frozen
 
       - name: Run Pytest with Coverage
-        run: uv run pytest -q
+        # The coverage gate is an explicit CI flag; local targeted runs stay usable without
+        # a forced threshold (pyproject.toml addopts no longer sets --cov-fail-under).
+        run: uv run pytest -q --cov-fail-under=80
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v7

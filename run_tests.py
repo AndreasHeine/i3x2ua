@@ -17,7 +17,8 @@ from pathlib import Path
 
 BASE_COMMAND = ["uv", "run", "--group", "dev"]
 TARGET_COVERAGE_PERCENT = 85.0
-COVERAGE_XML_PATH = Path(".coverage.xml")
+# pytest writes ``coverage.xml`` via ``--cov-report=xml`` (pyproject.toml addopts).
+COVERAGE_XML_PATH = Path("coverage.xml")
 
 COMMANDS: list[list[str]] = [
     [*BASE_COMMAND, "ruff", "check", "."],
@@ -51,8 +52,9 @@ def main() -> int:
 
     total_coverage = _read_total_coverage_percent(COVERAGE_XML_PATH)
     if total_coverage is None:
-        print("\nCoverage target check skipped: coverage.xml not found or unreadable.")
-    elif total_coverage >= TARGET_COVERAGE_PERCENT:
+        print(f"\nCoverage target check failed: {COVERAGE_XML_PATH} not found or unreadable.")
+        return 1
+    if total_coverage >= TARGET_COVERAGE_PERCENT:
         print(f"\nCoverage target reached: {total_coverage:.2f}% >= {TARGET_COVERAGE_PERCENT:.2f}%.")
     else:
         missing = TARGET_COVERAGE_PERCENT - total_coverage
@@ -60,6 +62,7 @@ def main() -> int:
             f"\nCoverage target not reached: {total_coverage:.2f}% < {TARGET_COVERAGE_PERCENT:.2f}% "
             f"(need +{missing:.2f}%)."
         )
+        return 1
 
     print("\nAll checks completed successfully.")
     return 0

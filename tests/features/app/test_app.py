@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
+from tests.conftest import fastapi_app
+
 
 def _csp_source_tokens(csp: str) -> set[str]:
     tokens: set[str] = set()
@@ -38,11 +40,12 @@ def test_landing_page_with_mcp_enabled(client: TestClient) -> None:
     assert "i3X API Gateway for OPC UA" in text
     assert "Turn any OPC UA server into" in text
     assert 'href="/docs"' in text
-    assert 'href="/view?endpoint=/v1/info' in text
-    assert 'href="/view?endpoint=/ua/status' in text
-    assert 'href="/view?endpoint=/ua/connection' in text
-    assert 'href="/view?endpoint=/ua/limits' in text
-    assert 'href="/view?endpoint=/ua/metrics' in text
+    assert 'href="/view/?endpoint=/v1/info' in text
+    assert 'href="/view/?endpoint=/ua/status' in text
+    assert 'href="/view/?endpoint=/ua/connection' in text
+    assert 'href="/view/?endpoint=/ua/limits' in text
+    assert 'href="/view/?endpoint=/ua/metrics' in text
+    assert 'href="/model-builder/"' in text
 
 
 def test_landing_page_with_mcp_disabled(client_without_mcp: TestClient) -> None:
@@ -50,11 +53,11 @@ def test_landing_page_with_mcp_disabled(client_without_mcp: TestClient) -> None:
     assert response.status_code == 200
     text = response.text
     assert 'href="/docs"' in text
-    assert 'href="/view?endpoint=/v1/info' in text
-    assert 'href="/view?endpoint=/ua/status' in text
-    assert 'href="/view?endpoint=/ua/connection' in text
-    assert 'href="/view?endpoint=/ua/limits' in text
-    assert 'href="/view?endpoint=/ua/metrics' in text
+    assert 'href="/view/?endpoint=/v1/info' in text
+    assert 'href="/view/?endpoint=/ua/status' in text
+    assert 'href="/view/?endpoint=/ua/connection' in text
+    assert 'href="/view/?endpoint=/ua/limits' in text
+    assert 'href="/view/?endpoint=/ua/metrics' in text
     assert 'href="/mcp"' not in text
 
 
@@ -122,3 +125,37 @@ def test_mcp_tools_viewer_page(client: TestClient) -> None:
     assert "Back" in response.text
     assert "/static/logo-small.png" in response.text
     assert "i3X API Gateway for OPC UA" in response.text
+
+
+def test_frontend_paths_redirect_to_canonical_trailing_slash(client: TestClient) -> None:
+    """Directly entered page URLs redirect to the trailing-slash form with query preserved.
+
+    Prerendered HTML uses relative asset URLs, so `/view` (no slash) would render a page
+    whose modules resolve to `/view/_app/...` and 404, leaving an inert skeleton.
+    """
+    no_follow = TestClient(fastapi_app(client), follow_redirects=False)
+
+    response = no_follow.get("/view?endpoint=/v1/info&label=Server%20Info")
+    assert response.status_code == 307
+    assert response.headers["location"] == "/view/?endpoint=/v1/info&label=Server%20Info"
+
+    for path, location in (("/model-builder", "/model-builder/"), ("/mcp-tools-viewer", "/mcp-tools-viewer/")):
+        redirect = no_follow.get(path)
+        assert redirect.status_code == 307
+        assert redirect.headers["location"] == location
+
+    # Canonical URLs serve the page directly; the redirect chain ends at 200 HTML.
+    canonical = no_follow.get("/view/?endpoint=/v1/info")
+    assert canonical.status_code == 200
+    assert canonical.headers["content-type"].startswith("text/html")
+    followed = client.get("/view?endpoint=/v1/info&label=Server%20Info")
+    assert followed.status_code == 200
+
+    # API paths and asset files are untouched: only directories with an index.html redirect.
+    assert no_follow.get("/v1/info").status_code == 200
+    assert no_follow.get("/ua/status").status_code == 200
+    assert no_follow.get("/_app/").status_code != 307
+    assert no_follow.get("/model").status_code == 404
+
+    # Redirects are limited to safe methods; POSTs pass through to their routes.
+    assert no_follow.post("/mcp/call", json={"tool": "getServerInfoV1"}).status_code != 307

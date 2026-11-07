@@ -17,7 +17,7 @@ from typing import Any, cast
 
 from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.routing import APIRoute
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -699,6 +699,30 @@ def create_app() -> FastAPI:
 
     if frontend_dist.exists():
         app.frontend("/", directory=str(frontend_dist), fallback=None)
+
+        # Prerendered pages carry relative asset URLs ("./_app/..."), and the boot script
+        # derives the asset base from the URL. `app.frontend()` serves dist/<path>/index.html
+        # for "/path" without a canonical redirect, so a directly entered or shared URL like
+        # "/view?endpoint=..." renders HTML whose modules resolve to "/view/_app/..." and 404:
+        # the page stays an inert "Loading..." skeleton. Answer GET/HEAD requests for paths
+        # whose directory contains an index.html with a redirect to the trailing-slash URL
+        # (query preserved), where relative assets resolve correctly.
+        frontend_dist_root = frontend_dist.resolve()
+
+        @app.middleware("http")
+        async def redirect_frontend_pages_to_canonical_url(
+            request: Request,
+            call_next: Callable[[Request], Awaitable[Response]],
+        ) -> Response:
+            if request.method not in {"GET", "HEAD"} or request.url.path.endswith("/"):
+                return await call_next(request)
+            candidate = (frontend_dist_root / request.url.path.lstrip("/")).resolve()
+            if frontend_dist_root in candidate.parents and (candidate / "index.html").is_file():
+                redirect_url = request.url.path + "/"
+                if request.url.query:
+                    redirect_url += f"?{request.url.query}"
+                return RedirectResponse(url=redirect_url)
+            return await call_next(request)
     else:
         logger.warning("Frontend dist directory not found at %s; UI pages are unavailable", frontend_dist)
 

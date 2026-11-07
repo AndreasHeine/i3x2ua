@@ -32,6 +32,8 @@ coverage*.xml
 .env
 .env.*
 !.env.example
+# Shipped production template: deploy.sh copies it on fresh clones, so it must be tracked.
+!docs/.env.production.example
 
 # IDE / Editor
 .vscode/

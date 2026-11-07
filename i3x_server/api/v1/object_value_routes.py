@@ -256,7 +256,11 @@ async def query_last_known_values_v1(
     if node_ids:
         try:
             raw_data_values = await opcua_client.read_data_values(node_ids)
-            values_by_node_id = {node_id: dv for node_id, dv in zip(node_ids, raw_data_values, strict=False)}
+            if len(raw_data_values) != len(node_ids):
+                raise RuntimeError(
+                    f"OPC UA read returned {len(raw_data_values)} values for {len(node_ids)} requested nodes"
+                )
+            values_by_node_id = dict(zip(node_ids, raw_data_values, strict=True))
         except Exception as exc:
             _raise_opcua_error("read values", exc)
 

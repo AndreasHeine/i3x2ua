@@ -77,10 +77,29 @@ def test_v1_value_query_container_node_returns_goodnodata_without_direct_read(cl
     assert result["quality"] == "GoodNoData"
 
 
+def test_v1_short_upstream_batch_is_reported_as_an_upstream_error_not_good_nodata(client: TestClient) -> None:
+    async def read_data_values(node_ids: list[str]) -> list[Any]:
+        assert node_ids == ["ns=2;s=Temperature"]
+        return []
+
+    fastapi_app(client).state.opcua_client.read_data_values = read_data_values
+
+    response = client.post(
+        "/v1/objects/value",
+        json={"elementIds": ["property-abc"], "maxDepth": 1},
+    )
+    assert response.status_code == 502
+    payload = response.json()
+    assert payload["success"] is False
+    assert payload["error"]["code"] == 502
+    assert payload["error"]["message"] == "Failed to read values"
+    assert payload["responseDetail"]["status"] == 502
+    assert_documented_response(client, "post", "/v1/objects/value", 502, payload)
+
+
 def test_v1_is_composition_false_when_no_composition_children(client: TestClient) -> None:
     app = fastapi_app(client)
     app.state.model_cache.composition_children_by_id = {}
-
     response = client.post(
         "/v1/objects/value",
         json={"elementIds": ["property-abc"], "maxDepth": 1},

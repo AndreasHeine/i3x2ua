@@ -22,9 +22,18 @@ from i3x_server.infrastructure.subscriptions.service import (
     _min_positive,
     _NodeMonitor,
     _SubscriptionState,
+    _ValueSignal,
 )
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
+
+
+def _server_timestamp(moment: datetime) -> ua.DateTime:
+    return ua.DateTime.fromisoformat(moment.astimezone(timezone.utc).isoformat())
+
+
+def _status_code(severity: int) -> ua.StatusCode:
+    return ua.StatusCode(ua.UInt32(severity))
 
 
 class FakeOpcUaClient:
@@ -33,9 +42,14 @@ class FakeOpcUaClient:
         self.removed_listeners: list[Any] = []
         self.deleted_subscriptions: list[Any] = []
         self.read_values_calls = 0
+        self.read_data_values_calls = 0
         self.create_subscription_calls = 0
         self.subscribe_calls = 0
         self.unsubscribed_calls: list[tuple[Any, list[int]]] = []
+        # Handlers handed to create_datachange_subscription, so tests can fire notifications.
+        self.handlers: list[Any] = []
+        # node_id -> DataValue to serve instead of the generated Good value.
+        self.data_value_overrides: dict[str, ua.DataValue] = {}
         # id(ua_subscription) -> handles asyncua reports after a reconnect (None = subscription lost).
         self.restored_handles: dict[int, dict[str, int] | None] = {}
 
@@ -57,7 +71,8 @@ class FakeOpcUaClient:
         )
 
     async def create_datachange_subscription(self, publishing_interval_ms: float, handler: Any) -> Any:
-        del publishing_interval_ms, handler
+        del publishing_interval_ms
+        self.handlers.append(handler)
         self.create_subscription_calls += 1
         return SimpleNamespace(id=f"ua-sub-{self.create_subscription_calls}")
 
@@ -82,6 +97,19 @@ class FakeOpcUaClient:
     async def read_values(self, node_ids: list[str]) -> list[float]:
         self.read_values_calls += 1
         return [float(i + self.read_values_calls) for i, _ in enumerate(node_ids)]
+
+    async def read_data_values(self, node_ids: list[str]) -> list[ua.DataValue]:
+        self.read_data_values_calls += 1
+        results: list[ua.DataValue] = []
+        for index, node_id in enumerate(node_ids):
+            override = self.data_value_overrides.get(node_id)
+            if override is not None:
+                results.append(override)
+                continue
+            data_value = ua.DataValue(ua.Variant(float(index + self.read_data_values_calls), ua.VariantType.Double))
+            data_value.SourceTimestamp = _server_timestamp(datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc))
+            results.append(data_value)
+        return results
 
 
 @pytest.mark.parametrize("empty_first", [False, True])
@@ -244,7 +272,7 @@ async def test_sync_refreshes_changed_values_when_queue_empty_and_no_ack() -> No
     assert third is not None
     assert third.updates
     assert all(item.sequence_number > last for item in third.updates)
-    assert client.read_values_calls >= 2
+    assert client.read_data_values_calls >= 2
     await service.close()
 
 
@@ -1188,3 +1216,125 @@ async def test_native_admission_failure_backs_off_to_polling() -> None:
     assert attempts_before == 0
 
     await service.close()
+
+
+def _signed_data_value(value: Any, severity: int, timestamp: datetime) -> ua.DataValue:
+    data_value = ua.DataValue(ua.Variant(value, ua.VariantType.Double) if value is not None else None)
+    data_value.StatusCode = _status_code(severity)
+    data_value.SourceTimestamp = _server_timestamp(timestamp)
+    return data_value
+
+
+@pytest.mark.asyncio
+async def test_initial_snapshot_reports_server_status_not_good_nodata() -> None:
+    client = FakeOpcUaClient()
+    client.data_value_overrides["ns=2;s=Temperature"] = _signed_data_value(
+        None, 0x80000000, datetime(2026, 2, 3, 4, 5, tzinfo=timezone.utc)
+    )
+    service = SubscriptionService(cast(OpcUaClientProtocol, client), interval_seconds=1, seed_initial_values=True)
+    created = await service.create_subscription(client_id="c1", display_name="s1")
+    assert (
+        await service.register_items("c1", created.subscription_id, ["asset-root"], max_depth=1, model=_model()) is True
+    )
+
+    synced = await service.sync("c1", created.subscription_id, acknowledge_sequence=None)
+    assert synced is not None
+    assert [item.element_id for item in synced.updates] == ["prop-a"]
+    assert synced.updates[0].quality == "Bad"
+    assert synced.updates[0].value is None
+    assert synced.updates[0].timestamp == "2026-02-03T04:05:00Z"
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_shared_polling_loop_maps_server_status_and_timestamp() -> None:
+    client = FakeOpcUaClient()
+
+    def _no_native_subscriptions(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError("native subscriptions unavailable")
+
+    client.create_datachange_subscription = _no_native_subscriptions  # type: ignore[method-assign]
+    client.data_value_overrides["ns=2;s=Temperature"] = _signed_data_value(
+        7.0, 0x40000000, datetime(2026, 3, 4, 5, 6, tzinfo=timezone.utc)
+    )
+
+    service = SubscriptionService(cast(OpcUaClientProtocol, client), interval_seconds=0.1, seed_initial_values=False)
+    created = await service.create_subscription(client_id="c1", display_name="s1")
+    assert (
+        await service.register_items("c1", created.subscription_id, ["asset-root"], max_depth=1, model=_model()) is True
+    )
+    async with service._lock:
+        assert service._node_monitors["ns=2;s=Temperature"].mode == "polling"
+
+    updates = await service.wait_for_updates("c1", created.subscription_id, after_sequence=0, timeout_seconds=2)
+    assert updates is not None
+    assert updates[0].element_id == "prop-a"
+    assert updates[0].value == 7.0
+    assert updates[0].quality == "Uncertain"
+    assert updates[0].timestamp == "2026-03-04T05:06:00Z"
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_native_handler_maps_status_code_and_source_timestamp() -> None:
+    client = FakeOpcUaClient()
+    service = SubscriptionService(cast(OpcUaClientProtocol, client), interval_seconds=1, seed_initial_values=False)
+    created = await service.create_subscription(client_id="c1", display_name="s1")
+    assert (
+        await service.register_items("c1", created.subscription_id, ["asset-root"], max_depth=1, model=_model()) is True
+    )
+    assert client.handlers
+
+    notification = SimpleNamespace(
+        monitored_item=SimpleNamespace(
+            ClientHandle=1,
+            Value=_signed_data_value(None, 0x80000000, datetime(2026, 4, 5, 6, 7, tzinfo=timezone.utc)),
+        )
+    )
+    client.handlers[0].datachange_notification(
+        SimpleNamespace(nodeid=SimpleNamespace(to_string=lambda: "ns=2;s=Temperature")),
+        None,
+        notification,
+    )
+
+    updates = await service.wait_for_updates("c1", created.subscription_id, after_sequence=0, timeout_seconds=2)
+    assert updates is not None
+    assert updates[0].element_id == "prop-a"
+    assert updates[0].quality == "Bad"
+    assert updates[0].value is None
+    assert updates[0].timestamp == "2026-04-05T06:07:00Z"
+    await service.close()
+
+
+def test_quality_change_emits_an_update_even_with_an_unchanged_value() -> None:
+    service = SubscriptionService(cast(OpcUaClientProtocol, FakeOpcUaClient()), interval_seconds=1.0)
+    state = _SubscriptionState(
+        subscription_id="sub-quality",
+        client_id="client",
+        display_name=None,
+        monitored_objects={"prop-a": 0},
+        node_to_element_id={"ns=2;s=Temperature": "prop-a"},
+    )
+    service._append_update(state, "ns=2;s=Temperature", 1.0, _ValueSignal("Good", "2026-01-01T00:00:00Z"))
+    service._append_update(state, "ns=2;s=Temperature", 1.0, _ValueSignal("Uncertain", "2026-01-01T00:00:01Z"))
+    service._append_update(state, "ns=2;s=Temperature", 1.0, _ValueSignal("Uncertain", "2026-01-01T00:00:02Z"))
+
+    assert [(item.quality, item.timestamp) for item in state.updates] == [
+        ("Good", "2026-01-01T00:00:00Z"),
+        ("Uncertain", "2026-01-01T00:00:01Z"),
+    ]
+
+
+def test_null_value_with_good_or_uncertain_quality_is_normalized_to_good_nodata() -> None:
+    service = SubscriptionService(cast(OpcUaClientProtocol, FakeOpcUaClient()), interval_seconds=1.0)
+    state = _SubscriptionState(
+        subscription_id="sub-null",
+        client_id="client",
+        display_name=None,
+        monitored_objects={"prop-a": 0},
+        node_to_element_id={"ns=2;s=Temperature": "prop-a"},
+    )
+    service._append_update(state, "ns=2;s=Temperature", None, _ValueSignal("Good", None))
+    service._append_update(state, "ns=2;s=Temperature", None, _ValueSignal("Bad", None))
+
+    assert [item.quality for item in state.updates] == ["GoodNoData", "Bad"]

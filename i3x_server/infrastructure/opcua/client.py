@@ -40,6 +40,7 @@ from i3x_server.domain.ports.opcua import (
     OpcUaWriteMetadataVerificationError,
 )
 from i3x_server.infrastructure.opcua.history import historical_data_value, quality_status_code
+from i3x_server.schemas.opcua_value import quality_from_status_code
 
 __all__ = [
     "OpcUaClient",
@@ -3077,19 +3078,7 @@ def _to_explicit_ua_variant(value: Any, variant_type: str | None) -> ua.Variant 
 
 
 def _quality_from_status_code(status_code: ua.StatusCode | None) -> str | None:
-    if status_code is None:
-        return None
-    code = int(status_code.value)
-    if code == int(StatusCodes.GoodNoData):
-        return "GoodNoData"
-    severity = code & 0xC0000000
-    if severity == 0:
-        return "Good"
-    if severity == 0x40000000:
-        return "Uncertain"
-    if severity == 0x80000000:
-        return "Bad"
-    return None
+    return quality_from_status_code(status_code)
 
 
 def _attribute_scalar_value(data_value: Any) -> Any:

@@ -12,10 +12,35 @@ from uuid import uuid4
 from i3x_server.config.settings import get_settings
 from i3x_server.domain.ports.opcua import OpcUaClientProtocol, OpcUaSubscriptionCapabilities
 from i3x_server.schemas.i3x import ModelNode
-from i3x_server.schemas.opcua_value import normalize_opcua_value
+from i3x_server.schemas.opcua_value import (
+    decode_data_value,
+    format_utc_timestamp,
+    normalize_opcua_value,
+    notification_data_value,
+)
 from i3x_server.schemas.state import BuildResult
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class _ValueSignal:
+    """Server-side quality/timestamp carried alongside a value.
+
+    ``None`` fields mean the upstream gave no signal, so the caller decides what to report
+    instead of inventing ``Good`` and a gateway timestamp for every update.
+    """
+
+    quality: str | None = None
+    timestamp: str | None = None
+
+
+_NO_SIGNAL = _ValueSignal()
+
+
+def _signal_from_data_value(data_value: Any) -> _ValueSignal:
+    _payload, quality, timestamp = decode_data_value(data_value)
+    return _ValueSignal(quality=quality, timestamp=timestamp)
 
 
 def _stream_debug_enabled() -> bool:
@@ -68,6 +93,7 @@ class _SubscriptionState:
     node_to_element_id: dict[str, str] = field(default_factory=dict)
     handle_to_node_id: dict[int, str] = field(default_factory=dict)
     last_values_by_node_id: dict[str, Any] = field(default_factory=dict)
+    last_quality_by_node_id: dict[str, str] = field(default_factory=dict)
     updates: list[SubscriptionUpdate] = field(default_factory=list)
     sequence_number: int = 0
     mode: str = "idle"
@@ -125,7 +151,8 @@ class _DataChangeHandler:
             raw_handle = getattr(monitored_item, "ClientHandle", None)
             client_handle = _to_client_handle(raw_handle)
 
-        self._service.schedule_datachange(self._subscription_id, node_id, val, client_handle)
+        signal = _signal_from_data_value(notification_data_value(data))
+        self._service.schedule_datachange(self._subscription_id, node_id, val, client_handle, signal)
 
     def event_notification(self, event: Any) -> None:
         return None
@@ -139,7 +166,7 @@ class _NodeDataChangeHandler:
         self._bin_id = bin_id
 
     def datachange_notification(self, node: Any, val: Any, data: Any) -> None:
-        del data
+        signal = _signal_from_data_value(notification_data_value(data))
         try:
             node_id = node.nodeid.to_string()
         except Exception:
@@ -148,7 +175,7 @@ class _NodeDataChangeHandler:
                 self._bin_id,
             )
             return
-        self._service.schedule_node_datachange(node_id, val)
+        self._service.schedule_node_datachange(node_id, val, signal)
 
     def event_notification(self, event: Any) -> None:
         return None
@@ -195,10 +222,10 @@ class SubscriptionService:
         self._datachange_task: asyncio.Task[None] | None = None
         self._node_datachange_task: asyncio.Task[None] | None = None
         self._shared_polling_task: asyncio.Task[None] | None = None
-        self._datachange_queue: asyncio.Queue[tuple[str, str, Any, int | None]] = asyncio.Queue(
+        self._datachange_queue: asyncio.Queue[tuple[str, str, Any, int | None, _ValueSignal]] = asyncio.Queue(
             maxsize=max(1000, self._max_updates_per_subscription)
         )
-        self._node_datachange_queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue(
+        self._node_datachange_queue: asyncio.Queue[tuple[str, Any, _ValueSignal]] = asyncio.Queue(
             maxsize=max(1000, self._max_updates_per_subscription)
         )
         self._dropped_datachange_events = 0
@@ -221,6 +248,7 @@ class SubscriptionService:
         node_id: str,
         value: Any,
         client_handle: int | None,
+        signal: _ValueSignal = _NO_SIGNAL,
     ) -> None:
         if self._datachange_queue.full():
             try:
@@ -229,16 +257,16 @@ class SubscriptionService:
             except asyncio.QueueEmpty:
                 pass
         try:
-            self._datachange_queue.put_nowait((subscription_id, node_id, value, client_handle))
+            self._datachange_queue.put_nowait((subscription_id, node_id, value, client_handle, signal))
         except asyncio.QueueFull:
             self._dropped_datachange_events += 1
 
     async def _datachange_loop(self) -> None:
         try:
             while True:
-                subscription_id, node_id, value, client_handle = await self._datachange_queue.get()
+                subscription_id, node_id, value, client_handle, signal = await self._datachange_queue.get()
                 try:
-                    await self.handle_datachange(subscription_id, node_id, value, client_handle)
+                    await self.handle_datachange(subscription_id, node_id, value, client_handle, signal)
                 except Exception:
                     logger.exception(
                         "OPC UA datachange handling failed",
@@ -251,7 +279,7 @@ class SubscriptionService:
         except asyncio.CancelledError:
             return
 
-    def _enqueue_node_datachange(self, node_id: str, value: Any) -> None:
+    def _enqueue_node_datachange(self, node_id: str, value: Any, signal: _ValueSignal = _NO_SIGNAL) -> None:
         if self._node_datachange_queue.full():
             try:
                 self._node_datachange_queue.get_nowait()
@@ -259,16 +287,16 @@ class SubscriptionService:
             except asyncio.QueueEmpty:
                 pass
         try:
-            self._node_datachange_queue.put_nowait((node_id, value))
+            self._node_datachange_queue.put_nowait((node_id, value, signal))
         except asyncio.QueueFull:
             self._dropped_datachange_events += 1
 
     async def _node_datachange_loop(self) -> None:
         try:
             while True:
-                node_id, value = await self._node_datachange_queue.get()
+                node_id, value, signal = await self._node_datachange_queue.get()
                 try:
-                    await self._fanout_node_value(node_id, value)
+                    await self._fanout_node_value(node_id, value, signal)
                 except Exception:
                     logger.exception(
                         "Shared node datachange fan-out failed",
@@ -277,15 +305,15 @@ class SubscriptionService:
         except asyncio.CancelledError:
             return
 
-    async def _fanout_node_value(self, node_id: str, value: Any) -> None:
+    async def _fanout_node_value(self, node_id: str, value: Any, signal: _ValueSignal = _NO_SIGNAL) -> None:
         """Deliver one node-level value change to every subscription monitoring it."""
         async with self._lock:
             monitor = self._node_monitors.get(node_id)
             subscriber_ids = list(monitor.subscriber_ids) if monitor is not None else []
         for subscription_id in subscriber_ids:
-            await self.handle_datachange(subscription_id, node_id, value)
+            await self.handle_datachange(subscription_id, node_id, value, signal=signal)
 
-    def schedule_node_datachange(self, node_id: str, value: Any) -> None:
+    def schedule_node_datachange(self, node_id: str, value: Any, signal: _ValueSignal = _NO_SIGNAL) -> None:
         target_loop = self._event_loop
         if target_loop is not None and target_loop.is_closed():
             target_loop = None
@@ -298,12 +326,12 @@ class SubscriptionService:
         if target_loop is None and current_loop is not None:
             self._event_loop = current_loop
             self._ensure_cleanup_task()
-            self._enqueue_node_datachange(node_id, value)
+            self._enqueue_node_datachange(node_id, value, signal)
             return
 
         if current_loop is not None and target_loop is current_loop:
             self._ensure_cleanup_task()
-            self._enqueue_node_datachange(node_id, value)
+            self._enqueue_node_datachange(node_id, value, signal)
             return
 
         if target_loop is None:
@@ -314,7 +342,7 @@ class SubscriptionService:
             return
 
         target_loop.call_soon_threadsafe(self._ensure_cleanup_task)
-        target_loop.call_soon_threadsafe(self._enqueue_node_datachange, node_id, value)
+        target_loop.call_soon_threadsafe(self._enqueue_node_datachange, node_id, value, signal)
 
     def schedule_datachange(
         self,
@@ -322,6 +350,7 @@ class SubscriptionService:
         node_id: str,
         value: Any,
         client_handle: int | None = None,
+        signal: _ValueSignal = _NO_SIGNAL,
     ) -> None:
         target_loop = self._event_loop
         if target_loop is not None and target_loop.is_closed():
@@ -336,12 +365,12 @@ class SubscriptionService:
             # Capture the app loop lazily on first callback when not already known.
             self._event_loop = current_loop
             self._ensure_cleanup_task()
-            self._enqueue_datachange(subscription_id, node_id, value, client_handle)
+            self._enqueue_datachange(subscription_id, node_id, value, client_handle, signal)
             return
 
         if current_loop is not None and target_loop is current_loop:
             self._ensure_cleanup_task()
-            self._enqueue_datachange(subscription_id, node_id, value, client_handle)
+            self._enqueue_datachange(subscription_id, node_id, value, client_handle, signal)
             return
 
         if target_loop is None:
@@ -360,6 +389,7 @@ class SubscriptionService:
             node_id,
             value,
             client_handle,
+            signal,
         )
 
     def _now_monotonic(self) -> float:
@@ -653,6 +683,11 @@ class SubscriptionService:
                 for node_id, value in state.last_values_by_node_id.items()
                 if node_id in monitored_node_ids
             }
+            state.last_quality_by_node_id = {
+                node_id: quality
+                for node_id, quality in state.last_quality_by_node_id.items()
+                if node_id in state.last_values_by_node_id
+            }
             self._touch(state)
 
         await self._apply_monitored_node_diff(subscription_id)
@@ -700,6 +735,11 @@ class SubscriptionService:
                 node_id: value
                 for node_id, value in state.last_values_by_node_id.items()
                 if node_id in monitored_node_ids
+            }
+            state.last_quality_by_node_id = {
+                node_id: quality
+                for node_id, quality in state.last_quality_by_node_id.items()
+                if node_id in state.last_values_by_node_id
             }
             self._touch(state)
 
@@ -940,6 +980,7 @@ class SubscriptionService:
         node_id: str,
         value: Any,
         client_handle: int | None = None,
+        signal: _ValueSignal = _NO_SIGNAL,
     ) -> None:
         async with self._lock:
             state = self._subscriptions.get(subscription_id)
@@ -965,7 +1006,7 @@ class SubscriptionService:
                 elif mapped_element is None:
                     return
 
-            self._append_update(state, resolved_node_id, value)
+            self._append_update(state, resolved_node_id, value, signal)
             logger.debug(
                 "Subscription datachange callback subscription_id=%s mode=%s node_id=%s client_handle=%s",
                 subscription_id,
@@ -1291,12 +1332,17 @@ class SubscriptionService:
 
                 if node_ids:
                     try:
-                        values = await self._opcua_client.read_values(node_ids)
+                        data_values = await self._opcua_client.read_data_values(node_ids)
+                        if len(data_values) != len(node_ids):
+                            raise RuntimeError(
+                                f"Read returned {len(data_values)} values for {len(node_ids)} monitored nodes"
+                            )
                     except Exception:
                         logger.exception("Shared polling read failed node_count=%d", len(node_ids))
                     else:
-                        for node_id, value in zip(node_ids, values, strict=False):
-                            await self._fanout_node_value(node_id, value)
+                        for node_id, data_value in zip(node_ids, data_values, strict=True):
+                            payload, quality, timestamp = decode_data_value(data_value)
+                            await self._fanout_node_value(node_id, payload, _ValueSignal(quality, timestamp))
 
                 await asyncio.sleep(self._interval_seconds)
         except asyncio.CancelledError:
@@ -1321,7 +1367,9 @@ class SubscriptionService:
             return
 
         try:
-            values = await self._opcua_client.read_values(node_ids)
+            data_values = await self._opcua_client.read_data_values(node_ids)
+            if len(data_values) != len(node_ids):
+                raise RuntimeError(f"Read returned {len(data_values)} values for {len(node_ids)} monitored nodes")
         except Exception:
             logger.exception("Initial subscription snapshot failed", extra={"subscription_id": subscription_id})
             return
@@ -1330,20 +1378,33 @@ class SubscriptionService:
             state = self._subscriptions.get(subscription_id)
             if state is None:
                 return
-            for node_id, value in zip(node_ids, values, strict=False):
+            for node_id, data_value in zip(node_ids, data_values, strict=True):
                 if node_id not in state.monitored_node_ids:
                     continue
-                self._append_update(state, node_id, value)
+                payload, quality, timestamp = decode_data_value(data_value)
+                self._append_update(state, node_id, payload, _ValueSignal(quality, timestamp))
             self._touch(state)
 
-    def _append_update(self, state: _SubscriptionState, node_id: str, value: Any) -> None:
+    def _append_update(
+        self,
+        state: _SubscriptionState,
+        node_id: str,
+        value: Any,
+        signal: _ValueSignal = _NO_SIGNAL,
+    ) -> None:
         value = normalize_opcua_value(value)
+        quality = signal.quality or ("GoodNoData" if value is None else "Good")
+        if value is None and quality in ("Good", "Uncertain"):
+            quality = "GoodNoData"
+
         has_current = node_id in state.last_values_by_node_id
         current = state.last_values_by_node_id.get(node_id)
-        if has_current and current == value:
+        current_quality = state.last_quality_by_node_id.get(node_id)
+        if has_current and current == value and current_quality == quality:
             return
 
         state.last_values_by_node_id[node_id] = value
+        state.last_quality_by_node_id[node_id] = quality
         state.sequence_number += 1
         element_id = state.node_to_element_id.get(node_id)
         if element_id is None:
@@ -1353,7 +1414,6 @@ class SubscriptionService:
             # single registered object, emit that object id so consumers can
             # still match updates to the active subscription row.
             element_id = next(iter(state.monitored_objects.keys()))
-        quality = "GoodNoData" if value is None else "Good"
         if len(state.updates) >= self._max_updates_per_subscription:
             dropped = state.updates.pop(0)
             if state.dropped_from_sequence is None:
@@ -1366,7 +1426,7 @@ class SubscriptionService:
                 node_id=node_id,
                 value=value,
                 quality=quality,
-                timestamp=_format_utc_timestamp(datetime.now(timezone.utc)),
+                timestamp=signal.timestamp or _format_utc_timestamp(datetime.now(timezone.utc)),
             )
         )
         state.update_event.set()
@@ -1510,7 +1570,4 @@ def _to_client_handle(value: Any) -> int | None:
 
 
 def _format_utc_timestamp(value: datetime) -> str:
-    normalized = value
-    if normalized.tzinfo is None:
-        normalized = normalized.replace(tzinfo=timezone.utc)
-    return normalized.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    return format_utc_timestamp(value)

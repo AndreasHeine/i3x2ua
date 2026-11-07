@@ -1614,17 +1614,6 @@ def _synthetic_object_types_from_structure_defs(
     return list(synthetic_by_source_type_id.values())
 
 
-def _require_client_id(client_id: str | None, endpoint: str) -> str:
-    normalized = (client_id or "").strip()
-    if normalized:
-        return normalized
-    _raise_invalid_argument(
-        "clientId",
-        None,
-        f"'{endpoint}' requires a non-empty clientId",
-    )
-
-
 def _to_vqt_from_history_value(data_value: Any) -> VQT:
     variant = getattr(data_value, "Value", None)
     value = getattr(variant, "Value", variant)

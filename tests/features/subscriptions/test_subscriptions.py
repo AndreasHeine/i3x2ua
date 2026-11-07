@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import time
 
+import pytest
 from fastapi.testclient import TestClient
 
 from i3x_server.schemas.i3x import ModelNode
@@ -57,6 +58,70 @@ def test_v1_subscription_lifecycle(client: TestClient) -> None:
         assert sync_payload["result"][0]["sequenceNumber"] >= 1
         assert isinstance(sync_payload["result"][0]["updates"], list)
         assert sync_payload["result"][0]["updates"][0]["elementId"]
+
+
+def test_v1_subscription_client_id_is_one_normalized_scope(client: TestClient) -> None:
+    """Surrounding whitespace must be trimmed at the boundary: create/register/sync/list/delete share one scope."""
+    created = client.post(
+        "/v1/subscriptions",
+        json={"clientId": "  padded-client  ", "displayName": "Padded Monitor"},
+    )
+    assert created.status_code == 200
+    created_payload = created.json()
+    assert created_payload["result"]["clientId"] == "padded-client"
+    subscription_id = created_payload["result"]["subscriptionId"]
+
+    register = client.post(
+        "/v1/subscriptions/register",
+        json={
+            "clientId": " padded-client ",
+            "subscriptionId": subscription_id,
+            "elementIds": ["property-abc"],
+            "maxDepth": 1,
+        },
+    )
+    assert register.status_code == 200
+
+    synced = client.post(
+        "/v1/subscriptions/sync",
+        json={"clientId": "padded-client ", "subscriptionId": subscription_id, "acknowledgeSequence": 0},
+    )
+    assert synced.status_code == 200
+
+    listed = client.post(
+        "/v1/subscriptions/list",
+        json={"clientId": "padded-client", "subscriptionIds": [subscription_id]},
+    )
+    assert listed.status_code == 200
+    assert listed.json()["results"][0]["result"]["subscriptionId"] == subscription_id
+
+    deleted = client.post(
+        "/v1/subscriptions/delete",
+        json={"clientId": " padded-client", "subscriptionIds": [subscription_id]},
+    )
+    assert deleted.status_code == 200
+    assert deleted.json()["results"][0]["success"] is True
+
+    after_delete = client.post(
+        "/v1/subscriptions/list",
+        json={"clientId": "padded-client", "subscriptionIds": [subscription_id]},
+    )
+    assert after_delete.json()["results"][0]["success"] is False
+
+
+@pytest.mark.parametrize("client_id", ["", "   ", "\t", "client\nnewline"])
+def test_v1_subscription_rejects_invalid_client_id(client: TestClient, client_id: str) -> None:
+    """Empty, whitespace-only, and non-printable clientIds are rejected with the documented 400 envelope."""
+    response = client.post(
+        "/v1/subscriptions",
+        json={"clientId": client_id, "displayName": "Invalid Monitor"},
+    )
+    assert response.status_code == 400
+    payload = response.json()
+    assert payload["success"] is False
+    assert payload["error"]["code"] == 400
+    assert payload["responseDetail"]["status"] == 400
+    assert_documented_response(client, "post", "/v1/subscriptions", 400, payload)
 
 
 def test_v1_subscription_register_defaults_to_one_composition_level(client: TestClient) -> None:

@@ -28,6 +28,24 @@ def validate_write_element_id(value: str) -> str:
 WriteElementId = Annotated[str, AfterValidator(validate_write_element_id)]
 
 
+def validate_client_id(value: str) -> str:
+    """Normalize the subscription scope identifier.
+
+    Every subscription endpoint must treat ``"app"`` and ``" app "`` as the same scope: the service stores
+    and compares ``clientId`` verbatim, so an untrimmed value would make ``/subscriptions/list`` and
+    ``/subscriptions/delete`` fail to find a subscription that ``/subscriptions`` created.
+    """
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError("clientId must be non-empty and free of surrounding whitespace")
+    if not normalized.isprintable():
+        raise ValueError("clientId must be printable")
+    return normalized
+
+
+ClientId = Annotated[str, AfterValidator(validate_client_id)]
+
+
 class SuccessResponse(BaseModel, Generic[T]):
     success: bool
     result: T
@@ -550,7 +568,7 @@ class RegisterMonitoredItemsRequest(BaseModel):
         }
     )
 
-    clientId: str
+    clientId: ClientId
     subscriptionId: str
     elementIds: list[str] = Field(min_length=1)
     maxDepth: int = Field(
@@ -564,7 +582,7 @@ class RegisterMonitoredItemsRequest(BaseModel):
 
 
 class UnregisterMonitoredItemsRequest(BaseModel):
-    clientId: str
+    clientId: ClientId
     subscriptionId: str
     elementIds: list[str] = Field(min_length=1)
 
@@ -582,7 +600,7 @@ class SyncRequest(BaseModel):
         }
     )
 
-    clientId: str
+    clientId: ClientId
     subscriptionId: str
     lastSequenceNumber: int | None = Field(
         default=None,
@@ -597,12 +615,12 @@ class SyncRequest(BaseModel):
 
 
 class ListSubscriptionsRequest(BaseModel):
-    clientId: str
+    clientId: ClientId
     subscriptionIds: list[str] = Field(min_length=1)
 
 
 class DeleteSubscriptionsRequest(BaseModel):
-    clientId: str
+    clientId: ClientId
     subscriptionIds: list[str] = Field(min_length=1)
 
 
@@ -619,7 +637,7 @@ class StreamRequest(BaseModel):
         },
     )
 
-    clientId: str
+    clientId: ClientId
     subscriptionId: str
 
 
@@ -628,7 +646,7 @@ class CreateSubscriptionRequest(BaseModel):
         json_schema_extra={"examples": [{"clientId": "example-client", "displayName": "Machine telemetry"}]}
     )
 
-    clientId: str = Field(description="Unique client scope identifier. This is not an authentication credential.")
+    clientId: ClientId = Field(description="Unique client scope identifier. This is not an authentication credential.")
     displayName: str | None = None
 
 

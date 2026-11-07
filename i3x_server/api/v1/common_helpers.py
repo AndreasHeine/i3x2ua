@@ -146,17 +146,6 @@ def _expand_subscription_bulk_item_element_ids(
     return expanded
 
 
-def _require_client_id(client_id: str | None, endpoint: str) -> str:
-    normalized = (client_id or "").strip()
-    if normalized:
-        return normalized
-    _raise_invalid_argument(
-        "clientId",
-        None,
-        f"'{endpoint}' requires a non-empty clientId",
-    )
-
-
 def _format_utc_timestamp(value: datetime) -> str:
     normalized = value
     if normalized.tzinfo is None:

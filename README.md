@@ -365,6 +365,15 @@ HTTP `206 Partial Content` with the standard body containing what was fetched pl
 `responseDetail` (`title`, `status: 206`, `detail`) - an incomplete result is never presented as
 complete. Follow up with requests targeting the remaining `elementIds` to fetch the rest.
 
+### Bulk request limits
+
+Bulk request arrays are capped at **500 items** (`elementIds`, `updates`, `subscriptionIds`) on
+every `/v1` route that accepts a batch. One item costs at least one upstream OPC UA round-trip, so
+an unbounded batch would turn a single request into thousands of reads or writes. The limit matches
+the MCP batch limit documented in the MCP tool guide, so REST is not weaker than the MCP surface.
+Submitting more than 500 items is rejected with HTTP `400` and the standard error envelope before
+any upstream call is made; split the work into several requests.
+
 ### Model revisions and conditional GET
 
 Every response built from the address-space model carries `I3X-Model-Revision`, a content hash of the model. It changes only when the model content changes, not on every periodic rebuild. Model-derived `GET` endpoints (`/objects`, `/objecttypes`, `/namespaces`, `/relationshiptypes`, `/model/namespace-gaps`) also return a weak `ETag` and `Cache-Control: no-cache`. Send it back in `If-None-Match` to get `304 Not Modified` with an empty body while the representation is unchanged:

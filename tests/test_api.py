@@ -21,6 +21,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from jsonschema import Draft202012Validator
 
+from i3x_server.api.v1.contracts import MAX_BULK_ITEMS
 from i3x_server.api.v1.monolithic import (
     _decode_bytestring_write_value,
     _to_json_safe_value,
@@ -1346,3 +1347,100 @@ def test_mcp_model_overview_and_root_resources_read_rest(client: TestClient) -> 
     root = json.loads(root_content["text"])
     assert root["elementId"] == "asset-root"
     assert root["displayName"]
+
+
+# Bulk batch limits: every bulk array is capped at ``MAX_BULK_ITEMS`` so one request cannot turn
+# into thousands of upstream OPC UA round-trips (REST parity with the MCP batch limit).
+_BULK_BATCH_FIELDS: tuple[tuple[str, str, str], ...] = (
+    ("post", "/v1/objecttypes/query", "elementIds"),
+    ("post", "/v1/relationshiptypes/query", "elementIds"),
+    ("post", "/v1/objects/list", "elementIds"),
+    ("post", "/v1/objects/related", "elementIds"),
+    ("post", "/v1/objects/value", "elementIds"),
+    ("post", "/v1/objects/history", "elementIds"),
+    ("put", "/v1/objects/value", "updates"),
+    ("put", "/v1/objects/history", "updates"),
+    ("post", "/v1/subscriptions/register", "elementIds"),
+    ("post", "/v1/subscriptions/unregister", "elementIds"),
+    ("post", "/v1/subscriptions/list", "subscriptionIds"),
+    ("post", "/v1/subscriptions/delete", "subscriptionIds"),
+)
+
+
+def _batch_item(field: str, index: int) -> dict[str, Any] | str:
+    if field == "updates":
+        return {
+            "elementId": f"property-{index}",
+            "value": {
+                "value": 1.0,
+                "quality": "Good",
+                "timestamp": "2026-01-01T00:00:00Z",
+            },
+        }
+    return f"batch-element-{index}"
+
+
+def _batch_body(method: str, path: str, field: str, count: int) -> dict[str, Any]:
+    body: dict[str, Any] = {field: [_batch_item(field, index) for index in range(count)]}
+    if method == "post" and path == "/v1/objects/history":
+        body["startTime"] = "2026-01-01T00:00:00Z"
+        body["endTime"] = "2026-01-02T00:00:00Z"
+    if path in {"/v1/subscriptions/register", "/v1/subscriptions/unregister"}:
+        body["clientId"] = "batch-client"
+        body["subscriptionId"] = "missing-subscription"
+    if path in {"/v1/subscriptions/list", "/v1/subscriptions/delete"}:
+        body["clientId"] = "batch-client"
+    return body
+
+
+def _request_body_schema(document: dict[str, Any], method: str, path: str) -> dict[str, Any]:
+    body_schema: dict[str, Any] = document["paths"][path][method]["requestBody"]["content"]["application/json"][
+        "schema"
+    ]
+    ref = body_schema.get("$ref")
+    if isinstance(ref, str):
+        components: dict[str, Any] = document["components"]["schemas"]
+        return cast(dict[str, Any], components[ref.split("/")[-1]])
+    return body_schema
+
+
+@pytest.mark.parametrize(("method", "path", "field"), _BULK_BATCH_FIELDS)
+def test_bulk_batch_above_the_limit_is_rejected_with_the_documented_400(
+    client: TestClient,
+    method: str,
+    path: str,
+    field: str,
+) -> None:
+    response = client.request(
+        method.upper(),
+        path,
+        json=_batch_body(method, path, field, MAX_BULK_ITEMS + 1),
+    )
+    assert response.status_code == 400
+    payload = response.json()
+    assert payload["success"] is False
+    assert payload["error"]["code"] == 400
+    assert_documented_response(client, method, path, 400, payload)
+
+
+@pytest.mark.parametrize(("method", "path", "field"), _BULK_BATCH_FIELDS)
+def test_bulk_batch_at_the_limit_passes_contract_validation(
+    client: TestClient,
+    method: str,
+    path: str,
+    field: str,
+) -> None:
+    # Reaching the cap must not be a validation failure - only exceeding it is.
+    response = client.request(
+        method.upper(),
+        path,
+        json=_batch_body(method, path, field, MAX_BULK_ITEMS),
+    )
+    assert response.status_code != 400
+
+
+def test_openapi_advertises_the_bulk_batch_limit(client: TestClient) -> None:
+    document = client.get("/openapi.json").json()
+    for method, path, field in _BULK_BATCH_FIELDS:
+        properties = _request_body_schema(document, method, path)["properties"]
+        assert properties[field].get("maxItems") == MAX_BULK_ITEMS, (path, field)

@@ -362,6 +362,9 @@ single request. When a cap stops the recursion before the requested depth is sat
 gateway returns HTTP `206 Partial Content` with the fetched subset and a top-level
 `responseDetail` explaining the limit; it never presents a truncated result as complete.
 
+Bulk request arrays (`elementIds`, `updates`, `subscriptionIds`) are capped at 500 items; a larger
+batch is rejected with HTTP `400` and the standard error envelope before any upstream request.
+
 Example:
 
 - Hierarchy: `Plant -> Line -> Pump`

@@ -45,6 +45,12 @@ def validate_client_id(value: str) -> str:
 
 ClientId = Annotated[str, AfterValidator(validate_client_id)]
 
+# Bulk arrays are capped: an unbounded ``elementIds``/``updates`` list turns one request into
+# thousands of upstream OPC UA round-trips. 500 matches the documented MCP batch limit
+# (``MCP_ID_RESOLUTION_MAX_ITEMS``), so REST is not weaker than the MCP surface. Overflow is a
+# documented 400 via the ``RequestValidationError`` handler, not a slow partial read.
+MAX_BULK_ITEMS = 500
+
 
 class SuccessResponse(BaseModel, Generic[T]):
     success: bool
@@ -310,11 +316,11 @@ class RelatedObjectResult(BaseModel):
 
 
 class GetObjectTypesRequest(BaseModel):
-    elementIds: list[str] = Field(min_length=1)
+    elementIds: list[str] = Field(min_length=1, max_length=MAX_BULK_ITEMS)
 
 
 class GetRelationshipTypesRequest(BaseModel):
-    elementIds: list[str] = Field(min_length=1)
+    elementIds: list[str] = Field(min_length=1, max_length=MAX_BULK_ITEMS)
 
 
 class GetObjectsRequest(BaseModel):
@@ -322,12 +328,12 @@ class GetObjectsRequest(BaseModel):
         json_schema_extra={"examples": [{"elementIds": ["property-0123456789abcdef"], "includeMetadata": True}]}
     )
 
-    elementIds: list[str] = Field(min_length=1)
+    elementIds: list[str] = Field(min_length=1, max_length=MAX_BULK_ITEMS)
     includeMetadata: bool = False
 
 
 class GetRelatedObjectsRequest(BaseModel):
-    elementIds: list[str] = Field(min_length=1)
+    elementIds: list[str] = Field(min_length=1, max_length=MAX_BULK_ITEMS)
     relationshipType: str | None = None
     includeMetadata: bool = False
 
@@ -339,6 +345,7 @@ class GetObjectValueRequest(BaseModel):
 
     elementIds: list[str] = Field(
         min_length=1,
+        max_length=MAX_BULK_ITEMS,
         description="Object element IDs returned by discovery; examples are placeholders.",
     )
     maxDepth: int = Field(
@@ -367,7 +374,7 @@ class GetObjectHistoryRequest(BaseModel):
         }
     )
 
-    elementIds: list[str] = Field(min_length=1)
+    elementIds: list[str] = Field(min_length=1, max_length=MAX_BULK_ITEMS)
     startTime: str = Field(description="Start of the history interval; RFC 3339 date-time with timezone.")
     endTime: str = Field(description="End of the history interval; RFC 3339 date-time with timezone.")
     maxDepth: int = Field(
@@ -470,7 +477,7 @@ class UpdateObjectValuesRequest(BaseModel):
         },
     )
 
-    updates: list[ValueUpdateItemRequest] = Field(min_length=1)
+    updates: list[ValueUpdateItemRequest] = Field(min_length=1, max_length=MAX_BULK_ITEMS)
 
 
 class HistoryWriteVQTRequest(BaseModel):
@@ -551,7 +558,7 @@ class UpdateObjectHistoryRequest(BaseModel):
         },
     )
 
-    updates: list[HistoryUpdateItemRequest] = Field(min_length=1)
+    updates: list[HistoryUpdateItemRequest] = Field(min_length=1, max_length=MAX_BULK_ITEMS)
 
 
 class RegisterMonitoredItemsRequest(BaseModel):
@@ -570,7 +577,7 @@ class RegisterMonitoredItemsRequest(BaseModel):
 
     clientId: ClientId
     subscriptionId: str
-    elementIds: list[str] = Field(min_length=1)
+    elementIds: list[str] = Field(min_length=1, max_length=MAX_BULK_ITEMS)
     maxDepth: int = Field(
         default=1,
         ge=0,
@@ -584,7 +591,7 @@ class RegisterMonitoredItemsRequest(BaseModel):
 class UnregisterMonitoredItemsRequest(BaseModel):
     clientId: ClientId
     subscriptionId: str
-    elementIds: list[str] = Field(min_length=1)
+    elementIds: list[str] = Field(min_length=1, max_length=MAX_BULK_ITEMS)
 
 
 class SyncRequest(BaseModel):
@@ -616,12 +623,12 @@ class SyncRequest(BaseModel):
 
 class ListSubscriptionsRequest(BaseModel):
     clientId: ClientId
-    subscriptionIds: list[str] = Field(min_length=1)
+    subscriptionIds: list[str] = Field(min_length=1, max_length=MAX_BULK_ITEMS)
 
 
 class DeleteSubscriptionsRequest(BaseModel):
     clientId: ClientId
-    subscriptionIds: list[str] = Field(min_length=1)
+    subscriptionIds: list[str] = Field(min_length=1, max_length=MAX_BULK_ITEMS)
 
 
 class StreamRequest(BaseModel):

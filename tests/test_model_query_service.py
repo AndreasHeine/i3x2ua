@@ -230,7 +230,29 @@ async def test_get_objects_returns_model_nodes_and_filtering() -> None:
 
     filtered = await service.get_objects(element_ids=["asset-root"], include_metadata=True)
     assert len(filtered) == 1
-    assert isinstance(filtered[0]["metadata"], dict)
+    metadata = filtered[0]["metadata"]
+    assert isinstance(metadata, dict)
+    # Provenance is required whenever metadata is returned (spec :284, conformance EXP-17).
+    assert metadata["sourceTypeId"] == "ns=2;s=Root"
+    assert metadata["typeNamespaceUri"] is None
 
-    missing = await service.get_objects(element_ids=["missing"])
-    assert missing == []
+    assert await service.get_objects(element_ids=["missing"]) == []
+
+
+@pytest.mark.asyncio
+async def test_get_objects_metadata_resolves_type_namespace_from_index() -> None:
+    model = _model()
+    node = model.nodes_by_id["asset-root"]
+    node.type = None
+    node.source_type_id = "ns=2;s=MachineryType"
+    model.namespace_uri_by_index = {0: "http://opcfoundation.org/UA/", 2: "http://example.com/custom"}
+
+    service = ModelQueryService(cast(OpcUaClientProtocol, _FakeOpcUaClient([])), model)
+    metadata = (await service.get_objects(element_ids=["asset-root"], include_metadata=True))[0]["metadata"]
+    assert isinstance(metadata, dict)
+    assert metadata["typeNamespaceUri"] == "http://example.com/custom"
+
+    node.source_type_id = "nsu=http://opcfoundation.org/UA/;i=1001"
+    metadata = (await service.get_objects(element_ids=["asset-root"], include_metadata=True))[0]["metadata"]
+    assert isinstance(metadata, dict)
+    assert metadata["typeNamespaceUri"] == "http://opcfoundation.org/UA/"

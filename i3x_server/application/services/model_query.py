@@ -175,11 +175,30 @@ def _relationship_type_items(model: BuildResult | None = None) -> list[dict[str,
     return items
 
 
-def _to_object_instance(node: ModelNode, include_metadata: bool) -> dict[str, object]:
+def _type_namespace_uri(model: BuildResult, node: ModelNode) -> str | None:
+    """Namespace of the node's *type* (spec :284: instances themselves belong to no namespace).
+
+    ``node.type`` / ``node.source_type_id`` may be an expanded ``nsu=`` id or an indexed ``ns=N`` id;
+    indexed ids are resolved through the namespace table captured during the model build.
+    """
+    raw = node.type or node.source_type_id
+    if not raw:
+        return None
+    if raw.startswith("nsu="):
+        return raw[len("nsu=") :].split(";", 1)[0] or None
+    index_match = re.match(r"^ns=(\d+);", raw, flags=re.IGNORECASE)
+    if index_match is None:
+        return None
+    return model.namespace_uri_by_index.get(int(index_match.group(1)))
+
+
+def _to_object_instance(model: BuildResult, node: ModelNode, include_metadata: bool) -> dict[str, object]:
     metadata: dict[str, object] | None = None
     if include_metadata:
         metadata = {
-            "sourceTypeId": node.source_type_id,
+            # Provenance fields are required whenever metadata is returned (spec :284, EXP-17).
+            "typeNamespaceUri": _type_namespace_uri(model, node),
+            "sourceTypeId": node.source_type_id or node.source_node_id,
             "description": str(node.metadata.get("description")) if "description" in node.metadata else None,
             "relationships": node.relationships,
             "extendedAttributes": node.metadata,
@@ -339,4 +358,4 @@ class ModelQueryService:
         if element_ids is not None:
             wanted = set(element_ids)
             nodes = [node for node in nodes if node.id in wanted]
-        return [_to_object_instance(node, include_metadata) for node in nodes]
+        return [_to_object_instance(self.model, node, include_metadata) for node in nodes]

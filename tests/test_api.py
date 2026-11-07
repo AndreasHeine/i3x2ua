@@ -485,7 +485,8 @@ def client_without_mcp() -> Generator[TestClient, None, None]:
     previous_skip_connect = os.environ.get("I3X_SKIP_OPCUA_CONNECT")
     previous_enable_writes = os.environ.get("I3X_ENABLE_WRITES")
     previous_mcp_include_opcua_metadata = os.environ.get("I3X_MCP_INCLUDE_OPCUA_METADATA")
-    os.environ.pop("I3X_ENABLE_MCP", None)
+    # Explicitly disabled: unsetting would let a .env in the working directory enable MCP.
+    os.environ["I3X_ENABLE_MCP"] = "0"
     os.environ["I3X_SKIP_OPCUA_CONNECT"] = "1"
     os.environ["I3X_ENABLE_WRITES"] = "0"
     os.environ["I3X_MCP_INCLUDE_OPCUA_METADATA"] = "1"

@@ -33,7 +33,7 @@ from i3x_server.api.v1.contracts import HttpErrorResponse
 from i3x_server.api.v1.objecttype_helpers import warm_object_type_context
 from i3x_server.application.errors import ApplicationServiceError
 from i3x_server.bootstrap.dependencies import get_or_build_model
-from i3x_server.config.settings import Settings, settings
+from i3x_server.config.settings import Settings, get_settings, settings
 from i3x_server.http_caching import MODEL_REVISION_HEADER, ModelRevisionMiddleware, NotModifiedError
 from i3x_server.infrastructure.opcua.client import OpcUaClient
 from i3x_server.infrastructure.subscriptions.service import SubscriptionService
@@ -96,7 +96,10 @@ def _status_title(status_code: int) -> str:
 
 
 def _runtime_settings() -> Settings:
-    return Settings(_env_file=None)  # type: ignore[call-arg]
+    # Same source as every other toggle read (config.settings.get_settings): explicit environment
+    # variables still win over the .env file, and launching with plain uvicorn no longer silently
+    # ignores the .env toggles that README and .env-example document.
+    return get_settings()
 
 
 def _frontend_inline_script_hashes(frontend_dist: Path) -> tuple[str, ...]:

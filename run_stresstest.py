@@ -137,7 +137,10 @@ class GroupStats:
             else:
                 self.failures += 1
                 self.last_error = error
-                self.error_counts[_error_key(error)] += 1
+                # An exit without stderr carries no message: counting _error_key("") would
+                # add a blank key and inflate the reported error distribution.
+                if error:
+                    self.error_counts[_error_key(error)] += 1
             if timed_out:
                 self.timeouts += 1
 
@@ -312,7 +315,10 @@ class Supervisor:
             if self.stop_event.is_set():
                 stats.record_abort()
                 break
-            stats.record_end(duration, False, False, error)
+            # The subscription client exits 0 after the gateway sends `event: close` and it
+            # deleted the subscription; a hardcoded False counted every restart cycle as a
+            # failure and overstated the failure rate during stress runs.
+            stats.record_end(duration, process.returncode == 0, False, error)
             if duration >= self.args.stable_after:
                 backoff = self.args.restart_backoff
             self._log(

@@ -80,6 +80,54 @@ def test_subscription_worker_uses_configured_element_ids(monkeypatch: pytest.Mon
     spawn.assert_called_once_with(expected, capture_stdout=True)
 
 
+def test_subscription_worker_counts_clean_exit_as_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Exit code decides the outcome; the client exits 0 after `event: close` (M22)."""
+    supervisor = make_supervisor(monkeypatch)
+    monkeypatch.setattr(supervisor.stop_event, "wait", lambda timeout: supervisor.stop_event.set())
+    process = Mock(stdout=io.StringIO(""), stderr=io.StringIO(""), returncode=0)
+    monkeypatch.setattr(supervisor, "_spawn", Mock(return_value=process))
+
+    supervisor.subscription_worker(0)
+
+    assert supervisor.subscription.starts == 1
+    assert supervisor.subscription.successes == 1
+    assert supervisor.subscription.failures == 0
+    assert supervisor.subscription.error_counts == {}
+
+
+def test_subscription_worker_records_nonzero_exit_as_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    supervisor = make_supervisor(monkeypatch)
+    monkeypatch.setattr(supervisor.stop_event, "wait", lambda timeout: supervisor.stop_event.set())
+    process = Mock(
+        stdout=io.StringIO("event: data\n"),
+        stderr=io.StringIO("subscription failed: stream error\n"),
+        returncode=1,
+    )
+    monkeypatch.setattr(supervisor, "_spawn", Mock(return_value=process))
+
+    supervisor.subscription_worker(0)
+
+    assert supervisor.subscription.successes == 0
+    assert supervisor.subscription.failures == 1
+    assert supervisor.subscription.lines == 1
+    assert list(supervisor.subscription.error_counts) == ["subscription failed: stream error"]
+    assert supervisor.subscription.last_error == "subscription failed: stream error"
+
+
+def test_subscription_worker_failure_without_stderr_has_no_blank_error_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    supervisor = make_supervisor(monkeypatch)
+    monkeypatch.setattr(supervisor.stop_event, "wait", lambda timeout: supervisor.stop_event.set())
+    process = Mock(stdout=io.StringIO(""), stderr=io.StringIO(""), returncode=1)
+    monkeypatch.setattr(supervisor, "_spawn", Mock(return_value=process))
+
+    supervisor.subscription_worker(0)
+
+    assert supervisor.subscription.failures == 1
+    assert supervisor.subscription.error_counts == {}
+
+
 def test_element_ids_reject_empty_values(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sys, "argv", ["run_stresstest.py", "--element-ids", " "])
     with pytest.raises(SystemExit) as exc:

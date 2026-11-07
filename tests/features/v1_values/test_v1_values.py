@@ -7,14 +7,17 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 
+from i3x_server.api.v1.object_value_routes import _COMPOSITION_TRUNCATION_DETAIL
 from i3x_server.schemas.i3x import ModelNode
 from tests.conftest import (
     FakeExtensionObject,
     FakeMachineConfig,
     FakeMachineThresholds,
     add_composition_depth_chain,
+    assert_documented_response,
     fastapi_app,
 )
 
@@ -155,6 +158,54 @@ def test_v1_value_max_depth_counts_composition_levels(client: TestClient) -> Non
         # The hierarchy branch (HasChildren) is independent and never read via the parent.
         assert "hier-prop" not in components
         assert "hier-child" not in components
+
+
+def test_v1_value_depth_cap_returns_206_with_response_detail(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Server limits must not be reported as a complete result (spec IMPLEMENTATION_GUIDE.md:1113-1119)."""
+    app = fastapi_app(client)
+    add_composition_depth_chain(app)
+    monkeypatch.setenv("I3X_COMPOSITION_MAX_DEPTH", "2")
+
+    response = client.post("/v1/objects/value", json={"elementIds": ["asset-root"], "maxDepth": 0})
+    assert response.status_code == 206
+    payload = response.json()
+    assert payload["success"] is True
+    components = payload["results"][0]["result"]["components"]
+    assert set(components) == {"comp-prop", "mid-prop"}
+    assert payload["responseDetail"] == {
+        "title": "Partial Content",
+        "status": 206,
+        "detail": _COMPOSITION_TRUNCATION_DETAIL,
+    }
+    assert_documented_response(client, "post", "/v1/objects/value", 206, payload)
+
+
+def test_v1_value_depth_cap_not_truncated_when_request_is_within_cap(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = fastapi_app(client)
+    add_composition_depth_chain(app)
+    monkeypatch.setenv("I3X_COMPOSITION_MAX_DEPTH", "2")
+
+    response = client.post("/v1/objects/value", json={"elementIds": ["asset-root"], "maxDepth": 2})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["responseDetail"] is None
+    assert set(payload["results"][0]["result"]["components"]) == {"comp-prop", "mid-prop"}
+
+
+def test_v1_value_node_budget_returns_206(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    app = fastapi_app(client)
+    add_composition_depth_chain(app)
+    monkeypatch.setenv("I3X_COMPOSITION_MAX_NODES", "1")
+
+    response = client.post("/v1/objects/value", json={"elementIds": ["asset-root"], "maxDepth": 0})
+    assert response.status_code == 206
+    payload = response.json()
+    assert set(payload["results"][0]["result"]["components"]) == {"comp-prop"}
+    assert payload["responseDetail"]["status"] == 206
 
 
 def test_v1_value_query_serializes_binary_values(client: TestClient) -> None:

@@ -957,21 +957,35 @@ def _collect_history_lookup_and_node_ids(
     model: BuildResult,
     resolved_nodes: list[tuple[str, ModelNode | None]],
     max_depth: int,
-) -> tuple[list[tuple[str, ModelNode, list[ModelNode], list[ModelNode]]], list[str]]:
-    """Collect history source nodes and node IDs for OPC UA read."""
+    max_levels: int | None = None,
+    max_nodes: int | None = None,
+) -> tuple[list[tuple[str, ModelNode, list[ModelNode], list[ModelNode]]], list[str], bool]:
+    """Collect history source nodes and node IDs for OPC UA read.
+
+    Mirrors the value traversal (composition levels, spec :1105-1110) and reports truncation caused
+    by the server's composition limits (spec :1113-1119), which the route answers with HTTP 206.
+    ``max_nodes`` is a per-request budget: callers shrink it as elements consume the allowance.
+    """
     lookup: list[tuple[str, ModelNode, list[ModelNode], list[ModelNode]]] = []
     node_ids: list[str] = []
+    truncated = False
+    collected = 0
     for element_id, node in resolved_nodes:
         if node is None:
             continue
         root_source_nodes = [node] if node.kind == "property" else []
-        component_nodes = _collect_value_component_nodes(model, node, max_depth)
+        budget = None if max_nodes is None else max(0, max_nodes - collected)
+        component_nodes, component_truncated = _collect_value_component_nodes(
+            model, node, max_depth, max_levels=max_levels, max_nodes=budget
+        )
+        truncated = truncated or component_truncated
+        collected += len(component_nodes) + len(root_source_nodes)
         lookup.append((element_id, node, root_source_nodes, component_nodes))
         for source_node in root_source_nodes:
             node_ids.append(source_node.source_node_id)
         for source_node in component_nodes:
             node_ids.append(source_node.source_node_id)
-    return lookup, node_ids
+    return lookup, node_ids, truncated
 
 
 def _build_historical_value_result(
@@ -1047,13 +1061,45 @@ def _vqt_from_data_value(data_value: Any) -> VQT:
     return VQT(value=safe_value, quality=quality, timestamp=timestamp)
 
 
-def _collect_value_component_nodes(model: BuildResult, root: ModelNode, max_depth: int) -> list[ModelNode]:
+def _composition_traversal_limits() -> tuple[int | None, int | None]:
+    """Server-imposed bounds for composition recursion (`I3X_COMPOSITION_MAX_*`, spec :1107/:1113).
+
+    ``None`` means unbounded; the configured ``0`` maps to unbounded as documented in the contract.
+    """
+    settings = _runtime_settings()
+    max_levels = settings.composition_max_depth if settings.composition_max_depth > 0 else None
+    max_nodes = settings.composition_max_nodes if settings.composition_max_nodes > 0 else None
+    return max_levels, max_nodes
+
+
+def _collect_value_component_nodes(
+    model: BuildResult,
+    root: ModelNode,
+    max_depth: int,
+    max_levels: int | None = None,
+    max_nodes: int | None = None,
+) -> tuple[list[ModelNode], bool]:
+    """Collect composition property descendants and report whether server limits truncated them.
+
+    ``maxDepth`` counts composition levels (spec IMPLEMENTATION_GUIDE.md:1105-1109): ``1`` = no
+    recursion, ``N > 1`` = up to N levels, ``0`` = unlimited. Unlimited requests are still bound by
+    the server's own limits (``max_levels`` / ``max_nodes``, ``None`` = unbounded), and the second
+    return value says that the recursion stopped short of what the client asked for - the routes
+    surface that as HTTP 206 rather than an incomplete-but-200 result (spec :1113-1119).
+    """
     if max_depth == 1:
-        return []
+        return [], False
+
+    requested_levels = max_depth if max_depth > 0 else None
+    level_limit = requested_levels
+    if max_levels is not None:
+        level_limit = min(requested_levels, max_levels) if requested_levels is not None else max_levels
+    limited_by_server = level_limit is not None and (requested_levels is None or requested_levels > level_limit)
 
     components: list[ModelNode] = []
     queue: list[tuple[str, int]] = [(root.id, 0)]
     visited: set[str] = set()
+    truncated = False
 
     while queue:
         node_id, depth = queue.pop(0)
@@ -1061,14 +1107,20 @@ def _collect_value_component_nodes(model: BuildResult, root: ModelNode, max_dept
             continue
         visited.add(node_id)
 
-        if max_depth > 0 and depth >= max_depth:
-            continue
-
         current_node = model.nodes_by_id.get(node_id)
         if current_node is None:
             continue
 
-        for child_id in _composition_children_for_node(model, current_node):
+        children = _composition_children_for_node(model, current_node)
+        if not children:
+            continue
+
+        if level_limit is not None and depth >= level_limit:
+            # Composition children exist below this level and were not fetched.
+            truncated = truncated or limited_by_server
+            continue
+
+        for child_id in children:
             child = model.nodes_by_id.get(child_id)
             if child is None:
                 continue
@@ -1077,7 +1129,12 @@ def _collect_value_component_nodes(model: BuildResult, root: ModelNode, max_dept
             else:
                 queue.append((child.id, depth + 1))
 
-    return components
+        if max_nodes is not None and len(components) >= max_nodes and queue:
+            truncated = True
+            queue.clear()
+            break
+
+    return components, truncated
 
 
 def _normalize_quality(status_code: Any) -> str:

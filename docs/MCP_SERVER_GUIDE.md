@@ -86,9 +86,9 @@ by the shipped overrides.
 
 | Tool | What it does | Arguments | Limits |
 |---|---|---|---|
-| `queryLastKnownValuesV1` | Current value, quality, timestamp for a few exact property IDs | `body.elementIds`, `body.maxDepth` | `maxDepth` default 1 (object only); N > 1 recurses up to N composition levels; 0 = unlimited |
+| `queryLastKnownValuesV1` | Current value, quality, timestamp for a few exact property IDs | `body.elementIds`, `body.maxDepth` | `maxDepth` default 1 (object only); N > 1 recurses up to N composition levels; 0 = unlimited, bounded by `I3X_COMPOSITION_MAX_DEPTH`/`I3X_COMPOSITION_MAX_NODES` (a truncated tree surfaces as HTTP 206 with a top-level `responseDetail`) |
 | `readContainerValues` | Many current values under **one** container in one short call — the server finds the descendant properties | `containerId`, `limit`, `offset` | page default 50, max 50; internally batches 10 reads; max 5000 nodes, max depth 32; no container values, no history |
-| `queryHistoricalValuesV1` | Samples over a time interval | `body.elementIds`, `body.startTime`/`body.endTime` (RFC 3339 with timezone), `body.maxDepth`, `body.limit`, `body.offset` | 100 samples per page by default, `limit` max 500 |
+| `queryHistoricalValuesV1` | Samples over a time interval | `body.elementIds`, `body.startTime`/`body.endTime` (RFC 3339 with timezone), `body.maxDepth`, `body.limit`, `body.offset` | 100 samples per page by default, `limit` max 500; composition recursion bounded by `I3X_COMPOSITION_MAX_DEPTH`/`I3X_COMPOSITION_MAX_NODES` (HTTP 206 when truncated) |
 
 Rule of thumb: one or a few signals → `queryLastKnownValuesV1`; a whole DataBlock
 or Memory area → `readContainerValues`; a trend → `queryHistoricalValuesV1`.

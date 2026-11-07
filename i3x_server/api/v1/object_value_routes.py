@@ -6,7 +6,7 @@ from typing import Any
 
 from asyncua.ua.status_codes import StatusCodes
 from asyncua.ua.uaerrors import UaStatusCodeError
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse
 
 from i3x_server.api.v1.common_helpers import (
@@ -26,17 +26,20 @@ from i3x_server.api.v1.contracts import (
     HistoryWriteUnavailableResponse,
     HttpErrorResponse,
     RelatedObjectResult,
+    ResponseDetail,
     UpdateObjectHistoryRequest,
     UpdateObjectValuesRequest,
     _bulk_response,
     _bulk_result_error,
     _bulk_result_success,
+    _status_title,
 )
 from i3x_server.api.v1.monolithic import (
     _build_historical_value_result,
     _classify_write_error,
     _collect_history_lookup_and_node_ids,
     _collect_value_component_nodes,
+    _composition_traversal_limits,
     _not_implemented,
     _parse_history_time_range,
     _vqt_from_data_value,
@@ -57,6 +60,22 @@ from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
 
 router = APIRouter(prefix="/v1")
+
+_COMPOSITION_TRUNCATION_DETAIL = (
+    "Server-imposed composition limits truncated the requested tree; issue follow-up requests "
+    "targeting the remaining elementIds to fetch the composition data that was not returned."
+)
+
+
+def _composition_truncation_detail(response: Response) -> ResponseDetail:
+    """Mark a partial composition result (spec IMPLEMENTATION_GUIDE.md:1113-1119).
+
+    The status is set on the injected ``Response`` so the declared ``response_model`` is still
+    validated, and the top-level ``responseDetail`` explains the limit (required by the conformance
+    suite, ``i3X/conformance-tests/lib/tests/query.js:156-158``).
+    """
+    response.status_code = 206
+    return ResponseDetail(title=_status_title(206), status=206, detail=_COMPOSITION_TRUNCATION_DETAIL)
 
 
 @router.post(
@@ -148,6 +167,49 @@ async def query_related_objects_v1(
                 }
             }
         },
+        206: {
+            "model": BulkResponse[CurrentValueResult],
+            "description": (
+                "Server composition limits truncated the requested tree. The body carries what could "
+                "be fetched and the top-level `responseDetail` explains the imposed limit."
+            ),
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "partialComposition": {
+                            "summary": "Server depth or node cap reached (HTTP 206)",
+                            "value": {
+                                "success": True,
+                                "results": [
+                                    {
+                                        "success": True,
+                                        "elementId": "machine-001",
+                                        "result": {
+                                            "isComposition": True,
+                                            "value": 23.5,
+                                            "quality": "Good",
+                                            "timestamp": "2026-10-14T06:00:00Z",
+                                            "components": {
+                                                "spindle-001-rpm": {
+                                                    "value": 12000,
+                                                    "quality": "Good",
+                                                    "timestamp": "2026-10-14T06:00:00Z",
+                                                }
+                                            },
+                                        },
+                                    },
+                                ],
+                                "responseDetail": {
+                                    "title": "Partial Content",
+                                    "status": 206,
+                                    "detail": _COMPOSITION_TRUNCATION_DETAIL,
+                                },
+                            },
+                        },
+                    }
+                }
+            },
+        },
     },
     summary="Query last known values",
     description=(
@@ -157,24 +219,36 @@ async def query_related_objects_v1(
         "A null value with `Good` or `Uncertain` quality is normalized to `GoodNoData`. "
         "When `maxDepth > 1`, component values are recursed using the **composition** adjacency only; "
         "hierarchy-only children are never included. "
+        "Server-imposed composition limits (`I3X_COMPOSITION_MAX_DEPTH`, `I3X_COMPOSITION_MAX_NODES`) "
+        "truncate deep trees and are reported as HTTP 206 with a top-level `responseDetail`. "
         "Failing items include an item-level `responseDetail` alongside `error`."
     ),
 )
 async def query_last_known_values_v1(
     body: GetObjectValueRequest,
+    response: Response,
     model: BuildResult = Depends(get_or_build_model),
     opcua_client: OpcUaClientProtocol = Depends(get_opcua_client),
 ) -> BulkResponse[CurrentValueResult]:
     resolved_nodes = _resolve_model_nodes(model, body.elementIds)
+    max_levels, max_nodes = _composition_traversal_limits()
     node_ids: list[str] = []
     component_nodes_by_element_id: dict[str, list[ModelNode]] = {}
     requested_depth = body.maxDepth
+    truncated = False
+    collected = 0
     for element_id, node in resolved_nodes:
         if node is None:
             continue
         if node.kind == "property":
             node_ids.append(node.source_node_id)
-        component_nodes = _collect_value_component_nodes(model, node, requested_depth)
+            collected += 1
+        budget = None if max_nodes is None else max(0, max_nodes - collected)
+        component_nodes, element_truncated = _collect_value_component_nodes(
+            model, node, requested_depth, max_levels=max_levels, max_nodes=budget
+        )
+        truncated = truncated or element_truncated
+        collected += len(component_nodes)
         component_nodes_by_element_id[element_id] = component_nodes
         node_ids.extend(item.source_node_id for item in component_nodes)
 
@@ -213,24 +287,39 @@ async def query_last_known_values_v1(
             components=components or None,
         )
         results.append(_bulk_result_success(element_id, result))
-    return _bulk_response(results)
+
+    detail = _composition_truncation_detail(response) if truncated else None
+    return _bulk_response(results, response_detail=detail)
 
 
 @router.post(
     "/objects/history",
     tags=["Query"],
     response_model=BulkResponse[HistoricalValueResult],
-    responses={502: {"model": HttpErrorResponse, "description": "Upstream OPC UA history read failed."}},
+    responses={
+        502: {"model": HttpErrorResponse, "description": "Upstream OPC UA history read failed."},
+        206: {
+            "model": BulkResponse[HistoricalValueResult],
+            "description": (
+                "Server composition limits truncated the requested tree. The body carries what could "
+                "be fetched and the top-level `responseDetail` explains the imposed limit."
+            ),
+        },
+    },
     summary="Query historical values",
     description=(
         "Return historical values for one or more objects within the specified time range. "
         "Values are ordered by source timestamp ascending. "
         "Component recursion follows the **composition** adjacency only; hierarchy-only children are excluded. "
+        "A range without stored samples is answered with a single `GoodNoData` record, not an error. "
+        "Server-imposed composition limits (`I3X_COMPOSITION_MAX_DEPTH`, `I3X_COMPOSITION_MAX_NODES`) "
+        "truncate deep trees and are reported as HTTP 206 with a top-level `responseDetail`. "
         "Failing items include an item-level `responseDetail` alongside `error`."
     ),
 )
 async def query_historical_values_v1(
     body: GetObjectHistoryRequest,
+    response: Response,
     model: BuildResult = Depends(get_or_build_model),
     opcua_client: OpcUaClientProtocol = Depends(get_opcua_client),
 ) -> BulkResponse[HistoricalValueResult]:
@@ -238,8 +327,11 @@ async def query_historical_values_v1(
     resolved_nodes = _resolve_model_nodes(model, body.elementIds)
     start_time, end_time = _parse_history_time_range(body)
     max_depth = body.maxDepth
+    max_levels, max_nodes = _composition_traversal_limits()
 
-    lookup, node_ids = _collect_history_lookup_and_node_ids(model, resolved_nodes, max_depth)
+    lookup, node_ids, truncated = _collect_history_lookup_and_node_ids(
+        model, resolved_nodes, max_depth, max_levels=max_levels, max_nodes=max_nodes
+    )
 
     values_by_node_id: dict[str, list[Any]] = {}
     unique_node_ids: list[str] = []
@@ -285,7 +377,8 @@ async def query_historical_values_v1(
         perf_counter() - started,
     )
 
-    return _bulk_response(results)
+    detail = _composition_truncation_detail(response) if truncated else None
+    return _bulk_response(results, response_detail=detail)
 
 
 @router.put(

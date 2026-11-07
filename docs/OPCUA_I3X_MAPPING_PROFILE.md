@@ -353,6 +353,11 @@ structure/navigation and root selection, not for value recursion.
 | `maxDepth = n (>1)` | Include composition descendants up to depth `n` from the root query element. |
 | `maxDepth = 0` | Unlimited recursion across composition descendants, subject to server limits. |
 
+Server limits (`I3X_COMPOSITION_MAX_DEPTH`, `I3X_COMPOSITION_MAX_NODES`, `0` = no cap) bound a
+single request. When a cap stops the recursion before the requested depth is satisfied, the
+gateway returns HTTP `206 Partial Content` with the fetched subset and a top-level
+`responseDetail` explaining the limit; it never presents a truncated result as complete.
+
 Example:
 
 - Hierarchy: `Plant -> Line -> Pump`

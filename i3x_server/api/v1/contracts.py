@@ -62,6 +62,9 @@ class BulkResultItem(BaseModel, Generic[T]):
 class BulkResponse(BaseModel, Generic[T]):
     success: bool
     results: list[BulkResultItem[T]]
+    # Top-level detail for partial results: HTTP 206 when server limits truncated a composition
+    # tree (i3X spec IMPLEMENTATION_GUIDE.md:1113-1119, conformance query.js QRY-05 requires it).
+    responseDetail: ResponseDetail | None = None
 
 
 def _status_title(status_code: int) -> str:
@@ -71,7 +74,10 @@ def _status_title(status_code: int) -> str:
         return "Error"
 
 
-def _bulk_response(results: list[BulkResultItem[T]]) -> BulkResponse[T]:
+def _bulk_response(
+    results: list[BulkResultItem[T]],
+    response_detail: ResponseDetail | None = None,
+) -> BulkResponse[T]:
     for item in results:
         if item.success or item.responseDetail is not None:
             continue
@@ -82,7 +88,7 @@ def _bulk_response(results: list[BulkResultItem[T]]) -> BulkResponse[T]:
             status=error_code,
             detail=error_message,
         )
-    return BulkResponse(success=all(item.success for item in results), results=results)
+    return BulkResponse(success=all(item.success for item in results), results=results, responseDetail=response_detail)
 
 
 def _map_lookup_bulk_result_items(
@@ -322,7 +328,9 @@ class GetObjectValueRequest(BaseModel):
         ge=0,
         description="Composition depth in levels: 1 = no recursion, only this element's own value "
         "(default); N > 1 = recurse up to N levels through composition (`HasComponent`) children; "
-        "0 = unlimited recursion, subject to server limits. Hierarchy-only children "
+        "0 = unlimited recursion, bounded by the server's composition limits "
+        "(`I3X_COMPOSITION_MAX_DEPTH`, `I3X_COMPOSITION_MAX_NODES`); a tree truncated by those limits "
+        "is answered as HTTP 206 with a top-level `responseDetail`. Hierarchy-only children "
         "(`HasChildren`) are never traversed - query them as separate elements.",
     )
 
@@ -349,7 +357,9 @@ class GetObjectHistoryRequest(BaseModel):
         ge=0,
         description="Composition depth in levels: 1 = no recursion, only this element's own history "
         "(default); N > 1 = recurse up to N levels through composition (`HasComponent`) children; "
-        "0 = unlimited recursion, subject to server limits. Hierarchy-only children "
+        "0 = unlimited recursion, bounded by the server's composition limits "
+        "(`I3X_COMPOSITION_MAX_DEPTH`, `I3X_COMPOSITION_MAX_NODES`); a tree truncated by those limits "
+        "is answered as HTTP 206 with a top-level `responseDetail`. Hierarchy-only children "
         "(`HasChildren`) are never traversed - query them as separate elements.",
     )
 

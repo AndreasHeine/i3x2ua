@@ -6,12 +6,14 @@ import base64
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
 
 from i3x_server.api.v1.monolithic import _expanded_node_id
+from i3x_server.api.v1.object_value_routes import _COMPOSITION_TRUNCATION_DETAIL
 from i3x_server.infrastructure.opcua.client import OpcUaNamespaceInfo
 from i3x_server.schemas.i3x import ModelNode
-from tests.conftest import add_composition_depth_chain, fastapi_app
+from tests.conftest import add_composition_depth_chain, assert_documented_response, fastapi_app
 
 
 def test_v1_history_query(client: TestClient) -> None:
@@ -121,6 +123,55 @@ def test_v1_history_max_depth_counts_composition_levels(client: TestClient) -> N
         for entry in components.values():
             assert len(entry["values"]) == 1
             assert entry["values"][0]["quality"] == "Good"
+
+
+def test_v1_history_depth_cap_returns_206_with_response_detail(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """History recursion obeys the server caps and reports them as HTTP 206 (spec :1113-1119)."""
+    app = fastapi_app(client)
+    add_composition_depth_chain(app)
+    monkeypatch.setenv("I3X_COMPOSITION_MAX_DEPTH", "2")
+
+    response = client.post(
+        "/v1/objects/history",
+        json={
+            "elementIds": ["asset-root"],
+            "startTime": "2026-01-01T00:00:00Z",
+            "endTime": "2026-01-02T00:00:00Z",
+            "maxDepth": 0,
+        },
+    )
+    assert response.status_code == 206
+    payload = response.json()
+    assert payload["success"] is True
+    assert set(payload["results"][0]["result"]["components"]) == {"comp-prop", "mid-prop"}
+    assert payload["responseDetail"] == {
+        "title": "Partial Content",
+        "status": 206,
+        "detail": _COMPOSITION_TRUNCATION_DETAIL,
+    }
+    assert_documented_response(client, "post", "/v1/objects/history", 206, payload)
+
+
+def test_v1_history_node_budget_returns_206(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    app = fastapi_app(client)
+    add_composition_depth_chain(app)
+    monkeypatch.setenv("I3X_COMPOSITION_MAX_NODES", "1")
+
+    response = client.post(
+        "/v1/objects/history",
+        json={
+            "elementIds": ["asset-root"],
+            "startTime": "2026-01-01T00:00:00Z",
+            "endTime": "2026-01-02T00:00:00Z",
+            "maxDepth": 0,
+        },
+    )
+    assert response.status_code == 206
+    payload = response.json()
+    assert set(payload["results"][0]["result"]["components"]) == {"comp-prop"}
+    assert payload["responseDetail"]["status"] == 206
 
 
 def test_v1_history_without_stored_data_returns_goodnodata(client: TestClient) -> None:

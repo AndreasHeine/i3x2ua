@@ -348,6 +348,23 @@ Object-type discovery remains independent and is not restricted to these entrypo
 This setting scopes discovery, not authorization: forward hierarchical cross-links
 can lead into other branches or namespaces.
 
+### Composition depth and node limits
+
+`POST /v1/objects/value` and `POST /v1/objects/history` recurse through `HasComponent`
+relationships. `maxDepth` counts composition levels (`0` = unlimited, `1` = no recursion,
+`N` = up to N levels); `HasChildren` children are never traversed. Unlimited or deep requests
+are bounded by the gateway's own limits:
+
+```dotenv
+I3X_COMPOSITION_MAX_DEPTH=32    # composition levels a single request may recurse (0 = no cap)
+I3X_COMPOSITION_MAX_NODES=2000  # property sources a single request may fetch (0 = no cap)
+```
+
+When a cap stops the recursion before the requested depth is satisfied, the response is
+HTTP `206 Partial Content` with the standard body containing what was fetched plus a top-level
+`responseDetail` (`title`, `status: 206`, `detail`) - an incomplete result is never presented as
+complete. Follow up with requests targeting the remaining `elementIds` to fetch the rest.
+
 ### Model revisions and conditional GET
 
 Every response built from the address-space model carries `I3X-Model-Revision`, a content hash of the model. It changes only when the model content changes, not on every periodic rebuild. Model-derived `GET` endpoints (`/objects`, `/objecttypes`, `/namespaces`, `/relationshiptypes`, `/model/namespace-gaps`) also return a weak `ETag` and `Cache-Control: no-cache`. Send it back in `If-None-Match` to get `304 Not Modified` with an empty body while the representation is unchanged:

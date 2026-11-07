@@ -427,10 +427,54 @@ def test_collect_value_component_nodes_respects_depth() -> None:
     """`maxDepth` counts composition levels (spec IMPLEMENTATION_GUIDE.md:1105-1110)."""
     model = _sample_model()
     root = model.nodes_by_id["asset-root"]
-    assert v1._collect_value_component_nodes(model, root, max_depth=1) == []
-    depth_two = v1._collect_value_component_nodes(model, root, max_depth=2)
-    assert [node.id for node in depth_two] == ["prop-a", "prop-b"]
-    assert [node.id for node in v1._collect_value_component_nodes(model, root, max_depth=0)] == ["prop-a", "prop-b"]
+    assert v1._collect_value_component_nodes(model, root, max_depth=1) == ([], False)
+
+    nodes, truncated = v1._collect_value_component_nodes(model, root, max_depth=2)
+    assert [node.id for node in nodes] == ["prop-a", "prop-b"]
+    assert truncated is False
+
+    nodes, truncated = v1._collect_value_component_nodes(model, root, max_depth=0)
+    assert [node.id for node in nodes] == ["prop-a", "prop-b"]
+    assert truncated is False
+
+
+def test_collect_value_component_nodes_reports_server_depth_cap() -> None:
+    """A server cap below the requested depth must be reported, not silently swallowed (:1113-1119)."""
+    model = _sample_model()
+    root = model.nodes_by_id["asset-root"]
+
+    nodes, truncated = v1._collect_value_component_nodes(model, root, max_depth=0, max_levels=1)
+    assert [node.id for node in nodes] == ["prop-a"]
+    assert truncated is True
+
+    # Unlimited requests whose tree is shallower than the cap are complete, not truncated.
+    nodes, truncated = v1._collect_value_component_nodes(model, root, max_depth=2, max_levels=5)
+    assert [node.id for node in nodes] == ["prop-a", "prop-b"]
+    assert truncated is False
+
+
+def test_collect_value_component_nodes_reports_node_budget() -> None:
+    model = _sample_model()
+    root = model.nodes_by_id["asset-root"]
+
+    nodes, truncated = v1._collect_value_component_nodes(model, root, max_depth=0, max_nodes=1)
+    assert [node.id for node in nodes] == ["prop-a"]
+    assert truncated is True
+
+    # The budget exactly covers the whole tree, so the result is complete.
+    nodes, truncated = v1._collect_value_component_nodes(model, root, max_depth=0, max_nodes=2)
+    assert [node.id for node in nodes] == ["prop-a", "prop-b"]
+    assert truncated is False
+
+
+def test_collect_history_lookup_reports_truncation() -> None:
+    model = _sample_model()
+    lookup, node_ids, truncated = v1._collect_history_lookup_and_node_ids(
+        model, [("asset-root", model.nodes_by_id["asset-root"])], max_depth=0, max_levels=1
+    )
+    assert truncated is True
+    assert [node.id for node in lookup[0][3]] == ["prop-a"]
+    assert node_ids == ["ns=2;s=Temperature"]
 
 
 def test_parse_iso_and_history_range_validation() -> None:

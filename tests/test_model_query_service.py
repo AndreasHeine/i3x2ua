@@ -220,6 +220,23 @@ async def test_get_relationship_types_contains_defaults_and_model_graph_items() 
 
 
 @pytest.mark.asyncio
+async def test_get_relationship_types_uses_modelled_inverse_names() -> None:
+    """Natural inverses from the address space replace the invented `inverseOf_<name>` names."""
+    model = _model()
+    model.graph_relationship_names = {"Monitors", "MonitoredBy"}
+    model.graph_relationship_namespace_by_id = {
+        "Monitors": "http://example.com/custom",
+        "MonitoredBy": "http://example.com/custom",
+    }
+    model.graph_relationship_inverse_by_id = {"Monitors": "MonitoredBy", "MonitoredBy": "Monitors"}
+    service = ModelQueryService(cast(OpcUaClientProtocol, _FakeOpcUaClient([])), model)
+
+    items = await service.get_relationship_types(namespace_uri="http://example.com/custom")
+    assert {item["elementId"] for item in items} == {"Monitors", "MonitoredBy"}
+    assert {item["reverseOf"] for item in items} == {"Monitors", "MonitoredBy"}
+
+
+@pytest.mark.asyncio
 async def test_get_objects_returns_model_nodes_and_filtering() -> None:
     service = ModelQueryService(cast(OpcUaClientProtocol, _FakeOpcUaClient([])), _model())
 

@@ -65,6 +65,9 @@ def test_model_revision_covers_fields_not_carried_by_nodes() -> None:
     assert compute_model_revision(_model(graph_relationship_names={"OrganizedBy"})) != base
     assert compute_model_revision(_model(graph_relationship_display_name_by_id={"qualified": "ConnectedTo"})) != base
     assert compute_model_revision(
+        _model(graph_relationship_inverse_by_id={"Monitors": "MonitoredBy"})
+    ) != compute_model_revision(_model(graph_relationship_inverse_by_id={"Monitors": "inverseOf_Monitors"}))
+    assert compute_model_revision(
         _model(graph_relationship_namespace_by_id={"ConnectedTo": "urn:example:first"})
     ) != compute_model_revision(_model(graph_relationship_namespace_by_id={"ConnectedTo": "urn:example:second"}))
 

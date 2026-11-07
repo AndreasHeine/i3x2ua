@@ -37,6 +37,10 @@ class BuildResult:
     graph_relationship_names: set[str] = field(default_factory=set)
     graph_relationship_namespace_by_id: dict[str, str] = field(default_factory=dict)
     graph_relationship_display_name_by_id: dict[str, str] = field(default_factory=dict)
+    # Reverse relationship for each graph relationship, taken from the address space when the
+    # source models the inverse itself (natural names such as `MonitoredBy`); synthesised
+    # `inverseOf_<name>` only when the address space defines none (spec IMPLEMENTATION_GUIDE.md:397).
+    graph_relationship_inverse_by_id: dict[str, str] = field(default_factory=dict)
     semantic_role_by_id: dict[str, str] = field(default_factory=dict)
     mapping_confidence_by_id: dict[str, str] = field(default_factory=dict)
     parent_id_by_id: dict[str, str | None] = field(default_factory=dict)

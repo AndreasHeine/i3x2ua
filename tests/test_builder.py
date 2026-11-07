@@ -523,6 +523,48 @@ async def test_model_builder_stores_graph_relationships_bidirectionally() -> Non
 
 
 @pytest.mark.asyncio
+async def test_model_builder_prefers_the_natural_inverse_relationship() -> None:
+    """The address space's own inverse name wins over an invented `inverseOf_<name>` (spec :397)."""
+
+    class Client(FakeOpcuaWithGraphReference):
+        async def browse_tree(self) -> list[OpcUaNodeInfo]:
+            nodes = await super().browse_tree()
+            nodes[0].outgoing_references = [
+                OpcUaReferenceInfo(
+                    target_node_id="ns=2;s=Sensor",
+                    reference_type_id="ns=0;i=32",
+                    reference_browse_name="Monitors",
+                )
+            ]
+            nodes[1].outgoing_references = [
+                OpcUaReferenceInfo(
+                    target_node_id="ns=2;s=Machine",
+                    reference_type_id="ns=0;i=32",
+                    reference_browse_name="MonitoredBy",
+                )
+            ]
+            return nodes
+
+    client = cast(OpcUaClientProtocol, Client())
+    result = await ModelBuilder(client).build()
+
+    machine_id = result.node_id_by_name["Machine"]
+    sensor_id = result.node_id_by_name["Sensor"]
+
+    assert result.relationships_by_id[machine_id]["Monitors"] == [sensor_id]
+    assert result.relationships_by_id[sensor_id]["MonitoredBy"] == [machine_id]
+    assert "inverseOf_Monitors" not in result.relationships_by_id[sensor_id]
+    assert result.graph_relationship_inverse_by_id["Monitors"] == "MonitoredBy"
+    assert result.graph_relationship_inverse_by_id["MonitoredBy"] == "Monitors"
+
+    items = await ModelQueryService(client, result).get_relationship_types()
+    rel_items = {item["elementId"]: item for item in items if item["elementId"] in {"Monitors", "MonitoredBy"}}
+    assert set(rel_items) == {"Monitors", "MonitoredBy"}
+    assert rel_items["Monitors"]["reverseOf"] == "MonitoredBy"
+    assert rel_items["MonitoredBy"]["reverseOf"] == "Monitors"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("reference_type_id", "expected_namespace"),
     [

@@ -1056,39 +1056,6 @@ def _collect_value_component_nodes(model: BuildResult, root: ModelNode, max_dept
     return components
 
 
-def _collect_history_source_nodes(model: BuildResult, root: ModelNode, max_depth: int) -> list[ModelNode]:
-    if root.kind == "property":
-        return [root]
-
-    results: list[ModelNode] = []
-    visited: set[str] = set()
-    queue: list[tuple[str, int]] = [(root.id, 1)]
-
-    while queue:
-        current_id, depth = queue.pop(0)
-        if current_id in visited:
-            continue
-        visited.add(current_id)
-
-        current = model.nodes_by_id.get(current_id)
-        if current is None:
-            continue
-        if current.kind == "property":
-            results.append(current)
-
-        if max_depth != 0 and depth >= max_depth:
-            continue
-
-        current_node = model.nodes_by_id.get(current_id)
-        if current_node is None:
-            continue
-
-        for child_id in _composition_children_for_node(model, current_node):
-            queue.append((child_id, depth + 1))
-
-    return results
-
-
 def _normalize_quality(status_code: Any) -> str:
     if status_code is None:
         return "Good"

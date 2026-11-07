@@ -92,7 +92,7 @@ class ObjectValueService:
 
             # If composition, collect component values
             if max_depth != 1:
-                components = self._collect_composition_components(node, max_depth or -1)
+                components = self._collect_composition_components(node, max_depth or 0)
                 if components:
                     result["components"] = {}
                     for component in components:
@@ -157,7 +157,7 @@ class ObjectValueService:
 
             # If composition, collect component histories
             if max_depth != 1:
-                components = self._collect_history_source_nodes(node, max_depth or -1)
+                components = self._collect_history_source_nodes(node, max_depth or 0)
                 if components:
                     result["components"] = {}
                     for component in components:
@@ -303,35 +303,44 @@ class ObjectValueService:
         return components
 
     def _collect_history_source_nodes(self, root: ModelNode, max_depth: int) -> list[ModelNode]:
-        """Collect property nodes for history retrieval."""
+        """Collect property nodes for history retrieval.
+
+        ``maxDepth`` counts composition *levels* (i3X spec IMPLEMENTATION_GUIDE.md:1105-1110 and
+        :1216): ``1`` = no recursion, ``N > 1`` = up to N levels of ``HasComponent`` descendants,
+        ``0`` = unlimited. The root sits at level 0, so ``maxDepth = 2`` also collects the
+        grandchildren of the queried composition element - identical to
+        ``_collect_composition_components``.
+        """
         if root.kind == "property":
             return [root]
+        if max_depth == 1:
+            return []
 
         results: list[ModelNode] = []
         visited: set[str] = set()
-        queue: list[tuple[str, int]] = [(root.id, 1)]
+        queue: list[tuple[str, int]] = [(root.id, 0)]
 
         while queue:
-            current_id, depth = queue.pop(0)
-            if current_id in visited:
+            node_id, depth = queue.pop(0)
+            if node_id in visited:
                 continue
-            visited.add(current_id)
+            visited.add(node_id)
 
-            current = self.model.nodes_by_id.get(current_id)
-            if current is None:
-                continue
-            if current.kind == "property":
-                results.append(current)
-
-            if max_depth != 0 and depth >= max_depth:
+            if max_depth > 0 and depth >= max_depth:
                 continue
 
-            current_node = self.model.nodes_by_id.get(current_id)
+            current_node = self.model.nodes_by_id.get(node_id)
             if current_node is None:
                 continue
 
-            for child_id in self.model.composition_child_ids(current_id):
-                queue.append((child_id, depth + 1))
+            for child_id in self.model.composition_child_ids(node_id):
+                child = self.model.nodes_by_id.get(child_id)
+                if child is None:
+                    continue
+                if child.kind == "property":
+                    results.append(child)
+                else:
+                    queue.append((child.id, depth + 1))
 
         return results
 

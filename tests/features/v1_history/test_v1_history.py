@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from i3x_server.api.v1.monolithic import _expanded_node_id
 from i3x_server.infrastructure.opcua.client import OpcUaNamespaceInfo
 from i3x_server.schemas.i3x import ModelNode
+from tests.conftest import add_composition_depth_chain, fastapi_app
 
 
 def test_v1_history_query(client: TestClient) -> None:
@@ -32,8 +33,6 @@ def test_v1_history_query(client: TestClient) -> None:
 
 
 def test_v1_history_query_includes_component_histories_when_depth_allows(client: TestClient) -> None:
-    from tests.conftest import fastapi_app
-
     app = fastapi_app(client)
     property_id = "property-abc"
     child_asset_id = "child-asset"
@@ -89,9 +88,43 @@ def test_v1_history_query_includes_component_histories_when_depth_allows(client:
     assert isinstance(result["components"][property_id]["values"], list)
 
 
-def test_v1_history_query_serializes_binary_values(client: TestClient) -> None:
-    from tests.conftest import fastapi_app
+def test_v1_history_max_depth_counts_composition_levels(client: TestClient) -> None:
+    """`maxDepth = N` recurses N composition levels for history as well (spec :1105-1110)."""
+    app = fastapi_app(client)
+    add_composition_depth_chain(app)
 
+    expected_by_depth = {
+        2: {"comp-prop", "mid-prop"},
+        3: {"comp-prop", "mid-prop", "deep-prop"},
+        0: {"comp-prop", "mid-prop", "deep-prop"},
+    }
+    # `maxDepth = 1` on a composition root has no own history source, so it currently fails
+    # item-level with "Object history not found" (SF2 - spec requires GoodNoData); covered in 4.3.
+    for depth, expected_ids in expected_by_depth.items():
+        response = client.post(
+            "/v1/objects/history",
+            json={
+                "elementIds": ["asset-root"],
+                "startTime": "2026-01-01T00:00:00Z",
+                "endTime": "2026-01-02T00:00:00Z",
+                "maxDepth": depth,
+            },
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["success"] is True
+        result = payload["results"][0]["result"]
+        components = result.get("components") or {}
+        assert set(components) == expected_ids, f"maxDepth={depth}"
+        # Hierarchy-only children stay independent; they need their own history request.
+        assert "hier-prop" not in components
+        assert "hier-child" not in components
+        for entry in components.values():
+            assert len(entry["values"]) == 1
+            assert entry["values"][0]["quality"] == "Good"
+
+
+def test_v1_history_query_serializes_binary_values(client: TestClient) -> None:
     fastapi_app(client).state.opcua_client.history_values["ns=2;s=Temperature"] = [
         SimpleNamespace(
             Value=SimpleNamespace(Value=b"\xff\x00"),

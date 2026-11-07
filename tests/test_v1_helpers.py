@@ -424,21 +424,13 @@ def test_find_node_and_parent_helpers() -> None:
 
 
 def test_collect_value_component_nodes_respects_depth() -> None:
+    """`maxDepth` counts composition levels (spec IMPLEMENTATION_GUIDE.md:1105-1110)."""
     model = _sample_model()
     root = model.nodes_by_id["asset-root"]
     assert v1._collect_value_component_nodes(model, root, max_depth=1) == []
     depth_two = v1._collect_value_component_nodes(model, root, max_depth=2)
     assert [node.id for node in depth_two] == ["prop-a", "prop-b"]
     assert [node.id for node in v1._collect_value_component_nodes(model, root, max_depth=0)] == ["prop-a", "prop-b"]
-
-
-def test_collect_history_source_nodes_paths() -> None:
-    model = _sample_model()
-    root = model.nodes_by_id["asset-root"]
-    prop = model.nodes_by_id["prop-a"]
-    assert [node.id for node in v1._collect_history_source_nodes(model, prop, 1)] == ["prop-a"]
-    assert [node.id for node in v1._collect_history_source_nodes(model, root, 1)] == []
-    assert {node.id for node in v1._collect_history_source_nodes(model, root, 0)} == {"prop-a", "prop-b"}
 
 
 def test_parse_iso_and_history_range_validation() -> None:

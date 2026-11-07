@@ -10,7 +10,13 @@ from typing import Any
 from fastapi.testclient import TestClient
 
 from i3x_server.schemas.i3x import ModelNode
-from tests.conftest import FakeExtensionObject, FakeMachineConfig, FakeMachineThresholds, fastapi_app
+from tests.conftest import (
+    FakeExtensionObject,
+    FakeMachineConfig,
+    FakeMachineThresholds,
+    add_composition_depth_chain,
+    fastapi_app,
+)
 
 
 def test_v1_value_missing_element_item_includes_response_detail(client: TestClient) -> None:
@@ -125,6 +131,30 @@ def test_v1_value_recursion_uses_composition_not_hierarchy(client: TestClient) -
     component_ids = set((result.get("components") or {}).keys())
     assert property_id in component_ids
     assert child_prop_id not in component_ids
+
+
+def test_v1_value_max_depth_counts_composition_levels(client: TestClient) -> None:
+    """`maxDepth = N` collects composition descendants up to N levels (spec :1105-1110)."""
+    app = fastapi_app(client)
+    add_composition_depth_chain(app)
+
+    expected_by_depth = {
+        1: set(),
+        2: {"comp-prop", "mid-prop"},
+        3: {"comp-prop", "mid-prop", "deep-prop"},
+        0: {"comp-prop", "mid-prop", "deep-prop"},
+    }
+    for depth, expected_ids in expected_by_depth.items():
+        response = client.post("/v1/objects/value", json={"elementIds": ["asset-root"], "maxDepth": depth})
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["success"] is True
+        result = payload["results"][0]["result"]
+        components = result.get("components") or {}
+        assert set(components) == expected_ids, f"maxDepth={depth}"
+        # The hierarchy branch (HasChildren) is independent and never read via the parent.
+        assert "hier-prop" not in components
+        assert "hier-child" not in components
 
 
 def test_v1_value_query_serializes_binary_values(client: TestClient) -> None:

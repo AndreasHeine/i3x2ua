@@ -30,7 +30,7 @@ from i3x_server.infrastructure.opcua.client import (
     OpcUaSubscriptionCapabilities,
 )
 from i3x_server.infrastructure.subscriptions.service import SubscriptionService
-from i3x_server.schemas.i3x import ModelNode
+from i3x_server.schemas.i3x import ModelNode, NodeKind
 from i3x_server.schemas.state import BuildResult
 
 
@@ -108,6 +108,74 @@ def configure_test_app(app: FastAPI) -> None:
     )
     app.state.opcua_client = FakeOpcUaClient()
     app.state.subscription_service = SubscriptionService(app.state.opcua_client, interval_seconds=1)
+
+
+def _append_unique(items: list[str], *values: str) -> None:
+    for value in values:
+        if value not in items:
+            items.append(value)
+
+
+def add_composition_depth_chain(app: FastAPI) -> dict[str, str]:
+    """Attach a three-level composition chain plus a hierarchy-only branch to the test model.
+
+    Composition plane (``HasComponent``): ``asset-root`` -> ``comp-prop`` (level 1),
+    ``asset-root`` -> ``comp-child`` -> ``mid-prop`` (level 2), ``comp-child`` -> ``sub-comp``
+    -> ``deep-prop`` (level 3). Hierarchy plane (``HasChildren``): ``asset-root`` ->
+    ``hier-child`` -> ``hier-prop`` - those must never be reached by value/history recursion
+    (i3X spec IMPLEMENTATION_GUIDE.md:1111).
+    """
+    model = app.state.model_cache
+    chain: dict[str, tuple[str, NodeKind, str]] = {
+        "comp-prop": ("CompositionProp", "property", "ns=2;s=CompositionProp"),
+        "comp-child": ("CompChild", "asset", "ns=2;s=CompChild"),
+        "mid-prop": ("MidProp", "property", "ns=2;s=MidProp"),
+        "sub-comp": ("SubComp", "asset", "ns=2;s=SubComp"),
+        "deep-prop": ("DeepProp", "property", "ns=2;s=DeepProp"),
+        "hier-child": ("HierChild", "asset", "ns=2;s=HierChild"),
+        "hier-prop": ("HierProp", "property", "ns=2;s=HierProp"),
+    }
+    for node_id, (name, kind, source_node_id) in chain.items():
+        model.nodes_by_id[node_id] = ModelNode(
+            id=node_id,
+            name=name,
+            kind=kind,
+            type=None,
+            children=[],
+            source_node_id=source_node_id,
+        )
+        model.children_by_id[node_id] = []
+
+    _append_unique(model.children_by_id.setdefault("asset-root", []), "comp-prop", "comp-child", "hier-child")
+    model.children_by_id["comp-child"] = ["mid-prop", "sub-comp"]
+    model.children_by_id["sub-comp"] = ["deep-prop"]
+    model.children_by_id["hier-child"] = ["hier-prop"]
+
+    composition = model.composition_children_by_id
+    _append_unique(composition.setdefault("asset-root", []), "comp-prop", "comp-child")
+    composition["comp-child"] = ["mid-prop", "sub-comp"]
+    composition["sub-comp"] = ["deep-prop"]
+    composition["hier-child"] = ["hier-prop"]
+
+    hierarchy = model.hierarchy_children_by_id
+    _append_unique(hierarchy.setdefault("asset-root", []), "comp-prop", "comp-child", "hier-child")
+    hierarchy["hier-child"] = ["hier-prop"]
+
+    client = app.state.opcua_client
+    for node_id, (_name, kind, source_node_id) in chain.items():
+        if kind != "property":
+            continue
+        model.property_to_node[node_id] = source_node_id
+        client.values.setdefault(source_node_id, 10.0)
+        client.history_values.setdefault(source_node_id, []).append(
+            SimpleNamespace(
+                Value=SimpleNamespace(Value=10.0),
+                StatusCode=SimpleNamespace(name="Good"),
+                SourceTimestamp=datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc),
+                ServerTimestamp=None,
+            )
+        )
+    return {node_id: node_id for node_id in chain}
 
 
 class FakeOpcUaClient:

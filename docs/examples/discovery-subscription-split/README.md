@@ -72,6 +72,12 @@ NGINX cannot route individual MCP tools by their underlying REST path. MCP
 subscription tools sent to discovery will use discovery's local state, not the
 dedicated subscription service.
 
+Legacy MCP transport sessions are also process-local. With two or more
+discovery workers, a legacy client that calls `initialize` on one worker can
+reach a different worker on its next request and gets an unknown-session
+error. Keep MCP clients on the stateless modern protocol, set
+`I3X2UA_DISCOVERY_WORKERS=1`, or add session affinity for `/mcp`.
+
 ## Important limitation
 
 Both services are full i3x2ua application instances and each creates its own

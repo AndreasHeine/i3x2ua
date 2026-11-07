@@ -388,6 +388,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
         app.state.mcp_tools = build_mcp_tools(openapi_spec)
         app.state.mcp_api_prefix = get_api_prefix(openapi_spec)
+        app.state.mcp_transport_sessions = {}
         prompt_overrides = load_prompt_overrides()
         app.state.mcp_prompts = PromptRegistry.load_from_overrides(
             prompt_overrides,
@@ -436,6 +437,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 with suppress(asyncio.CancelledError):
                     await warm_task
         await app.state.subscription_service.close()
+        # Close every legacy MCP SSE stream and drop the transport session map. The signal handler
+        # only covers terminated processes; a plain shutdown (uvicorn exit, TestClient context)
+        # must not leave sessions - and their queues - alive.
+        shutdown_mcp_transport(app)
         if not skip_connect:
             await opcua_client.disconnect()
         logger.info("App shutdown finished")

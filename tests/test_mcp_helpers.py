@@ -88,6 +88,71 @@ def test_resolve_schema_and_request_body_schema() -> None:
     assert _resolve_request_body_schema({}, components) is None
 
 
+def test_resolve_schema_terminates_on_recursive_and_cyclic_refs() -> None:
+    """`$ref` chains must terminate; sibling references stay fully expanded."""
+    components = {
+        "schemas": {
+            "Self": {"type": "object", "properties": {"child": {"$ref": "#/components/schemas/Self"}}},
+            "Left": {"type": "object", "properties": {"right": {"$ref": "#/components/schemas/Right"}}},
+            "Right": {"type": "object", "properties": {"left": {"$ref": "#/components/schemas/Left"}}},
+            "Direct": {"$ref": "#/components/schemas/Direct"},
+            "Leaf": {"type": "string"},
+        }
+    }
+
+    self_schema = _resolve_schema({"$ref": "#/components/schemas/Self"}, components)
+    assert self_schema["type"] == "object"
+    assert self_schema["properties"]["child"] == {"$ref": "#/components/schemas/Self"}
+
+    cycle = _resolve_schema({"$ref": "#/components/schemas/Left"}, components)
+    assert cycle["properties"]["right"]["properties"]["left"] == {"$ref": "#/components/schemas/Left"}
+
+    assert _resolve_schema({"$ref": "#/components/schemas/Direct"}, components) == {
+        "$ref": "#/components/schemas/Direct"
+    }
+
+    # Two siblings pointing at the same schema each receive a fully expanded copy.
+    bag = _resolve_schema(
+        {
+            "type": "object",
+            "properties": {"a": {"$ref": "#/components/schemas/Leaf"}, "b": {"$ref": "#/components/schemas/Leaf"}},
+        },
+        components,
+    )
+    assert bag["properties"]["a"] == {"type": "string"}
+    assert bag["properties"]["b"] == {"type": "string"}
+
+    # A recursive contract model must not raise RecursionError while tools are built.
+    tools = build_mcp_tools(
+        {
+            "components": components,
+            "paths": {
+                "/v1/objects/value": {
+                    "post": {
+                        "operationId": "queryLastKnownValuesV1",
+                        "requestBody": {
+                            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Self"}}},
+                        },
+                    }
+                }
+            },
+        },
+        overrides={},
+    )
+    input_schema = tools["queryLastKnownValuesV1"].input_schema
+    assert input_schema["properties"]["body"]["properties"]["child"] == {"$ref": "#/components/schemas/Self"}
+
+
+def test_resolve_schema_cuts_absurd_nesting_without_cyclic_output() -> None:
+    """A hand-augmented structure that nests forever is truncated, not expanded to infinity."""
+    node: dict[str, Any] = {"type": "object", "description": "nested"}
+    node["properties"] = {"child": node}
+
+    resolved = _resolve_schema(node, {})
+    assert resolved["type"] == "object"
+    assert isinstance(json.dumps(resolved), str)
+
+
 def test_build_mcp_tools_and_api_prefix_from_openapi() -> None:
     openapi = {
         "servers": [{"url": "/api"}],

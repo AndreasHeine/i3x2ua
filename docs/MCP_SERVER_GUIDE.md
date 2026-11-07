@@ -213,7 +213,10 @@ Rules worth knowing:
   flags it — keep the file in sync with `GET /mcp/tools`.
 - **Any invalid JSON or schema violation disables *all* overrides.** The server
   logs a warning like `MCP overrides validation failed … Overrides were not
-  applied.` and starts with built-in descriptions.
+  applied.` and starts with built-in descriptions. An unreadable file (missing
+  permissions, a directory instead of a file, a non-UTF-8 payload) is skipped the
+  same way — the server starts with built-in descriptions instead of failing at
+  startup.
 - Overrides apply to REST-derived tools, `readContainerValues`, and the
   cached-model tools.
 - Omitted fields keep the built-in default.

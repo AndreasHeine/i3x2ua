@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any, cast
 
@@ -8,6 +9,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from jsonschema import validate
 
+from i3x_server.api.mcp import monolithic
 from i3x_server.api.mcp.monolithic import (
     MCP_IDENTITY_GUIDE_URI,
     MCP_META_CLIENT_CAPABILITIES,
@@ -15,11 +17,13 @@ from i3x_server.api.mcp.monolithic import (
     MCP_PROTOCOL_VERSION,
     MCP_SESSION_HEADER,
     MCP_SUPPORTED_PROTOCOL_VERSIONS,
+    McpTransportSession,
     _compact_tool_body,
     publish_mcp_notification,
     router,
     shutdown_mcp_transport,
 )
+from i3x_server.bootstrap.app_factory import create_app
 from i3x_server.mcp import build_mcp_tools
 from i3x_server.prompts.registry import PromptDefinition, PromptRegistry
 
@@ -247,6 +251,122 @@ def test_modern_protocol_validation_errors(protocol_client: TestClient) -> None:
         "supported": list(MCP_SUPPORTED_PROTOCOL_VERSIONS),
         "requested": "2099-01-01",
     }
+
+
+def test_modern_version_is_negotiated_before_per_request_metadata(protocol_client: TestClient) -> None:
+    """An unsupported version must be answered with the supported list even without `_meta`.
+
+    A client that announces a version only through the `MCP-Protocol-Version` header (or only
+    through `params._meta`) cannot learn anything from a metadata error, so the documented
+    UnsupportedProtocolVersion renegotiation comes first.
+    """
+    header_only = protocol_client.post(
+        "/mcp",
+        headers={"MCP-Protocol-Version": "2027-01-01", "Mcp-Method": "tools/list"},
+        json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+    )
+    assert header_only.status_code == 400
+    assert header_only.json()["error"]["code"] == -32022
+    assert header_only.json()["error"]["data"] == {
+        "supported": list(MCP_SUPPORTED_PROTOCOL_VERSIONS),
+        "requested": "2027-01-01",
+    }
+
+    metadata_only = protocol_client.post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/list",
+            "params": {"_meta": {MCP_META_PROTOCOL_VERSION: "2027-01-01"}},
+        },
+    )
+    assert metadata_only.status_code == 400
+    assert metadata_only.json()["error"]["code"] == -32022
+    assert metadata_only.json()["error"]["data"]["requested"] == "2027-01-01"
+
+    # A supported version with incomplete metadata is still a metadata error.
+    incomplete_metadata = protocol_client.post(
+        "/mcp",
+        headers={"MCP-Protocol-Version": MCP_PROTOCOL_VERSION, "Mcp-Method": "tools/list"},
+        json={
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/list",
+            "params": {"_meta": {MCP_META_PROTOCOL_VERSION: MCP_PROTOCOL_VERSION}},
+        },
+    )
+    assert incomplete_metadata.status_code == 400
+    assert incomplete_metadata.json()["error"]["code"] == -32602
+
+
+def test_legacy_transport_sessions_are_bounded(
+    protocol_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Legacy sessions are gateway state, so the session map must have a hard limit."""
+    monkeypatch.setattr(monolithic, "MCP_MAX_TRANSPORT_SESSIONS", 2)
+
+    def initialize() -> tuple[int, str | None, dict[str, Any]]:
+        response = protocol_client.post(
+            "/mcp",
+            json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-11-25"}},
+        )
+        return response.status_code, response.headers.get(MCP_SESSION_HEADER), response.json()
+
+    first_status, first_session, _ = initialize()
+    second_status, second_session, _ = initialize()
+    assert first_status == 200 and second_status == 200
+    assert first_session and second_session and first_session != second_session
+
+    app = cast(FastAPI, protocol_client.app)
+    sessions = app.state.mcp_transport_sessions
+    assert len(sessions) == 2
+
+    third_status, third_session, payload = initialize()
+    assert third_status == 400
+    assert third_session is None
+    assert payload["error"]["code"] == -32000
+    assert payload["error"]["data"] == {"maxSessions": 2}
+    assert set(sessions) == {first_session, second_session}
+
+
+def test_idle_legacy_sessions_are_pruned(
+    protocol_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sessions without a live stream are released once they have been idle long enough."""
+    monkeypatch.setattr(monolithic, "MCP_SESSION_IDLE_TTL_SECONDS", 0.0)
+    monkeypatch.setattr(monolithic, "MCP_MAX_TRANSPORT_SESSIONS", 3)
+
+    for _ in range(3):
+        response = protocol_client.post(
+            "/mcp",
+            json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-11-25"}},
+        )
+        assert response.status_code == 200
+
+    sessions = cast(FastAPI, protocol_client.app).state.mcp_transport_sessions
+    assert len(sessions) == 1
+
+
+def test_lifespan_shutdown_closes_mcp_transport_sessions(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A plain shutdown must close legacy SSE streams and drop the session map.
+
+    The signal handler only covers terminated processes; uvicorn exits and TestClient context
+    teardown used to leave sessions and their queues alive.
+    """
+    monkeypatch.setenv("I3X_ENABLE_MCP", "1")
+    monkeypatch.setenv("I3X_SKIP_OPCUA_CONNECT", "1")
+    app = create_app()
+    stream: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+
+    with TestClient(app):
+        sessions = app.state.mcp_transport_sessions
+        sessions["legacy-session"] = McpTransportSession(streams={stream})
+
+    assert sessions == {}
+    assert stream.get_nowait() is None
 
 
 def test_standard_prompt_and_resource_contracts(protocol_client: TestClient) -> None:

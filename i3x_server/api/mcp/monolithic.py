@@ -5,6 +5,7 @@ import base64
 import binascii
 import json
 import logging
+import time
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -156,12 +157,17 @@ MCP_INSTRUCTIONS = (
 )
 MCP_SESSION_HEADER = "Mcp-Session-Id"
 MCP_SSE_KEEPALIVE_SECONDS = 15
+# Legacy transport sessions are state the gateway keeps for the lifetime of the app, so both the
+# number of sessions and how long an unused one is retained must be bounded.
+MCP_MAX_TRANSPORT_SESSIONS = 200
+MCP_SESSION_IDLE_TTL_SECONDS = 900.0
 
 
 @dataclass(slots=True)
 class McpTransportSession:
     protocol_version: str = MCP_LEGACY_PROTOCOL_VERSION
     streams: set[asyncio.Queue[dict[str, Any] | None]] = field(default_factory=set)
+    last_used: float = field(default_factory=time.monotonic)
 
 
 def publish_mcp_notification(
@@ -176,6 +182,7 @@ def publish_mcp_notification(
     session = sessions.get(session_id) if isinstance(sessions, dict) else None
     if not isinstance(session, McpTransportSession):
         return 0
+    session.last_used = time.monotonic()
     message: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
     if params is not None:
         message["params"] = params
@@ -201,6 +208,28 @@ def _mcp_sessions(request: Request) -> dict[str, McpTransportSession]:
         sessions = {}
         request.app.state.mcp_transport_sessions = sessions
     return sessions
+
+
+def _prune_idle_mcp_sessions(sessions: dict[str, McpTransportSession]) -> None:
+    """Drop legacy sessions that have no live SSE stream and have been unused for the idle TTL."""
+    now = time.monotonic()
+    expired = [
+        session_id
+        for session_id, session in sessions.items()
+        if not session.streams and now - session.last_used > MCP_SESSION_IDLE_TTL_SECONDS
+    ]
+    for session_id in expired:
+        sessions.pop(session_id, None)
+
+
+def _register_mcp_session(sessions: dict[str, McpTransportSession], protocol_version: str) -> str | None:
+    """Create a legacy transport session, returning ``None`` when the configured cap is reached."""
+    _prune_idle_mcp_sessions(sessions)
+    if len(sessions) >= MCP_MAX_TRANSPORT_SESSIONS:
+        return None
+    session_id = uuid4().hex
+    sessions[session_id] = McpTransportSession(protocol_version=protocol_version, last_used=time.monotonic())
+    return session_id
 
 
 def _origin_is_allowed(request: Request) -> bool:
@@ -283,6 +312,21 @@ def _modern_request_error(request: Request, message: Mapping[str, Any]) -> dict[
     def header_mismatch(detail: str) -> dict[str, Any]:
         return _jsonrpc_error(request_id, -32020, f"HeaderMismatch: {detail}")
 
+    # The protocol version is negotiated before any per-request metadata is validated. A client
+    # that only announces an unsupported version - through the header without `_meta`, or through
+    # `_meta` without the matching header - must get the documented UnsupportedProtocolVersion
+    # answer with the supported list, not a metadata error that says nothing about versions.
+    announced_version = protocol_version if isinstance(protocol_version, str) else protocol_header
+    if announced_version is not None and announced_version not in MCP_SUPPORTED_MODERN_PROTOCOL_VERSIONS:
+        return _jsonrpc_error(
+            request_id,
+            -32022,
+            "Unsupported protocol version",
+            {
+                "supported": list(MCP_SUPPORTED_PROTOCOL_VERSIONS),
+                "requested": announced_version,
+            },
+        )
     if not isinstance(protocol_version, str) or not isinstance(metadata.get(MCP_META_CLIENT_CAPABILITIES), dict):
         return _jsonrpc_error(request_id, -32602, "Missing or invalid per-request MCP metadata")
     if protocol_header is None or protocol_header != protocol_version:
@@ -303,16 +347,6 @@ def _modern_request_error(request: Request, message: Mapping[str, Any]) -> dict[
     elif name_header is not None:
         return header_mismatch("Mcp-Name is not applicable to this method")
 
-    if protocol_version not in MCP_SUPPORTED_MODERN_PROTOCOL_VERSIONS:
-        return _jsonrpc_error(
-            request_id,
-            -32022,
-            "Unsupported protocol version",
-            {
-                "supported": list(MCP_SUPPORTED_PROTOCOL_VERSIONS),
-                "requested": protocol_version,
-            },
-        )
     return None
 
 
@@ -1016,6 +1050,7 @@ async def mcp_get(request: Request) -> Response:
 
     stream: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
     session.streams.add(stream)
+    session.last_used = time.monotonic()
 
     async def event_stream() -> AsyncIterator[str]:
         try:
@@ -1166,10 +1201,30 @@ async def mcp_post(request: Request) -> Response:
     if modern and response is not None and "result" in response:
         response = _add_modern_response_metadata(response, message["method"])
     response_headers: dict[str, str] = {}
+    if not modern and session_id is not None:
+        # Every legacy request refreshes the session; idle sessions without a stream are pruned
+        # when a new initialize arrives.
+        existing = sessions.get(session_id)
+        if isinstance(existing, McpTransportSession):
+            existing.last_used = time.monotonic()
     if not modern and message.get("method") == "initialize" and response is not None and "result" in response:
-        session_id = uuid4().hex
         negotiated_version = response["result"].get("protocolVersion", MCP_LEGACY_PROTOCOL_VERSION)
-        sessions[session_id] = McpTransportSession(protocol_version=negotiated_version)
+        session_id = _register_mcp_session(sessions, str(negotiated_version))
+        if session_id is None:
+            logger.warning(
+                "MCP transport session limit reached count=%d limit=%d",
+                len(sessions),
+                MCP_MAX_TRANSPORT_SESSIONS,
+            )
+            return JSONResponse(
+                status_code=400,
+                content=_jsonrpc_error(
+                    message.get("id"),
+                    -32000,
+                    "Too many MCP transport sessions",
+                    {"maxSessions": MCP_MAX_TRANSPORT_SESSIONS},
+                ),
+            )
         response_headers[MCP_SESSION_HEADER] = session_id
     elif session_id is not None and message.get("method") == "notifications/initialized":
         response_headers[MCP_SESSION_HEADER] = session_id

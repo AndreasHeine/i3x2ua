@@ -391,7 +391,7 @@ Optional OPC UA diagnostic endpoints are exposed under `/ua`:
 
 Optional MCP endpoints are exposed only when `I3X_ENABLE_MCP=1`:
 
-- **MCP endpoint**: accepts JSON-RPC requests at `POST /mcp`. Legacy clients may use session-scoped SSE with `GET /mcp`; initialization returns `Mcp-Session-Id`, which can be closed with `DELETE /mcp`. Modern `2026-07-28` requests are stateless.
+- **MCP endpoint**: accepts JSON-RPC requests at `POST /mcp`. Legacy clients may use session-scoped SSE with `GET /mcp`; initialization returns `Mcp-Session-Id`, which can be closed with `DELETE /mcp`. Modern `2026-07-28` requests are stateless. Legacy transport sessions are bounded (200): sessions without an SSE stream that have not been used for 15 minutes are dropped, and a new `initialize` is rejected with a JSON-RPC error once the limit is reached. Sessions are closed when the application shuts down.
 - **MCP Helpers**: Local REST-style convenience endpoints for the tool catalog and tool calls (`/mcp/tools`, `/mcp/call`), prompt listing/definition/execution, resource listing/reading, and plant roots (`/mcp/roots`). These are not MCP protocol routes.
 
 MCP supports legacy initialization-based clients using `2025-03-26`,
@@ -403,7 +403,10 @@ include the protocol version and client capabilities in `params._meta`, plus
 the matching `MCP-Protocol-Version` and `Mcp-Method` HTTP headers; calls to
 `tools/call`, `prompts/get`, and `resources/read` also require a matching
 `Mcp-Name` header. `server/discover` reports modern protocol support. Unsupported
-modern versions return `400` with `UnsupportedProtocolVersion`; JSON-RPC batch
+modern versions return `400` with `UnsupportedProtocolVersion` and the list of
+supported versions - including when the client announces the version only through
+the `MCP-Protocol-Version` header or only through `params._meta`; version
+negotiation is answered before any per-request metadata is validated. JSON-RPC batch
 arrays are not supported.
 
 Modern clients can discover the supported current protocol and server

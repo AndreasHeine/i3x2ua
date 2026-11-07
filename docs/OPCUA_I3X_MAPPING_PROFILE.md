@@ -231,7 +231,9 @@ If a reference type cannot be classified after lineage root checks and fallback
 id/name checks, it is mapped deterministically to the Graph plane.
 
 `POST /objects/value` and `POST /objects/history` recurse through **composition**
-children only when `maxDepth > 1`. Hierarchy-only children are never included in
+children only. `maxDepth = N` means "up to N levels deep" (so `2` covers direct
+children *and* their children), `maxDepth = 1` is no recursion, and `maxDepth = 0`
+is unlimited subject to server limits. Hierarchy-only children are never included in
 value recursion.
 
 ## Current Output Shape
@@ -347,9 +349,9 @@ structure/navigation and root selection, not for value recursion.
 | Request | Traversal behavior |
 |---|---|
 | `maxDepth = 1` | No recursion. Return only the requested element's value/history payload. |
-| `maxDepth = 2` | Include direct composition children only. |
-| `maxDepth = n (>1)` | Include composition descendants up to depth `n-1` from the root query element. |
-| `maxDepth = 0` | Unlimited recursion across composition descendants. |
+| `maxDepth = 2` | Include direct composition children and their children (two levels). |
+| `maxDepth = n (>1)` | Include composition descendants up to depth `n` from the root query element. |
+| `maxDepth = 0` | Unlimited recursion across composition descendants, subject to server limits. |
 
 Example:
 

@@ -85,7 +85,12 @@ success without storing the record.
 ## History composition sample
 
 The fixture is intended to satisfy i3X `QRY-11` style checks for `POST /objects/history` with `maxDepth > 1`.
-Machine objects such as `ConformancePlant/LineA/Mixer-01` expose historized component variables like `Temperature`, `Pressure`, `Speed`, and `IsRunning`, so querying the machine with `maxDepth: 2` should return child histories under `result.components`.
+`maxDepth` counts composition levels (spec `IMPLEMENTATION_GUIDE.md` "maxDepth Parameter Semantics"):
+`1` = no recursion (only the queried element's own history), `N` = up to N levels of `HasComponent`
+descendants, `0` = unlimited. Machine objects such as `ConformancePlant/LineA/Mixer-01` expose
+historized component variables like `Temperature`, `Pressure`, `Speed`, and `IsRunning`, so querying
+the machine with `maxDepth: 2` (two composition levels) should return those child histories under
+`result.components`.
 
 Example request body against i3x2ua:
 

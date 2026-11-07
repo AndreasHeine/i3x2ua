@@ -320,8 +320,10 @@ class GetObjectValueRequest(BaseModel):
     maxDepth: int = Field(
         default=1,
         ge=0,
-        description="Composition depth: 1 reads only the object, 2 includes direct components, 0 is unlimited. "
-        "Hierarchy-only children are not traversed.",
+        description="Composition depth in levels: 1 = no recursion, only this element's own value "
+        "(default); N > 1 = recurse up to N levels through composition (`HasComponent`) children; "
+        "0 = unlimited recursion, subject to server limits. Hierarchy-only children "
+        "(`HasChildren`) are never traversed - query them as separate elements.",
     )
 
 
@@ -345,7 +347,10 @@ class GetObjectHistoryRequest(BaseModel):
     maxDepth: int = Field(
         default=1,
         ge=0,
-        description="Composition depth: 1 reads only the object, 0 is unlimited.",
+        description="Composition depth in levels: 1 = no recursion, only this element's own history "
+        "(default); N > 1 = recurse up to N levels through composition (`HasComponent`) children; "
+        "0 = unlimited recursion, subject to server limits. Hierarchy-only children "
+        "(`HasChildren`) are never traversed - query them as separate elements.",
     )
 
     @field_validator("startTime", "endTime")

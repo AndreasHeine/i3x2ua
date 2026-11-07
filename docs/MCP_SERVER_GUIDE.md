@@ -86,7 +86,7 @@ by the shipped overrides.
 
 | Tool | What it does | Arguments | Limits |
 |---|---|---|---|
-| `queryLastKnownValuesV1` | Current value, quality, timestamp for a few exact property IDs | `body.elementIds`, `body.maxDepth` | `maxDepth` default 1 (object only); 2 adds direct components; 0 = unlimited |
+| `queryLastKnownValuesV1` | Current value, quality, timestamp for a few exact property IDs | `body.elementIds`, `body.maxDepth` | `maxDepth` default 1 (object only); N > 1 recurses up to N composition levels; 0 = unlimited |
 | `readContainerValues` | Many current values under **one** container in one short call — the server finds the descendant properties | `containerId`, `limit`, `offset` | page default 50, max 50; internally batches 10 reads; max 5000 nodes, max depth 32; no container values, no history |
 | `queryHistoricalValuesV1` | Samples over a time interval | `body.elementIds`, `body.startTime`/`body.endTime` (RFC 3339 with timezone), `body.maxDepth`, `body.limit`, `body.offset` | 100 samples per page by default, `limit` max 500 |
 

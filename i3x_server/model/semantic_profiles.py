@@ -150,7 +150,6 @@ def resolve_semantic_role(
     node: OpcUaNodeInfo,
     active_profiles: ResolvedProfileSet | None = None,
     *,
-    relationship_class: str | None = None,
     type_definition_hierarchy: tuple[OpcUaTypeDefinitionInfo, ...] = (),
 ) -> SemanticRole:
     profiles = active_profiles.profiles if active_profiles else load_default_profiles()
@@ -172,8 +171,9 @@ def resolve_semantic_role(
         return "datapoint"
     if node.node_class == "Method":
         return "component"
-    if relationship_class == "composition":
-        return "property"
+    # Containers (Objects/Folders) with composition children are assets, not properties:
+    # value-bearing Variables map to "datapoint" above, and "property" stays reserved
+    # for profile overrides. `findElementsByRole(role="asset")` must return containers.
     return "asset"
 
 
@@ -192,8 +192,6 @@ def resolve_mapping_confidence(
         return "medium"
     if relationship_class == "graph":
         return "high"
-    if relationship_class == "composition":
-        return "medium"
     return "medium"
 
 
@@ -240,16 +238,3 @@ def forced_relationship_class_for_node(
                 if override.force_composition:
                     return "composition"
     return None
-
-
-def reference_classification_overrides(active_profiles: ResolvedProfileSet | None = None) -> dict[str, str]:
-    overrides: dict[str, str] = {}
-    profiles = active_profiles.profiles if active_profiles else load_default_profiles()
-    for profile in profiles:
-        for name in profile.hierarchy_references:
-            overrides[_normalize_token(name)] = "hierarchy"
-        for name in profile.composition_references:
-            overrides[_normalize_token(name)] = "composition"
-        for name in profile.graph_references:
-            overrides[_normalize_token(name)] = "graph"
-    return overrides

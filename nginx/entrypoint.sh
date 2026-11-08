@@ -90,6 +90,27 @@ sse_proxy_block=$(cat <<EOF
 EOF
 )
 
+# MCP streamable HTTP (GET /mcp) is a long-lived event stream; buffering it hides
+# tool events and the 60s proxy_read_timeout would cut idle streams. Sessions are
+# process-local, so /mcp must reach one backend - the same upstream as everything else.
+mcp_proxy_block=$(cat <<EOF
+      proxy_http_version 1.1;
+      proxy_set_header Host \$host;
+      proxy_set_header X-Real-IP \$remote_addr;
+      proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto \$scheme;
+      proxy_set_header X-Forwarded-Host \$host;
+      proxy_set_header X-Forwarded-Port \$server_port;
+      proxy_set_header Connection "";
+      proxy_buffering off;
+      proxy_cache off;
+      proxy_read_timeout 3600s;
+      proxy_send_timeout 3600s;
+      chunked_transfer_encoding on;
+      proxy_pass http://i3x2ua_backend;
+EOF
+)
+
 mkdir -p /etc/nginx/conf.d
 
 if is_truthy "$https_enabled"; then
@@ -127,6 +148,11 @@ $(printf '%s\n' "$auth_block")
 $(printf '%s\n' "$sse_proxy_block")
   }
 
+  location = /mcp {
+$(printf '%s\n' "$auth_block")
+$(printf '%s\n' "$mcp_proxy_block")
+  }
+
   location / {
 $(printf '%s\n' "$auth_block")
 $(printf '%s\n' "$proxy_block")
@@ -148,6 +174,11 @@ $(printf '%s\n' "$proxy_block")
   location = /v1/subscriptions/stream {
 $(printf '%s\n' "$auth_block")
 $(printf '%s\n' "$sse_proxy_block")
+  }
+
+  location = /mcp {
+$(printf '%s\n' "$auth_block")
+$(printf '%s\n' "$mcp_proxy_block")
   }
 
   location / {

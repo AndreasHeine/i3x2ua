@@ -121,6 +121,9 @@ def historical_data_value(
         dimensions = len(shape)
         if (
             (value_rank == -1 and dimensions != 0)
+            # ValueRank -2 (OneOrMoreDimensions) explicitly requires at least one dimension;
+            # accepting a scalar here would write a Scalar variant where the node declares an array.
+            or (value_rank == -2 and dimensions == 0)
             or (value_rank == -3 and dimensions > 1)
             or (value_rank == 0 and dimensions == 0)
             or (value_rank > 0 and dimensions != value_rank)

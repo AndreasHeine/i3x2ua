@@ -42,6 +42,8 @@ def test_history_upsert_preserves_current_value(client: TestClient, monkeypatch:
                 "responseDetail": None,
             }
         ],
+        # The top-level detail is only present for partial (HTTP 206) results.
+        "responseDetail": None,
     }
     assert len(records) == count
     assert records[0].Value.Value == 19.5

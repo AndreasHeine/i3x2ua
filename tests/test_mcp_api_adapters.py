@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -9,22 +10,24 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from starlette.requests import Request
 
-from i3x_server.api.mcp.monolithic import (
+from i3x_server.api.mcp.jsonrpc import (
+    MCP_ROOT_RESOURCE_PREFIX,
+    _handle_jsonrpc,
+    _jsonrpc_error,
+    _jsonrpc_response,
+)
+from i3x_server.api.mcp.prompts import _prompt_registry
+from i3x_server.api.mcp.resources import (
     MCP_IDENTITY_GUIDE,
     MCP_IDENTITY_GUIDE_URI,
     MCP_MAPPING_GUIDE,
     MCP_MAPPING_GUIDE_URI,
     MCP_MODEL_OVERVIEW_URI,
-    MCP_ROOT_RESOURCE_PREFIX,
-    _handle_jsonrpc,
-    _jsonrpc_error,
-    _jsonrpc_response,
-    _prompt_registry,
     _read_resource_content,
     _resource_catalog,
-    _roots_catalog,
-    _tool_catalog,
 )
+from i3x_server.api.mcp.roots import _roots_catalog
+from i3x_server.api.mcp.tools import _tool_catalog
 from i3x_server.mcp import McpToolDefinition
 from i3x_server.prompts.registry import PromptDefinition, PromptRegistry
 
@@ -70,7 +73,7 @@ def test_tool_and_resource_and_roots_catalogs(monkeypatch: pytest.MonkeyPatch) -
     assert _tool_catalog(request_bad_tools) == []
 
     monkeypatch.setattr(
-        "i3x_server.api.mcp.monolithic.list_prompt_metadata",
+        "i3x_server.api.mcp.resources.list_prompt_metadata",
         lambda registry: [{"name": "p1", "description": "Prompt one"}] if registry else [],
     )
     prompt_registry = PromptRegistry(
@@ -138,8 +141,8 @@ def test_read_resource_content_variants(tmp_path: Path, monkeypatch: pytest.Monk
     (docs_dir / "QUICK_REFERENCE.md").write_text("# Quick", encoding="utf-8")
 
     request = _request()
-    monkeypatch.setattr("i3x_server.api.mcp.monolithic._project_root", lambda: tmp_path)
-    monkeypatch.setattr("i3x_server.api.mcp.monolithic.get_prompt", lambda registry, name: {"name": name})
+    monkeypatch.setattr("i3x_server.api.mcp.resources._project_root", lambda: tmp_path)
+    monkeypatch.setattr("i3x_server.api.mcp.resources.get_prompt", lambda registry, name: {"name": name})
 
     openapi = _read_resource_content(request, "i3x://openapi")
     assert json.loads(openapi["text"]) == {"openapi": "3.1.0"}
@@ -157,6 +160,28 @@ def test_read_resource_content_variants(tmp_path: Path, monkeypatch: pytest.Monk
 
     with pytest.raises(HTTPException):
         _read_resource_content(request, "i3x://unknown")
+
+
+def test_read_resource_content_malformed_overrides_stays_sanitized(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Exception text must not flow into the resource response (CodeQL py/stack-trace-exposure)."""
+    overrides_dir = tmp_path / "overrides"
+    overrides_dir.mkdir(parents=True, exist_ok=True)
+    raw = "{this is not valid json"
+    (overrides_dir / "mcp_overrides.json").write_text(raw, encoding="utf-8")
+    monkeypatch.setattr("i3x_server.api.mcp.resources._project_root", lambda: tmp_path)
+
+    request = _request({"mcp_overrides_applied": True})
+    caplog.set_level(logging.WARNING)
+    document = json.loads(_read_resource_content(request, "i3x://mcp-overrides")["text"])
+
+    assert document["applied"] is False
+    assert document["parseError"] == "mcp_overrides.json is not valid JSON"
+    assert document["contents"] == raw
+    assert "MCP overrides JSON parse failed" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -200,7 +225,7 @@ async def test_handle_jsonrpc_core_branches(monkeypatch: pytest.MonkeyPatch) -> 
         del req, tool, arguments
         return {"status_code": 200, "body": {"ok": True}}
 
-    monkeypatch.setattr("i3x_server.api.mcp.monolithic.invoke_mcp_tool", _invoke_ok)
+    monkeypatch.setattr("i3x_server.api.mcp.tools.invoke_mcp_tool", _invoke_ok)
     tool_ok = await _handle_jsonrpc(
         request,
         {"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {"name": "tool-a", "arguments": {}}},
@@ -212,7 +237,7 @@ async def test_handle_jsonrpc_core_branches(monkeypatch: pytest.MonkeyPatch) -> 
         del req, tool, arguments
         return {"status_code": 500, "body": {"error": "bad"}}
 
-    monkeypatch.setattr("i3x_server.api.mcp.monolithic.invoke_mcp_tool", _invoke_bad)
+    monkeypatch.setattr("i3x_server.api.mcp.tools.invoke_mcp_tool", _invoke_bad)
     tool_bad = await _handle_jsonrpc(
         request,
         {"jsonrpc": "2.0", "id": 8, "method": "tools/call", "params": {"name": "tool-a", "arguments": {}}},

@@ -7,8 +7,10 @@ delivery (sync polling and SSE streaming).
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
+from contextlib import suppress
 from typing import Literal, NoReturn, TypedDict
 
 from fastapi import HTTPException, Request
@@ -44,13 +46,12 @@ class StreamSessionDto(TypedDict):
     clientId: str
     subscriptionId: str
     streamGeneration: int
-    scopeRelaxed: bool
     acknowledged: SubscriptionSyncResultPort
 
 
 class StreamEventDto(TypedDict):
     kind: Literal["connected", "keepalive", "close", "updates"]
-    updates: list[SubscriptionUpdatePort]
+    updates: Sequence[SubscriptionUpdatePort]
 
 
 def _raise_or_wrap_subscription_error(message: str, exc: Exception) -> NoReturn:
@@ -62,6 +63,18 @@ def _raise_or_wrap_subscription_error(message: str, exc: Exception) -> NoReturn:
         message,
         {"cause": str(exc)},
     ) from exc
+
+
+def _normalize_client_id(client_id: str | None) -> str | None:
+    """Trim surrounding whitespace from a client scope.
+
+    The subscription service stores and compares ``client_id`` verbatim, so every operation has to use the
+    same normalized value or ``list``/``delete`` cannot find a subscription created with ``" app "``.
+    ``None`` keeps the port's "no scope filter" semantics; an empty string stays a strict mismatch.
+    """
+    if client_id is None:
+        return None
+    return client_id.strip()
 
 
 class SubscriptionAppService:
@@ -101,9 +114,10 @@ class SubscriptionAppService:
         Returns:
             Subscription details with ID
         """
+        normalized_client_id = client_id.strip()
         try:
-            subscription = await self.subscription_service.create_subscription(client_id, display_name)
-            return map_create_subscription(subscription, client_id, display_name)
+            subscription = await self.subscription_service.create_subscription(normalized_client_id, display_name)
+            return map_create_subscription(subscription, normalized_client_id, display_name)
         except Exception as exc:
             _raise_or_wrap_subscription_error("Failed to create subscription", exc)
 
@@ -127,7 +141,8 @@ class SubscriptionAppService:
         """
         try:
             # Validate client ID if required
-            if not client_id or not client_id.strip():
+            normalized_client_id = _normalize_client_id(client_id)
+            if not normalized_client_id:
                 if self.request:
                     raise i3x_http_error(
                         400,
@@ -141,7 +156,7 @@ class SubscriptionAppService:
 
             # Register items in subscription service
             registered = await self.subscription_service.register_items(
-                client_id,
+                normalized_client_id,
                 subscription_id,
                 element_ids,
                 max_depth=effective_max_depth,
@@ -166,7 +181,8 @@ class SubscriptionAppService:
     ) -> RegisterMonitoredItemsDto:
         """Unregister monitored objects from a subscription."""
         try:
-            if not client_id or not client_id.strip():
+            normalized_client_id = _normalize_client_id(client_id)
+            if not normalized_client_id:
                 if self.request:
                     raise i3x_http_error(
                         400,
@@ -176,7 +192,7 @@ class SubscriptionAppService:
                     )
 
             unregistered = await self.subscription_service.unregister_items(
-                client_id,
+                normalized_client_id,
                 subscription_id,
                 element_ids,
                 model=self.model,
@@ -200,7 +216,8 @@ class SubscriptionAppService:
     ) -> StreamSessionDto:
         """Start a stream session and preload acknowledged updates."""
         try:
-            if not client_id or not client_id.strip():
+            normalized_client_id = _normalize_client_id(client_id)
+            if not normalized_client_id:
                 raise i3x_http_error(
                     400,
                     "InvalidArgument",
@@ -208,28 +225,22 @@ class SubscriptionAppService:
                     {"field": "clientId"},
                 )
 
-            normalized_client_id = client_id.strip()
+            # Strict client scope: a subscription owned by another client must not be
+            # activated or drained from this request (cross-client update leakage).
             stream_generation = await self.subscription_service.activate_stream(
                 client_id=normalized_client_id,
                 subscription_id=subscription_id,
             )
-            scope_relaxed = False
             if stream_generation is None:
-                stream_generation = await self.subscription_service.activate_stream(
-                    client_id=None,
-                    subscription_id=subscription_id,
+                raise i3x_http_error(
+                    404,
+                    "NotFound",
+                    "Subscription not found",
+                    {"subscriptionId": subscription_id},
                 )
-                if stream_generation is None:
-                    raise i3x_http_error(
-                        404,
-                        "NotFound",
-                        "Subscription not found",
-                        {"subscriptionId": subscription_id},
-                    )
-                scope_relaxed = True
 
             acknowledged = await self.subscription_service.sync(
-                client_id=None if scope_relaxed else normalized_client_id,
+                client_id=normalized_client_id,
                 subscription_id=subscription_id,
                 acknowledge_sequence=acknowledge_sequence,
                 allow_when_stream_active=True,
@@ -246,7 +257,6 @@ class SubscriptionAppService:
                 "clientId": normalized_client_id,
                 "subscriptionId": subscription_id,
                 "streamGeneration": stream_generation,
-                "scopeRelaxed": scope_relaxed,
                 "acknowledged": acknowledged,
             }
         except Exception as exc:
@@ -269,7 +279,8 @@ class SubscriptionAppService:
             Batch of pending updates
         """
         try:
-            if not client_id or not client_id.strip():
+            normalized_client_id = _normalize_client_id(client_id)
+            if not normalized_client_id:
                 raise i3x_http_error(
                     400,
                     "InvalidArgument",
@@ -279,7 +290,7 @@ class SubscriptionAppService:
 
             # Get updates from subscription service
             sync_result = await self.subscription_service.sync(
-                client_id,
+                normalized_client_id,
                 subscription_id,
                 acknowledge_sequence=acknowledge_sequence,
             )
@@ -306,7 +317,7 @@ class SubscriptionAppService:
         subscription_id: str,
         client_id: str,
         stream_generation: int,
-        acknowledged_updates: list[SubscriptionUpdatePort],
+        acknowledged_updates: Sequence[SubscriptionUpdatePort],
         acknowledge_sequence: int | None = None,
         timeout_seconds: float = 2,
     ) -> AsyncIterator[StreamEventDto]:
@@ -341,7 +352,11 @@ class SubscriptionAppService:
                 last_sequence = int(updates[-1].sequence_number)
                 yield {"kind": "updates", "updates": updates}
         finally:
-            await self.subscription_service.deactivate_stream(subscription_id, stream_generation)
+            # A client disconnect cancels this generator while the finally runs. Without a shield the
+            # deactivation itself is cancelled, leaving ``stream_connected`` set until the TTL expires
+            # (``POST /subscriptions/sync`` then answers 400 "Subscription stream is active").
+            with suppress(asyncio.CancelledError):
+                await asyncio.shield(self.subscription_service.deactivate_stream(subscription_id, stream_generation))
 
     async def delete_subscriptions(
         self,
@@ -358,7 +373,10 @@ class SubscriptionAppService:
             Deletion confirmation
         """
         try:
-            delete_results = await self.subscription_service.delete_subscriptions(client_id, subscription_ids)
+            delete_results = await self.subscription_service.delete_subscriptions(
+                _normalize_client_id(client_id),
+                subscription_ids,
+            )
             return map_delete_subscriptions(delete_results, requested=len(subscription_ids))
         except Exception as exc:
             _raise_or_wrap_subscription_error("Failed to delete subscriptions", exc)
@@ -370,7 +388,10 @@ class SubscriptionAppService:
     ) -> list[SubscriptionBulkItemDto]:
         """Delete subscriptions and return per-subscription bulk results."""
         try:
-            delete_results = await self.subscription_service.delete_subscriptions(client_id, subscription_ids)
+            delete_results = await self.subscription_service.delete_subscriptions(
+                _normalize_client_id(client_id),
+                subscription_ids,
+            )
             return map_delete_subscription_items(delete_results)
         except Exception as exc:
             _raise_or_wrap_subscription_error("Failed to delete subscriptions", exc)
@@ -391,7 +412,7 @@ class SubscriptionAppService:
         """
         try:
             subscriptions = await self.subscription_service.list_subscriptions(
-                client_id=client_id,
+                client_id=_normalize_client_id(client_id),
                 subscription_ids=subscription_ids,
             )
             return map_list_subscriptions(subscriptions)
@@ -406,7 +427,7 @@ class SubscriptionAppService:
         """List subscriptions and return per-subscription bulk results."""
         try:
             subscriptions = await self.subscription_service.list_subscriptions(
-                client_id=client_id,
+                client_id=_normalize_client_id(client_id),
                 subscription_ids=subscription_ids,
             )
             return map_subscription_detail_bulk_items(subscriptions, requested_ids=subscription_ids)

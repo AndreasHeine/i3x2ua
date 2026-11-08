@@ -65,6 +65,9 @@ def test_model_revision_covers_fields_not_carried_by_nodes() -> None:
     assert compute_model_revision(_model(graph_relationship_names={"OrganizedBy"})) != base
     assert compute_model_revision(_model(graph_relationship_display_name_by_id={"qualified": "ConnectedTo"})) != base
     assert compute_model_revision(
+        _model(graph_relationship_inverse_by_id={"Monitors": "MonitoredBy"})
+    ) != compute_model_revision(_model(graph_relationship_inverse_by_id={"Monitors": "inverseOf_Monitors"}))
+    assert compute_model_revision(
         _model(graph_relationship_namespace_by_id={"ConnectedTo": "urn:example:first"})
     ) != compute_model_revision(_model(graph_relationship_namespace_by_id={"ConnectedTo": "urn:example:second"}))
 
@@ -129,6 +132,28 @@ def test_mismatched_if_none_match_returns_full_body(client: TestClient) -> None:
 
     assert response.status_code == 200
     assert response.json()
+
+
+def test_different_query_string_is_a_different_representation(client: TestClient) -> None:
+    """Filters select a different representation, so revalidation must not answer 304."""
+    filtered = client.get("/model/namespace-gaps?limit=10")
+    assert filtered.status_code == 200
+    etag = filtered.headers["etag"]
+
+    revalidated_same_url = client.get("/model/namespace-gaps?limit=10", headers={"If-None-Match": etag})
+    assert revalidated_same_url.status_code == 304
+
+    other_limit = client.get("/model/namespace-gaps?limit=20", headers={"If-None-Match": etag})
+    assert other_limit.status_code == 200
+    assert other_limit.headers["etag"] != etag
+
+    plain_objects = client.get("/v1/objects")
+    assert plain_objects.status_code == 200
+    objects_etag = plain_objects.headers["etag"]
+    root_only = client.get("/v1/objects?root=true", headers={"If-None-Match": objects_etag})
+    assert root_only.status_code == 200
+    assert root_only.headers["etag"] != objects_etag
+    assert len(root_only.json()["result"]) <= len(plain_objects.json()["result"])
 
 
 def test_model_change_produces_new_etag(client: TestClient) -> None:

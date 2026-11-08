@@ -69,6 +69,10 @@ def _model() -> BuildResult:
             prop_a.id: [],
             prop_b.id: [],
         },
+        # Relationship planes per i3X spec: prop-a is a composition child of the root,
+        # child_asset is a hierarchical child (independent, never read via the parent).
+        hierarchy_children_by_id={root.id: [child_asset.id]},
+        composition_children_by_id={root.id: [prop_a.id], child_asset.id: [prop_b.id]},
         instances_by_type_id={},
         property_to_node={prop_a.id: prop_a.source_node_id, prop_b.id: prop_b.source_node_id},
         action_to_method={},
@@ -136,7 +140,11 @@ async def test_get_current_value_includes_components_when_depth_allows() -> None
     service = _Service(cast(OpcUaClientProtocol, object()), _model())
     result = await service.get_current_value("asset-root", max_depth=3)
     assert result["value"] == "asset-root"
-    assert set(result["components"].keys()) == {"prop-a", "prop-b"}
+    # Composition only: the hierarchical child's property is never included via the parent.
+    assert set(result["components"].keys()) == {"prop-a"}
+
+    child_result = await service.get_current_value("asset-child", max_depth=2)
+    assert set(child_result["components"].keys()) == {"prop-b"}
 
 
 @pytest.mark.asyncio
@@ -165,7 +173,16 @@ async def test_get_history_collects_components_for_composition_nodes() -> None:
         max_depth=3,
     )
     assert result["values"][0]["value"] == "asset-root"
-    assert set(result["components"].keys()) == {"prop-a", "prop-b"}
+    # Composition only; hierarchical children are queried independently.
+    assert set(result["components"].keys()) == {"prop-a"}
+
+    child_result = await service.get_history(
+        "asset-child",
+        "2026-01-01T00:00:00Z",
+        "2026-01-01T01:00:00Z",
+        max_depth=2,
+    )
+    assert set(child_result["components"].keys()) == {"prop-b"}
 
 
 @pytest.mark.asyncio
@@ -250,6 +267,111 @@ def test_collect_history_source_nodes_includes_root_property() -> None:
     service = _Service(cast(OpcUaClientProtocol, object()), _model())
     prop = service.model.nodes_by_id["prop-a"]
     assert [node.id for node in service._collect_history_source_nodes(prop, max_depth=0)] == ["prop-a"]
+
+
+def _chain_model() -> BuildResult:
+    """Composition chain across three levels plus a hierarchy-only branch.
+
+    ``asset-root`` -> ``comp-prop`` (level 1); ``asset-root`` -> ``comp-child`` -> ``mid-prop``
+    (level 2) -> ``sub-comp`` -> ``deep-prop`` (level 3); ``asset-root`` -> ``hier-child`` ->
+    ``hier-prop`` sits on the hierarchy plane and must never be traversed (spec :1111).
+    """
+    nodes = {
+        "asset-root": ("Root", "asset"),
+        "comp-prop": ("CompProp", "property"),
+        "comp-child": ("CompChild", "asset"),
+        "mid-prop": ("MidProp", "property"),
+        "sub-comp": ("SubComp", "asset"),
+        "deep-prop": ("DeepProp", "property"),
+        "hier-child": ("HierChild", "asset"),
+        "hier-prop": ("HierProp", "property"),
+    }
+    nodes_by_id = {
+        node_id: ModelNode(
+            id=node_id,
+            name=name,
+            kind=cast(Any, kind),
+            type=None,
+            children=[],
+            source_node_id=f"ns=2;s={name}",
+        )
+        for node_id, (name, kind) in nodes.items()
+    }
+    children_by_id = {
+        "asset-root": ["comp-prop", "comp-child", "hier-child"],
+        "comp-child": ["mid-prop", "sub-comp"],
+        "sub-comp": ["deep-prop"],
+        "hier-child": ["hier-prop"],
+        "comp-prop": [],
+        "mid-prop": [],
+        "deep-prop": [],
+        "hier-prop": [],
+    }
+    return BuildResult(
+        nodes_by_id=nodes_by_id,
+        root_ids=["asset-root"],
+        children_by_id=children_by_id,
+        hierarchy_children_by_id={"asset-root": ["comp-prop", "comp-child", "hier-child"], "hier-child": ["hier-prop"]},
+        composition_children_by_id={
+            "asset-root": ["comp-prop", "comp-child"],
+            "comp-child": ["mid-prop", "sub-comp"],
+            "sub-comp": ["deep-prop"],
+            "hier-child": ["hier-prop"],
+        },
+        instances_by_type_id={},
+        property_to_node={
+            "comp-prop": "ns=2;s=CompProp",
+            "mid-prop": "ns=2;s=MidProp",
+            "deep-prop": "ns=2;s=DeepProp",
+            "hier-prop": "ns=2;s=HierProp",
+        },
+        action_to_method={},
+    )
+
+
+def test_service_history_sources_count_composition_levels() -> None:
+    """`maxDepth = N` means N levels; `0` is unlimited, hierarchy edges are never followed."""
+    service = _Service(cast(OpcUaClientProtocol, object()), _chain_model())
+    root = service.model.nodes_by_id["asset-root"]
+
+    assert service._collect_history_source_nodes(root, max_depth=1) == []
+    assert [node.id for node in service._collect_history_source_nodes(root, max_depth=2)] == ["comp-prop", "mid-prop"]
+    assert [node.id for node in service._collect_history_source_nodes(root, max_depth=3)] == [
+        "comp-prop",
+        "mid-prop",
+        "deep-prop",
+    ]
+    assert [node.id for node in service._collect_history_source_nodes(root, max_depth=0)] == [
+        "comp-prop",
+        "mid-prop",
+        "deep-prop",
+    ]
+
+
+def test_service_value_components_count_composition_levels() -> None:
+    service = _Service(cast(OpcUaClientProtocol, object()), _chain_model())
+    root = service.model.nodes_by_id["asset-root"]
+
+    assert service._collect_composition_components(root, max_depth=1) == []
+    assert [node.id for node in service._collect_composition_components(root, max_depth=2)] == ["comp-prop", "mid-prop"]
+    assert [node.id for node in service._collect_composition_components(root, max_depth=0)] == [
+        "comp-prop",
+        "mid-prop",
+        "deep-prop",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_service_history_unlimited_depth_collects_all_levels() -> None:
+    """`maxDepth = 0` must stay unlimited (the old `max_depth or -1` guard stopped at level 1)."""
+    service = _Service(cast(OpcUaClientProtocol, object()), _chain_model())
+
+    limited = await service.get_history("asset-root", "2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z", max_depth=2)
+    assert set(limited["components"]) == {"comp-prop", "mid-prop"}
+
+    unlimited = await service.get_history("asset-root", "2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z", max_depth=0)
+    assert set(unlimited["components"]) == {"comp-prop", "mid-prop", "deep-prop"}
+    assert "hier-prop" not in unlimited["components"]
 
 
 def test_parse_iso_datetime_normalizes_z_and_naive() -> None:

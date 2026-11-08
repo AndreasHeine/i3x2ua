@@ -33,7 +33,7 @@ Replace the example type ID with a `typeElementId` from your server.
 | Option | Description | Default |
 |---|---|---|
 | `--max-nodes N` | Maximum number of discovered objects | `200` |
-| `--max-depth N` | Maximum breadth-first discovery levels from the roots | Unlimited |
+| `--max-depth N` | Maximum breadth-first discovery levels from the roots | `1` |
 | `--type-element-id ID` | Fetch instances of this type instead of walking the tree | Not set |
 | `--no-values` | Skip reading and printing current values | Values enabled |
 
@@ -100,7 +100,7 @@ Abrupt process termination cannot perform cleanup.
 | `--mode poll\|sse` | Notification receive mode | `poll` |
 | `--client-id ID` | Subscription owner ID | Generated unique ID |
 | `--poll-interval SECONDS` | Delay between sync calls; positive, finite number | `1` |
-| `--max-depth N` | Maximum composition depth to monitor; nonnegative integer | All descendant properties |
+| `--max-depth N` | Maximum composition depth to monitor; nonnegative integer | `1` |
 | `--timeout SECONDS` | HTTP/socket read timeout, including SSE reads; positive, finite number | `30` |
 
 ## Connection options for both clients

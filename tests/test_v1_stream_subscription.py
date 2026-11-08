@@ -12,7 +12,7 @@ from i3x_server.api.v1.monolithic import StreamRequest, stream_subscription_v1
 from i3x_server.application.ports.subscription import SubscriptionServicePort
 from i3x_server.application.services.subscription import SubscriptionAppService
 from i3x_server.domain.ports.opcua import OpcUaClientProtocol, OpcUaNamespaceInfo
-from i3x_server.infrastructure.subscriptions.service import SubscriptionSyncResult, SubscriptionUpdate
+from i3x_server.infrastructure.subscriptions.state import SubscriptionSyncResult, SubscriptionUpdate
 from i3x_server.schemas.state import BuildResult
 
 
@@ -172,7 +172,7 @@ async def test_stream_subscription_sends_initial_payload_then_close() -> None:
 @pytest.mark.asyncio
 async def test_stream_subscription_keepalive_and_update_flow() -> None:
     service = _FakeSubscriptionService()
-    service.activate_returns = [None, 7]
+    service.activate_returns = [7]
     service.sync_result = SubscriptionSyncResult(updates=[])
     service.active_sequence = [True, True, False]
     service.wait_returns = [

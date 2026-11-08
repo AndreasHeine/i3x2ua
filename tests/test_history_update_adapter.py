@@ -223,6 +223,9 @@ async def test_history_access_uses_history_bit(
         ([1, 2], ua.VariantType.Int16, 1, [3], [1, 2]),
         ([[1, 2], [3, 4]], ua.VariantType.Double, 2, [0, 2], [[1.0, 2.0], [3.0, 4.0]]),
         ([], ua.VariantType.String, 1, [0], []),
+        # ValueRank -2 (OneOrMoreDimensions) accepts any array shape - one or more dimensions.
+        ([1, 2], ua.VariantType.Double, -2, None, [1.0, 2.0]),
+        ([[1, 2], [3, 4]], ua.VariantType.Double, -2, [2, 2], [[1.0, 2.0], [3.0, 4.0]]),
     ],
 )
 def test_history_value_conversion(
@@ -270,6 +273,10 @@ def test_history_value_conversion(
         ([[1], [2, 3]], ua.VariantType.Double, 2, None),
         ([[1]], ua.VariantType.Double, -3, None),
         (1, ua.VariantType.Double, -4, None),
+        # ValueRank -2 (OneOrMoreDimensions) requires at least one dimension: a scalar must not be
+        # written as a Scalar variant onto a node that declares an array.
+        (1, ua.VariantType.Double, -2, None),
+        ("text", ua.VariantType.String, -2, None),
     ],
 )
 def test_history_value_rejects_type_rank_and_range_errors(

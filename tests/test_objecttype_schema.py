@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import types
+import typing
 from copy import deepcopy
 from dataclasses import dataclass, field, make_dataclass
 from types import SimpleNamespace
@@ -14,7 +15,7 @@ from jsonschema import Draft202012Validator
 
 from i3x_server.api.v1.object_helpers import _object_type_element_id
 from i3x_server.infrastructure.opcua.client import OpcUaNamespaceInfo, OpcUaObjectTypeInfo, OpcUaObjectTypeMemberInfo
-from i3x_server.schemas import objecttype_schema
+from i3x_server.schemas import objecttype_annotations, objecttype_registry, objecttype_schema
 from i3x_server.schemas.objecttype_schema import build_object_type_schema
 from i3x_server.schemas.opcua_value import normalize_opcua_value
 
@@ -618,8 +619,8 @@ def test_recursive_datatype_annotations_resolve_nested_subschemas(monkeypatch: p
 
 
 def test_unresolved_datatype_annotation_falls_back_to_object() -> None:
-    schema = objecttype_schema._schema_for_annotation_string(
-        "ua.UnknownCustomDataType", objecttype_schema._SchemaRegistry()
+    schema = objecttype_annotations._schema_for_annotation_string(
+        "ua.UnknownCustomDataType", objecttype_registry._SchemaRegistry()
     )
     assert schema["type"] == "object"
     assert schema["title"] == "UnknownCustomDataType"
@@ -634,7 +635,7 @@ def test_forwardref_annotation_is_resolved_as_structure(monkeypatch: pytest.Monk
     class _ForwardRef:
         __forward_arg__ = "ua.ForwardRefNested"
 
-    schema = objecttype_schema._schema_for_annotation(_ForwardRef(), objecttype_schema._SchemaRegistry())
+    schema = objecttype_annotations._schema_for_annotation(_ForwardRef(), objecttype_registry._SchemaRegistry())
     assert schema == {"$ref": "#/$defs/Nested"}
 
 
@@ -643,8 +644,8 @@ def test_non_dataclass_structured_class_with_annotations_is_resolved(monkeypatch
         __annotations__ = {"JobOrderID": "ua.String", "Priority": "ua.Int16"}
 
     monkeypatch.setattr(ua, "AnnotatedOnlyType", _AnnotatedOnlyType, raising=False)
-    schema = objecttype_schema._schema_for_annotation_string(
-        "ua.AnnotatedOnlyType", objecttype_schema._SchemaRegistry()
+    schema = objecttype_annotations._schema_for_annotation_string(
+        "ua.AnnotatedOnlyType", objecttype_registry._SchemaRegistry()
     )
     assert schema == {"$ref": "#/$defs/AnnotatedOnlyType"}
 
@@ -665,8 +666,8 @@ def test_dataclass_docstring_vartype_override_applies_for_ambiguous_annotations(
 
     monkeypatch.setattr(ua, "DocNested", _DocNested, raising=False)
 
-    registry = objecttype_schema._SchemaRegistry()
-    schema = objecttype_schema._structure_schema_for_type(_DocCarrier, registry)
+    registry = objecttype_registry._SchemaRegistry()
+    schema = objecttype_annotations._structure_schema_for_type(_DocCarrier, registry)
     assert schema["properties"]["JobOrder"] == {"$ref": "#/$defs/DocNested"}
 
 
@@ -681,15 +682,15 @@ def test_dataclass_ua_types_override_applies_for_ambiguous_annotations(monkeypat
     cast(Any, _UaCarrier).ua_types = [("JobOrder", "ua.UaNested")]
     monkeypatch.setattr(ua, "UaNested", _UaNested, raising=False)
 
-    registry = objecttype_schema._SchemaRegistry()
-    schema = objecttype_schema._structure_schema_for_type(_UaCarrier, registry)
+    registry = objecttype_registry._SchemaRegistry()
+    schema = objecttype_annotations._structure_schema_for_type(_UaCarrier, registry)
     assert schema["properties"]["JobOrder"] == {"$ref": "#/$defs/UaNested"}
 
 
 def test_module_path_resolution_inlines_structured_annotation() -> None:
-    schema = objecttype_schema._schema_for_annotation_string(
+    schema = objecttype_annotations._schema_for_annotation_string(
         "asyncua.common.structures104.isa95joborderdatatype",
-        objecttype_schema._SchemaRegistry(),
+        objecttype_registry._SchemaRegistry(),
     )
     assert schema["type"] == "object"
     assert schema["title"] == "isa95joborderdatatype"
@@ -706,9 +707,9 @@ def test_loaded_structures_module_name_resolution_supports_recursive_arrays() ->
     module_any.ISA95ParameterDataType = _Parameter
     sys.modules[module.__name__] = module
     try:
-        schema = objecttype_schema._schema_for_annotation_string(
+        schema = objecttype_annotations._schema_for_annotation_string(
             "ua.ISA95ParameterDataType",
-            objecttype_schema._SchemaRegistry(),
+            objecttype_registry._SchemaRegistry(),
         )
         assert schema == {"$ref": "#/$defs/Parameter"}
     finally:
@@ -736,9 +737,9 @@ def test_localizedtext_deduplicates_across_distinct_runtime_types(monkeypatch: p
     monkeypatch.setattr(ua, "LocalizedText", localized_text_ua)
 
     try:
-        registry = objecttype_schema._SchemaRegistry()
-        from_ua = objecttype_schema._schema_for_annotation_string("ua.LocalizedText", registry)
-        from_module = objecttype_schema._schema_for_annotation_string(
+        registry = objecttype_registry._SchemaRegistry()
+        from_ua = objecttype_annotations._schema_for_annotation_string("ua.LocalizedText", registry)
+        from_module = objecttype_annotations._schema_for_annotation_string(
             "asyncua.common.structures902.LocalizedText",
             registry,
         )
@@ -758,7 +759,7 @@ def test_localizedtext_deduplicates_between_value_and_annotation_paths(monkeypat
         Text: str | None = None
 
     monkeypatch.setattr(ua, "LocalizedText", LocalizedText)
-    registry = objecttype_schema._SchemaRegistry()
+    registry = objecttype_registry._SchemaRegistry()
 
     value_ref = objecttype_schema._reference_or_register_structure(
         "py-structure:test.localizedtextvalue",
@@ -766,7 +767,7 @@ def test_localizedtext_deduplicates_between_value_and_annotation_paths(monkeypat
         registry,
         {},
     )
-    annotation_ref = objecttype_schema._schema_for_annotation_string("ua.LocalizedText", registry)
+    annotation_ref = objecttype_annotations._schema_for_annotation_string("ua.LocalizedText", registry)
 
     assert value_ref == {"$ref": "#/$defs/LocalizedText"}
     assert annotation_ref == {"$ref": "#/$defs/LocalizedText"}
@@ -781,15 +782,15 @@ def test_isa95_workmaster_deduplicates_between_annotation_and_datatype_paths() -
     class ISA95WorkMasterDataType:
         ID: str | None = None
 
-    registry = objecttype_schema._SchemaRegistry()
+    registry = objecttype_registry._SchemaRegistry()
 
-    from_annotation = objecttype_schema._reference_or_register_structure_from_type(
+    from_annotation = objecttype_annotations._reference_or_register_structure_from_type(
         "py-annotation:test.isa95workmasterdatatype",
         ISA95WorkMasterDataType,
         registry,
         {},
     )
-    from_datatype = objecttype_schema._reference_or_register_structure_from_type(
+    from_datatype = objecttype_annotations._reference_or_register_structure_from_type(
         "opcua-datatype:nsu=http://opcfoundation.org/ua/isa95-jobcontrol_v2/;i=3007",
         ISA95WorkMasterDataType,
         registry,
@@ -810,7 +811,7 @@ def test_expand_schema_refs_inlines_nested_refs() -> None:
         "outer": {"type": "object", "properties": {"inner": {"$ref": "#/$defs/nested"}}},
     }
     schema = {"$ref": "#/$defs/outer"}
-    expanded = objecttype_schema._expand_schema_refs(schema, defs)
+    expanded = objecttype_registry._expand_schema_refs(schema, defs)
     assert expanded["properties"]["inner"]["properties"]["x"]["type"] == "string"
 
 
@@ -827,7 +828,7 @@ def test_expand_schema_refs_preserves_recursive_boundary_ref() -> None:
         }
     }
     schema = {"$ref": "#/$defs/recursive"}
-    expanded = objecttype_schema._expand_schema_refs(schema, defs)
+    expanded = objecttype_registry._expand_schema_refs(schema, defs)
     assert expanded["type"] == "object"
     assert expanded["properties"]["children"]["type"] == "array"
     assert expanded["properties"]["children"]["items"]["$ref"] == "#/$defs/recursive"
@@ -846,8 +847,8 @@ def test_generated_dep_annotation_is_evaluated_in_owner_module_context() -> None
     try:
         carrier_cls = type("Carrier", (), {"__module__": module.__name__, "__annotations__": {"Child": "_dep_0"}})
         _Carrier: type[Any] = dataclass(carrier_cls)
-        registry = objecttype_schema._SchemaRegistry()
-        schema = objecttype_schema._structure_schema_for_type(_Carrier, registry)
+        registry = objecttype_registry._SchemaRegistry()
+        schema = objecttype_annotations._structure_schema_for_type(_Carrier, registry)
         child_ref = _extract_ref(schema["properties"]["Child"])
         assert child_ref == "#/$defs/Nested"
     finally:
@@ -855,12 +856,14 @@ def test_generated_dep_annotation_is_evaluated_in_owner_module_context() -> None
 
 
 def test_uint32_annotation_maps_to_integer() -> None:
-    schema = objecttype_schema._schema_for_annotation(ua.UInt32, objecttype_schema._SchemaRegistry())
+    schema = objecttype_annotations._schema_for_annotation(ua.UInt32, objecttype_registry._SchemaRegistry())
     assert schema["type"] == "integer"
 
 
 def test_enum_annotation_string_maps_to_integer_enum() -> None:
-    schema = objecttype_schema._schema_for_annotation_string("ua.ServerState", objecttype_schema._SchemaRegistry())
+    schema = objecttype_annotations._schema_for_annotation_string(
+        "ua.ServerState", objecttype_registry._SchemaRegistry()
+    )
     assert schema["type"] == "integer"
     assert isinstance(schema.get("enum"), list)
     assert schema.get("x-opcua-enumNames")
@@ -894,11 +897,12 @@ def test_enum_like_fields_in_standard_datatypes_do_not_degrade_to_object(
         data_type_id,
         [OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/", display_name="UA")],
     )
-    if not isinstance(schema, dict):
-        pytest.skip(f"Datatype schema unavailable in this asyncua build: {data_type_id}")
+    # These standard datatypes ship with the pinned asyncua build; skipping silently would turn
+    # this regression guard into a no-op when the dependency is bumped (L12).
+    assert isinstance(schema, dict), f"Datatype schema unavailable in this asyncua build: {data_type_id}"
     properties = schema.get("properties")
-    if not isinstance(properties, dict) or field_name not in properties:
-        pytest.skip(f"Field unavailable in this asyncua build: {data_type_id}.{field_name}")
+    assert isinstance(properties, dict), f"Datatype schema has no properties: {data_type_id}"
+    assert field_name in properties, f"Field unavailable in this asyncua build: {data_type_id}.{field_name}"
 
     field_schema = properties[field_name]
     assert isinstance(field_schema, dict)
@@ -924,7 +928,7 @@ def test_guess_generated_dependency_type_prefers_parameter_for_joborderparameter
     module_any.ISA95ParameterDataType = ISA95ParameterDataType
     sys.modules[module.__name__] = module
     try:
-        guessed = objecttype_schema._guess_generated_dependency_type("JobOrderParameters", ISA95JobOrderDataType)
+        guessed = objecttype_annotations._guess_generated_dependency_type("JobOrderParameters", ISA95JobOrderDataType)
         assert guessed is ISA95ParameterDataType
     finally:
         sys.modules.pop(module.__name__, None)
@@ -949,7 +953,7 @@ def test_guess_generated_dependency_type_prefers_workmaster_for_workmasterid() -
     module_any.ISA95ParameterDataType = ISA95ParameterDataType
     sys.modules[module.__name__] = module
     try:
-        guessed = objecttype_schema._guess_generated_dependency_type("WorkMasterID", ISA95WorkMasterDataType)
+        guessed = objecttype_annotations._guess_generated_dependency_type("WorkMasterID", ISA95WorkMasterDataType)
         assert guessed is ISA95WorkMasterDataType
     finally:
         sys.modules.pop(module.__name__, None)
@@ -974,7 +978,9 @@ def test_guess_generated_dependency_type_prefers_personnel_for_personnelrequirem
     module_any.ISA95ParameterDataType = ISA95ParameterDataType
     sys.modules[module.__name__] = module
     try:
-        guessed = objecttype_schema._guess_generated_dependency_type("PersonnelRequirements", ISA95PersonnelDataType)
+        guessed = objecttype_annotations._guess_generated_dependency_type(
+            "PersonnelRequirements", ISA95PersonnelDataType
+        )
         assert guessed is ISA95PersonnelDataType
     finally:
         sys.modules.pop(module.__name__, None)
@@ -1026,8 +1032,8 @@ def test_nodeid_datatype_schema_uses_discriminated_identifier_branches() -> None
 
 
 def test_nodeid_annotation_schema_keeps_nodeidtype_identifier_dependency() -> None:
-    registry = objecttype_schema._SchemaRegistry()
-    ref = objecttype_schema._schema_for_annotation_string("ua.NodeId", registry)
+    registry = objecttype_registry._SchemaRegistry()
+    ref = objecttype_annotations._schema_for_annotation_string("ua.NodeId", registry)
     assert ref == {"$ref": "#/$defs/NodeId"}
 
     nodeid_def = registry.defs["NodeId"]
@@ -1048,9 +1054,9 @@ def test_nodeid_annotation_schema_keeps_nodeidtype_identifier_dependency() -> No
 
 
 def test_nodeid_annotation_and_datatype_use_single_canonical_definition() -> None:
-    registry = objecttype_schema._SchemaRegistry()
+    registry = objecttype_registry._SchemaRegistry()
 
-    annotation_ref = objecttype_schema._schema_for_annotation_string("ua.NodeId", registry)
+    annotation_ref = objecttype_annotations._schema_for_annotation_string("ua.NodeId", registry)
     datatype_ref = objecttype_schema._schema_from_data_type(
         "nsu=http://opcfoundation.org/UA/;i=17",
         [OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/", display_name="UA")],
@@ -1080,14 +1086,14 @@ def test_nodeid_structure_value_and_annotation_share_single_canonical_definition
 
     monkeypatch.setattr(ua, "NodeId", NodeId)
 
-    registry = objecttype_schema._SchemaRegistry()
+    registry = objecttype_registry._SchemaRegistry()
     value_ref = objecttype_schema._reference_or_register_structure(
         "py-structure:test.nodeid",
         NodeId(),
         registry,
         {},
     )
-    annotation_ref = objecttype_schema._schema_for_annotation_string("ua.NodeId", registry)
+    annotation_ref = objecttype_annotations._schema_for_annotation_string("ua.NodeId", registry)
 
     assert value_ref == {"$ref": "#/$defs/NodeId"}
     assert annotation_ref == {"$ref": "#/$defs/NodeId"}
@@ -1120,8 +1126,216 @@ def test_dedupe_defs_rewrites_local_refs_to_first_definition() -> None:
         "allOf": [{"$ref": "#/$defs/Alpha_2"}],
     }
 
-    objecttype_schema._dedupe_defs_and_rewrite_local_refs(schema)
+    objecttype_registry._dedupe_defs_and_rewrite_local_refs(schema)
 
     assert set(schema["$defs"].keys()) == {"Alpha", "Wrapper"}
     assert schema["allOf"][0]["$ref"] == "#/$defs/Alpha"
     assert schema["$defs"]["Wrapper"]["properties"]["nested"]["$ref"] == "#/$defs/Alpha"
+
+
+def _namespace_infos() -> list[OpcUaNamespaceInfo]:
+    return [
+        OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/", display_name="UA"),
+        OpcUaNamespaceInfo(uri="urn:namespace-a", display_name="NamespaceA"),
+        OpcUaNamespaceInfo(uri="urn:namespace-b", display_name="NamespaceB"),
+    ]
+
+
+def test_same_browse_name_ancestors_keep_separate_definitions() -> None:
+    """Ancestors sharing a BrowseName must not share one ``$defs`` entry (M12).
+
+    Two ObjectTypes in different namespaces can have the same BrowseName, and one is commonly a
+    subtype of the other. Keying an unresolved ancestor by BrowseName alone made ``set_definition``
+    overwrite the ancestor's schema, so both ``allOf`` entries pointed at the descendant's schema and
+    write validation checked the wrong required fields.
+    """
+    base = OpcUaObjectTypeInfo(
+        node_id="ns=3;i=1000",
+        parent_node_id="ns=2;i=1000",
+        browse_name="SharedBase",
+        display_name="SharedBase (namespace B)",
+        properties={"Beta": "ns=0;i=6"},
+        members=[
+            OpcUaObjectTypeMemberInfo(
+                node_id="ns=3;i=2001",
+                browse_name="Beta",
+                display_name="Beta",
+                description=None,
+                node_class="Variable",
+                data_type="ns=0;i=6",
+                modelling_rule="Mandatory",
+                value=None,
+            )
+        ],
+    )
+    parent = OpcUaObjectTypeInfo(
+        node_id="ns=2;i=1000",
+        parent_node_id=None,
+        browse_name="SharedBase",
+        display_name="SharedBase (namespace A)",
+        properties={"Alpha": "ns=0;i=6"},
+        members=[
+            OpcUaObjectTypeMemberInfo(
+                node_id="ns=2;i=2001",
+                browse_name="Alpha",
+                display_name="Alpha",
+                description=None,
+                node_class="Variable",
+                data_type="ns=0;i=6",
+                modelling_rule="Mandatory",
+                value=None,
+            )
+        ],
+    )
+    derived = OpcUaObjectTypeInfo(
+        node_id="ns=2;i=3000",
+        parent_node_id="ns=3;i=1000",
+        browse_name="DerivedType",
+        display_name="DerivedType",
+        properties={"Gamma": "ns=0;i=6"},
+        members=[
+            OpcUaObjectTypeMemberInfo(
+                node_id="ns=2;i=3001",
+                browse_name="Gamma",
+                display_name="Gamma",
+                description=None,
+                node_class="Variable",
+                data_type="ns=0;i=6",
+                modelling_rule="Mandatory",
+                value=None,
+            )
+        ],
+    )
+
+    schema = build_object_type_schema(
+        derived,
+        {base.node_id: base, parent.node_id: parent, derived.node_id: derived},
+        {derived.node_id: "derived-type"},
+        _namespace_infos(),
+    )
+
+    definition_names = list(schema["$defs"])
+    assert len(definition_names) == 3, definition_names
+    ref_names = [entry["$ref"].split("#/$defs/", 1)[1] for entry in schema["allOf"]]
+    assert len(set(ref_names)) == 3, ref_names
+
+    # Both ancestors contribute their mandatory fields.
+    assert schema["required"] == ["Alpha", "Beta", "Gamma"]
+    validator = Draft202012Validator(schema)
+    assert not validator.is_valid({"Alpha": 1, "Gamma": 1})
+    assert not validator.is_valid({"Beta": 1, "Gamma": 1})
+    assert validator.is_valid({"Alpha": 1, "Beta": 1, "Gamma": 1})
+
+
+@pytest.mark.parametrize("value_rank", [-2, -3])
+def test_one_or_more_dimension_value_rank_is_modelled_as_array(value_rank: int) -> None:
+    """ValueRank -2 (OneOrMoreDimensions) and -3 (ScalarOrOneDimension) allow array values."""
+    member = OpcUaObjectTypeMemberInfo(
+        node_id="ns=2;i=2000",
+        browse_name="Values",
+        display_name="Values",
+        description=None,
+        node_class="Variable",
+        data_type="ns=0;i=6",
+        modelling_rule="Optional",
+        value=None,
+        value_rank=value_rank,
+    )
+    item = OpcUaObjectTypeInfo(
+        node_id="ns=2;i=1000",
+        parent_node_id=None,
+        browse_name="DimensionedType",
+        display_name="DimensionedType",
+        properties={"Values": "ns=0;i=6"},
+        members=[member],
+    )
+    schema = build_object_type_schema(
+        item,
+        {item.node_id: item},
+        {item.node_id: "dimensioned-type"},
+        _namespace_infos(),
+    )
+
+    prop = schema["properties"]["Values"]
+    assert prop["type"] == "array"
+    assert prop["items"] == {"type": "integer"}
+    assert prop["x-opcua-valueRank"] == value_rank
+    validator = Draft202012Validator(schema)
+    assert validator.is_valid({"Values": [1, 2]})
+
+
+def test_object_member_keeps_resolved_datatype_schema_and_array_shape() -> None:
+    """A NodeClass ``Object`` member must not discard its DataType schema or its ValueRank shape."""
+    members = [
+        OpcUaObjectTypeMemberInfo(
+            node_id="ns=2;i=2000",
+            browse_name="ScalarObject",
+            display_name="ScalarObject",
+            description=None,
+            node_class="Object",
+            data_type="ns=2;i=3001",
+            modelling_rule="Optional",
+            value=None,
+            value_rank=-1,
+        ),
+        OpcUaObjectTypeMemberInfo(
+            node_id="ns=2;i=2001",
+            browse_name="ObjectList",
+            display_name="ObjectList",
+            description=None,
+            node_class="Object",
+            data_type="ns=2;i=3001",
+            modelling_rule="Optional",
+            value=None,
+            value_rank=-2,
+        ),
+    ]
+    item = OpcUaObjectTypeInfo(
+        node_id="ns=2;i=1000",
+        parent_node_id=None,
+        browse_name="ObjectMemberType",
+        display_name="ObjectMemberType",
+        properties={member.browse_name: member.data_type for member in members},
+        members=members,
+    )
+    schema = build_object_type_schema(
+        item,
+        {item.node_id: item},
+        {item.node_id: "object-member-type"},
+        _namespace_infos(),
+        resolved_data_type_schemas={"nsu=urn:namespace-b;i=3001": {"type": "integer", "minimum": 0}},
+    )
+
+    assert schema["properties"]["ScalarObject"]["type"] == "integer"
+    assert schema["properties"]["ScalarObject"]["minimum"] == 0
+    assert schema["properties"]["ObjectList"]["type"] == "array"
+    assert schema["properties"]["ObjectList"]["items"] == {"type": "integer", "minimum": 0}
+    validator = Draft202012Validator(schema)
+    assert validator.is_valid({"ScalarObject": 7, "ObjectList": [0, 1]})
+    assert not validator.is_valid({"ScalarObject": -1})
+    assert not validator.is_valid({"ObjectList": [7, "text"]})
+
+
+@pytest.mark.parametrize(
+    ("annotation", "expected"),
+    [
+        # ``X | Y`` yields ``types.UnionType``; ``typing.Union[...]`` yields ``typing.Union`` - both
+        # appear in annotations coming from asyncua dataclasses and pydantic models.
+        (int | str, {"anyOf": [{"type": "integer"}, {"type": "string"}]}),
+        (typing.Union[int, str], {"anyOf": [{"type": "integer"}, {"type": "string"}]}),  # noqa: UP007
+        (int | None, {"type": ["integer", "null"]}),
+        (
+            int | str | None,
+            {"anyOf": [{"type": "integer"}, {"type": "string"}, {"type": "null"}]},
+        ),
+        (type(None), {"type": "null"}),
+        (
+            list[int | str],
+            {"type": "array", "items": {"anyOf": [{"type": "integer"}, {"type": "string"}]}},
+        ),
+    ],
+)
+def test_annotation_unions_keep_all_members(annotation: Any, expected: dict[str, Any]) -> None:
+    """``Union[int, str]`` must stay a union instead of collapsing to the string fallback."""
+    registry = objecttype_registry._SchemaRegistry()
+    assert objecttype_annotations._schema_for_annotation(annotation, registry) == expected

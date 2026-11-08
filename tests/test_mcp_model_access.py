@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from jsonschema import Draft202012Validator
 from starlette.requests import Request
 
-from i3x_server.api.mcp.monolithic import router
+from i3x_server.api.mcp.router import router
 from i3x_server.api.v1.contracts import ObjectTypeResponse
 from i3x_server.api.v1.objecttype_helpers import _object_type_context_revision, _ObjectTypeContext
 from i3x_server.application.ports.opcua import OpcUaNamespaceInfo, OpcUaObjectTypeInfo
@@ -501,6 +501,46 @@ async def test_all_access_tools_are_registered_read_only_and_never_build_or_cont
         assert response["status_code"] == 200
         assert response["body"]["modelRevision"] == model_revision(model)
     forbidden.assert_not_called()
+
+
+_COMPOSITE_ARGUMENTS: dict[str, dict[str, Any]] = {
+    "searchModelElements": {"text": "temp"},
+    "getElementContext": {"elementId": "station-a"},
+    "summarizeSubtree": {"rootElementId": "station-a"},
+    "traceRelationshipPath": {"sourceElementId": "station-a", "targetElementId": "station-b"},
+}
+
+
+@pytest.mark.asyncio
+async def test_composite_model_tools_read_the_cache_and_never_build(model: BuildResult) -> None:
+    """The four composite tools run on the cached model only (`docs/MCP_SERVER_GUIDE.md`)."""
+    app = FastAPI()
+    provider = AsyncMock(side_effect=AssertionError("Composite tools must not build a model or contact OPC UA"))
+    app.state.mcp_model_provider = provider
+    app.state.model_cache = model
+    app.state.opcua_client = _ForbiddenLiveAccess()
+    request = Request({"type": "http", "app": app, "headers": []})
+    tools = build_mcp_tools({"paths": {}}, overrides={})
+    for name, arguments in _COMPOSITE_ARGUMENTS.items():
+        response = await invoke_mcp_tool(request, tools[name], arguments)
+        assert response["status_code"] == 200
+        assert response["body"]["modelRevision"] == model_revision(model)
+    provider.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_composite_model_tools_answer_503_without_cached_model() -> None:
+    """A cache miss must answer 503 instead of starting a full address-space browse."""
+    app = FastAPI()
+    provider = AsyncMock(side_effect=AssertionError("A cache miss must not build a model"))
+    app.state.mcp_model_provider = provider
+    request = Request({"type": "http", "app": app, "headers": []})
+    tools = build_mcp_tools({"paths": {}}, overrides={})
+    for name, arguments in _COMPOSITE_ARGUMENTS.items():
+        with pytest.raises(HTTPException) as exc:
+            await invoke_mcp_tool(request, tools[name], arguments)
+        assert exc.value.status_code == 503
+    provider.assert_not_awaited()
 
 
 @pytest.mark.asyncio

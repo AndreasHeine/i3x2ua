@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import signal
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock
@@ -394,3 +395,21 @@ def test_prepare_otel_environment_preserves_standard_values(monkeypatch: pytest.
 
     assert os.environ["OTEL_SERVICE_NAME"] == "standard-service"
     assert os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://legacy:4318"
+
+
+@pytest.mark.asyncio
+async def test_lifespan_deregisters_signal_handlers_on_shutdown(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Shutdown must restore the signal handlers it installed (L5).
+
+    Otherwise a later `create_app()` in the same process chains onto the previous
+    app's handler and `_early_shutdown` fires on a closed event loop.
+    """
+    monkeypatch.setenv("I3X_SKIP_OPCUA_CONNECT", "1")
+    monkeypatch.setenv("I3X_ENABLE_MCP", "0")
+    app = FastAPI()
+
+    before = signal.getsignal(signal.SIGINT)
+    async with app_factory.lifespan(app):
+        during = signal.getsignal(signal.SIGINT)
+        assert during != before, "lifespan must install a SIGINT handler"
+    assert signal.getsignal(signal.SIGINT) != during, "lifespan must deregister the SIGINT handler"

@@ -18,16 +18,34 @@ def _load_local_env(env_path: str = ".env") -> None:
         if not key:
             continue
         value = value.strip()
-        if value.startswith(('"', "'")) and value.endswith(('"', "'")) and len(value) >= 2:
-            value = value[1:-1]
+        if value.startswith(('"', "'")):
+            quote = value[0]
+            closing = value.find(quote, 1)
+            if closing > 0:
+                # python-dotenv ignores whatever follows the closing quote (a comment).
+                value = value[1:closing]
+        elif value:
+            # Unquoted values may carry a trailing ` # comment` (python-dotenv strips it).
+            value = value.split(" #", 1)[0].strip()
         os.environ.setdefault(key, value)
 
 
-if __name__ == "__main__":
+def _prepare_environment(env_path: str = ".env") -> None:
+    """Load `.env` before applying platform defaults.
+
+    Real shell values always win (everything goes through `setdefault`), but the file must
+    be read *first*: on Windows the `I3X_HOST=127.0.0.1` default applied before the load
+    silently out-ranked `.env` (`pydantic-settings` prefers the process environment over
+    the file), so `python run.py` bound localhost even though `.env` requested `0.0.0.0`.
+    """
+    _load_local_env(env_path)
     if os.name == "nt":
         # Keep local dev requests on localhost stable unless explicitly overridden.
         os.environ.setdefault("I3X_HOST", "127.0.0.1")
-    _load_local_env()
+
+
+if __name__ == "__main__":
+    _prepare_environment()
     host = os.getenv("I3X_HOST", "0.0.0.0")
     port = os.getenv("I3X_PORT", "8000")
     if os.name == "nt":
@@ -36,7 +54,7 @@ if __name__ == "__main__":
         reload_default = "1"
     reload_enabled = os.getenv("I3X_RELOAD", reload_default).strip().lower() in {"1", "true", "yes", "on"}
     requested_loop = os.getenv("I3X_UVICORN_LOOP", "").strip().lower()
-    # uvicorn 0.41 imports uvicorn.loops (which imports uvloop) for several
+    # uvicorn imports uvicorn.loops (which imports uvloop) for several
     # loop options. On Windows, forcing "none" avoids uvloop import failures.
     if os.name == "nt":
         uvicorn_loop = "none"

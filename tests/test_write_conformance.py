@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from unittest.mock import AsyncMock
@@ -12,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from i3x_server.api.v1.contracts import HistoryWriteVQTRequest, WriteVQTRequest
 from i3x_server.api.v1.object_helpers import _resolved_type_element_id_for_node
+from i3x_server.api.v1.object_value_helpers import _classify_write_error
 from i3x_server.domain.ports.opcua import OpcUaWriteMetadataUnsupportedError
 from tests.conftest import fastapi_app
 
@@ -475,3 +477,114 @@ def test_unsupported_access_read_does_not_disable_history_service(
     assert response.json()["results"][0]["responseDetail"]["status"] == 502
     assert read_access.await_count == 2
     write.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    "status_code,expected",
+    [
+        (StatusCodes.BadNodeIdUnknown, (404, "node_not_found")),
+        (StatusCodes.BadUserAccessDenied, (403, "unauthorized_by_opcua_server")),
+        (StatusCodes.BadNotWritable, (403, "target_not_writable")),
+        (StatusCodes.BadTypeMismatch, (400, "bad_type_or_range")),
+        (StatusCodes.BadOutOfRange, (400, "bad_type_or_range")),
+        (StatusCodes.BadInvalidArgument, (400, "bad_type_or_range")),
+        (StatusCodes.BadSessionClosed, (502, "session_or_transport_failure")),
+        (StatusCodes.BadSessionIdInvalid, (502, "session_or_transport_failure")),
+        (StatusCodes.BadSecureChannelClosed, (502, "session_or_transport_failure")),
+        (StatusCodes.BadConnectionClosed, (502, "session_or_transport_failure")),
+        (StatusCodes.BadServerHalted, (502, "session_or_transport_failure")),
+        # Rejections outside the mapped set stay server failures, not gateway transport trouble.
+        (StatusCodes.BadHistoryOperationUnsupported, (502, "opcua_write_failed")),
+    ],
+)
+def test_write_error_classification_uses_status_codes(status_code: int, expected: tuple[int, str]) -> None:
+    assert _classify_write_error(_status_error(status_code)) == expected
+
+
+def test_service_unsupported_classification_depends_on_the_write_kind() -> None:
+    """`BadServiceUnsupported` means \"write not offered\" only on the current-value path."""
+    unsupported = _status_error(StatusCodes.BadServiceUnsupported)
+    not_implemented = _status_error(StatusCodes.BadNotImplemented)
+
+    assert _classify_write_error(unsupported, service_unsupported_is_write_unavailable=True) == (
+        501,
+        "write_not_supported_by_opcua_server",
+    )
+    assert _classify_write_error(not_implemented, service_unsupported_is_write_unavailable=True) == (
+        501,
+        "write_not_supported_by_opcua_server",
+    )
+    # The history route decides service-wide unavailability itself; an access-read rejection
+    # must not claim the whole service is unavailable.
+    assert _classify_write_error(unsupported) == (502, "opcua_write_failed")
+    assert _classify_write_error(not_implemented) == (502, "opcua_write_failed")
+
+
+def test_write_error_classification_without_status_code() -> None:
+    assert _classify_write_error(ConnectionResetError("connection reset by peer")) == (
+        502,
+        "session_or_transport_failure",
+    )
+    assert _classify_write_error(asyncio.TimeoutError()) == (502, "session_or_transport_failure")
+    assert _classify_write_error(RuntimeError("discovery failed")) == (502, "opcua_write_failed")
+
+
+@pytest.mark.parametrize(
+    "status_code,expected_status,expected_detail",
+    [
+        (StatusCodes.BadNodeIdUnknown, 404, "node_not_found"),
+        (StatusCodes.BadUserAccessDenied, 403, "unauthorized_by_opcua_server"),
+        (StatusCodes.BadNotWritable, 403, "target_not_writable"),
+        (StatusCodes.BadTypeMismatch, 400, "bad_type_or_range"),
+        (StatusCodes.BadSessionClosed, 502, "session_or_transport_failure"),
+        (StatusCodes.BadServiceUnsupported, 501, "write_not_supported_by_opcua_server"),
+    ],
+)
+def test_current_value_write_reports_upstream_status_codes_at_item_level(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    status_code: int,
+    expected_status: int,
+    expected_detail: str,
+) -> None:
+    monkeypatch.setenv("I3X_ENABLE_WRITES", "1")
+    opcua = fastapi_app(client).state.opcua_client
+    write = AsyncMock(side_effect=_status_error(status_code))
+    monkeypatch.setattr(opcua, "write_value", write)
+
+    response = _write(client, "value", 19.5)
+
+    assert response.status_code == 200
+    item = response.json()["results"][0]
+    assert item["success"] is False
+    assert item["responseDetail"]["status"] == expected_status
+    assert item["responseDetail"]["detail"] == expected_detail
+
+
+def test_current_value_write_reports_deleted_node_as_not_found(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A node deleted after the model snapshot is 404 item-level, not a retryable 502.
+
+    Exception text matched on the old classifier reported `BadNodeIdUnknown` as
+    ``session_or_transport_failure``; clients retried a permanently wrong request.
+    """
+    monkeypatch.setenv("I3X_ENABLE_WRITES", "1")
+    opcua = fastapi_app(client).state.opcua_client
+    monkeypatch.setattr(
+        opcua,
+        "read_write_access",
+        AsyncMock(side_effect=_status_error(StatusCodes.BadNodeIdUnknown)),
+    )
+    write = AsyncMock()
+    monkeypatch.setattr(opcua, "write_value", write)
+
+    response = _write(client, "value", 19.5)
+
+    assert response.status_code == 200
+    item = response.json()["results"][0]
+    assert item["success"] is False
+    assert item["responseDetail"]["status"] == 404
+    assert item["responseDetail"]["detail"] == "node_not_found"
+    write.assert_not_awaited()

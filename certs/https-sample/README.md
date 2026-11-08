@@ -18,8 +18,15 @@ Optional custom values:
 ```bash
 uv run python scripts/generate_https_dev_cert.py \
   --common-name localhost \
-  --dns localhost --dns 127.0.0.1 --dns my-dev-host
+  --dns localhost --dns my-dev-host \
+  --ip 127.0.0.1 \
+  --days-valid 365 \
+  --include-hostname
 ```
+
+Use `--ip` for numeric addresses so they are written as SAN `iPAddress` entries; `--dns`
+entries are written as `dNSName`. `--days-valid` must be positive. `--include-hostname` is off
+by default so the certificate does not carry your machine name.
 
 Use with Docker Compose nginx HTTPS settings:
 
@@ -30,6 +37,8 @@ Use with Docker Compose nginx HTTPS settings:
 
 Important:
 
+- The files in this directory are committed to a public repository, so the private key is
+  public sample material with no confidentiality or identity value.
 - This bundle is not intended for production use.
 - Browsers will show a warning for self-signed certificates unless the certificate is trusted locally.
 - For production, use certificates from your CA or Let's Encrypt.

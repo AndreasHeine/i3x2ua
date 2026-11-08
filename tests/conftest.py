@@ -9,8 +9,7 @@ Provides:
 
 from __future__ import annotations
 
-import os
-from collections.abc import Generator
+from collections.abc import Callable, Generator, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -19,6 +18,7 @@ from typing import Any, cast
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from jsonschema import Draft202012Validator
 
 from i3x_server.bootstrap.app_factory import create_app
 from i3x_server.infrastructure.opcua.client import (
@@ -29,7 +29,7 @@ from i3x_server.infrastructure.opcua.client import (
     OpcUaSubscriptionCapabilities,
 )
 from i3x_server.infrastructure.subscriptions.service import SubscriptionService
-from i3x_server.schemas.i3x import ModelNode
+from i3x_server.schemas.i3x import ModelNode, NodeKind
 from i3x_server.schemas.state import BuildResult
 
 
@@ -107,6 +107,74 @@ def configure_test_app(app: FastAPI) -> None:
     )
     app.state.opcua_client = FakeOpcUaClient()
     app.state.subscription_service = SubscriptionService(app.state.opcua_client, interval_seconds=1)
+
+
+def _append_unique(items: list[str], *values: str) -> None:
+    for value in values:
+        if value not in items:
+            items.append(value)
+
+
+def add_composition_depth_chain(app: FastAPI) -> dict[str, str]:
+    """Attach a three-level composition chain plus a hierarchy-only branch to the test model.
+
+    Composition plane (``HasComponent``): ``asset-root`` -> ``comp-prop`` (level 1),
+    ``asset-root`` -> ``comp-child`` -> ``mid-prop`` (level 2), ``comp-child`` -> ``sub-comp``
+    -> ``deep-prop`` (level 3). Hierarchy plane (``HasChildren``): ``asset-root`` ->
+    ``hier-child`` -> ``hier-prop`` - those must never be reached by value/history recursion
+    (i3X spec IMPLEMENTATION_GUIDE.md:1111).
+    """
+    model = app.state.model_cache
+    chain: dict[str, tuple[str, NodeKind, str]] = {
+        "comp-prop": ("CompositionProp", "property", "ns=2;s=CompositionProp"),
+        "comp-child": ("CompChild", "asset", "ns=2;s=CompChild"),
+        "mid-prop": ("MidProp", "property", "ns=2;s=MidProp"),
+        "sub-comp": ("SubComp", "asset", "ns=2;s=SubComp"),
+        "deep-prop": ("DeepProp", "property", "ns=2;s=DeepProp"),
+        "hier-child": ("HierChild", "asset", "ns=2;s=HierChild"),
+        "hier-prop": ("HierProp", "property", "ns=2;s=HierProp"),
+    }
+    for node_id, (name, kind, source_node_id) in chain.items():
+        model.nodes_by_id[node_id] = ModelNode(
+            id=node_id,
+            name=name,
+            kind=kind,
+            type=None,
+            children=[],
+            source_node_id=source_node_id,
+        )
+        model.children_by_id[node_id] = []
+
+    _append_unique(model.children_by_id.setdefault("asset-root", []), "comp-prop", "comp-child", "hier-child")
+    model.children_by_id["comp-child"] = ["mid-prop", "sub-comp"]
+    model.children_by_id["sub-comp"] = ["deep-prop"]
+    model.children_by_id["hier-child"] = ["hier-prop"]
+
+    composition = model.composition_children_by_id
+    _append_unique(composition.setdefault("asset-root", []), "comp-prop", "comp-child")
+    composition["comp-child"] = ["mid-prop", "sub-comp"]
+    composition["sub-comp"] = ["deep-prop"]
+    composition["hier-child"] = ["hier-prop"]
+
+    hierarchy = model.hierarchy_children_by_id
+    _append_unique(hierarchy.setdefault("asset-root", []), "comp-prop", "comp-child", "hier-child")
+    hierarchy["hier-child"] = ["hier-prop"]
+
+    client = app.state.opcua_client
+    for node_id, (_name, kind, source_node_id) in chain.items():
+        if kind != "property":
+            continue
+        model.property_to_node[node_id] = source_node_id
+        client.values.setdefault(source_node_id, 10.0)
+        client.history_values.setdefault(source_node_id, []).append(
+            SimpleNamespace(
+                Value=SimpleNamespace(Value=10.0),
+                StatusCode=SimpleNamespace(name="Good"),
+                SourceTimestamp=datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc),
+                ServerTimestamp=None,
+            )
+        )
+    return {node_id: node_id for node_id in chain}
 
 
 class FakeOpcUaClient:
@@ -258,6 +326,10 @@ class FakeOpcUaClient:
             return "SessionDiagnosticsDataType"
         if node_id == "ns=0;i=96":
             return "RolePermissionType"
+        if node_id == "nsu=http://example.com/custom;i=900001":
+            return "CustomNetworkAddressType"
+        if node_id == "nsu=http://example.com/custom;i=900002":
+            return "CustomMachineStateType"
         return None
 
     async def read_values(self, node_ids: list[str]) -> list[Any]:
@@ -418,110 +490,61 @@ class FakeOpcUaClient:
         return None
 
 
+_MCP_ENABLED_ENV = {
+    "I3X_ENABLE_MCP": "1",
+    "I3X_SKIP_OPCUA_CONNECT": "1",
+    "I3X_ENABLE_WRITES": "0",
+    "I3X_MCP_INCLUDE_OPCUA_METADATA": "1",
+}
+# Explicitly disabled: unsetting would let a .env in the working directory enable MCP.
+_MCP_DISABLED_ENV = {**_MCP_ENABLED_ENV, "I3X_ENABLE_MCP": "0"}
+
+
+def _test_client_with_env(
+    monkeypatch: pytest.MonkeyPatch,
+    env: Mapping[str, str],
+    configure: Callable[[FastAPI], None],
+) -> Generator[TestClient, None, None]:
+    """Build an app with the given environment.
+
+    `monkeypatch` restores the variables even when `create_app()` raises, which manual
+    `os.environ` mutation would leak into later tests (L12).
+    """
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    app = create_app()
+    with TestClient(app) as test_client:
+        configure(app)
+        yield test_client
+
+
 @pytest.fixture
-def client() -> Generator[TestClient, None, None]:
+def client(monkeypatch: pytest.MonkeyPatch) -> Generator[TestClient, None, None]:
     """Test client fixture with MCP enabled."""
-    previous_enable_mcp = os.environ.get("I3X_ENABLE_MCP")
-    previous_skip_connect = os.environ.get("I3X_SKIP_OPCUA_CONNECT")
-    previous_enable_writes = os.environ.get("I3X_ENABLE_WRITES")
-    previous_mcp_include_opcua_metadata = os.environ.get("I3X_MCP_INCLUDE_OPCUA_METADATA")
-    os.environ["I3X_ENABLE_MCP"] = "1"
-    os.environ["I3X_SKIP_OPCUA_CONNECT"] = "1"
-    os.environ["I3X_ENABLE_WRITES"] = "0"
-    os.environ["I3X_MCP_INCLUDE_OPCUA_METADATA"] = "1"
-    app = create_app()
-    try:
-        with TestClient(app) as test_client:
-            configure_test_app(app)
-            yield test_client
-    finally:
-        if previous_enable_mcp is None:
-            os.environ.pop("I3X_ENABLE_MCP", None)
-        else:
-            os.environ["I3X_ENABLE_MCP"] = previous_enable_mcp
-        if previous_skip_connect is None:
-            os.environ.pop("I3X_SKIP_OPCUA_CONNECT", None)
-        else:
-            os.environ["I3X_SKIP_OPCUA_CONNECT"] = previous_skip_connect
-        if previous_enable_writes is None:
-            os.environ.pop("I3X_ENABLE_WRITES", None)
-        else:
-            os.environ["I3X_ENABLE_WRITES"] = previous_enable_writes
-        if previous_mcp_include_opcua_metadata is None:
-            os.environ.pop("I3X_MCP_INCLUDE_OPCUA_METADATA", None)
-        else:
-            os.environ["I3X_MCP_INCLUDE_OPCUA_METADATA"] = previous_mcp_include_opcua_metadata
+    yield from _test_client_with_env(monkeypatch, _MCP_ENABLED_ENV, configure_test_app)
 
 
 @pytest.fixture
-def client_without_mcp() -> Generator[TestClient, None, None]:
+def client_without_mcp(monkeypatch: pytest.MonkeyPatch) -> Generator[TestClient, None, None]:
     """Test client fixture with MCP disabled."""
-    previous_enable_mcp = os.environ.get("I3X_ENABLE_MCP")
-    previous_skip_connect = os.environ.get("I3X_SKIP_OPCUA_CONNECT")
-    previous_enable_writes = os.environ.get("I3X_ENABLE_WRITES")
-    previous_mcp_include_opcua_metadata = os.environ.get("I3X_MCP_INCLUDE_OPCUA_METADATA")
-    os.environ.pop("I3X_ENABLE_MCP", None)
-    os.environ["I3X_SKIP_OPCUA_CONNECT"] = "1"
-    os.environ["I3X_ENABLE_WRITES"] = "0"
-    os.environ["I3X_MCP_INCLUDE_OPCUA_METADATA"] = "1"
-    app = create_app()
-    try:
-        with TestClient(app) as test_client:
-            configure_test_app(app)
-            yield test_client
-    finally:
-        if previous_enable_mcp is None:
-            os.environ.pop("I3X_ENABLE_MCP", None)
-        else:
-            os.environ["I3X_ENABLE_MCP"] = previous_enable_mcp
-        if previous_skip_connect is None:
-            os.environ.pop("I3X_SKIP_OPCUA_CONNECT", None)
-        else:
-            os.environ["I3X_SKIP_OPCUA_CONNECT"] = previous_skip_connect
-        if previous_enable_writes is None:
-            os.environ.pop("I3X_ENABLE_WRITES", None)
-        else:
-            os.environ["I3X_ENABLE_WRITES"] = previous_enable_writes
-        if previous_mcp_include_opcua_metadata is None:
-            os.environ.pop("I3X_MCP_INCLUDE_OPCUA_METADATA", None)
-        else:
-            os.environ["I3X_MCP_INCLUDE_OPCUA_METADATA"] = previous_mcp_include_opcua_metadata
+    yield from _test_client_with_env(monkeypatch, _MCP_DISABLED_ENV, configure_test_app)
 
 
 @pytest.fixture
 def client_without_tool_overrides(monkeypatch: pytest.MonkeyPatch) -> Generator[TestClient, None, None]:
     """Test client fixture with MCP tool overrides disabled."""
-    previous_enable_mcp = os.environ.get("I3X_ENABLE_MCP")
-    previous_skip_connect = os.environ.get("I3X_SKIP_OPCUA_CONNECT")
-    previous_enable_writes = os.environ.get("I3X_ENABLE_WRITES")
-    previous_mcp_include_opcua_metadata = os.environ.get("I3X_MCP_INCLUDE_OPCUA_METADATA")
-    os.environ["I3X_ENABLE_MCP"] = "1"
-    os.environ["I3X_SKIP_OPCUA_CONNECT"] = "1"
-    os.environ["I3X_ENABLE_WRITES"] = "0"
-    os.environ["I3X_MCP_INCLUDE_OPCUA_METADATA"] = "1"
     monkeypatch.setattr(
         "i3x_server.mcp.tool_definitions.load_overrides",
         lambda *args, **kwargs: {"tools": {}, "prompts": {}, "excluded_tools": []},
     )
-    app = create_app()
-    try:
-        with TestClient(app) as test_client:
-            configure_test_app(app)
-            yield test_client
-    finally:
-        if previous_enable_mcp is None:
-            os.environ.pop("I3X_ENABLE_MCP", None)
-        else:
-            os.environ["I3X_ENABLE_MCP"] = previous_enable_mcp
-        if previous_skip_connect is None:
-            os.environ.pop("I3X_SKIP_OPCUA_CONNECT", None)
-        else:
-            os.environ["I3X_SKIP_OPCUA_CONNECT"] = previous_skip_connect
-        if previous_enable_writes is None:
-            os.environ.pop("I3X_ENABLE_WRITES", None)
-        else:
-            os.environ["I3X_ENABLE_WRITES"] = previous_enable_writes
-        if previous_mcp_include_opcua_metadata is None:
-            os.environ.pop("I3X_MCP_INCLUDE_OPCUA_METADATA", None)
-        else:
-            os.environ["I3X_MCP_INCLUDE_OPCUA_METADATA"] = previous_mcp_include_opcua_metadata
+    yield from _test_client_with_env(monkeypatch, _MCP_ENABLED_ENV, configure_test_app)
+
+
+def assert_documented_response(client: TestClient, method: str, path: str, status: int, payload: Any) -> None:
+    """Validate a runtime payload against the response schema documented in ``/openapi.json``."""
+    document = client.get("/openapi.json").json()
+    schema = document["paths"][path][method]["responses"][str(status)]["content"]["application/json"]["schema"]
+    Draft202012Validator(
+        {**schema, "components": document["components"]},
+        format_checker=Draft202012Validator.FORMAT_CHECKER,
+    ).validate(payload)

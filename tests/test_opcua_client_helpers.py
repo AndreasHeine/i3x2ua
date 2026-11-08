@@ -19,16 +19,15 @@ from asyncua.ua.uaerrors import UaStatusCodeError
 
 from i3x_server.application.services.model_query import ModelQueryService
 from i3x_server.domain.ports.opcua import OpcUaNodeInfo
+from i3x_server.infrastructure.opcua.browse import _chunked, _chunked_nodes, _gather_cancelled_on_failure
 from i3x_server.infrastructure.opcua.client import (
     OpcUaClient,
     OpcUaNamespaceInfo,
     OpcUaOperationalLimits,
     _assert_file_exists,
-    _chunked,
-    _chunked_nodes,
-    _to_explicit_ua_variant,
-    _to_json_compatible,
 )
+from i3x_server.infrastructure.opcua.object_types import _to_json_compatible
+from i3x_server.infrastructure.opcua.values import _to_explicit_ua_variant
 from i3x_server.model.builder import ModelBuilder
 
 
@@ -294,6 +293,57 @@ def test_chunk_and_json_helpers() -> None:
     assert isinstance(out["now"], str)
     assert out["list"][1]["nested"] == [2, 3]
     assert isinstance(out["other"], str)
+
+
+def test_to_json_compatible_encodes_byte_payloads_as_base64() -> None:
+    """Raw ByteString values must use the gateway's base64 convention, not a Python repr.
+
+    ``str(b'\\xff\\x00')`` would publish ``"b'\\xff\\x00'"`` on the read path while the write path
+    expects base64 (``history.py``), so a round-trip of the same ByteString fails.
+    """
+    assert _to_json_compatible(b"\xff\x00") == "/wA="
+    assert _to_json_compatible(bytearray(b"\xff\x00")) == "/wA="
+    assert _to_json_compatible(memoryview(b"\xff\x00")) == "/wA="
+    assert _to_json_compatible({"raw": b"\xff\x00"}) == {"raw": "/wA="}
+    assert _to_json_compatible([b"\xff\x00"]) == ["/wA="]
+
+
+@pytest.mark.asyncio
+async def test_gather_cancelled_on_failure_cancels_and_awaits_siblings() -> None:
+    """A failing sibling must not keep issuing requests against a possibly dying session."""
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+    baseline = len(asyncio.all_tasks())
+
+    async def failing() -> None:
+        await asyncio.sleep(0.05)
+        raise RuntimeError("browse failed")
+
+    async def slow() -> str:
+        started.set()
+        try:
+            await asyncio.sleep(1.0)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+        return "never reached"
+
+    with pytest.raises(RuntimeError, match="browse failed"):
+        await _gather_cancelled_on_failure([failing(), slow()])
+
+    assert started.is_set()
+    assert cancelled.is_set()
+    # No orphaned tasks survive the failure path.
+    assert len(asyncio.all_tasks()) == baseline
+
+
+@pytest.mark.asyncio
+async def test_gather_cancelled_on_failure_returns_results_in_order() -> None:
+    async def value(index: int) -> int:
+        await asyncio.sleep(0.02 if index == 0 else 0.01)
+        return index
+
+    assert await _gather_cancelled_on_failure([value(index) for index in range(3)]) == [0, 1, 2]
 
 
 def test_to_explicit_ua_variant_builds_typed_variant() -> None:

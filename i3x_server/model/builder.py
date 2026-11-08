@@ -48,7 +48,7 @@ class ModelBuilder:
             try:
                 namespace_infos = await get_namespace_infos()
             except Exception:
-                logger.debug("Namespace info resolution failed", exc_info=True)
+                logger.warning("Namespace info resolution failed", exc_info=True)
         namespace_uri_by_index = {
             index: namespace_info.uri
             for index, namespace_info in enumerate(namespace_infos)
@@ -83,7 +83,7 @@ class ModelBuilder:
                             name for name in resolved_supertypes if isinstance(name, str)
                         ]
                 except Exception:
-                    logger.debug(
+                    logger.warning(
                         "Reference supertype resolution failed for reference_type_id=%s",
                         reference_type_id,
                         exc_info=True,
@@ -343,10 +343,29 @@ class ModelBuilder:
                 append_relationship(parent_id, "HasComponent", child_id)
                 append_relationship(child_id, "ComponentOf", parent_id)
 
+        # Relationship ids browsed in the opposite direction, per node pair: the address space may
+        # model the inverse itself (e.g. `Monitors` forward, `MonitoredBy` back), and i3X expects
+        # those natural names rather than invented ones (UNDERSTANDING_RELATIONSHIPS.md:156-157).
+        graph_ids_by_direction: dict[tuple[str, str], set[str]] = {}
+        for source_id, entries in graph_entries_by_id.items():
+            for name, namespace_uri, target_id in entries:
+                graph_ids_by_direction.setdefault((source_id, target_id), set()).add(
+                    graph_relationship_ids[(name, namespace_uri)]
+                )
+
+        graph_relationship_inverse_by_id: dict[str, str] = {}
         for source_id, graph_relations in graph_related_by_id.items():
             for relationship_name, target_id in graph_relations:
                 append_relationship(source_id, relationship_name, target_id)
-                append_relationship(target_id, f"inverseOf_{relationship_name}", source_id)
+                opposite = graph_ids_by_direction.get((target_id, source_id), set()) - {relationship_name}
+                if len(opposite) == 1:
+                    reverse_name = next(iter(opposite))
+                elif relationship_name.startswith("inverseOf_"):
+                    reverse_name = relationship_name[len("inverseOf_") :]
+                else:
+                    reverse_name = f"inverseOf_{relationship_name}"
+                graph_relationship_inverse_by_id[relationship_name] = reverse_name
+                append_relationship(target_id, reverse_name, source_id)
 
         nodes_by_id: dict[str, ModelNode] = {}
         node_id_by_name: dict[str, str] = {}
@@ -380,7 +399,6 @@ class ModelBuilder:
             semantic_role = resolve_semantic_role(
                 opc_node,
                 active_profiles_resolved,
-                relationship_class="composition" if composition_children else None,
                 type_definition_hierarchy=type_definition_hierarchy_by_id.get(
                     opc_node.type_definition_id or "",
                     (),
@@ -495,6 +513,7 @@ class ModelBuilder:
             graph_relationship_names=graph_relationship_names,
             graph_relationship_namespace_by_id=graph_relationship_namespace_by_id,
             graph_relationship_display_name_by_id=graph_relationship_display_name_by_id,
+            graph_relationship_inverse_by_id=graph_relationship_inverse_by_id,
             hierarchy_parent_by_id=hierarchy_parent_by_id,
             composition_parent_by_id=composition_parent_by_id,
             semantic_role_by_id=semantic_role_by_id,

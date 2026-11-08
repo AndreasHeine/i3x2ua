@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Any, cast
 
 import pytest
 from asyncua import ua
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from i3x_server.schemas.i3x import ModelNode
@@ -449,25 +451,53 @@ def test_v1_objecttypes_unresolved_standard_property_datatype_gets_fallback_sche
     assert resolved["schema"]["x-opcua-nodeId"] == "nsu=http://opcfoundation.org/UA/;i=14119"
 
 
-def test_v1_objecttypes_generic_standard_id_uses_browse_name_lookup(
+def _add_unresolved_custom_object_type(
+    app: FastAPI,
+    node_id: str,
+    name: str,
+    source_node_id: str,
+    numeric_id: int,
+) -> str:
+    """Attach an asset whose ``sourceTypeId`` has no upstream object type definition.
+
+    ``nsu=http://example.com/custom;i=<numeric_id>`` is therefore referenced but unresolved:
+    it is not a property datatype, so ``/v1/objecttypes`` infers a generic placeholder and may
+    resolve the display name through the live ``read_browse_name`` lookup.
+    """
+    source_type_id = f"nsu=http://example.com/custom;i={numeric_id}"
+    model = app.state.model_cache
+    model.nodes_by_id[node_id] = ModelNode(
+        id=node_id,
+        name=name,
+        kind="asset",
+        type=None,
+        children=[],
+        source_node_id=source_node_id,
+        source_type_id=source_type_id,
+        parent_id="asset-root",
+    )
+    model.children_by_id[node_id] = []
+    model.children_by_id.setdefault("asset-root", []).append(node_id)
+    model.hierarchy_children_by_id.setdefault("asset-root", []).append(node_id)
+    model.instances_by_type_id[source_type_id] = [node_id]
+    return source_type_id
+
+
+def test_v1_objecttypes_generic_custom_id_uses_browse_name_lookup(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("i3x_server.api.v1.monolithic._ENABLE_LIVE_TYPE_NAME_LOOKUP", True)
-    monkeypatch.setattr("i3x_server.api.v1.monolithic._LIVE_TYPE_NAME_LOOKUP_MAX_PER_REQUEST", 100)
+    """Live BrowseName lookup must be patched at its source module (docs/architecture.md:178).
+
+    ``nsu=http://example.com/custom;i=900001`` is an unresolved *object* type (no datatype
+    schema, no registry name), so the generic inference path runs and the inferred name is
+    replaced by the ``read_browse_name`` result.
+    """
+    monkeypatch.setattr("i3x_server.api.v1.objecttype_helpers._ENABLE_LIVE_TYPE_NAME_LOOKUP", True)
+    monkeypatch.setattr("i3x_server.api.v1.objecttype_helpers._LIVE_TYPE_NAME_LOOKUP_MAX_PER_REQUEST", 100)
 
     app = fastapi_app(client)
-    app.state.model_cache.nodes_by_id["property-ua-17364"] = ModelNode(
-        id="property-ua-17364",
-        name="NetworkAddress",
-        kind="property",
-        type="ns=0;i=17364",
-        children=[],
-        source_node_id="ns=2;s=NetworkAddress",
-    )
-    app.state.model_cache.children_by_id.setdefault("asset-root", []).append("property-ua-17364")
-    app.state.model_cache.children_by_id["property-ua-17364"] = []
-    app.state.model_cache.property_to_node["property-ua-17364"] = "ns=2;s=NetworkAddress"
+    _add_unresolved_custom_object_type(app, "asset-custom-900001", "CustomAsset", "ns=2;s=CustomAsset", 900001)
 
     response = client.get("/v1/objecttypes")
     assert response.status_code == 200
@@ -475,12 +505,112 @@ def test_v1_objecttypes_generic_standard_id_uses_browse_name_lookup(
     assert payload["success"] is True
 
     resolved = next(
-        (item for item in payload["result"] if item["sourceTypeId"] == "nsu=http://opcfoundation.org/UA/;i=17364"),
+        (item for item in payload["result"] if item["sourceTypeId"] == "nsu=http://example.com/custom;i=900001"),
         None,
     )
     assert resolved is not None
-    assert resolved["displayName"] == "PublishSubscribe_SetSecurityKeys"
-    assert resolved["schema"]["title"] == "PublishSubscribe_SetSecurityKeys"
+    assert resolved["displayName"] == "CustomNetworkAddressType"
+    assert resolved["schema"]["title"] == "CustomNetworkAddressType"
+
+
+def test_v1_objecttypes_lookup_budget_limits_browse_name_reads(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The per-request budget caps how many inferred type ids may be looked up."""
+    monkeypatch.setattr("i3x_server.api.v1.objecttype_helpers._ENABLE_LIVE_TYPE_NAME_LOOKUP", True)
+    monkeypatch.setattr("i3x_server.api.v1.objecttype_helpers._LIVE_TYPE_NAME_LOOKUP_MAX_PER_REQUEST", 1)
+
+    app = fastapi_app(client)
+    _add_unresolved_custom_object_type(app, "asset-custom-900001", "CustomAsset", "ns=2;s=CustomAsset", 900001)
+    _add_unresolved_custom_object_type(app, "asset-custom-900002", "MachineState", "ns=2;s=MachineState", 900002)
+
+    response = client.get("/v1/objecttypes")
+    assert response.status_code == 200
+    by_source = {item["sourceTypeId"]: item["displayName"] for item in response.json()["result"]}
+    assert by_source["nsu=http://example.com/custom;i=900001"] == "CustomNetworkAddressType"
+    assert by_source["nsu=http://example.com/custom;i=900002"].startswith("InferredType_")
+
+
+async def test_v1_objecttypes_standard_namespace_lookup_remaps_to_ns0_index(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Standard-UA inferred ids are looked up with ``ns=0;i=…``, not the expanded ``nsu=`` form."""
+    monkeypatch.setattr("i3x_server.api.v1.objecttype_helpers._ENABLE_LIVE_TYPE_NAME_LOOKUP", True)
+    monkeypatch.setattr("i3x_server.api.v1.objecttype_helpers._LIVE_TYPE_NAME_LOOKUP_MAX_PER_REQUEST", 100)
+
+    app = fastapi_app(client)
+    looked_up: list[str] = []
+
+    async def browse_name(node_id: str) -> str | None:
+        looked_up.append(node_id)
+        return "VendorDiagnosticsType" if node_id == "ns=0;i=999999" else None
+
+    app.state.opcua_client.read_browse_name = browse_name
+    model = app.state.model_cache
+    model.nodes_by_id["asset-ua-999999"] = ModelNode(
+        id="asset-ua-999999",
+        name="Diagnostics",
+        kind="asset",
+        type=None,
+        children=[],
+        source_node_id="ns=2;s=Diagnostics",
+        source_type_id="nsu=http://opcfoundation.org/UA/;i=999999",
+        parent_id="asset-root",
+    )
+    model.children_by_id["asset-ua-999999"] = []
+    model.children_by_id.setdefault("asset-root", []).append("asset-ua-999999")
+    model.hierarchy_children_by_id.setdefault("asset-root", []).append("asset-ua-999999")
+    model.instances_by_type_id["nsu=http://opcfoundation.org/UA/;i=999999"] = ["asset-ua-999999"]
+
+    response = client.get("/v1/objecttypes")
+    assert response.status_code == 200
+    resolved = next(
+        (
+            item
+            for item in response.json()["result"]
+            if item["sourceTypeId"] == "nsu=http://opcfoundation.org/UA/;i=999999"
+        ),
+        None,
+    )
+    assert resolved is not None
+    assert looked_up == ["ns=0;i=999999"]
+    assert resolved["displayName"] == "VendorDiagnosticsType"
+
+
+@pytest.mark.asyncio
+async def test_v1_objecttypes_lookup_timeout_falls_back_to_inferred_name(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A slow upstream BrowseName read must degrade to the inferred name, not hang the request."""
+    monkeypatch.setattr("i3x_server.api.v1.objecttype_helpers._ENABLE_LIVE_TYPE_NAME_LOOKUP", True)
+    monkeypatch.setattr("i3x_server.api.v1.objecttype_helpers._LIVE_TYPE_NAME_LOOKUP_MAX_PER_REQUEST", 100)
+    monkeypatch.setattr("i3x_server.api.v1.objecttype_helpers._live_type_name_lookup_timeout_seconds", lambda: 0.05)
+
+    app = fastapi_app(client)
+
+    async def slow_browse_name(node_id: str) -> str | None:
+        del node_id
+        await asyncio.sleep(0.5)
+        return "CustomNetworkAddressType"
+
+    app.state.opcua_client.read_browse_name = slow_browse_name
+    _add_unresolved_custom_object_type(app, "asset-custom-900001", "CustomAsset", "ns=2;s=CustomAsset", 900001)
+
+    response = client.get("/v1/objecttypes")
+    assert response.status_code == 200
+    resolved = next(
+        (
+            item
+            for item in response.json()["result"]
+            if item["sourceTypeId"] == "nsu=http://example.com/custom;i=900001"
+        ),
+        None,
+    )
+    assert resolved is not None
+    assert resolved["displayName"].startswith("InferredType_")
 
 
 def test_v1_objecttypes_does_not_publish_null_opcua_type_id(client: TestClient) -> None:

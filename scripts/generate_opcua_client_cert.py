@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
+import os
 import socket
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -44,7 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--days-valid",
         type=int,
         default=3650,
-        help="Validity period in days.",
+        help="Validity period in days. Must be a positive number.",
     )
     parser.add_argument(
         "--dns",
@@ -53,7 +55,50 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="Additional SAN DNS names. Can be provided multiple times.",
     )
+    parser.add_argument(
+        "--ip",
+        action="append",
+        dest="ip_addresses",
+        default=[],
+        help="Additional SAN IP addresses, written as iPAddress. Can be provided multiple times.",
+    )
+    parser.add_argument(
+        "--include-hostname",
+        action="store_true",
+        help="Add the local host name to the SAN DNS names. Off by default so the generated "
+        "certificate does not carry a developer machine name into committed material.",
+    )
     return parser
+
+
+def _san_dns_names(dns_names: list[str], include_hostname: bool) -> list[str]:
+    names = ["localhost"]
+    if include_hostname:
+        names.append(socket.gethostname())
+    for name in dns_names:
+        if name not in names:
+            names.append(name)
+    return names
+
+
+def _san_ip_addresses(ip_addresses: list[str]) -> list[x509.IPAddress]:
+    try:
+        return [x509.IPAddress(ipaddress.ip_address(value)) for value in ip_addresses]
+    except ValueError as exc:
+        raise SystemExit(f"Invalid --ip value: {exc}") from exc
+
+
+def _write_private_key(key_path: Path, private_key: rsa.RSAPrivateKey) -> None:
+    key_path.write_bytes(
+        private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+    )
+    # Keep the key owner-only on POSIX. Windows has no POSIX permission bits to set.
+    if os.name != "nt":
+        key_path.chmod(0o600)
 
 
 def generate_certificate(
@@ -64,7 +109,12 @@ def generate_certificate(
     country: str,
     days_valid: int,
     dns_names: list[str],
+    ip_addresses: list[str],
+    include_hostname: bool,
 ) -> tuple[Path, Path, str]:
+    if days_valid <= 0:
+        raise SystemExit("--days-valid must be a positive number of days")
+
     out_dir.mkdir(parents=True, exist_ok=True)
 
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
@@ -77,11 +127,7 @@ def generate_certificate(
         ]
     )
 
-    hostname = socket.gethostname()
-    san_dns = ["localhost", hostname]
-    for name in dns_names:
-        if name not in san_dns:
-            san_dns.append(name)
+    san_dns = _san_dns_names(dns_names, include_hostname=include_hostname)
 
     now = datetime.now(timezone.utc)
     cert = (
@@ -113,7 +159,11 @@ def generate_certificate(
         )
         .add_extension(
             x509.SubjectAlternativeName(
-                [x509.UniformResourceIdentifier(app_uri), *[x509.DNSName(name) for name in san_dns]]
+                [
+                    x509.UniformResourceIdentifier(app_uri),
+                    *[x509.DNSName(name) for name in san_dns],
+                    *_san_ip_addresses(ip_addresses),
+                ]
             ),
             critical=False,
         )
@@ -124,13 +174,7 @@ def generate_certificate(
     key_path = out_dir / "client-key.pem"
 
     cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
-    key_path.write_bytes(
-        key.private_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PrivateFormat.PKCS8,
-            encryption_algorithm=serialization.NoEncryption(),
-        )
-    )
+    _write_private_key(key_path, key)
 
     thumbprint = cert.fingerprint(hashes.SHA1()).hex()
     return cert_path, key_path, thumbprint
@@ -148,6 +192,8 @@ def main() -> None:
         country=args.country,
         days_valid=args.days_valid,
         dns_names=args.dns_names,
+        ip_addresses=args.ip_addresses,
+        include_hostname=args.include_hostname,
     )
 
     print(f"Written certificate: {cert_path}")

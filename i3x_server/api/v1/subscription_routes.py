@@ -12,7 +12,6 @@ from i3x_server.api.v1.common_helpers import (
     _fetch_namespace_infos,
     _map_delete_subscription_bulk_result_items,
     _map_subscription_detail_bulk_result_items,
-    _require_client_id,
     _to_json_safe_value,
     _validate_subscription_element_ids,
 )
@@ -176,7 +175,6 @@ async def stream_subscription_v1(
     )
     client_id = stream_session["clientId"]
     stream_generation = stream_session["streamGeneration"]
-    scope_relaxed = stream_session["scopeRelaxed"]
     acknowledged = stream_session["acknowledged"]
 
     if _stream_debug_enabled():
@@ -186,12 +184,6 @@ async def stream_subscription_v1(
             body.subscriptionId,
             None,
         )
-        if scope_relaxed:
-            logger.warning(
-                "Stream activation recovered with relaxed client scope client_id=%s subscription_id=%s",
-                client_id,
-                body.subscriptionId,
-            )
         logger.info(
             "Subscription stream activated client_id=%s subscription_id=%s generation=%s initial_updates=%s",
             client_id,
@@ -378,7 +370,9 @@ async def delete_subscriptions_v1(
     body: DeleteSubscriptionsRequest,
     subscription_app_service: SubscriptionAppService = Depends(get_subscription_app_service),
 ) -> BulkResponse[None]:
-    client_id = _require_client_id(body.clientId, "/subscriptions/delete")
+    # ``clientId`` is trimmed and validated by ``contracts.ClientId``, so the scope the service stored
+    # is the scope being looked up here.
+    client_id = body.clientId
     items = await subscription_app_service.delete_subscription_items(body.subscriptionIds, client_id=client_id)
     return _bulk_response(_map_delete_subscription_bulk_result_items(items))
 
@@ -393,7 +387,9 @@ async def list_subscriptions_v1(
     opcua_client: OpcUaClientProtocol = Depends(get_opcua_client),
     subscription_app_service: SubscriptionAppService = Depends(get_subscription_app_service),
 ) -> BulkResponse[SubscriptionDetail]:
-    client_id = _require_client_id(body.clientId, "/subscriptions/list")
+    # ``clientId`` is trimmed and validated by ``contracts.ClientId``, so the scope the service stored
+    # is the scope being looked up here.
+    client_id = body.clientId
     namespace_infos = await _fetch_namespace_infos(opcua_client)
 
     items = await subscription_app_service.list_subscription_items(

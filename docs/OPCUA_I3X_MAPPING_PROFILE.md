@@ -118,6 +118,9 @@ Argument JSON Schemas permit both arrays and null for `ArrayDimensions`.
 10. Object instance `mapping_confidence`
 - Current values: `high | medium | low`.
 - Used as an explainability hint for profile-driven and generic mappings.
+- The gateway currently produces `high` (profile override, specialized profile,
+  or graph relationship) and `medium` (Variable, composition, or generic
+  fallback); `low` is reserved and not currently produced.
 
 11. Internal model metadata `appliedProfileIds`
 - Ordered list of profile ids matched against the resolved instance type and
@@ -207,8 +210,12 @@ Names containing `:` are also qualified to avoid collisions with qualified IDs.
 Components are not percent-encoded in JSON. Treat IDs as opaque strings: namespace
 URIs and browse names can both contain colons, so do not split IDs on `:`.
 URL-encode the complete value only when placing it in a URL.
-Generated inverse IDs prefix the forward ID with `inverseOf_`; display names
-retain the original browse name. These IDs are used consistently in relationship
+When the address space models the reverse direction of a graph relationship under its own
+browse name (`Monitors` forward, `MonitoredBy` back), that natural name is used for the reverse
+edge and for the inverse relationship type, so the reverse chain is `Monitors` ↔ `MonitoredBy`
+and no duplicate synthetic edge is stored. Only when the address space defines no inverse does
+the gateway generate one; its ID prefixes the forward ID with `inverseOf_` and its display name
+retains the original browse name. These IDs are used consistently in relationship
 type queries and related-object responses. An unresolvable ReferenceType namespace
 fails model construction explicitly rather than publishing an incorrect namespace.
 If distinct namespace/name pairs produce the same expanded qualified string,
@@ -231,7 +238,9 @@ If a reference type cannot be classified after lineage root checks and fallback
 id/name checks, it is mapped deterministically to the Graph plane.
 
 `POST /objects/value` and `POST /objects/history` recurse through **composition**
-children only when `maxDepth > 1`. Hierarchy-only children are never included in
+children only. `maxDepth = N` means "up to N levels deep" (so `2` covers direct
+children *and* their children), `maxDepth = 1` is no recursion, and `maxDepth = 0`
+is unlimited subject to server limits. Hierarchy-only children are never included in
 value recursion.
 
 ## Current Output Shape
@@ -347,9 +356,17 @@ structure/navigation and root selection, not for value recursion.
 | Request | Traversal behavior |
 |---|---|
 | `maxDepth = 1` | No recursion. Return only the requested element's value/history payload. |
-| `maxDepth = 2` | Include direct composition children only. |
-| `maxDepth = n (>1)` | Include composition descendants up to depth `n-1` from the root query element. |
-| `maxDepth = 0` | Unlimited recursion across composition descendants. |
+| `maxDepth = 2` | Include direct composition children and their children (two levels). |
+| `maxDepth = n (>1)` | Include composition descendants up to depth `n` from the root query element. |
+| `maxDepth = 0` | Unlimited recursion across composition descendants, subject to server limits. |
+
+Server limits (`I3X_COMPOSITION_MAX_DEPTH`, `I3X_COMPOSITION_MAX_NODES`, `0` = no cap) bound a
+single request. When a cap stops the recursion before the requested depth is satisfied, the
+gateway returns HTTP `206 Partial Content` with the fetched subset and a top-level
+`responseDetail` explaining the limit; it never presents a truncated result as complete.
+
+Bulk request arrays (`elementIds`, `updates`, `subscriptionIds`) are capped at 500 items; a larger
+batch is rejected with HTTP `400` and the standard error envelope before any upstream request.
 
 Example:
 
@@ -379,13 +396,47 @@ values fail with 400. Local schema references are supported, but external refere
 are rejected and schemas are never downloaded during validation. Bulk routes
 report these failures per item.
 
+## Write Error Classification
+
+Failures raised by the upstream server are classified by the OPC UA status code
+carried by the exception, never by exception text (text depends on the asyncua
+version and its language). The classification applies to both bulk write routes
+and stays item-level inside the bulk envelope:
+
+| OPC UA code | HTTP | Error class |
+|---|---|---|
+| `BadNodeIdUnknown` | 404 | `node_not_found` |
+| `BadUserAccessDenied` | 403 | `unauthorized_by_opcua_server` |
+| `BadNotWritable` | 403 | `target_not_writable` |
+| `BadTypeMismatch`, `BadOutOfRange`, `BadInvalidArgument` | 400 | `bad_type_or_range` |
+| `BadSessionClosed`, `BadSessionIdInvalid`, `BadSecureChannelClosed`, `BadConnectionClosed`, `BadServerHalted` | 502 | `session_or_transport_failure` |
+| Any other status code | 502 | `opcua_write_failed` |
+| No status code, transport failure | 502 | `session_or_transport_failure` |
+
+Request- and target-level rejections must not be reported as gateway failures:
+clients retry 502, and retrying a permanently wrong request never succeeds.
+On current-value writes an explicit `BadServiceUnsupported` or `BadNotImplemented`
+means the write itself is not offered and returns `501`
+(`write_not_supported_by_opcua_server`). On historical writes that decision belongs
+to the HistoryUpdate route (see Historical Updates), so an unsupported access read
+stays an item-level upstream failure instead of claiming service-wide unavailability.
+
+Current-value writes send quality and source timestamp as `DataValue` fields and verify
+them with a read-back. If the read-back does not match the submitted quality or source
+timestamp, the item reports an item-level `502` whose detail states the outcome is
+uncertain rather than successful. If the access check reports the target as not
+writable but the submitted value, quality, and source timestamp exactly match the
+current state, the item is a successful no-op (`success: true`) and no write is sent
+upstream.
+
 ## Historical Updates
 
 `PUT /v1/objects/history` accepts `{"updates": [{"elementId": "...", "value":
 {"value": 19.5, "quality": "Good", "timestamp": "2026-01-01T10:00:00Z"}}]}`.
-All three VQT fields are required. Timestamps must be RFC 3339 UTC with a `Z`
-suffix (case-insensitive); timezone offsets, including `+00:00`, are rejected.
-Extra fractional digits beyond microsecond precision are accepted only when all
+All three VQT fields are required. Timestamps must be RFC 3339 date-times with a
+timezone: a UTC `Z` suffix (case-insensitive) or an explicit offset. Timezone
+offsets, including `+00:00` and non-UTC offsets, are accepted and normalized to
+UTC. Extra fractional digits beyond microsecond precision are accepted only when all
 are zero, preserving the instant exactly without rounding or substituting the
 current time. Null values require `Bad` or `GoodNoData`, and both qualities require
 null. Null is accepted only if the published ObjectType schema permits it.

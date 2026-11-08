@@ -120,3 +120,25 @@ def test_load_overrides_skips_malformed_json_with_clear_log(
     assert loaded == {}
     assert "Invalid JSON in MCP overrides" in caplog.text
     assert "Skipping MCP overrides" in caplog.text
+
+
+def test_load_overrides_skips_unreadable_file_with_clear_log(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Only malformed JSON had a graceful path; any other read failure used to crash startup."""
+    schema_path = tmp_path / "schema.json"
+    _write_json(schema_path, {"type": "object"})
+
+    binary_path = tmp_path / "mcp_overrides.json"
+    binary_path.write_bytes(b"\xff\xfe\x00\x01")
+    directory_path = tmp_path / "overrides-dir"
+    directory_path.mkdir()
+
+    caplog.set_level(logging.WARNING)
+
+    assert load_overrides(path=binary_path, schema_path=schema_path) == {}
+    assert load_overrides(path=directory_path, schema_path=schema_path) == {}
+
+    assert "could not be read" in caplog.text
+    assert "Skipping MCP overrides" in caplog.text

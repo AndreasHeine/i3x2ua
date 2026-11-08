@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import base64
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import fields, is_dataclass
 from datetime import datetime, timezone
 from typing import Any, cast
@@ -90,6 +90,15 @@ def _map_subscription_result(
     return result_mapper(result)
 
 
+def _error_detail_from_payload(payload: Mapping[str, object] | None) -> ErrorDetail | None:
+    """Coerce a port error payload (`Mapping[str, object]`) into the response model."""
+    if payload is None:
+        return None
+    raw_code: object = payload["code"]
+    code = raw_code if isinstance(raw_code, int) else int(str(raw_code))
+    return ErrorDetail(code=code, message=str(payload["message"]))
+
+
 def _map_subscription_bulk_items_to_result_items(
     items: list[SubscriptionBulkItemDto],
     result_mapper: Callable[[object], T] | None = None,
@@ -100,7 +109,7 @@ def _map_subscription_bulk_items_to_result_items(
             elementId=item["elementId"],
             subscriptionId=item["subscriptionId"],
             result=_map_subscription_result(item["result"], result_mapper),
-            error=None if item["error"] is None else ErrorDetail(**item["error"]),
+            error=_error_detail_from_payload(item["error"]),
         )
         for item in items
     ]
@@ -144,17 +153,6 @@ def _expand_subscription_bulk_item_element_ids(
             mapped["result"] = result_copy
         expanded.append(cast(SubscriptionBulkItemDto, mapped))
     return expanded
-
-
-def _require_client_id(client_id: str | None, endpoint: str) -> str:
-    normalized = (client_id or "").strip()
-    if normalized:
-        return normalized
-    _raise_invalid_argument(
-        "clientId",
-        None,
-        f"'{endpoint}' requires a non-empty clientId",
-    )
 
 
 def _format_utc_timestamp(value: datetime) -> str:

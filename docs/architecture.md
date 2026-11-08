@@ -62,7 +62,7 @@ graph LR
 The project follows a layered architecture inside i3x_server:
 
 1. presentation
-- Responsibility: protocol-facing endpoints, request parsing, response shaping, and protocol adapters (REST and MCP). The MCP adapter dispatches tool calls to existing REST routes in-process and uses the application model provider for cached-model tools.
+- Responsibility: protocol-facing endpoints, request parsing, response shaping, and protocol adapters (REST and MCP). The MCP adapter dispatches tool calls to existing REST routes in-process. Cached-model tools read the cached model directly and answer 503 when it is not built yet; they never start a model build or contact OPC UA. Only `readContainerValues` uses the application model provider, because it fetches live values from OPC UA.
 - Current primary modules: i3x_server/api, i3x_server/mcp/*, i3x_server/api/v1/*_routes.py, i3x_server/api/v1/contracts.py, i3x_server/api/v1/*helpers.py, i3x_server/api/mcp/monolithic.py.
 
 2. application
@@ -173,7 +173,8 @@ During migration, compatibility wrappers are expected:
 
 - i3x_server/api/v1/__init__.py is the v1 router aggregator
 - i3x_server/api/v1/monolithic.py is retained only as a compatibility surface for remaining direct imports/tests
-- i3x_server/api/mcp/__init__.py wraps i3x_server.api.mcp.monolithic exports; the MCP protocol router is still monolithic and should be split into focused adapters before substantial feature growth
+- i3x_server/api/mcp/__init__.py re-exports the composed router and transport helpers; the MCP protocol
+  is split into focused adapters (jsonrpc.py, tools.py, prompts.py, resources.py, roots.py, router.py)
 
 For private internals, tests and monkeypatching must target source modules, not wrapper re-exports.
 
@@ -193,9 +194,11 @@ If a module crosses 600 lines, add a follow-up issue or refactor note with an ex
 
 Feature tests should live under tests/features/<feature_name>/ and map to runtime ownership:
 
-- API presentation behavior: tests/features/*
-- application service behavior: tests/application/* (as introduced)
-- infrastructure adapter behavior: tests/infrastructure/* (as introduced)
+- API presentation behavior: tests/features/* (app, errors, mcp, subscriptions, ua, v1_*)
+- application service behavior: flat modules under tests/ named `test_*_service.py`
+  (a dedicated `tests/application/` directory is not present)
+- infrastructure adapter behavior: flat modules under tests/ named `test_opcua_*.py`
+  (a dedicated `tests/infrastructure/` directory is not present)
 
 ## Change Safety Checklist
 

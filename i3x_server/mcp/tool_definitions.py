@@ -28,6 +28,10 @@ MCP_CONTAINER_VALUES_BATCH_SIZE = 10
 MCP_CONTAINER_VALUES_MAX_NODES = 5000
 MCP_CONTAINER_VALUES_MAX_DEPTH = 32
 
+# Structural nesting depth allowed while inlining `$ref`s. Recursive contracts are cut by the
+# reference chain itself; this bound only guards against hand-augmented documents nesting forever.
+MCP_SCHEMA_RESOLVE_MAX_DEPTH = 64
+
 
 def _resolve_override_path(path: str | Path) -> Path:
     candidate = Path(path)
@@ -48,6 +52,18 @@ def _load_json_mapping(path: Path, *, label: str) -> dict[str, Any] | None:
             exc.lineno,
             exc.colno,
             exc.msg,
+        )
+        return None
+    except (OSError, UnicodeDecodeError) as exc:
+        # The overrides file is optional configuration: an unreadable file (missing permissions, a
+        # directory, a binary payload) must not abort application startup. Only malformed JSON had a
+        # graceful path before, so any other read failure propagated into the lifespan startup.
+        logger.warning(
+            "%s could not be read at %s (%s: %s). Skipping MCP overrides.",
+            label,
+            path,
+            type(exc).__name__,
+            exc,
         )
         return None
 
@@ -220,7 +236,28 @@ def _resolve_request_body_schema(
     return resolved if isinstance(resolved, dict) else None
 
 
-def _resolve_schema(schema: Any, components: Mapping[str, Any]) -> Any:
+def _resolve_schema(
+    schema: Any,
+    components: Mapping[str, Any],
+    ref_chain: tuple[str, ...] = (),
+    depth: int = 0,
+) -> Any:
+    """Inline ``#/components/schemas`` references into a standalone JSON schema.
+
+    ``ref_chain`` carries the references that led to this node. It is passed unchanged through
+    structural descent, so a recursive contract expands exactly one level and then keeps an opaque
+    ``$ref`` instead of recursing forever, while two sibling properties referencing the same schema
+    both receive a fully expanded copy.
+    """
+    if depth >= MCP_SCHEMA_RESOLVE_MAX_DEPTH:
+        # A hand-augmented document can nest deeper than any generated OpenAPI contract. Keep the
+        # declared keywords and stop expanding nested members rather than exhausting the
+        # interpreter's recursion limit (a cyclic document must not produce a cyclic schema either).
+        if not isinstance(schema, Mapping):
+            return deepcopy(schema)
+        nested = {"properties", "items", "allOf", "anyOf", "oneOf", "$ref"}
+        return {key: deepcopy(value) for key, value in schema.items() if key not in nested}
+
     if not isinstance(schema, Mapping):
         return deepcopy(schema)
 
@@ -228,24 +265,25 @@ def _resolve_schema(schema: Any, components: Mapping[str, Any]) -> Any:
         ref = schema["$ref"]
         if not isinstance(ref, str):
             return deepcopy(dict(schema))
-        resolved = _resolve_ref(ref, components)
-        return _resolve_schema(resolved, components)
+        if ref in ref_chain:
+            return {"$ref": ref}
+        return _resolve_schema(_resolve_ref(ref, components), components, (*ref_chain, ref), depth + 1)
 
     resolved_schema = deepcopy(dict(schema))
     for key in ("allOf", "anyOf", "oneOf"):
         value = resolved_schema.get(key)
         if isinstance(value, list):
-            resolved_schema[key] = [_resolve_schema(item, components) for item in value]
+            resolved_schema[key] = [_resolve_schema(item, components, ref_chain, depth + 1) for item in value]
 
     properties = resolved_schema.get("properties")
     if isinstance(properties, Mapping):
         resolved_schema["properties"] = {
-            str(name): _resolve_schema(value, components) for name, value in properties.items()
+            str(name): _resolve_schema(value, components, ref_chain, depth + 1) for name, value in properties.items()
         }
 
     items = resolved_schema.get("items")
     if items is not None:
-        resolved_schema["items"] = _resolve_schema(items, components)
+        resolved_schema["items"] = _resolve_schema(items, components, ref_chain, depth + 1)
 
     return resolved_schema
 

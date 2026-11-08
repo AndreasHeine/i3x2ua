@@ -9,8 +9,10 @@ Files:
 
 OPC UA compatibility profile used by this sample certificate:
 
-- Subject Alternative Name (SAN) includes application URI: `urn:example.org:FreeOpcUa:opcua-asyncio`
-- SAN includes DNS names: `localhost` and the local host name
+- Subject Alternative Name (SAN) includes application URI: `urn:i3x2ua:opcua_client` (the application URI the gateway declares in `i3x_server/infrastructure/opcua/client.py`)
+- SAN includes DNS names: `localhost`. The committed sample carries no host name; the local
+  host name is added only when the certificate is generated with `--include-hostname`.
+- SAN IP addresses are written as `iPAddress` when `--ip` is used.
 - Key Usage includes: `digitalSignature`, `nonRepudiation/contentCommitment`, `keyEncipherment`, `dataEncipherment`
 - Extended Key Usage (EKU) includes: `clientAuth` and `serverAuth`
 
@@ -34,11 +36,19 @@ uv run python scripts/generate_opcua_client_cert.py \
 	--app-uri urn:my-company:my-opcua-client \
 	--common-name my-opcua-client \
 	--organization "My Company" \
-	--dns opc-client-host --dns localhost
+	--dns opc-client-host --dns localhost \
+	--ip 127.0.0.1 \
+	--days-valid 365 \
+	--include-hostname
 ```
+
+`--days-valid` must be positive. `--include-hostname` is off by default so the certificate
+does not carry your machine name; pass it only when the target server validates the host name.
 
 Important:
 
+- The files in this directory are committed to a public repository, so `client-key.pem` is
+  public sample material with no confidentiality or identity value.
 - This bundle is not intended for production use.
 - Many OPC UA servers require trusting/importing the client certificate before secure connection will succeed.
 - For production, generate unique per-environment certificates and protect private keys with your standard secret management process.

@@ -28,6 +28,30 @@ def validate_write_element_id(value: str) -> str:
 WriteElementId = Annotated[str, AfterValidator(validate_write_element_id)]
 
 
+def validate_client_id(value: str) -> str:
+    """Normalize the subscription scope identifier.
+
+    Every subscription endpoint must treat ``"app"`` and ``" app "`` as the same scope: the service stores
+    and compares ``clientId`` verbatim, so an untrimmed value would make ``/subscriptions/list`` and
+    ``/subscriptions/delete`` fail to find a subscription that ``/subscriptions`` created.
+    """
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError("clientId must be non-empty and free of surrounding whitespace")
+    if not normalized.isprintable():
+        raise ValueError("clientId must be printable")
+    return normalized
+
+
+ClientId = Annotated[str, AfterValidator(validate_client_id)]
+
+# Bulk arrays are capped: an unbounded ``elementIds``/``updates`` list turns one request into
+# thousands of upstream OPC UA round-trips. 500 matches the documented MCP batch limit
+# (``MCP_ID_RESOLUTION_MAX_ITEMS``), so REST is not weaker than the MCP surface. Overflow is a
+# documented 400 via the ``RequestValidationError`` handler, not a slow partial read.
+MAX_BULK_ITEMS = 500
+
+
 class SuccessResponse(BaseModel, Generic[T]):
     success: bool
     result: T
@@ -62,6 +86,9 @@ class BulkResultItem(BaseModel, Generic[T]):
 class BulkResponse(BaseModel, Generic[T]):
     success: bool
     results: list[BulkResultItem[T]]
+    # Top-level detail for partial results: HTTP 206 when server limits truncated a composition
+    # tree (i3X spec IMPLEMENTATION_GUIDE.md:1113-1119, conformance query.js QRY-05 requires it).
+    responseDetail: ResponseDetail | None = None
 
 
 def _status_title(status_code: int) -> str:
@@ -71,7 +98,10 @@ def _status_title(status_code: int) -> str:
         return "Error"
 
 
-def _bulk_response(results: list[BulkResultItem[T]]) -> BulkResponse[T]:
+def _bulk_response(
+    results: list[BulkResultItem[T]],
+    response_detail: ResponseDetail | None = None,
+) -> BulkResponse[T]:
     for item in results:
         if item.success or item.responseDetail is not None:
             continue
@@ -82,7 +112,7 @@ def _bulk_response(results: list[BulkResultItem[T]]) -> BulkResponse[T]:
             status=error_code,
             detail=error_message,
         )
-    return BulkResponse(success=all(item.success for item in results), results=results)
+    return BulkResponse(success=all(item.success for item in results), results=results, responseDetail=response_detail)
 
 
 def _map_lookup_bulk_result_items(
@@ -286,11 +316,11 @@ class RelatedObjectResult(BaseModel):
 
 
 class GetObjectTypesRequest(BaseModel):
-    elementIds: list[str] = Field(min_length=1)
+    elementIds: list[str] = Field(min_length=1, max_length=MAX_BULK_ITEMS)
 
 
 class GetRelationshipTypesRequest(BaseModel):
-    elementIds: list[str] = Field(min_length=1)
+    elementIds: list[str] = Field(min_length=1, max_length=MAX_BULK_ITEMS)
 
 
 class GetObjectsRequest(BaseModel):
@@ -298,12 +328,12 @@ class GetObjectsRequest(BaseModel):
         json_schema_extra={"examples": [{"elementIds": ["property-0123456789abcdef"], "includeMetadata": True}]}
     )
 
-    elementIds: list[str] = Field(min_length=1)
+    elementIds: list[str] = Field(min_length=1, max_length=MAX_BULK_ITEMS)
     includeMetadata: bool = False
 
 
 class GetRelatedObjectsRequest(BaseModel):
-    elementIds: list[str] = Field(min_length=1)
+    elementIds: list[str] = Field(min_length=1, max_length=MAX_BULK_ITEMS)
     relationshipType: str | None = None
     includeMetadata: bool = False
 
@@ -315,13 +345,18 @@ class GetObjectValueRequest(BaseModel):
 
     elementIds: list[str] = Field(
         min_length=1,
+        max_length=MAX_BULK_ITEMS,
         description="Object element IDs returned by discovery; examples are placeholders.",
     )
     maxDepth: int = Field(
         default=1,
         ge=0,
-        description="Composition depth: 1 reads only the object, 2 includes direct components, 0 is unlimited. "
-        "Hierarchy-only children are not traversed.",
+        description="Composition depth in levels: 1 = no recursion, only this element's own value "
+        "(default); N > 1 = recurse up to N levels through composition (`HasComponent`) children; "
+        "0 = unlimited recursion, bounded by the server's composition limits "
+        "(`I3X_COMPOSITION_MAX_DEPTH`, `I3X_COMPOSITION_MAX_NODES`); a tree truncated by those limits "
+        "is answered as HTTP 206 with a top-level `responseDetail`. Hierarchy-only children "
+        "(`HasChildren`) are never traversed - query them as separate elements.",
     )
 
 
@@ -339,13 +374,18 @@ class GetObjectHistoryRequest(BaseModel):
         }
     )
 
-    elementIds: list[str] = Field(min_length=1)
+    elementIds: list[str] = Field(min_length=1, max_length=MAX_BULK_ITEMS)
     startTime: str = Field(description="Start of the history interval; RFC 3339 date-time with timezone.")
     endTime: str = Field(description="End of the history interval; RFC 3339 date-time with timezone.")
     maxDepth: int = Field(
         default=1,
         ge=0,
-        description="Composition depth: 1 reads only the object, 0 is unlimited.",
+        description="Composition depth in levels: 1 = no recursion, only this element's own history "
+        "(default); N > 1 = recurse up to N levels through composition (`HasComponent`) children; "
+        "0 = unlimited recursion, bounded by the server's composition limits "
+        "(`I3X_COMPOSITION_MAX_DEPTH`, `I3X_COMPOSITION_MAX_NODES`); a tree truncated by those limits "
+        "is answered as HTTP 206 with a top-level `responseDetail`. Hierarchy-only children "
+        "(`HasChildren`) are never traversed - query them as separate elements.",
     )
 
     @field_validator("startTime", "endTime")
@@ -437,7 +477,7 @@ class UpdateObjectValuesRequest(BaseModel):
         },
     )
 
-    updates: list[ValueUpdateItemRequest] = Field(min_length=1)
+    updates: list[ValueUpdateItemRequest] = Field(min_length=1, max_length=MAX_BULK_ITEMS)
 
 
 class HistoryWriteVQTRequest(BaseModel):
@@ -518,11 +558,13 @@ class UpdateObjectHistoryRequest(BaseModel):
         },
     )
 
-    updates: list[HistoryUpdateItemRequest] = Field(min_length=1)
+    updates: list[HistoryUpdateItemRequest] = Field(min_length=1, max_length=MAX_BULK_ITEMS)
 
 
 class RegisterMonitoredItemsRequest(BaseModel):
     model_config = ConfigDict(
+        # A misspelled field (e.g. `maxdepth`) must fail instead of silently applying the default.
+        extra="forbid",
         json_schema_extra={
             "examples": [
                 {
@@ -532,12 +574,12 @@ class RegisterMonitoredItemsRequest(BaseModel):
                     "maxDepth": 1,
                 }
             ]
-        }
+        },
     )
 
-    clientId: str
+    clientId: ClientId
     subscriptionId: str
-    elementIds: list[str] = Field(min_length=1)
+    elementIds: list[str] = Field(min_length=1, max_length=MAX_BULK_ITEMS)
     maxDepth: int = Field(
         default=1,
         ge=0,
@@ -549,13 +591,16 @@ class RegisterMonitoredItemsRequest(BaseModel):
 
 
 class UnregisterMonitoredItemsRequest(BaseModel):
-    clientId: str
+    model_config = ConfigDict(extra="forbid")
+
+    clientId: ClientId
     subscriptionId: str
-    elementIds: list[str] = Field(min_length=1)
+    elementIds: list[str] = Field(min_length=1, max_length=MAX_BULK_ITEMS)
 
 
 class SyncRequest(BaseModel):
     model_config = ConfigDict(
+        extra="forbid",
         json_schema_extra={
             "examples": [
                 {
@@ -564,10 +609,10 @@ class SyncRequest(BaseModel):
                     "lastSequenceNumber": 42,
                 }
             ]
-        }
+        },
     )
 
-    clientId: str
+    clientId: ClientId
     subscriptionId: str
     lastSequenceNumber: int | None = Field(
         default=None,
@@ -582,13 +627,17 @@ class SyncRequest(BaseModel):
 
 
 class ListSubscriptionsRequest(BaseModel):
-    clientId: str
-    subscriptionIds: list[str] = Field(min_length=1)
+    model_config = ConfigDict(extra="forbid")
+
+    clientId: ClientId
+    subscriptionIds: list[str] = Field(min_length=1, max_length=MAX_BULK_ITEMS)
 
 
 class DeleteSubscriptionsRequest(BaseModel):
-    clientId: str
-    subscriptionIds: list[str] = Field(min_length=1)
+    model_config = ConfigDict(extra="forbid")
+
+    clientId: ClientId
+    subscriptionIds: list[str] = Field(min_length=1, max_length=MAX_BULK_ITEMS)
 
 
 class StreamRequest(BaseModel):
@@ -604,16 +653,17 @@ class StreamRequest(BaseModel):
         },
     )
 
-    clientId: str
+    clientId: ClientId
     subscriptionId: str
 
 
 class CreateSubscriptionRequest(BaseModel):
     model_config = ConfigDict(
-        json_schema_extra={"examples": [{"clientId": "example-client", "displayName": "Machine telemetry"}]}
+        extra="forbid",
+        json_schema_extra={"examples": [{"clientId": "example-client", "displayName": "Machine telemetry"}]},
     )
 
-    clientId: str = Field(description="Unique client scope identifier. This is not an authentication credential.")
+    clientId: ClientId = Field(description="Unique client scope identifier. This is not an authentication credential.")
     displayName: str | None = None
 
 

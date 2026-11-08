@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+import i3x_server.api.mcp.resources as mcp_resources
 from i3x_server.mcp import get_api_prefix, load_overrides
 from tests.conftest import fastapi_app
 
@@ -205,8 +206,6 @@ def test_openapi_json_is_source_of_truth(client: TestClient) -> None:
     assert isinstance(generated, dict)
     assert isinstance(generated.get("paths"), dict)
 
-    assert isinstance(generated.get("paths"), dict)
-
 
 def test_mcp_tool_input_schemas_match_openapi_contract(client: TestClient) -> None:
     openapi = client.get("/openapi.json").json()
@@ -320,6 +319,13 @@ def test_mcp_non_subscription_tools_runtime_smoke(client: TestClient) -> None:
         _operation_id_for(client, "POST", "/v1/subscriptions/list"),
     }
 
+    # The fixture model has a matching node for every tool, so a runtime call must succeed.
+    # Tools that legitimately cannot succeed against a server lacking the capability (501
+    # unsupported, 404 unknown elementId) must be listed here explicitly instead of letting a
+    # broad status range hide a broken dispatch (L12).
+    KNOWN_UNSUPPORTED_TOOLS: dict[str, set[int]] = {}
+
+    allowed_by_tool = {name: {200, 206} | statuses for name, statuses in KNOWN_UNSUPPORTED_TOOLS.items()}
     for tool_name, tool in tools.items():
         if tool_name in skipped_tools:
             continue
@@ -330,16 +336,9 @@ def test_mcp_non_subscription_tools_runtime_smoke(client: TestClient) -> None:
         arguments = _with_runtime_argument_overrides(tool_name, arguments, subscription_id=None)
 
         response = client.post("/mcp/call", json={"tool": tool_name, "arguments": arguments})
-        assert response.status_code in {200, 206, 404, 501}, (
+        assert response.status_code in allowed_by_tool.get(tool_name, {200, 206}), (
             f"Unexpected status for {tool_name} with args {arguments}: {response.status_code} {response.text}"
         )
-
-        if response.status_code == 400:
-            payload = response.json()
-            message = payload.get("error", {}).get("message", "")
-            assert "Missing required arguments" not in message
-            assert "Unexpected arguments" not in message
-            assert "Missing required body" not in message
 
 
 def test_mcp_subscription_tools_runtime_lifecycle(client: TestClient) -> None:
@@ -575,6 +574,8 @@ def test_mcp_resources_list_rest(client: TestClient) -> None:
     resources = payload["resources"]
     assert any(item["uri"] == "i3x://openapi" for item in resources)
     assert any(item["uri"] == "i3x://mcp-overrides" for item in resources)
+    assert any(item["uri"] == "i3x://model/overview" for item in resources)
+    assert any(item["uri"] == "i3x://roots/asset-root" for item in resources)
 
 
 def test_mcp_resource_read_rest(client: TestClient) -> None:
@@ -585,6 +586,30 @@ def test_mcp_resource_read_rest(client: TestClient) -> None:
     assert len(contents) == 1
     assert contents[0]["uri"] == "i3x://openapi"
     assert contents[0]["mimeType"] == "application/json"
+
+
+def test_mcp_resource_read_rest_unknown_uri(client: TestClient) -> None:
+    response = client.post("/mcp/resources/read", json={"uri": "i3x://unknown"})
+    assert response.status_code == 404
+    payload = response.json()
+    assert payload["success"] is False
+    assert payload["error"]["message"] == "Unknown resource i3x://unknown"
+    assert payload["responseDetail"]["status"] == 404
+
+
+def test_mcp_resource_read_rest_hides_internal_failure(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Failure text must never reach the client (CodeQL py/stack-trace-exposure)."""
+
+    def _boom(request: Any, uri: str) -> dict[str, Any]:
+        raise RuntimeError("secret internal detail at i3x_server/model/builder.py")
+
+    monkeypatch.setattr(mcp_resources, "_read_resource_content", _boom)
+    response = client.post("/mcp/resources/read", json={"uri": "i3x://openapi"})
+    assert response.status_code == 500
+    payload = response.json()
+    assert payload["success"] is False
+    assert payload["error"]["message"] == "Internal server error"
+    assert "secret" not in response.text
 
 
 def test_mcp_roots_list_rest(client: TestClient) -> None:
@@ -784,8 +809,9 @@ def test_mcp_call_allows_omitting_optional_query_parameters(client: TestClient) 
             candidate_name = name
             break
 
-    if candidate_name is None:
-        pytest.skip("No MCP tool with fully optional query parameters is available")
+    # The catalog must keep at least one GET tool whose query parameters are all optional
+    # (`getObjectsV1`); a silent skip would turn this guard into a no-op (L12).
+    assert candidate_name is not None, "No MCP tool with fully optional query parameters is available"
 
     response = client.post("/mcp/call", json={"tool": candidate_name, "arguments": {}})
     assert response.status_code == 200

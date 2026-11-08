@@ -12,4 +12,5 @@ def test_v1_info(client: TestClient) -> None:
     assert payload["success"] is True
     assert payload["result"]["specVersion"] == "1.0"
     assert payload["result"]["capabilities"]["query"]["history"] is True
+    assert payload["result"]["capabilities"]["update"]["current"] is False
     assert payload["result"]["capabilities"]["subscribe"]["stream"] is True

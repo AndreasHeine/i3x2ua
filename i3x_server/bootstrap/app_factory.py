@@ -17,7 +17,7 @@ from typing import Any, cast
 
 from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.routing import APIRoute
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -25,7 +25,7 @@ from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipMiddleware
 
 from i3x_server.api.mcp import router as mcp_router
-from i3x_server.api.mcp.monolithic import shutdown_mcp_transport
+from i3x_server.api.mcp.jsonrpc import shutdown_mcp_transport
 from i3x_server.api.openapi import DocumentedFastAPI
 from i3x_server.api.ua import router as ua_router
 from i3x_server.api.v1 import router as v1_router
@@ -33,12 +33,13 @@ from i3x_server.api.v1.contracts import HttpErrorResponse
 from i3x_server.api.v1.objecttype_helpers import warm_object_type_context
 from i3x_server.application.errors import ApplicationServiceError
 from i3x_server.bootstrap.dependencies import get_or_build_model
-from i3x_server.config.settings import Settings, settings
+from i3x_server.config.settings import Settings, get_settings, settings
+from i3x_server.errors import format_error_details
 from i3x_server.http_caching import MODEL_REVISION_HEADER, ModelRevisionMiddleware, NotModifiedError
 from i3x_server.infrastructure.opcua.client import OpcUaClient
 from i3x_server.infrastructure.subscriptions.service import SubscriptionService
 from i3x_server.mcp.invocation import get_api_prefix, init_mcp_metrics
-from i3x_server.mcp.tool_definitions import build_mcp_tools, load_prompt_overrides
+from i3x_server.mcp.tool_definitions import build_mcp_tools, load_overrides, load_prompt_overrides
 from i3x_server.model.builder import ModelBuilder
 from i3x_server.prompts.registry import PromptRegistry
 from i3x_server.schemas.state import BuildResult
@@ -46,6 +47,9 @@ from i3x_server.version import get_server_version
 
 logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+# Bound the request-validation diagnostics embedded in `responseDetail.detail` so a
+# pathological payload cannot blow up the error envelope.
+_MAX_VALIDATION_DIAGNOSTICS = 10
 
 
 def _is_tag_name_boundary(value: str, index: int) -> bool:
@@ -96,7 +100,10 @@ def _status_title(status_code: int) -> str:
 
 
 def _runtime_settings() -> Settings:
-    return Settings(_env_file=None)  # type: ignore[call-arg]
+    # Same source as every other toggle read (config.settings.get_settings): explicit environment
+    # variables still win over the .env file, and launching with plain uvicorn no longer silently
+    # ignores the .env toggles that README and .env-example document.
+    return get_settings()
 
 
 def _frontend_inline_script_hashes(frontend_dist: Path) -> tuple[str, ...]:
@@ -355,14 +362,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 _old(signum, frame)
 
         signal.signal(sig, _handler)
+        _signal_original_handlers[sig] = _old
 
     _handled_signals = [signal.SIGINT]
     if hasattr(signal, "SIGTERM"):
         _handled_signals.append(signal.SIGTERM)
+    _async_signal_signums: set[int] = set()
+    _signal_original_handlers: dict[int, Any] = {}
     for _sig in _handled_signals:
         try:
             # On Unix, prefer asyncio's loop handler so we stay on the event loop thread.
             _loop.add_signal_handler(_sig, _early_shutdown)
+            _async_signal_signums.add(_sig)
         except (NotImplementedError, OSError, RuntimeError):
             # Windows: asyncio does not support add_signal_handler; chain with signal.signal.
             try:
@@ -384,7 +395,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             raise ValueError(f"OpenAPI spec must be dict, got {type(openapi_spec)}")
 
         app.state.mcp_tools = build_mcp_tools(openapi_spec)
+        # The overrides file may be rejected by validation (runtime then applies nothing).
+        # Record whether it was applied so `i3x://mcp-overrides` cannot be mistaken for the
+        # effective catalog (L11).
+        app.state.mcp_overrides_applied = bool(load_overrides())
         app.state.mcp_api_prefix = get_api_prefix(openapi_spec)
+        app.state.mcp_transport_sessions = {}
         prompt_overrides = load_prompt_overrides()
         app.state.mcp_prompts = PromptRegistry.load_from_overrides(
             prompt_overrides,
@@ -416,6 +432,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         logger.info("App shutdown started")
+        # Deregister the termination signal handlers installed above. Without this, a
+        # later shutdown in the same process (tests, repeated `create_app()`) fires
+        # `_early_shutdown` on a closed event loop (`RuntimeError: Event loop is
+        # closed`) and chained handlers accumulate onto the previous app's handler.
+        for _sig in _handled_signals:
+            if _sig in _async_signal_signums:
+                with suppress(Exception):
+                    _loop.remove_signal_handler(_sig)
+            original_handler = _signal_original_handlers.get(_sig)
+            if original_handler is not None:
+                with suppress(Exception):
+                    signal.signal(_sig, original_handler)
         refresh_task = getattr(app.state, "model_refresh_task", None)
         if refresh_task is not None and not refresh_task.done():
             refresh_task.cancel()
@@ -433,6 +461,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 with suppress(asyncio.CancelledError):
                     await warm_task
         await app.state.subscription_service.close()
+        # Close every legacy MCP SSE stream and drop the transport session map. The signal handler
+        # only covers terminated processes; a plain shutdown (uvicorn exit, TestClient context)
+        # must not leave sessions - and their queues - alive.
+        shutdown_mcp_transport(app)
         if not skip_connect:
             await opcua_client.disconnect()
         logger.info("App shutdown finished")
@@ -535,8 +567,22 @@ def create_app() -> FastAPI:
         request: Request,
         exc: RequestValidationError,
     ) -> JSONResponse:
-        del request, exc
+        del request
+        # Keep the field diagnostics (loc/msg) in `responseDetail.detail`: for a bulk
+        # API the message alone is the difference between a fast fix and a guessing loop.
         message = "Invalid request payload or parameters"
+        errors = list(exc.errors())
+        diagnostics: list[str] = []
+        for item in errors[:_MAX_VALIDATION_DIAGNOSTICS]:
+            loc = ".".join(str(token) for token in item.get("loc", ()))
+            msg = str(item.get("msg", "invalid value"))
+            diagnostics.append(f"{loc}: {msg}" if loc else msg)
+        detail = message
+        if diagnostics:
+            suffix = "; ".join(diagnostics)
+            if len(errors) > len(diagnostics):
+                suffix += f"; (+{len(errors) - len(diagnostics)} more)"
+            detail = f"{message} ({suffix})"
         return JSONResponse(
             status_code=400,
             content={
@@ -548,7 +594,7 @@ def create_app() -> FastAPI:
                 "responseDetail": {
                     "title": _status_title(400),
                     "status": 400,
-                    "detail": message,
+                    "detail": detail,
                 },
             },
         )
@@ -594,6 +640,12 @@ def create_app() -> FastAPI:
         exc: ApplicationServiceError,
     ) -> JSONResponse:
         del request
+        # `ApplicationServiceError.details` (e.g. {"cause": ...}) must reach the client;
+        # it used to be stored but never rendered.
+        detail = exc.message
+        diagnostics = format_error_details(exc.details)
+        if diagnostics is not None:
+            detail = f"{exc.message} ({diagnostics})"
         return JSONResponse(
             status_code=exc.status_code,
             content={
@@ -602,7 +654,7 @@ def create_app() -> FastAPI:
                 "responseDetail": {
                     "title": _status_title(int(exc.status_code)),
                     "status": int(exc.status_code),
-                    "detail": exc.message,
+                    "detail": detail,
                 },
             },
         )
@@ -691,6 +743,30 @@ def create_app() -> FastAPI:
 
     if frontend_dist.exists():
         app.frontend("/", directory=str(frontend_dist), fallback=None)
+
+        # Prerendered pages carry relative asset URLs ("./_app/..."), and the boot script
+        # derives the asset base from the URL. `app.frontend()` serves dist/<path>/index.html
+        # for "/path" without a canonical redirect, so a directly entered or shared URL like
+        # "/view?endpoint=..." renders HTML whose modules resolve to "/view/_app/..." and 404:
+        # the page stays an inert "Loading..." skeleton. Answer GET/HEAD requests for paths
+        # whose directory contains an index.html with a redirect to the trailing-slash URL
+        # (query preserved), where relative assets resolve correctly.
+        frontend_dist_root = frontend_dist.resolve()
+
+        @app.middleware("http")
+        async def redirect_frontend_pages_to_canonical_url(
+            request: Request,
+            call_next: Callable[[Request], Awaitable[Response]],
+        ) -> Response:
+            if request.method not in {"GET", "HEAD"} or request.url.path.endswith("/"):
+                return await call_next(request)
+            candidate = (frontend_dist_root / request.url.path.lstrip("/")).resolve()
+            if frontend_dist_root in candidate.parents and (candidate / "index.html").is_file():
+                redirect_url = request.url.path + "/"
+                if request.url.query:
+                    redirect_url += f"?{request.url.query}"
+                return RedirectResponse(url=redirect_url)
+            return await call_next(request)
     else:
         logger.warning("Frontend dist directory not found at %s; UI pages are unavailable", frontend_dist)
 

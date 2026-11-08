@@ -97,7 +97,14 @@ GET  /mcp/roots
 POST /mcp
 ```
 
-These APIs generally benefit directly from additional workers.
+The `/mcp/*` REST helper endpoints are stateless and benefit directly from additional workers.
+
+The MCP protocol endpoint `POST /mcp` depends on the protocol mode:
+
+- Modern `2026-07-28` requests are stateless (one POST per request, no session header) and scale across workers.
+- Legacy clients call `initialize`, receive an `Mcp-Session-Id`, and may attach a session-scoped SSE stream with `GET /mcp`. Those transport sessions live in the worker process that answered `initialize`. Without session affinity (sticky routing) or a single worker, a later `tools/call` can reach a different worker and is rejected as an unknown session.
+
+So multi-worker MCP throughput is real for stateless traffic; session-based legacy clients need affinity routing to the owning worker.
 
 ---
 
@@ -217,7 +224,7 @@ uvicorn i3x_server.main:app --workers 8
 - Better CPU utilization
 - Better discovery performance
 - Better query performance
-- Better MCP performance
+- Better MCP performance for stateless traffic (modern protocol requests and REST helpers)
 
 ## Trade-offs
 
@@ -225,6 +232,7 @@ uvicorn i3x_server.main:app --workers 8
 - Duplicate caches
 - Additional OPC UA sessions
 - Subscription state becomes worker-local
+- Legacy MCP transport sessions (`Mcp-Session-Id`, `GET /mcp` SSE) become worker-local and need session affinity
 
 ## Recommended For
 
@@ -311,11 +319,13 @@ Worker A
 
 The TCP connection remains attached to the same worker.
 
-Because the subscription state and the stream remain in the same process:
-
-```text
-SSE generally scales well in multi-worker deployments.
-```
+That alone is not enough: `POST /v1/subscriptions`, `POST /v1/subscriptions/register`, and
+`POST /v1/subscriptions/stream` are separate requests. Plain round-robin routing can deliver
+the stream request to a worker that never created the subscription, and the stream fails or
+stays empty. SSE scales in multi-worker deployments only when **every** `/v1/subscriptions*`
+path - create, register, unregister, stream, sync, list, delete - is routed to the same worker
+or instance that owns the subscription, either by running one worker or by the routing pattern
+shown in the Discovery / Subscription Split section.
 
 ---
 
@@ -358,7 +368,7 @@ Discovery Service
 
 ✅ Stable SSE streams
 
-✅ No worker affinity required
+✅ Affinity achieved by routing: every /v1/subscriptions* path goes to the one subscription instance
 ```
 
 ## Trade-offs
@@ -369,6 +379,10 @@ Additional OPC UA client
 Additional OPC UA session
 
 Additional containers
+
+Legacy MCP transport sessions still live inside the multi-worker discovery service:
+either keep MCP clients on the stateless modern protocol, or add session affinity
+for /mcp
 ```
 
 ## Recommended For
@@ -615,7 +629,10 @@ Typical:
 
 # MCP Scaling Considerations
 
-The MCP endpoints are stateless and scale similarly to discovery APIs.
+The MCP REST helper endpoints listed below are stateless and scale similarly to discovery APIs.
+The MCP protocol endpoint `POST /mcp` is stateless only in the modern `2026-07-28` mode; legacy
+session-based clients keep their `Mcp-Session-Id` transport state in one worker process and
+need session affinity or a single worker (see the MCP section above).
 
 Examples:
 

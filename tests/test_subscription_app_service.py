@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+from contextlib import suppress
 from types import SimpleNamespace
 from typing import cast
 
@@ -10,7 +12,7 @@ from starlette.requests import Request
 from i3x_server.application.ports.subscription import SubscriptionServicePort
 from i3x_server.application.services.subscription import SubscriptionAppService
 from i3x_server.domain.ports.opcua import OpcUaClientProtocol
-from i3x_server.infrastructure.subscriptions.service import (
+from i3x_server.infrastructure.subscriptions.state import (
     SubscriptionDeleteResult,
     SubscriptionDetail,
     SubscriptionSyncResult,
@@ -49,6 +51,8 @@ class _FakeSubscriptionPort:
         self.register_result = True
         self.unregister_result = True
         self.activate_returns: list[int | None] = [1]
+        self.activate_clients: list[str | None] = []
+        self.sync_clients: list[str | None] = []
         self.sync_result: SubscriptionSyncResult | None = None
         self.active_sequence: list[bool] = [False]
         self.wait_returns: list[list[SubscriptionUpdate] | None] = []
@@ -63,7 +67,8 @@ class _FakeSubscriptionPort:
         self.list_error: Exception | None = None
 
     async def activate_stream(self, client_id: str | None, subscription_id: str) -> int | None:
-        del client_id, subscription_id
+        del subscription_id
+        self.activate_clients.append(client_id)
         return self.activate_returns.pop(0) if self.activate_returns else None
 
     async def create_subscription(self, client_id: str | None, display_name: str | None = None) -> SubscriptionDetail:
@@ -97,7 +102,8 @@ class _FakeSubscriptionPort:
         acknowledge_sequence: int | None = None,
         allow_when_stream_active: bool = False,
     ) -> SubscriptionSyncResult | None:
-        del client_id, subscription_id, acknowledge_sequence, allow_when_stream_active
+        del subscription_id, acknowledge_sequence, allow_when_stream_active
+        self.sync_clients.append(client_id)
         if self.sync_error:
             raise self.sync_error
         return self.sync_result
@@ -421,9 +427,9 @@ async def test_list_subscription_items_with_missing_requested_id() -> None:
 
 
 @pytest.mark.asyncio
-async def test_begin_stream_session_success_and_relaxed_scope() -> None:
+async def test_begin_stream_session_success() -> None:
     port = _FakeSubscriptionPort()
-    port.activate_returns = [None, 7]
+    port.activate_returns = [7]
     port.sync_result = SubscriptionSyncResult(updates=[])
     service = SubscriptionAppService(
         cast(OpcUaClientProtocol, SimpleNamespace()),
@@ -441,8 +447,34 @@ async def test_begin_stream_session_success_and_relaxed_scope() -> None:
     assert session["clientId"] == "client-1"
     assert session["subscriptionId"] == "sub-1"
     assert session["streamGeneration"] == 7
-    assert session["scopeRelaxed"] is True
     assert session["acknowledged"].updates == []
+    assert port.activate_clients == ["client-1"]
+    assert port.sync_clients == ["client-1"]
+
+
+@pytest.mark.asyncio
+async def test_begin_stream_session_does_not_relax_client_scope() -> None:
+    """A scoped activation miss must not fall back to an unscoped activation (cross-client leak)."""
+    port = _FakeSubscriptionPort()
+    port.activate_returns = [None]
+    port.sync_result = SubscriptionSyncResult(updates=[])
+    service = SubscriptionAppService(
+        cast(OpcUaClientProtocol, SimpleNamespace()),
+        _model(),
+        cast(SubscriptionServicePort, port),
+        request=_request(),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await service.begin_stream_session(
+            subscription_id="sub-1",
+            client_id="client-1",
+            acknowledge_sequence=2,
+        )
+
+    assert exc_info.value.status_code == 404
+    assert port.activate_clients == ["client-1"]
+    assert port.sync_clients == []
 
 
 @pytest.mark.asyncio
@@ -509,3 +541,57 @@ async def test_iter_stream_events_emits_connected_keepalive_updates_close() -> N
     assert kinds == ["connected", "keepalive", "updates", "close"]
     assert len(events[2]["updates"]) == 1
     assert port.deactivated == [("sub-1", 3)]
+
+
+@pytest.mark.asyncio
+async def test_iter_stream_events_deactivates_stream_when_cancelled() -> None:
+    """A client disconnect must still deactivate the stream (M10).
+
+    Without a shield the ``finally`` coroutine is cancelled together with the generator, leaving
+    ``stream_connected`` set until the TTL expires - ``POST /subscriptions/sync`` then answers
+    400 "Subscription stream is active" for a stream that is long gone.
+    """
+    port = _FakeSubscriptionPort()
+    port.active_sequence = [True]
+    never_returns = asyncio.Event()
+
+    async def blocking_wait_for_updates(
+        client_id: str | None,
+        subscription_id: str,
+        after_sequence: int,
+        timeout_seconds: float,
+    ) -> list[SubscriptionUpdate] | None:
+        del client_id, subscription_id, after_sequence, timeout_seconds
+        await never_returns.wait()
+        return None
+
+    port.wait_for_updates = blocking_wait_for_updates  # type: ignore[method-assign]
+    service = SubscriptionAppService(
+        cast(OpcUaClientProtocol, SimpleNamespace()),
+        _model(),
+        cast(SubscriptionServicePort, port),
+    )
+
+    async def consume() -> None:
+        async for _event in service.iter_stream_events(
+            subscription_id="sub-1",
+            client_id="client-1",
+            stream_generation=5,
+            acknowledged_updates=[],
+            acknowledge_sequence=0,
+            timeout_seconds=0.1,
+        ):
+            pass
+
+    task = asyncio.create_task(consume())
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
+
+    # The shielded deactivation runs to completion even though the generator was cancelled.
+    for _ in range(20):
+        if port.deactivated:
+            break
+        await asyncio.sleep(0.01)
+    assert port.deactivated == [("sub-1", 5)]

@@ -35,6 +35,11 @@ x-i3x2ua-common: &i3x2ua-common
   volumes:
     - ../../../certs:/app/certs:ro
     - ../../../overrides:/app/overrides:ro
+  # OTLP export is configured in the shared environment (OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318),
+  # so the collector must be reachable before either service starts.
+  depends_on:
+    jaeger:
+      condition: service_started
   expose:
     - "8000"
   read_only: true
@@ -99,16 +104,13 @@ services:
       OTEL_SERVICE_NAME: i3x2ua-subscriptions
 
   jaeger:
-    image: jaegertracing/all-in-one:latest
+    # Pinned to the release that `latest` currently points at (same amd64 digest), so a retag
+    # cannot silently change the tracing backend.
+    image: jaegertracing/all-in-one:1.76.0
     container_name: i3x2ua-jaeger
     restart: unless-stopped
     command:
       - "--memory.max-traces=10000"
-    depends_on:
-      i3x2ua-discovery:
-        condition: service_healthy
-      i3x2ua-subscriptions:
-        condition: service_healthy
     ports:
       - "127.0.0.1:16686:16686"
     networks:
@@ -160,6 +162,9 @@ services:
       - CHOWN
       - SETGID
       - SETUID
+      # The nginx master runs as root and binds :80/:443; cap_drop: ALL removes the
+      # capability required for privileged ports, so it must be added back explicitly.
+      - NET_BIND_SERVICE
     security_opt:
       - no-new-privileges:true
     pids_limit: 128

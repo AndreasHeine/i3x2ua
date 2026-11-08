@@ -16,7 +16,14 @@ from i3x_server.api.v1.contracts import (
 )
 from i3x_server.application.dependencies import get_model_query_service
 from i3x_server.application.services.model_query import ModelQueryService
-from i3x_server.http_caching import NAMESPACES_PART, content_revision, enable_etag, record_revision
+from i3x_server.http_caching import (
+    NAMESPACES_PART,
+    RELATIONSHIP_TYPES_PART,
+    content_revision,
+    enable_etag,
+    raise_if_not_modified,
+    record_revision,
+)
 
 router = APIRouter(prefix="/v1")
 
@@ -52,6 +59,9 @@ async def get_namespaces_v1(
     namespaces = await model_query_service.get_namespaces()
     payload = [Namespace(uri=item.uri, displayName=item.displayName) for item in namespaces]
     record_revision(request, NAMESPACES_PART, content_revision((item.uri, item.displayName) for item in payload))
+    # Revalidate before serializing: the namespace list itself is cached by the client, so a
+    # matching `If-None-Match` costs no upstream read and no body (L12).
+    raise_if_not_modified(request)
     return SuccessResponse(success=True, result=payload)
 
 
@@ -70,11 +80,17 @@ async def get_namespaces_v1(
     tags=["Exploratory"],
 )
 async def get_relationship_types_v1(
+    request: Request,
     namespace_uri: str | None = Query(default=None, alias="namespaceUri"),
     model_query_service: ModelQueryService = Depends(get_model_query_service),
 ) -> SuccessResponse[list[RelationshipType]]:
     items = await model_query_service.get_relationship_types(namespace_uri)
-    return SuccessResponse(success=True, result=[RelationshipType.model_validate(item) for item in items])
+    payload = [RelationshipType.model_validate(item) for item in items]
+    # The relationship list is derived from the built model, so the model revision alone cannot
+    # detect a changed set of graph types; record the content and revalidate before serializing (L12).
+    record_revision(request, RELATIONSHIP_TYPES_PART, content_revision(item.model_dump() for item in payload))
+    raise_if_not_modified(request)
+    return SuccessResponse(success=True, result=payload)
 
 
 @router.post(

@@ -93,6 +93,19 @@ Production environments should:
 - Enable audit logging
 - Keep operating systems and containers updated
 
+## Committed Sample Certificates and Keys
+
+The repository ships development sample material in `certs/https-sample/` and
+`certs/opcua-client-sample/`, including private keys. Because they are published in a
+public repository, these keys are **public samples** and carry no confidentiality or
+identity value:
+
+- Never use them in production or as client credentials.
+- They exist so `docker compose` and the sample clients work out of the box.
+- Generate your own material with `scripts/generate_https_dev_cert.py` and
+  `scripts/generate_opcua_client_cert.py` (or a CA) and keep private keys out of the
+  repository and out of image builds.
+
 ## Vulnerability Handling Process
 
 When a vulnerability is identified:

@@ -14,7 +14,12 @@ from typing import Any
 from i3x_server.application.errors import ApplicationServiceError
 from i3x_server.config.settings import get_settings
 from i3x_server.domain.ports.opcua import OpcUaClientProtocol, OpcUaNamespaceInfo
-from i3x_server.domain.utils import canonical_namespace_uri, display_name_for_uri, namespace_uri_for_node_id
+from i3x_server.domain.utils import (
+    canonical_namespace_uri,
+    display_name_for_uri,
+    namespace_uri_for_node_id,
+    normalize_namespace_uri,
+)
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
 from i3x_server.version import get_server_version
@@ -94,6 +99,9 @@ def _build_server_info(
         serverVersion=server_version or get_server_version(),
         serverName=server_name or server_name_from_openapi(),
         capabilities=ServerCapabilities(
+            # Honest declaration: the history endpoint is always implemented and never errors on a
+            # range without stored samples (GoodNoData), unlike update.history, which depends on the
+            # upstream server actually exposing history writes (spec :599-601, :1294).
             query={"history": True},
             update={
                 "current": writes_enabled,
@@ -144,13 +152,16 @@ def _relationship_type_items(model: BuildResult | None = None) -> list[dict[str,
         return items
 
     graph_names = getattr(model, "graph_relationship_names", None) or set()
+    inverse_by_id = getattr(model, "graph_relationship_inverse_by_id", None) or {}
     existing = {item["elementId"] for item in items}
+    graph_names = {name for name in graph_names if name not in existing}
     for name in sorted(graph_names):
-        if name in existing:
-            continue
-        reverse_name = f"inverseOf_{name}"
         namespace_uri = model.graph_relationship_namespace_by_id[name]
         display_name = model.graph_relationship_display_name_by_id.get(name, name)
+        # Prefer the inverse the address space actually models (natural names such as
+        # `MonitoredBy`, spec UNDERSTANDING_RELATIONSHIPS.md:156-157); `inverseOf_<name>` is only
+        # invented when the source defines no reverse relationship (spec :397 requires one).
+        reverse_name = inverse_by_id.get(name) or f"inverseOf_{name}"
         items.append(
             {
                 "elementId": name,
@@ -160,6 +171,10 @@ def _relationship_type_items(model: BuildResult | None = None) -> list[dict[str,
                 "reverseOf": reverse_name,
             }
         )
+        if reverse_name in graph_names:
+            # The reverse is a registered relationship itself; inventing a second record would
+            # leave a dangling `reverseOf` chain.
+            continue
         items.append(
             {
                 "elementId": reverse_name,
@@ -172,11 +187,30 @@ def _relationship_type_items(model: BuildResult | None = None) -> list[dict[str,
     return items
 
 
-def _to_object_instance(node: ModelNode, include_metadata: bool) -> dict[str, object]:
+def _type_namespace_uri(model: BuildResult, node: ModelNode) -> str | None:
+    """Namespace of the node's *type* (spec :284: instances themselves belong to no namespace).
+
+    ``node.type`` / ``node.source_type_id`` may be an expanded ``nsu=`` id or an indexed ``ns=N`` id;
+    indexed ids are resolved through the namespace table captured during the model build.
+    """
+    raw = node.type or node.source_type_id
+    if not raw:
+        return None
+    if raw.startswith("nsu="):
+        return raw[len("nsu=") :].split(";", 1)[0] or None
+    index_match = re.match(r"^ns=(\d+);", raw, flags=re.IGNORECASE)
+    if index_match is None:
+        return None
+    return model.namespace_uri_by_index.get(int(index_match.group(1)))
+
+
+def _to_object_instance(model: BuildResult, node: ModelNode, include_metadata: bool) -> dict[str, object]:
     metadata: dict[str, object] | None = None
     if include_metadata:
         metadata = {
-            "sourceTypeId": node.source_type_id,
+            # Provenance fields are required whenever metadata is returned (spec :284, EXP-17).
+            "typeNamespaceUri": _type_namespace_uri(model, node),
+            "sourceTypeId": node.source_type_id or node.source_node_id,
             "description": str(node.metadata.get("description")) if "description" in node.metadata else None,
             "relationships": node.relationships,
             "extendedAttributes": node.metadata,
@@ -316,7 +350,10 @@ class ModelQueryService:
         items = _relationship_type_items(self.model)
         if namespace_uri is None:
             return items
-        return [item for item in items if item["namespaceUri"] == namespace_uri]
+        # Namespace comparison follows mapping profile rule 6: canonicalized URIs,
+        # so `https://cesmii.org/i3x/` matches the stored `https://cesmii.org/i3x`.
+        normalized_filter = normalize_namespace_uri(namespace_uri)
+        return [item for item in items if normalize_namespace_uri(str(item["namespaceUri"])) == normalized_filter]
 
     async def get_objects(
         self,
@@ -336,4 +373,4 @@ class ModelQueryService:
         if element_ids is not None:
             wanted = set(element_ids)
             nodes = [node for node in nodes if node.id in wanted]
-        return [_to_object_instance(node, include_metadata) for node in nodes]
+        return [_to_object_instance(self.model, node, include_metadata) for node in nodes]

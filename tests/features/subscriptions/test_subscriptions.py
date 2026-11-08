@@ -5,10 +5,12 @@ from __future__ import annotations
 import base64
 import time
 
+import pytest
 from fastapi.testclient import TestClient
 
 from i3x_server.schemas.i3x import ModelNode
-from tests.conftest import fastapi_app
+from i3x_server.schemas.opcua_value import normalize_opcua_value
+from tests.conftest import assert_documented_response, fastapi_app
 
 
 def test_v1_subscription_lifecycle(client: TestClient) -> None:
@@ -59,6 +61,70 @@ def test_v1_subscription_lifecycle(client: TestClient) -> None:
         assert sync_payload["result"][0]["updates"][0]["elementId"]
 
 
+def test_v1_subscription_client_id_is_one_normalized_scope(client: TestClient) -> None:
+    """Surrounding whitespace must be trimmed at the boundary: create/register/sync/list/delete share one scope."""
+    created = client.post(
+        "/v1/subscriptions",
+        json={"clientId": "  padded-client  ", "displayName": "Padded Monitor"},
+    )
+    assert created.status_code == 200
+    created_payload = created.json()
+    assert created_payload["result"]["clientId"] == "padded-client"
+    subscription_id = created_payload["result"]["subscriptionId"]
+
+    register = client.post(
+        "/v1/subscriptions/register",
+        json={
+            "clientId": " padded-client ",
+            "subscriptionId": subscription_id,
+            "elementIds": ["property-abc"],
+            "maxDepth": 1,
+        },
+    )
+    assert register.status_code == 200
+
+    synced = client.post(
+        "/v1/subscriptions/sync",
+        json={"clientId": "padded-client ", "subscriptionId": subscription_id, "acknowledgeSequence": 0},
+    )
+    assert synced.status_code == 200
+
+    listed = client.post(
+        "/v1/subscriptions/list",
+        json={"clientId": "padded-client", "subscriptionIds": [subscription_id]},
+    )
+    assert listed.status_code == 200
+    assert listed.json()["results"][0]["result"]["subscriptionId"] == subscription_id
+
+    deleted = client.post(
+        "/v1/subscriptions/delete",
+        json={"clientId": " padded-client", "subscriptionIds": [subscription_id]},
+    )
+    assert deleted.status_code == 200
+    assert deleted.json()["results"][0]["success"] is True
+
+    after_delete = client.post(
+        "/v1/subscriptions/list",
+        json={"clientId": "padded-client", "subscriptionIds": [subscription_id]},
+    )
+    assert after_delete.json()["results"][0]["success"] is False
+
+
+@pytest.mark.parametrize("client_id", ["", "   ", "\t", "client\nnewline"])
+def test_v1_subscription_rejects_invalid_client_id(client: TestClient, client_id: str) -> None:
+    """Empty, whitespace-only, and non-printable clientIds are rejected with the documented 400 envelope."""
+    response = client.post(
+        "/v1/subscriptions",
+        json={"clientId": client_id, "displayName": "Invalid Monitor"},
+    )
+    assert response.status_code == 400
+    payload = response.json()
+    assert payload["success"] is False
+    assert payload["error"]["code"] == 400
+    assert payload["responseDetail"]["status"] == 400
+    assert_documented_response(client, "post", "/v1/subscriptions", 400, payload)
+
+
 def test_v1_subscription_register_defaults_to_one_composition_level(client: TestClient) -> None:
     client_id = "my-app-instance-001"
     app = fastapi_app(client)
@@ -83,6 +149,10 @@ def test_v1_subscription_register_defaults_to_one_composition_level(client: Test
     model.children_by_id["asset-child"] = ["property-def"]
     model.children_by_id["property-def"] = []
     model.children_by_id["asset-root"] = ["property-abc", "action-def", "asset-child"]
+    # Relationship planes (i3X spec): asset-child is a hierarchical child (independent object),
+    # property-def is a composition child of asset-child.
+    model.hierarchy_children_by_id["asset-root"] = ["asset-child"]
+    model.composition_children_by_id["asset-child"] = ["property-def"]
     model.property_to_node["property-def"] = "ns=2;s=Pressure"
     app.state.opcua_client.values["ns=2;s=Pressure"] = 17.5
 
@@ -122,6 +192,7 @@ def test_v1_subscription_register_defaults_to_one_composition_level(client: Test
     ).json()
     assert details["results"][0]["result"]["monitoredObjects"][0]["maxDepth"] == 1
 
+    # Unbounded composition depth still never follows HasChildren (spec :1111/:1924).
     register_all = client.post(
         "/v1/subscriptions/register",
         json={
@@ -138,7 +209,26 @@ def test_v1_subscription_register_defaults_to_one_composition_level(client: Test
     )
     assert synced_all.status_code == 200
     all_element_ids = {item["elementId"] for batch in synced_all.json()["result"] for item in batch["updates"]}
-    assert {"property-abc", "property-def"}.issubset(all_element_ids)
+    assert "property-abc" in all_element_ids
+    assert "property-def" not in all_element_ids
+
+    # A hierarchical child is monitored by registering it on its own.
+    register_child = client.post(
+        "/v1/subscriptions/register",
+        json={
+            "clientId": client_id,
+            "subscriptionId": subscription_id,
+            "elementIds": ["asset-child"],
+        },
+    )
+    assert register_child.status_code == 200
+    synced_child = client.post(
+        "/v1/subscriptions/sync",
+        json={"clientId": client_id, "subscriptionId": subscription_id},
+    )
+    assert synced_child.status_code == 200
+    child_element_ids = {item["elementId"] for batch in synced_child.json()["result"] for item in batch["updates"]}
+    assert "property-def" in child_element_ids
 
     deleted = client.post(
         "/v1/subscriptions/delete",
@@ -159,7 +249,7 @@ def test_v1_subscription_sync_serializes_binary_values(client: TestClient) -> No
 
     service = fastapi_app(client).state.subscription_service
     state = service._subscriptions[subscription_id]
-    service._append_update(state, "ns=2;s=RawBytes", b"\xff\x00")
+    service._append_update(state, "ns=2;s=RawBytes", normalize_opcua_value(b"\xff\x00"))
 
     synced = client.post(
         "/v1/subscriptions/sync",
@@ -289,6 +379,7 @@ def test_v1_subscription_sync_returns_206_on_overflow(client: TestClient) -> Non
     assert isinstance(payload["result"], list)
     assert payload["responseDetail"]["status"] == 206
     assert "Dropped sequence numbers" in payload["responseDetail"]["detail"]
+    assert_documented_response(client, "post", "/v1/subscriptions/sync", 206, payload)
 
 
 def test_v1_subscription_sync_last_sequence_number_minus_one_clears_pending_updates(client: TestClient) -> None:

@@ -294,7 +294,7 @@ docker system df
 
 ### Certificate Expiration
 ```bash
-openssl x509 -in certs/fullchain.pem -noout -enddate
+openssl x509 -in certs/https-sample/fullchain.pem -noout -enddate
 ```
 
 ---
@@ -302,11 +302,12 @@ openssl x509 -in certs/fullchain.pem -noout -enddate
 ## Performance Tuning
 
 ### Increase Workers (Per Instance)
-In `docker-compose.yml`:
+In `docker-compose.yml` (shipped default is `1`; raise it for discovery-heavy traffic,
+but note the worker-local state described in `docs/SCALING_GUIDE.md`):
 ```yaml
 command:
   - --workers
-  - "8"  # Increase from 4
+  - "4"  # Increase from 1
 ```
 
 ### Enable Caching Headers
@@ -342,5 +343,5 @@ NGINX_LOAD_BALANCING=least_conn  # Change from round_robin
 
 ---
 
-**Last Updated**: 2024
+**Last Updated**: 2026-11
 **Status**: Production Ready

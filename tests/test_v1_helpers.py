@@ -13,7 +13,7 @@ from fastapi import HTTPException
 from jsonschema import Draft202012Validator
 
 import i3x_server.api.v1.monolithic as v1
-from i3x_server.api.v1 import object_helpers, objecttype_helpers
+from i3x_server.api.v1 import object_helpers, object_value_helpers, objecttype_helpers
 from i3x_server.application.services.model_query import _relationship_type_items
 from i3x_server.infrastructure.opcua.client import (
     OpcUaClientProtocol,
@@ -374,6 +374,7 @@ def test_standard_ua_datatype_scalar_schema_detection() -> None:
 
 
 def test_generic_object_type_from_source_type_id() -> None:
+    """Generic inference and the live BrowseName lookup live in ``objecttype_helpers`` (source module)."""
     infos = [
         OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/", display_name="UA"),
         OpcUaNamespaceInfo(uri="http://example.com/custom", display_name="Custom"),
@@ -386,7 +387,7 @@ def test_generic_object_type_from_source_type_id() -> None:
     client = cast(Any, _NoopClient())
 
     standard = asyncio.run(
-        v1._generic_object_type_from_source_type_id(
+        objecttype_helpers._generic_object_type_from_source_type_id(
             "nsu=http://opcfoundation.org/UA/;i=865",
             infos,
             client,
@@ -399,7 +400,7 @@ def test_generic_object_type_from_source_type_id() -> None:
     assert standard.schema_["type"] == "object"
 
     custom = asyncio.run(
-        v1._generic_object_type_from_source_type_id(
+        objecttype_helpers._generic_object_type_from_source_type_id(
             "nsu=http://example.com/custom;s=Vendor.TypeA",
             infos,
             client,
@@ -414,34 +415,70 @@ def test_generic_object_type_from_source_type_id() -> None:
 
 def test_find_node_and_parent_helpers() -> None:
     model = _sample_model()
-    assert v1._find_model_node(model, "prop-a") is not None
-    assert v1._find_model_node(model, "Temperature") is not None
-    assert v1._find_model_node(model, "ns=1;i=11") is not None
-    assert v1._find_model_node(model, "missing") is None
+    assert object_helpers._find_model_node(model, "prop-a") is not None
+    assert object_helpers._find_model_node(model, "Temperature") is not None
+    assert object_helpers._find_model_node(model, "ns=1;i=11") is not None
+    assert object_helpers._find_model_node(model, "missing") is None
     assert v1._parent_id_for_node(model, "prop-b") == "asset-child"
     assert v1._parent_id_for_node(model, "asset-root") is None
 
 
 def test_collect_value_component_nodes_respects_depth() -> None:
+    """`maxDepth` counts composition levels (spec IMPLEMENTATION_GUIDE.md:1105-1110)."""
     model = _sample_model()
     root = model.nodes_by_id["asset-root"]
-    assert v1._collect_value_component_nodes(model, root, max_depth=1) == []
-    depth_two = v1._collect_value_component_nodes(model, root, max_depth=2)
-    assert [node.id for node in depth_two] == ["prop-a", "prop-b"]
-    assert [node.id for node in v1._collect_value_component_nodes(model, root, max_depth=0)] == ["prop-a", "prop-b"]
+    assert object_value_helpers._collect_value_component_nodes(model, root, max_depth=1) == ([], False)
+
+    nodes, truncated = object_value_helpers._collect_value_component_nodes(model, root, max_depth=2)
+    assert [node.id for node in nodes] == ["prop-a", "prop-b"]
+    assert truncated is False
+
+    nodes, truncated = object_value_helpers._collect_value_component_nodes(model, root, max_depth=0)
+    assert [node.id for node in nodes] == ["prop-a", "prop-b"]
+    assert truncated is False
 
 
-def test_collect_history_source_nodes_paths() -> None:
+def test_collect_value_component_nodes_reports_server_depth_cap() -> None:
+    """A server cap below the requested depth must be reported, not silently swallowed (:1113-1119)."""
     model = _sample_model()
     root = model.nodes_by_id["asset-root"]
-    prop = model.nodes_by_id["prop-a"]
-    assert [node.id for node in v1._collect_history_source_nodes(model, prop, 1)] == ["prop-a"]
-    assert [node.id for node in v1._collect_history_source_nodes(model, root, 1)] == []
-    assert {node.id for node in v1._collect_history_source_nodes(model, root, 0)} == {"prop-a", "prop-b"}
+
+    nodes, truncated = object_value_helpers._collect_value_component_nodes(model, root, max_depth=0, max_levels=1)
+    assert [node.id for node in nodes] == ["prop-a"]
+    assert truncated is True
+
+    # Unlimited requests whose tree is shallower than the cap are complete, not truncated.
+    nodes, truncated = object_value_helpers._collect_value_component_nodes(model, root, max_depth=2, max_levels=5)
+    assert [node.id for node in nodes] == ["prop-a", "prop-b"]
+    assert truncated is False
+
+
+def test_collect_value_component_nodes_reports_node_budget() -> None:
+    model = _sample_model()
+    root = model.nodes_by_id["asset-root"]
+
+    nodes, truncated = object_value_helpers._collect_value_component_nodes(model, root, max_depth=0, max_nodes=1)
+    assert [node.id for node in nodes] == ["prop-a"]
+    assert truncated is True
+
+    # The budget exactly covers the whole tree, so the result is complete.
+    nodes, truncated = object_value_helpers._collect_value_component_nodes(model, root, max_depth=0, max_nodes=2)
+    assert [node.id for node in nodes] == ["prop-a", "prop-b"]
+    assert truncated is False
+
+
+def test_collect_history_lookup_reports_truncation() -> None:
+    model = _sample_model()
+    lookup, node_ids, truncated = object_value_helpers._collect_history_lookup_and_node_ids(
+        model, [("asset-root", model.nodes_by_id["asset-root"])], max_depth=0, max_levels=1
+    )
+    assert truncated is True
+    assert [node.id for node in lookup[0][3]] == ["prop-a"]
+    assert node_ids == ["ns=2;s=Temperature"]
 
 
 def test_parse_iso_and_history_range_validation() -> None:
-    start = v1._parse_iso_datetime("2026-01-01T12:00:00", "startTime")
+    start = object_value_helpers._parse_iso_datetime("2026-01-01T12:00:00", "startTime")
     assert start.tzinfo is not None
 
     body = v1.GetObjectHistoryRequest(
@@ -450,13 +487,13 @@ def test_parse_iso_and_history_range_validation() -> None:
         endTime="2026-01-01T01:00:00Z",
         maxDepth=1,
     )
-    parsed_start, parsed_end = v1._parse_history_time_range(body)
+    parsed_start, parsed_end = object_value_helpers._parse_history_time_range(body)
     assert parsed_start is not None
     assert parsed_end is not None
     assert parsed_start <= parsed_end
 
     with pytest.raises(HTTPException):
-        v1._parse_iso_datetime("not-a-time", "startTime")
+        object_value_helpers._parse_iso_datetime("not-a-time", "startTime")
 
     bad = v1.GetObjectHistoryRequest(
         elementIds=["x"],
@@ -465,28 +502,28 @@ def test_parse_iso_and_history_range_validation() -> None:
         maxDepth=1,
     )
     with pytest.raises(HTTPException):
-        v1._parse_history_time_range(bad)
+        object_value_helpers._parse_history_time_range(bad)
 
 
 def test_quality_timestamp_and_history_conversion_helpers() -> None:
-    assert v1._normalize_quality(None) == "Good"
-    assert v1._normalize_quality(SimpleNamespace(is_good=lambda: False)) == "Bad"
-    assert v1._normalize_quality(SimpleNamespace(name="UncertainLastUsableValue")) == "Uncertain"
-    assert v1._normalize_quality(SimpleNamespace(name="GoodClamped")) == "Good"
-    assert v1._normalize_quality(SimpleNamespace(name="SomethingElse")) == "Bad"
+    assert object_value_helpers._normalize_quality(None) == "Good"
+    assert object_value_helpers._normalize_quality(SimpleNamespace(is_good=lambda: False)) == "Bad"
+    assert object_value_helpers._normalize_quality(SimpleNamespace(name="UncertainLastUsableValue")) == "Uncertain"
+    assert object_value_helpers._normalize_quality(SimpleNamespace(name="GoodClamped")) == "Good"
+    assert object_value_helpers._normalize_quality(SimpleNamespace(name="SomethingElse")) == "Bad"
 
     naive_dt = datetime(2026, 1, 1, 12, 0, 0)
     aware_dt = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
-    assert v1._normalize_timestamp(naive_dt).endswith("Z")
-    assert v1._normalize_timestamp(aware_dt).endswith("Z")
-    assert v1._normalize_timestamp("invalid").endswith("Z")
+    assert object_value_helpers._normalize_timestamp(naive_dt).endswith("Z")
+    assert object_value_helpers._normalize_timestamp(aware_dt).endswith("Z")
+    assert object_value_helpers._normalize_timestamp("invalid").endswith("Z")
 
     data_value = SimpleNamespace(
         Value=SimpleNamespace(Value=123),
         SourceTimestamp=aware_dt,
         StatusCode=SimpleNamespace(name="Good"),
     )
-    vqt = v1._to_vqt_from_history_value(data_value)
+    vqt = object_value_helpers._to_vqt_from_history_value(data_value)
     assert vqt.value == 123
     assert vqt.quality == "Good"
     assert vqt.timestamp.endswith("Z")

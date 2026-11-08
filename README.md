@@ -348,6 +348,32 @@ Object-type discovery remains independent and is not restricted to these entrypo
 This setting scopes discovery, not authorization: forward hierarchical cross-links
 can lead into other branches or namespaces.
 
+### Composition depth and node limits
+
+`POST /v1/objects/value` and `POST /v1/objects/history` recurse through `HasComponent`
+relationships. `maxDepth` counts composition levels (`0` = unlimited, `1` = no recursion,
+`N` = up to N levels); `HasChildren` children are never traversed. Unlimited or deep requests
+are bounded by the gateway's own limits:
+
+```dotenv
+I3X_COMPOSITION_MAX_DEPTH=32    # composition levels a single request may recurse (0 = no cap)
+I3X_COMPOSITION_MAX_NODES=2000  # property sources a single request may fetch (0 = no cap)
+```
+
+When a cap stops the recursion before the requested depth is satisfied, the response is
+HTTP `206 Partial Content` with the standard body containing what was fetched plus a top-level
+`responseDetail` (`title`, `status: 206`, `detail`) - an incomplete result is never presented as
+complete. Follow up with requests targeting the remaining `elementIds` to fetch the rest.
+
+### Bulk request limits
+
+Bulk request arrays are capped at **500 items** (`elementIds`, `updates`, `subscriptionIds`) on
+every `/v1` route that accepts a batch. One item costs at least one upstream OPC UA round-trip, so
+an unbounded batch would turn a single request into thousands of reads or writes. The limit matches
+the MCP batch limit documented in the MCP tool guide, so REST is not weaker than the MCP surface.
+Submitting more than 500 items is rejected with HTTP `400` and the standard error envelope before
+any upstream call is made; split the work into several requests.
+
 ### Model revisions and conditional GET
 
 Every response built from the address-space model carries `I3X-Model-Revision`, a content hash of the model. It changes only when the model content changes, not on every periodic rebuild. Model-derived `GET` endpoints (`/objects`, `/objecttypes`, `/namespaces`, `/relationshiptypes`, `/model/namespace-gaps`) also return a weak `ETag` and `Cache-Control: no-cache`. Send it back in `If-None-Match` to get `304 Not Modified` with an empty body while the representation is unchanged:
@@ -360,12 +386,12 @@ A response served from a stale cache keeps the older ETag, so clients pick up th
 
 Optional OPC UA diagnostic endpoints are exposed under `/ua`:
 
-- client state and connectivity (`/ua/state`, `/ua/connection`)
+- client state and connectivity (`/ua/status`, `/ua/connection`)
 - session limits and metrics (`/ua/limits`, `/ua/metrics`)
 
 Optional MCP endpoints are exposed only when `I3X_ENABLE_MCP=1`:
 
-- **MCP endpoint**: accepts JSON-RPC requests at `POST /mcp`. Legacy clients may use session-scoped SSE with `GET /mcp`; initialization returns `Mcp-Session-Id`, which can be closed with `DELETE /mcp`. Modern `2026-07-28` requests are stateless.
+- **MCP endpoint**: accepts JSON-RPC requests at `POST /mcp`. Legacy clients may use session-scoped SSE with `GET /mcp`; initialization returns `Mcp-Session-Id`, which can be closed with `DELETE /mcp`. Modern `2026-07-28` requests are stateless. Legacy transport sessions are bounded (200): sessions without an SSE stream that have not been used for 15 minutes are dropped, and a new `initialize` is rejected with a JSON-RPC error once the limit is reached. Sessions are closed when the application shuts down.
 - **MCP Helpers**: Local REST-style convenience endpoints for the tool catalog and tool calls (`/mcp/tools`, `/mcp/call`), prompt listing/definition/execution, resource listing/reading, and plant roots (`/mcp/roots`). These are not MCP protocol routes.
 
 MCP supports legacy initialization-based clients using `2025-03-26`,
@@ -377,7 +403,10 @@ include the protocol version and client capabilities in `params._meta`, plus
 the matching `MCP-Protocol-Version` and `Mcp-Method` HTTP headers; calls to
 `tools/call`, `prompts/get`, and `resources/read` also require a matching
 `Mcp-Name` header. `server/discover` reports modern protocol support. Unsupported
-modern versions return `400` with `UnsupportedProtocolVersion`; JSON-RPC batch
+modern versions return `400` with `UnsupportedProtocolVersion` and the list of
+supported versions - including when the client announces the version only through
+the `MCP-Protocol-Version` header or only through `params._meta`; version
+negotiation is answered before any per-request metadata is validated. JSON-RPC batch
 arrays are not supported.
 
 Modern clients can discover the supported current protocol and server
@@ -394,7 +423,7 @@ curl -i http://127.0.0.1:8000/mcp \
 The SSE stream sends `event: message` events and periodic keep-alives. Server
 code can publish a JSON-RPC notification to connected clients with
 `publish_mcp_notification(app, session_id, method, params)` from
-`i3x_server.api.mcp.monolithic`.
+`i3x_server.api.mcp` (implementation in `i3x_server.api.mcp.jsonrpc`).
 
 For example, initialize and copy the returned session ID into the later
 commands:
@@ -438,7 +467,9 @@ semantic and relationship context rather than exposing individual REST calls:
 `searchModelElements`, `getElementContext`, `summarizeSubtree`, and
 `traceRelationshipPath`. They return model element IDs and the current model
 revision; subtree and path traversal are bounded by caller-supplied depth and
-size limits.
+size limits. Like the identity and model-access tools, they never start a model
+build or contact OPC UA; when the cached model is not available they answer
+`503` instead of starting discovery.
 `resolveElementIdsToNodeIds` and `resolveNodeIdsToElementIds` provide batch
 identity translation using indexes built with the cached model. They return
 per-item results and never establish an OPC UA connection or invoke OPC UA
@@ -459,15 +490,17 @@ MCP write policy: `PUT` routes are intentionally excluded from MCP tool generati
 - Current-value updates use a VQT: `value` is required and must conform to the ObjectType schema; optional `quality` defaults to `Good` and optional RFC 3339 `timestamp` defaults to server time.
 - Historical updates insert or replace records by source timestamp and require a complete VQT. `Bad` and `GoodNoData` require a null value, and null requires one of those qualities plus schema-declared nullability.
 - The implementation validates writes against the target's published ObjectType JSON Schema. Invalid values fail with 400; missing or invalid schemas fail with 502.
+- Upstream write failures are classified by the OPC UA status code carried by the exception, not by exception text: `BadNodeIdUnknown` maps to an item-level `404 node_not_found`, user-access denial to `403 unauthorized_by_opcua_server`, a non-writable target to `403 target_not_writable`, type/range/argument rejections to `400 bad_type_or_range`, and session, secure-channel, connection, and server-halted codes to the retryable `502 session_or_transport_failure`. Any other server rejection is reported as `502 opcua_write_failed` rather than as gateway transport trouble. On current-value writes an explicit `BadServiceUnsupported` or `BadNotImplemented` returns `501 write_not_supported_by_opcua_server`; historical writes keep their own service-wide `BadServiceUnsupported` handling.
 
 ### OPC UA gateway integration constraints
 
 - current-value and historical write support is optional and controlled by `I3X_ENABLE_WRITES`:
 	- `I3X_ENABLE_WRITES=1`: `capabilities.update.current=true`, `capabilities.update.history=true`, both bulk write endpoints enabled
 	- default (`I3X_ENABLE_WRITES` unset/0): write endpoints return `501 Not Implemented`
-- Current-value writes send quality and source timestamp as OPC UA `DataValue` fields and verify them with a read-back. If the upstream server does not preserve both, that item returns `501 Not Implemented`; if verification fails, the outcome is reported as uncertain rather than successful.
+- Current-value writes send quality and source timestamp as OPC UA `DataValue` fields and verify them with a read-back. If the upstream server does not preserve both, that item returns `501 Not Implemented`; if the read-back verification fails, the item reports an item-level `502` whose `responseDetail.detail` states the outcome is uncertain rather than successful.
+- If the access check reports the target as not writable, but the submitted VQT exactly matches the current value, quality, and source timestamp, the item is reported as a successful no-op and no write is sent upstream.
 - Historical writes require upstream `HistoryUpdate` support and per-node OPC UA `HistoryWrite` access. When enabled, `capabilities.update.history` is true until the gateway receives service-wide `BadServiceUnsupported`; it then becomes false. Per-node permission differences remain request-time errors. The standard asyncua 2.1.0 server rejects `HistoryUpdate`.
-- This adapter requires historical timestamps in UTC with a `Z` suffix and accepts fractional precision beyond six digits only when the extra digits are zero. The six-digit precision limit is an OPC UA adapter constraint; i3X's RFC 3339 timestamp requirement does not impose that limit.
+- This adapter accepts historical timestamps as RFC 3339 date-times with a timezone: a `Z` suffix (case-insensitive) or an explicit offset such as `+00:00` or `+02:00`; offsets are accepted and normalized to UTC. Fractional precision beyond six digits is accepted only when the extra digits are zero. The six-digit precision limit is an OPC UA adapter constraint; i3X's RFC 3339 timestamp requirement does not impose that limit.
 - The OPC UA mapping supports historical writes for Variable-backed property elements with built-in Boolean, numeric, String, DateTime, Guid, and base64 ByteString values. Arrays must be rectangular and conform to OPC UA ValueRank and ArrayDimensions. Composition fan-out and custom structured values are not supported.
 - Writes are validated against the published ObjectType schema, including formats and nullability. External schema references are not downloaded or accepted. Write element IDs must be printable with no surrounding whitespace.
 - Historical mutations are not automatically retried after a transport failure. Explicit service-wide `BadServiceUnsupported` returns HTTP 501 unless earlier items succeeded, in which case mixed results retain HTTP 200; after that service-wide result, subsequent history writes return 501 without an upstream attempt. Node-level unsupported operations and permission denials remain item-level failures and do not by themselves disable history updates globally.
@@ -554,6 +587,16 @@ uv run pytest -q --cov=i3x_server --cov-report=term-missing
 
 Mypy uses explicit package bases from the repository root so namespace packages
 such as `samples` have consistent module names during discovery and imports.
+
+### Frontend pages
+
+The viewer pages live in `frontend/` and are built with `npm run build` (from `frontend/`),
+which writes the prerendered site to `dist/`. `dist/` is build output and not tracked.
+
+The Content-Security-Policy inline script hashes are computed once at server startup from
+the HTML files in `dist/`. A rebuild while the server is running (the Windows default is
+`I3X_RELOAD=0`) therefore serves a boot script the old CSP does not allow and the pages stay
+inert: rebuild, then restart the server.
 
 ## Production Deployment and i3X Strict Compliance
 

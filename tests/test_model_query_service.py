@@ -218,6 +218,29 @@ async def test_get_relationship_types_contains_defaults_and_model_graph_items() 
     assert await service.get_relationship_types("http://example.com/custom") == graph_items
     assert await service.get_relationship_types("https://example.com/custom") == []
 
+    # Canonical namespace comparison (mapping profile rule 6): trailing slash and case ignored.
+    assert await service.get_relationship_types(namespace_uri="https://cesmii.org/i3x/") == filtered
+    assert await service.get_relationship_types(namespace_uri="HTTPS://CESMII.ORG/I3X") == filtered
+    assert await service.get_relationship_types(namespace_uri="http://EXAMPLE.com/custom/") == graph_items
+    assert await service.get_relationship_types(namespace_uri="https://example.com/custom/") == []
+
+
+@pytest.mark.asyncio
+async def test_get_relationship_types_uses_modelled_inverse_names() -> None:
+    """Natural inverses from the address space replace the invented `inverseOf_<name>` names."""
+    model = _model()
+    model.graph_relationship_names = {"Monitors", "MonitoredBy"}
+    model.graph_relationship_namespace_by_id = {
+        "Monitors": "http://example.com/custom",
+        "MonitoredBy": "http://example.com/custom",
+    }
+    model.graph_relationship_inverse_by_id = {"Monitors": "MonitoredBy", "MonitoredBy": "Monitors"}
+    service = ModelQueryService(cast(OpcUaClientProtocol, _FakeOpcUaClient([])), model)
+
+    items = await service.get_relationship_types(namespace_uri="http://example.com/custom")
+    assert {item["elementId"] for item in items} == {"Monitors", "MonitoredBy"}
+    assert {item["reverseOf"] for item in items} == {"Monitors", "MonitoredBy"}
+
 
 @pytest.mark.asyncio
 async def test_get_objects_returns_model_nodes_and_filtering() -> None:
@@ -230,7 +253,29 @@ async def test_get_objects_returns_model_nodes_and_filtering() -> None:
 
     filtered = await service.get_objects(element_ids=["asset-root"], include_metadata=True)
     assert len(filtered) == 1
-    assert isinstance(filtered[0]["metadata"], dict)
+    metadata = filtered[0]["metadata"]
+    assert isinstance(metadata, dict)
+    # Provenance is required whenever metadata is returned (spec :284, conformance EXP-17).
+    assert metadata["sourceTypeId"] == "ns=2;s=Root"
+    assert metadata["typeNamespaceUri"] is None
 
-    missing = await service.get_objects(element_ids=["missing"])
-    assert missing == []
+    assert await service.get_objects(element_ids=["missing"]) == []
+
+
+@pytest.mark.asyncio
+async def test_get_objects_metadata_resolves_type_namespace_from_index() -> None:
+    model = _model()
+    node = model.nodes_by_id["asset-root"]
+    node.type = None
+    node.source_type_id = "ns=2;s=MachineryType"
+    model.namespace_uri_by_index = {0: "http://opcfoundation.org/UA/", 2: "http://example.com/custom"}
+
+    service = ModelQueryService(cast(OpcUaClientProtocol, _FakeOpcUaClient([])), model)
+    metadata = (await service.get_objects(element_ids=["asset-root"], include_metadata=True))[0]["metadata"]
+    assert isinstance(metadata, dict)
+    assert metadata["typeNamespaceUri"] == "http://example.com/custom"
+
+    node.source_type_id = "nsu=http://opcfoundation.org/UA/;i=1001"
+    metadata = (await service.get_objects(element_ids=["asset-root"], include_metadata=True))[0]["metadata"]
+    assert isinstance(metadata, dict)
+    assert metadata["typeNamespaceUri"] == "http://opcfoundation.org/UA/"

@@ -423,7 +423,7 @@ curl -i http://127.0.0.1:8000/mcp \
 The SSE stream sends `event: message` events and periodic keep-alives. Server
 code can publish a JSON-RPC notification to connected clients with
 `publish_mcp_notification(app, session_id, method, params)` from
-`i3x_server.api.mcp.monolithic`.
+`i3x_server.api.mcp` (implementation in `i3x_server.api.mcp.jsonrpc`).
 
 For example, initialize and copy the returned session ID into the later
 commands:

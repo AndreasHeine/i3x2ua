@@ -173,7 +173,8 @@ During migration, compatibility wrappers are expected:
 
 - i3x_server/api/v1/__init__.py is the v1 router aggregator
 - i3x_server/api/v1/monolithic.py is retained only as a compatibility surface for remaining direct imports/tests
-- i3x_server/api/mcp/__init__.py wraps i3x_server.api.mcp.monolithic exports; the MCP protocol router is still monolithic and should be split into focused adapters before substantial feature growth
+- i3x_server/api/mcp/__init__.py re-exports the composed router and transport helpers; the MCP protocol
+  is split into focused adapters (jsonrpc.py, tools.py, prompts.py, resources.py, roots.py, router.py)
 
 For private internals, tests and monkeypatching must target source modules, not wrapper re-exports.
 

@@ -9,20 +9,20 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from jsonschema import validate
 
-from i3x_server.api.mcp import monolithic
-from i3x_server.api.mcp.monolithic import (
-    MCP_IDENTITY_GUIDE_URI,
+from i3x_server.api.mcp import jsonrpc
+from i3x_server.api.mcp.jsonrpc import (
     MCP_META_CLIENT_CAPABILITIES,
     MCP_META_PROTOCOL_VERSION,
     MCP_PROTOCOL_VERSION,
     MCP_SESSION_HEADER,
     MCP_SUPPORTED_PROTOCOL_VERSIONS,
     McpTransportSession,
-    _compact_tool_body,
     publish_mcp_notification,
-    router,
     shutdown_mcp_transport,
 )
+from i3x_server.api.mcp.resources import MCP_IDENTITY_GUIDE_URI
+from i3x_server.api.mcp.router import router
+from i3x_server.api.mcp.tools import _compact_tool_body
 from i3x_server.bootstrap.app_factory import create_app
 from i3x_server.mcp import build_mcp_tools
 from i3x_server.prompts.registry import PromptDefinition, PromptRegistry
@@ -305,7 +305,7 @@ def test_legacy_transport_sessions_are_bounded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Legacy sessions are gateway state, so the session map must have a hard limit."""
-    monkeypatch.setattr(monolithic, "MCP_MAX_TRANSPORT_SESSIONS", 2)
+    monkeypatch.setattr(jsonrpc, "MCP_MAX_TRANSPORT_SESSIONS", 2)
 
     def initialize() -> tuple[int, str | None, dict[str, Any]]:
         response = protocol_client.post(
@@ -336,8 +336,8 @@ def test_idle_legacy_sessions_are_pruned(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Sessions without a live stream are released once they have been idle long enough."""
-    monkeypatch.setattr(monolithic, "MCP_SESSION_IDLE_TTL_SECONDS", 0.0)
-    monkeypatch.setattr(monolithic, "MCP_MAX_TRANSPORT_SESSIONS", 3)
+    monkeypatch.setattr(jsonrpc, "MCP_SESSION_IDLE_TTL_SECONDS", 0.0)
+    monkeypatch.setattr(jsonrpc, "MCP_MAX_TRANSPORT_SESSIONS", 3)
 
     for _ in range(3):
         response = protocol_client.post(
@@ -513,7 +513,7 @@ def test_structured_tool_results(
     async def invoke(*args: Any) -> dict[str, Any]:
         return {"status_code": status, "body": body}
 
-    monkeypatch.setattr("i3x_server.api.mcp.monolithic.invoke_mcp_tool", invoke)
+    monkeypatch.setattr("i3x_server.api.mcp.tools.invoke_mcp_tool", invoke)
     tools = {tool["name"]: tool for tool in rpc(protocol_client, "tools/list")["result"]["tools"]}
     assert tools["readValues"]["annotations"]["readOnlyHint"] is True
     assert tools["readValues"]["outputSchema"]["properties"]["body"] == {
@@ -622,7 +622,7 @@ def test_tool_argument_error_is_protocol_error(protocol_client: TestClient, monk
     async def invoke(*args: Any) -> dict[str, Any]:
         raise HTTPException(400, "Missing required body")
 
-    monkeypatch.setattr("i3x_server.api.mcp.monolithic.invoke_mcp_tool", invoke)
+    monkeypatch.setattr("i3x_server.api.mcp.tools.invoke_mcp_tool", invoke)
     result = rpc(protocol_client, "tools/call", {"name": "readValues", "arguments": {"body": {}}})
     assert result["error"]["code"] == -32602
 
@@ -657,7 +657,7 @@ def test_execution_exceptions_and_internal_errors(
     async def unavailable(*args: Any) -> dict[str, Any]:
         raise HTTPException(503, "UA unavailable")
 
-    monkeypatch.setattr("i3x_server.api.mcp.monolithic.invoke_mcp_tool", unavailable)
+    monkeypatch.setattr("i3x_server.api.mcp.tools.invoke_mcp_tool", unavailable)
     params = {"name": "readValues", "arguments": {"body": {}}}
     result = rpc(protocol_client, "tools/call", params)["result"]
     assert result["isError"] is True
@@ -666,7 +666,7 @@ def test_execution_exceptions_and_internal_errors(
     async def broken(*args: Any) -> dict[str, Any]:
         raise RuntimeError("private implementation detail")
 
-    monkeypatch.setattr("i3x_server.api.mcp.monolithic.invoke_mcp_tool", broken)
+    monkeypatch.setattr("i3x_server.api.mcp.tools.invoke_mcp_tool", broken)
     error = rpc(protocol_client, "tools/call", params)["error"]
     assert error == {"code": -32603, "message": "Internal error"}
     assert "MCP request failed" in caplog.text
@@ -676,7 +676,7 @@ def test_invalid_arguments_do_not_invoke_tools(protocol_client: TestClient, monk
     async def forbidden(*args: Any) -> dict[str, Any]:
         pytest.fail("Invalid arguments must not invoke the tool")
 
-    monkeypatch.setattr("i3x_server.api.mcp.monolithic.invoke_mcp_tool", forbidden)
+    monkeypatch.setattr("i3x_server.api.mcp.tools.invoke_mcp_tool", forbidden)
     for arguments in ({}, {"body": 42}, {"body": {}, "unknown": True}):
         assert (
             rpc(protocol_client, "tools/call", {"name": "readValues", "arguments": arguments})["error"]["code"]
@@ -693,7 +693,7 @@ def test_invalid_tool_response_is_logged(
     async def invoke(*args: Any) -> Any:
         return payload
 
-    monkeypatch.setattr("i3x_server.api.mcp.monolithic.invoke_mcp_tool", invoke)
+    monkeypatch.setattr("i3x_server.api.mcp.tools.invoke_mcp_tool", invoke)
     result = rpc(protocol_client, "tools/call", {"name": "readValues", "arguments": {"body": {}}})
     assert result["error"]["code"] == -32603
     assert "Invalid MCP tool response" in caplog.text

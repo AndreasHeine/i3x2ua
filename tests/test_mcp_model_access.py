@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from jsonschema import Draft202012Validator
 from starlette.requests import Request
 
-from i3x_server.api.mcp.monolithic import router
+from i3x_server.api.mcp.router import router
 from i3x_server.api.v1.contracts import ObjectTypeResponse
 from i3x_server.api.v1.objecttype_helpers import _object_type_context_revision, _ObjectTypeContext
 from i3x_server.application.ports.opcua import OpcUaNamespaceInfo, OpcUaObjectTypeInfo

@@ -21,10 +21,8 @@ from fastapi.testclient import TestClient
 from jsonschema import Draft202012Validator
 
 from i3x_server.api.v1.contracts import MAX_BULK_ITEMS
-from i3x_server.api.v1.monolithic import (
-    _decode_bytestring_write_value,
-    _to_json_safe_value,
-)
+from i3x_server.api.v1.monolithic import _to_json_safe_value
+from i3x_server.api.v1.object_value_helpers import _decode_bytestring_write_value
 from i3x_server.application.errors import ApplicationServiceError
 from i3x_server.bootstrap.app_factory import create_app
 from i3x_server.infrastructure.opcua.client import (

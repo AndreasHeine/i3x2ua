@@ -9,7 +9,8 @@ from i3x_server.api.v1.contracts import (
     ModelNamespaceGapResponse,
     SuccessResponse,
 )
-from i3x_server.api.v1.monolithic import _build_model_metrics, _namespace_index_from_node_id
+from i3x_server.api.v1.monolithic import _namespace_index_from_node_id
+from i3x_server.api.v1.object_value_helpers import _build_model_metrics
 from i3x_server.application.dependencies import get_or_build_model
 from i3x_server.http_caching import enable_etag
 from i3x_server.schemas.state import BuildResult

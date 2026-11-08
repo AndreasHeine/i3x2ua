@@ -35,6 +35,7 @@ Adopt a service-centric orchestration model with presentation-local helper modul
 - `object_helpers.py`
 - `objecttype_helpers.py`
 - `common_helpers.py`
+- `object_value_helpers.py`
 
 5. `i3x_server/api/v1/__init__.py` is the only router aggregator for v1.
 
@@ -63,3 +64,20 @@ Trade-offs:
 1. Keep moving direct imports away from `monolithic.py` when practical.
 2. Prefer adding new shared DTOs to `contracts.py` instead of route modules.
 3. Prefer adding new presentation-local helpers to focused helper modules instead of `monolithic.py`.
+
+## Decision update (2026-11-08)
+
+Phase 9.3 applied rule 4 to the value/write/history/metrics cluster that previously lived in
+`monolithic.py`. It moved to a new presentation-local helper module, `object_value_helpers.py`,
+which is added to the rule 4 list above:
+
+- The write path depends on `write_validation.py` (presentation), so moving it into an application
+  service would invert the layering contract (application must not depend on presentation).
+- The bulk endpoints own behavior that the application `ObjectValueService` does not implement:
+  per-item diagnostics and status classification, HTTP 206 composition-truncation responses, and
+  the `GoodNoData` history-range contract. Wiring the routes onto `ObjectValueService` would change
+  behavior, so the service stays consciously justified as application-facing scaffolding for
+  future endpoint work rather than the current bulk routes.
+- `monolithic.py` keeps its role under rule 6 (compatibility module) for the object-type machinery
+  that tests still target. Its remaining size above the module guidance threshold is a deliberate
+  deferral until test imports stop targeting it.

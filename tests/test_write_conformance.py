@@ -12,8 +12,8 @@ from asyncua.ua.uaerrors import UaStatusCodeError
 from fastapi.testclient import TestClient
 
 from i3x_server.api.v1.contracts import HistoryWriteVQTRequest, WriteVQTRequest
-from i3x_server.api.v1.monolithic import _classify_write_error
 from i3x_server.api.v1.object_helpers import _resolved_type_element_id_for_node
+from i3x_server.api.v1.object_value_helpers import _classify_write_error
 from i3x_server.domain.ports.opcua import OpcUaWriteMetadataUnsupportedError
 from tests.conftest import fastapi_app
 

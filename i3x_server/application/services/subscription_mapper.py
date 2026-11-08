@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from typing import TypedDict
 
 from i3x_server.application.ports.subscription import (
@@ -59,7 +59,7 @@ class SubscriptionBulkItemDto(TypedDict):
     elementId: str
     subscriptionId: str
     result: object | None
-    error: SubscriptionDeleteResultPort.ErrorPayload | None
+    error: Mapping[str, object] | None
 
 
 class SubscriptionDetailDto(TypedDict):
@@ -170,7 +170,7 @@ def map_public_sync_batches(
 
 
 def map_delete_subscriptions(
-    delete_results: list[SubscriptionDeleteResultPort],
+    delete_results: Iterable[SubscriptionDeleteResultPort],
     requested: int,
 ) -> DeleteSubscriptionsDto:
     deleted_count = sum(1 for item in delete_results if item.success)
@@ -195,7 +195,7 @@ def _subscription_bulk_success(
 def _subscription_bulk_error(
     element_id: str,
     subscription_id: str,
-    error: SubscriptionDeleteResultPort.ErrorPayload | None = None,
+    error: Mapping[str, object] | None = None,
 ) -> SubscriptionBulkItemDto:
     """Create an error subscription bulk response item."""
     return {

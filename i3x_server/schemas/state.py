@@ -77,9 +77,3 @@ class BuildResult:
             and self.nodes_by_id.get(child_id) is not None
             and self.nodes_by_id[child_id].kind == "property"
         ]
-
-
-@dataclass(slots=True)
-class AppState:
-    model_cache: BuildResult | None = None
-    model_refresh_lock: object = field(default_factory=object)

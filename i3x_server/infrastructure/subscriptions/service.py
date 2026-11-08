@@ -118,7 +118,6 @@ class _SubscriptionState:
     monitored_node_ids: set[str] = field(default_factory=set)
     applied_node_ids: set[str] = field(default_factory=set)
     node_to_element_id: dict[str, str] = field(default_factory=dict)
-    handle_to_node_id: dict[int, str] = field(default_factory=dict)
     last_values_by_node_id: dict[str, Any] = field(default_factory=dict)
     last_quality_by_node_id: dict[str, str] = field(default_factory=dict)
     updates: list[SubscriptionUpdate] = field(default_factory=list)
@@ -166,29 +165,6 @@ class _ManagedBin:
     # Set once ``ua_subscription`` exists. A bin registered before its create returned is a
     # placeholder: concurrent admissions reserve slots in it and wait here instead of opening more bins.
     ready: asyncio.Event = field(default_factory=asyncio.Event)
-
-
-class _DataChangeHandler:
-    def __init__(self, service: SubscriptionService, subscription_id: str) -> None:
-        self._service = service
-        self._subscription_id = subscription_id
-
-    def datachange_notification(self, node: Any, val: Any, data: Any) -> None:
-        try:
-            node_id = node.nodeid.to_string()
-        except Exception:
-            node_id = str(node)
-        client_handle: int | None = None
-        monitored_item = getattr(data, "monitored_item", None)
-        if monitored_item is not None:
-            raw_handle = getattr(monitored_item, "ClientHandle", None)
-            client_handle = _to_client_handle(raw_handle)
-
-        signal = _signal_from_data_value(notification_data_value(data))
-        self._service.schedule_datachange(self._subscription_id, node_id, val, client_handle, signal)
-
-    def event_notification(self, event: Any) -> None:
-        return None
 
 
 class _NodeDataChangeHandler:
@@ -252,16 +228,11 @@ class SubscriptionService:
         self._native_backoff_seconds = max(0.1, float(native_backoff_seconds))
         self._native_backoff_until_monotonic: float = 0.0
         self._cleanup_task: asyncio.Task[None] | None = None
-        self._datachange_task: asyncio.Task[None] | None = None
         self._node_datachange_task: asyncio.Task[None] | None = None
         self._shared_polling_task: asyncio.Task[None] | None = None
-        self._datachange_queue: asyncio.Queue[tuple[str, str, Any, int | None, _ValueSignal]] = asyncio.Queue(
-            maxsize=max(1000, self._max_updates_per_subscription)
-        )
         self._node_datachange_queue: asyncio.Queue[tuple[str, Any, _ValueSignal]] = asyncio.Queue(
             maxsize=max(1000, self._max_updates_per_subscription)
         )
-        self._dropped_datachange_events = 0
         self._event_loop: asyncio.AbstractEventLoop | None = None
         self._shutdown_event: asyncio.Event = asyncio.Event()
         # Set by ``close()``: background tasks must never be resurrected afterwards, otherwise a
@@ -279,54 +250,16 @@ class SubscriptionService:
         if self._event_loop is None or self._event_loop.is_closed():
             self._event_loop = loop
 
-    def _enqueue_datachange(
-        self,
-        subscription_id: str,
-        node_id: str,
-        value: Any,
-        client_handle: int | None,
-        signal: _ValueSignal = _NO_SIGNAL,
-    ) -> None:
-        if self._datachange_queue.full():
-            try:
-                self._datachange_queue.get_nowait()
-                self._dropped_datachange_events += 1
-            except asyncio.QueueEmpty:
-                pass
-        try:
-            self._datachange_queue.put_nowait((subscription_id, node_id, value, client_handle, signal))
-        except asyncio.QueueFull:
-            self._dropped_datachange_events += 1
-
-    async def _datachange_loop(self) -> None:
-        try:
-            while True:
-                subscription_id, node_id, value, client_handle, signal = await self._datachange_queue.get()
-                try:
-                    await self.handle_datachange(subscription_id, node_id, value, client_handle, signal)
-                except Exception:
-                    logger.exception(
-                        "OPC UA datachange handling failed",
-                        extra={
-                            "subscription_id": subscription_id,
-                            "node_id": node_id,
-                            "client_handle": client_handle,
-                        },
-                    )
-        except asyncio.CancelledError:
-            return
-
     def _enqueue_node_datachange(self, node_id: str, value: Any, signal: _ValueSignal = _NO_SIGNAL) -> None:
         if self._node_datachange_queue.full():
             try:
                 self._node_datachange_queue.get_nowait()
-                self._dropped_datachange_events += 1
             except asyncio.QueueEmpty:
                 pass
         try:
             self._node_datachange_queue.put_nowait((node_id, value, signal))
         except asyncio.QueueFull:
-            self._dropped_datachange_events += 1
+            pass
 
     async def _node_datachange_loop(self) -> None:
         try:
@@ -381,54 +314,6 @@ class SubscriptionService:
         target_loop.call_soon_threadsafe(self._ensure_cleanup_task)
         target_loop.call_soon_threadsafe(self._enqueue_node_datachange, node_id, value, signal)
 
-    def schedule_datachange(
-        self,
-        subscription_id: str,
-        node_id: str,
-        value: Any,
-        client_handle: int | None = None,
-        signal: _ValueSignal = _NO_SIGNAL,
-    ) -> None:
-        target_loop = self._event_loop
-        if target_loop is not None and target_loop.is_closed():
-            target_loop = None
-
-        try:
-            current_loop = asyncio.get_running_loop()
-        except RuntimeError:
-            current_loop = None
-
-        if target_loop is None and current_loop is not None:
-            # Capture the app loop lazily on first callback when not already known.
-            self._event_loop = current_loop
-            self._ensure_cleanup_task()
-            self._enqueue_datachange(subscription_id, node_id, value, client_handle, signal)
-            return
-
-        if current_loop is not None and target_loop is current_loop:
-            self._ensure_cleanup_task()
-            self._enqueue_datachange(subscription_id, node_id, value, client_handle, signal)
-            return
-
-        if target_loop is None:
-            logger.warning(
-                "Dropping OPC UA datachange because no running event loop is available",
-                extra={"subscription_id": subscription_id, "node_id": node_id},
-            )
-            return
-
-        target_loop.call_soon_threadsafe(
-            self._ensure_cleanup_task,
-        )
-        target_loop.call_soon_threadsafe(
-            self._enqueue_datachange,
-            subscription_id,
-            node_id,
-            value,
-            client_handle,
-            signal,
-        )
-
     def _now_monotonic(self) -> float:
         self._remember_event_loop()
         return asyncio.get_running_loop().time()
@@ -443,8 +328,6 @@ class SubscriptionService:
             return
         if self._cleanup_task is None or self._cleanup_task.done():
             self._cleanup_task = asyncio.create_task(self._cleanup_loop())
-        if self._datachange_task is None or self._datachange_task.done():
-            self._datachange_task = asyncio.create_task(self._datachange_loop())
         if self._node_datachange_task is None or self._node_datachange_task.done():
             self._node_datachange_task = asyncio.create_task(self._node_datachange_loop())
         if self._shared_polling_task is None or self._shared_polling_task.done():
@@ -575,15 +458,6 @@ class SubscriptionService:
             except asyncio.CancelledError:
                 pass
 
-        datachange_task = self._datachange_task
-        self._datachange_task = None
-        if datachange_task is not None:
-            datachange_task.cancel()
-            try:
-                await datachange_task
-            except asyncio.CancelledError:
-                pass
-
         node_datachange_task = self._node_datachange_task
         self._node_datachange_task = None
         if node_datachange_task is not None:
@@ -609,7 +483,7 @@ class SubscriptionService:
             except Exception:
                 logger.debug("Failed to remove reconnect listener", exc_info=True)
 
-    async def create_subscription(self, client_id: str | None, display_name: str | None) -> SubscriptionDetail:
+    async def create_subscription(self, client_id: str | None, display_name: str | None = None) -> SubscriptionDetail:
         self._ensure_cleanup_task()
         subscription_id = f"sub-{uuid4()}"
         state = _SubscriptionState(
@@ -647,13 +521,6 @@ class SubscriptionService:
                 values = [item for item in values if item.subscription_id in allowed]
             # Snapshot inside the lock for the same reason as ``create_subscription``.
             return [self._to_detail(item) for item in values]
-
-    async def get_subscription(self, subscription_id: str) -> SubscriptionDetail | None:
-        async with self._lock:
-            state = self._subscriptions.get(subscription_id)
-            if state is None:
-                return None
-            return self._to_detail(state)
 
     async def delete_subscriptions(
         self,
@@ -810,7 +677,7 @@ class SubscriptionService:
         self,
         client_id: str | None,
         subscription_id: str,
-        acknowledge_sequence: int | None,
+        acknowledge_sequence: int | None = None,
         allow_when_stream_active: bool = False,
     ) -> SubscriptionSyncResult | None:
         self._ensure_cleanup_task()
@@ -875,48 +742,34 @@ class SubscriptionService:
                 )
             return state.active_stream_generation
 
-    async def deactivate_stream(self, subscription_id: str, generation: int) -> None:
+    async def deactivate_stream(self, subscription_id: str, stream_generation: int) -> None:
         async with self._lock:
             state = self._subscriptions.get(subscription_id)
             if state is None:
                 return
-            if state.active_stream_generation == generation:
+            if state.active_stream_generation == stream_generation:
                 state.stream_connected = False
                 self._touch(state)
                 if _stream_debug_enabled():
                     logger.info(
                         "Subscription service deactivate stream subscription_id=%s generation=%s",
                         subscription_id,
-                        generation,
+                        stream_generation,
                     )
 
-    async def has_active_stream(self, client_id: str | None, subscription_id: str) -> bool | None:
-        async with self._lock:
-            state = self._subscriptions.get(subscription_id)
-            if state is None or (client_id is not None and state.client_id != client_id):
-                return None
-            return state.stream_connected
-
-    async def is_stream_active(self, subscription_id: str, generation: int) -> bool:
+    async def is_stream_active(self, subscription_id: str, stream_generation: int) -> bool:
         async with self._lock:
             state = self._subscriptions.get(subscription_id)
             if state is None:
                 return False
-            return state.active_stream_generation == generation
-
-    async def updates_after(self, subscription_id: str, after_sequence: int) -> list[SubscriptionUpdate] | None:
-        async with self._lock:
-            state = self._subscriptions.get(subscription_id)
-            if state is None:
-                return None
-            return [item for item in state.updates if item.sequence_number > after_sequence]
+            return state.active_stream_generation == stream_generation
 
     async def wait_for_updates(
         self,
         client_id: str | None,
         subscription_id: str,
         after_sequence: int,
-        timeout_seconds: int = 15,
+        timeout_seconds: float = 15.0,
     ) -> list[SubscriptionUpdate] | None:
         self._ensure_cleanup_task()
         should_refresh_after_timeout = False
@@ -1039,7 +892,6 @@ class SubscriptionService:
         subscription_id: str,
         node_id: str,
         value: Any,
-        client_handle: int | None = None,
         signal: _ValueSignal = _NO_SIGNAL,
     ) -> None:
         async with self._lock:
@@ -1048,19 +900,14 @@ class SubscriptionService:
                 return
 
             resolved_node_id = node_id
-            if client_handle is not None:
-                mapped = state.handle_to_node_id.get(client_handle)
-                if mapped is not None:
-                    resolved_node_id = mapped
-
             if resolved_node_id not in state.monitored_node_ids:
                 mapped_element = state.node_to_element_id.get(resolved_node_id)
                 if mapped_element is None:
                     mapped_element = state.node_to_element_id.get(resolved_node_id.lower())
-                if mapped_element is not None:
-                    pass
-                elif not state.monitored_node_ids:
+                if mapped_element is None and not state.monitored_node_ids:
                     return
+                # A single monitored node accepts any notification the server reports for
+                # it (node-id formats can differ); with several nodes an unmapped id is dropped.
                 if len(state.monitored_node_ids) == 1:
                     resolved_node_id = next(iter(state.monitored_node_ids))
                 elif mapped_element is None:
@@ -1068,11 +915,10 @@ class SubscriptionService:
 
             self._append_update(state, resolved_node_id, value, signal)
             logger.debug(
-                "Subscription datachange callback subscription_id=%s mode=%s node_id=%s client_handle=%s",
+                "Subscription datachange callback subscription_id=%s mode=%s node_id=%s",
                 subscription_id,
                 state.mode,
                 resolved_node_id,
-                client_handle,
             )
             state.native_timeout_count = 0
             # Removed self._touch(state) to ensure server notifications don't keep stale subscriptions alive.

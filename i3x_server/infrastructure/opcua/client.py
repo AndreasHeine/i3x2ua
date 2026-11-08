@@ -57,6 +57,8 @@ __all__ = [
     "OpcUaRuntimeMetrics",
     "OpcUaSubscriptionCapabilities",
     "OpcUaTypeDefinitionInfo",
+    "OpcUaWriteMetadataUnsupportedError",
+    "OpcUaWriteMetadataVerificationError",
 ]
 
 logger = logging.getLogger(__name__)

@@ -33,7 +33,9 @@ def get_opcua_client(request: Request) -> OpcUaClientProtocol:
 
 
 def get_subscription_service(request: Request) -> SubscriptionServicePort:
-    service = cast(SubscriptionServicePort | None, getattr(request.app.state, "subscription_service", None))
+    # The concrete `SubscriptionService` is verified against the port by the mypy gate
+    # (tests/test_subscription_port_conformance.py); no `cast` masking needed here.
+    service: SubscriptionServicePort | None = getattr(request.app.state, "subscription_service", None)
     if service is None:
         raise i3x_http_error(500, "InternalError", "Subscription service not initialized")
     return service

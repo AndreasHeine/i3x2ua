@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import suppress
 from typing import Literal, NoReturn, TypedDict
 
@@ -51,7 +51,7 @@ class StreamSessionDto(TypedDict):
 
 class StreamEventDto(TypedDict):
     kind: Literal["connected", "keepalive", "close", "updates"]
-    updates: list[SubscriptionUpdatePort]
+    updates: Sequence[SubscriptionUpdatePort]
 
 
 def _raise_or_wrap_subscription_error(message: str, exc: Exception) -> NoReturn:
@@ -317,7 +317,7 @@ class SubscriptionAppService:
         subscription_id: str,
         client_id: str,
         stream_generation: int,
-        acknowledged_updates: list[SubscriptionUpdatePort],
+        acknowledged_updates: Sequence[SubscriptionUpdatePort],
         acknowledge_sequence: int | None = None,
         timeout_seconds: float = 2,
     ) -> AsyncIterator[StreamEventDto]:

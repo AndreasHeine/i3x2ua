@@ -122,7 +122,9 @@ async def _read_reference_type_browse_names(
         )
         return
     for type_id, value in zip(type_ids, inverse_values, strict=True):
-        inverse_name = client._extract_attribute_value(value)
+        inverse_obj = client._extract_attribute_value(value)
+        # The attribute is ``LocalizedText`` (OPC UA Part 3); some servers publish a bare string.
+        inverse_name = getattr(inverse_obj, "Text", inverse_obj)
         if isinstance(inverse_name, str) and inverse_name:
             inverse_names[type_id] = inverse_name
 

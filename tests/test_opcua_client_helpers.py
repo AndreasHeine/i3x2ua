@@ -58,7 +58,8 @@ async def test_reference_names_come_from_reference_types_not_targets(monkeypatch
         node_ids = [node.nodeid.to_string() for node in nodes]
         if attr == AttributeIds.InverseName:
             inverse_reads.extend(node_ids)
-            inverse_names = {"i=36": "EventSourceOf", "ns=2;i=5001": None}
+            # Real asyncua shape: LocalizedText attribute value; some servers publish bare strings.
+            inverse_names = {"i=36": ua.LocalizedText("EventSourceOf"), "ns=2;i=5001": "MonitoredBy"}
             return [ua.DataValue(ua.Variant(inverse_names[node_id])) for node_id in node_ids]
         assert attr == AttributeIds.BrowseName
         reads.extend(node_ids)
@@ -71,7 +72,7 @@ async def test_reference_names_come_from_reference_types_not_targets(monkeypatch
     await client._read_reference_type_browse_names(refs, cache, inverse)
     converted = client._to_reference_infos(refs, cache, inverse)
     assert [ref.reference_browse_name for ref in converted] == ["HasEventSource", "HasEventSource", "Monitors"]
-    assert [ref.reference_inverse_name for ref in converted] == ["EventSourceOf", "EventSourceOf", None]
+    assert [ref.reference_inverse_name for ref in converted] == ["EventSourceOf", "EventSourceOf", "MonitoredBy"]
     assert [ref.target_node_id for ref in converted] == [ref.NodeId.to_string() for ref in refs]
     assert [ref.reference_type_id for ref in converted] == [ref.ReferenceTypeId.to_string() for ref in refs]
     assert reads == ["i=36", "ns=2;i=5001"]
@@ -178,7 +179,7 @@ async def test_browse_tree_to_relationship_types_uses_type_names(monkeypatch: py
     async def read_names(nodes: list[Any], attr: AttributeIds, batch_size: int | None = None) -> list[ua.DataValue]:
         del batch_size
         if attr == AttributeIds.InverseName:
-            return [ua.DataValue(ua.Variant("EventSourceOf")) for _ in nodes]
+            return [ua.DataValue(ua.Variant(ua.LocalizedText("EventSourceOf"))) for _ in nodes]
         assert attr == AttributeIds.BrowseName
         reads.extend(node.nodeid.to_string() for node in nodes)
         return [ua.DataValue(ua.Variant(ua.QualifiedName("HasEventSource"))) for _ in nodes]

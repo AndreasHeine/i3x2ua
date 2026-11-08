@@ -48,7 +48,7 @@ class ModelBuilder:
             try:
                 namespace_infos = await get_namespace_infos()
             except Exception:
-                logger.debug("Namespace info resolution failed", exc_info=True)
+                logger.warning("Namespace info resolution failed", exc_info=True)
         namespace_uri_by_index = {
             index: namespace_info.uri
             for index, namespace_info in enumerate(namespace_infos)
@@ -83,7 +83,7 @@ class ModelBuilder:
                             name for name in resolved_supertypes if isinstance(name, str)
                         ]
                 except Exception:
-                    logger.debug(
+                    logger.warning(
                         "Reference supertype resolution failed for reference_type_id=%s",
                         reference_type_id,
                         exc_info=True,

@@ -34,6 +34,7 @@ from i3x_server.api.v1.objecttype_helpers import warm_object_type_context
 from i3x_server.application.errors import ApplicationServiceError
 from i3x_server.bootstrap.dependencies import get_or_build_model
 from i3x_server.config.settings import Settings, get_settings, settings
+from i3x_server.errors import format_error_details
 from i3x_server.http_caching import MODEL_REVISION_HEADER, ModelRevisionMiddleware, NotModifiedError
 from i3x_server.infrastructure.opcua.client import OpcUaClient
 from i3x_server.infrastructure.subscriptions.service import SubscriptionService
@@ -46,6 +47,9 @@ from i3x_server.version import get_server_version
 
 logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+# Bound the request-validation diagnostics embedded in `responseDetail.detail` so a
+# pathological payload cannot blow up the error envelope.
+_MAX_VALIDATION_DIAGNOSTICS = 10
 
 
 def _is_tag_name_boundary(value: str, index: int) -> bool:
@@ -358,14 +362,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 _old(signum, frame)
 
         signal.signal(sig, _handler)
+        _signal_original_handlers[sig] = _old
 
     _handled_signals = [signal.SIGINT]
     if hasattr(signal, "SIGTERM"):
         _handled_signals.append(signal.SIGTERM)
+    _async_signal_signums: set[int] = set()
+    _signal_original_handlers: dict[int, Any] = {}
     for _sig in _handled_signals:
         try:
             # On Unix, prefer asyncio's loop handler so we stay on the event loop thread.
             _loop.add_signal_handler(_sig, _early_shutdown)
+            _async_signal_signums.add(_sig)
         except (NotImplementedError, OSError, RuntimeError):
             # Windows: asyncio does not support add_signal_handler; chain with signal.signal.
             try:
@@ -420,6 +428,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         logger.info("App shutdown started")
+        # Deregister the termination signal handlers installed above. Without this, a
+        # later shutdown in the same process (tests, repeated `create_app()`) fires
+        # `_early_shutdown` on a closed event loop (`RuntimeError: Event loop is
+        # closed`) and chained handlers accumulate onto the previous app's handler.
+        for _sig in _handled_signals:
+            if _sig in _async_signal_signums:
+                with suppress(Exception):
+                    _loop.remove_signal_handler(_sig)
+            original_handler = _signal_original_handlers.get(_sig)
+            if original_handler is not None:
+                with suppress(Exception):
+                    signal.signal(_sig, original_handler)
         refresh_task = getattr(app.state, "model_refresh_task", None)
         if refresh_task is not None and not refresh_task.done():
             refresh_task.cancel()
@@ -543,8 +563,22 @@ def create_app() -> FastAPI:
         request: Request,
         exc: RequestValidationError,
     ) -> JSONResponse:
-        del request, exc
+        del request
+        # Keep the field diagnostics (loc/msg) in `responseDetail.detail`: for a bulk
+        # API the message alone is the difference between a fast fix and a guessing loop.
         message = "Invalid request payload or parameters"
+        errors = list(exc.errors())
+        diagnostics: list[str] = []
+        for item in errors[:_MAX_VALIDATION_DIAGNOSTICS]:
+            loc = ".".join(str(token) for token in item.get("loc", ()))
+            msg = str(item.get("msg", "invalid value"))
+            diagnostics.append(f"{loc}: {msg}" if loc else msg)
+        detail = message
+        if diagnostics:
+            suffix = "; ".join(diagnostics)
+            if len(errors) > len(diagnostics):
+                suffix += f"; (+{len(errors) - len(diagnostics)} more)"
+            detail = f"{message} ({suffix})"
         return JSONResponse(
             status_code=400,
             content={
@@ -556,7 +590,7 @@ def create_app() -> FastAPI:
                 "responseDetail": {
                     "title": _status_title(400),
                     "status": 400,
-                    "detail": message,
+                    "detail": detail,
                 },
             },
         )
@@ -602,6 +636,12 @@ def create_app() -> FastAPI:
         exc: ApplicationServiceError,
     ) -> JSONResponse:
         del request
+        # `ApplicationServiceError.details` (e.g. {"cause": ...}) must reach the client;
+        # it used to be stored but never rendered.
+        detail = exc.message
+        diagnostics = format_error_details(exc.details)
+        if diagnostics is not None:
+            detail = f"{exc.message} ({diagnostics})"
         return JSONResponse(
             status_code=exc.status_code,
             content={
@@ -610,7 +650,7 @@ def create_app() -> FastAPI:
                 "responseDetail": {
                     "title": _status_title(int(exc.status_code)),
                     "status": int(exc.status_code),
-                    "detail": exc.message,
+                    "detail": detail,
                 },
             },
         )

@@ -26,6 +26,7 @@ from i3x_server.api.v1.monolithic import (
     _decode_bytestring_write_value,
     _to_json_safe_value,
 )
+from i3x_server.application.errors import ApplicationServiceError
 from i3x_server.bootstrap.app_factory import create_app
 from i3x_server.infrastructure.opcua.client import (
     OpcUaConnectionSnapshot,
@@ -948,6 +949,11 @@ def test_openapi_errors_match_runtime(client: TestClient, monkeypatch: pytest.Mo
     validation = client.post("/v1/objects/value", json={"maxDepth": 1})
     assert validation.status_code == 400
     assert_documented_response(client, "post", "/v1/objects/value", 400, validation.json())
+    # Field diagnostics (loc/msg) must reach the client in responseDetail.detail (L4).
+    validation_detail = validation.json()["responseDetail"]["detail"]
+    assert validation_detail.startswith("Invalid request payload or parameters")
+    assert "body" in validation_detail
+    assert "Field required" in validation_detail
 
     missing = client.post("/v1/subscriptions/sync", json={"clientId": "example-client", "subscriptionId": "missing"})
     assert missing.status_code == 404
@@ -1444,3 +1450,24 @@ def test_openapi_advertises_the_bulk_batch_limit(client: TestClient) -> None:
     for method, path, field in _BULK_BATCH_FIELDS:
         properties = _request_body_schema(document, method, path)["properties"]
         assert properties[field].get("maxItems") == MAX_BULK_ITEMS, (path, field)
+
+
+def test_application_service_error_details_reach_response_detail(client: TestClient) -> None:
+    """`ApplicationServiceError.details` must surface in `responseDetail.detail` (L4)."""
+    app = _fastapi_app(client)
+
+    async def _raise_service_error() -> None:
+        raise ApplicationServiceError(
+            502,
+            "OpcUaNamespaceError",
+            "Failed to read OPC UA namespaces",
+            {"cause": "connection reset"},
+        )
+
+    app.add_api_route("/test/service-error", _raise_service_error, methods=["GET"])
+    response = client.get("/test/service-error")
+    assert response.status_code == 502
+    payload = response.json()
+    assert payload["success"] is False
+    assert payload["error"]["message"] == "Failed to read OPC UA namespaces"
+    assert payload["responseDetail"]["detail"] == "Failed to read OPC UA namespaces (cause=connection reset)"

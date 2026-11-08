@@ -17,6 +17,7 @@ dependencies, e.g.:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import signal
@@ -49,6 +50,10 @@ I3X_CONFORMANCE_ENV = {
     "I3X_SKIP_OPCUA_CONNECT": "0",
     "I3X_ENABLE_WRITES": "1",
     "I3X_ENABLE_MCP": "1",
+    # The repo .env pins a production browse root (Machinery nsu) that the fixture does not
+    # expose; the fixture tree hangs under Objects (NodeId 84 in namespace 0). Process env takes
+    # precedence over dotenv in pydantic-settings, so this override neutralizes the .env value.
+    "I3X_OPCUA_BROWSE_ROOTS": "nsu=http://opcfoundation.org/UA/;i=84",
 }
 
 
@@ -132,7 +137,14 @@ def _require_conformance_tests() -> str:
             f"Conformance test tool entry point not found: {CONFORMANCE_TESTS_ENTRY}. "
             "Initialize the submodule with 'git submodule update --init i3X'."
         )
-    if not (CONFORMANCE_TESTS_DIR / "node_modules").is_dir():
+    # The tool ships dependency-free (Node builtins only); npm install never creates a
+    # node_modules directory for that, so only declared dependencies must be installed.
+    package_json = CONFORMANCE_TESTS_DIR / "package.json"
+    dependencies: dict[str, str] = {}
+    if package_json.is_file():
+        manifest = json.loads(package_json.read_text(encoding="utf-8"))
+        dependencies = manifest.get("dependencies") or {}
+    if dependencies and not (CONFORMANCE_TESTS_DIR / "node_modules").is_dir():
         raise RuntimeError(
             f"Conformance test tool dependencies are not installed in {CONFORMANCE_TESTS_DIR}. "
             "Run 'npm install' inside that directory first."

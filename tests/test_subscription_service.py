@@ -17,11 +17,10 @@ from i3x_server.infrastructure.opcua.client import (
     OpcUaClientProtocol,
     OpcUaSubscriptionCapabilities,
 )
-from i3x_server.infrastructure.subscriptions.service import (
-    SubscriptionService,
-    SubscriptionUpdate,
+from i3x_server.infrastructure.subscriptions.monitoring import _min_positive
+from i3x_server.infrastructure.subscriptions.service import SubscriptionService, SubscriptionUpdate
+from i3x_server.infrastructure.subscriptions.state import (
     _ManagedBin,
-    _min_positive,
     _NodeMonitor,
     _SubscriptionState,
     _ValueSignal,

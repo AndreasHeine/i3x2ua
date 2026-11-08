@@ -12,7 +12,7 @@ from i3x_server.api.v1.monolithic import StreamRequest, stream_subscription_v1
 from i3x_server.application.ports.subscription import SubscriptionServicePort
 from i3x_server.application.services.subscription import SubscriptionAppService
 from i3x_server.domain.ports.opcua import OpcUaClientProtocol, OpcUaNamespaceInfo
-from i3x_server.infrastructure.subscriptions.service import SubscriptionSyncResult, SubscriptionUpdate
+from i3x_server.infrastructure.subscriptions.state import SubscriptionSyncResult, SubscriptionUpdate
 from i3x_server.schemas.state import BuildResult
 
 

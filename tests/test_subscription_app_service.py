@@ -12,7 +12,7 @@ from starlette.requests import Request
 from i3x_server.application.ports.subscription import SubscriptionServicePort
 from i3x_server.application.services.subscription import SubscriptionAppService
 from i3x_server.domain.ports.opcua import OpcUaClientProtocol
-from i3x_server.infrastructure.subscriptions.service import (
+from i3x_server.infrastructure.subscriptions.state import (
     SubscriptionDeleteResult,
     SubscriptionDetail,
     SubscriptionSyncResult,

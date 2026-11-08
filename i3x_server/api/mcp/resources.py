@@ -3,20 +3,24 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Never
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from i3x_server.api.mcp.jsonrpc import MCP_ROOT_RESOURCE_PREFIX, _jsonrpc_error, _jsonrpc_response
 from i3x_server.api.mcp.prompts import _prompt_registry
 from i3x_server.api.mcp.roots import _roots_catalog
+from i3x_server.api.v1.contracts import _status_title
 from i3x_server.errors import i3x_http_error
 from i3x_server.prompts.api import get_prompt, list_prompt_metadata
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 MCP_MAPPING_GUIDE_URI = "i3x://opcua-to-i3x-mapping"
 MCP_IDENTITY_GUIDE_URI = "i3x://element-id-and-type-id"
@@ -129,6 +133,15 @@ class McpResourceReadRequest(BaseModel):
 
 def _raise_invalid_resource(uri: str) -> Never:
     raise i3x_http_error(404, "Not Found", f"Unknown resource {uri}")
+
+
+def _helper_error_payload(status: int, message: str) -> dict[str, Any]:
+    """Error envelope matching the gateway exception handler, built without exception text."""
+    return {
+        "success": False,
+        "error": {"code": status, "message": message},
+        "responseDetail": {"title": _status_title(status), "status": status, "detail": message},
+    }
 
 
 def _project_root() -> Path:
@@ -419,6 +432,18 @@ async def list_resources(request: Request) -> dict[str, Any]:
     return {"resources": _resource_catalog(request)}
 
 
-@router.post("/resources/read", tags=["MCP Helpers"])
-async def read_resource(request: Request, payload: McpResourceReadRequest) -> dict[str, Any]:
-    return {"contents": [_read_resource_content(request, payload.uri)]}
+@router.post("/resources/read", tags=["MCP Helpers"], response_model=dict[str, Any])
+async def read_resource(request: Request, payload: McpResourceReadRequest) -> Response:
+    # Exception text must not flow into the client response (CodeQL py/stack-trace-exposure):
+    # failures are answered with a sanitized envelope built from the caller's own uri, and
+    # unexpected errors are logged server-side only, mirroring the gateway's global handler.
+    try:
+        content = _read_resource_content(request, payload.uri)
+    except HTTPException as exc:
+        status = int(exc.status_code)
+        message = f"Unknown resource {payload.uri}" if status == 404 else "Request failed"
+        return JSONResponse(status_code=status, content=_helper_error_payload(status, message))
+    except Exception:
+        logger.exception("MCP resource read failed uri=%s", payload.uri)
+        return JSONResponse(status_code=500, content=_helper_error_payload(500, "Internal server error"))
+    return JSONResponse(content={"contents": [content]})

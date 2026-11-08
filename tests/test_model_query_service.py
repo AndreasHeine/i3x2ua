@@ -243,6 +243,26 @@ async def test_get_relationship_types_uses_modelled_inverse_names() -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_relationship_types_emits_each_reverse_record_once() -> None:
+    """Two forwards sharing a reverse id must not duplicate the record or dangle the chain."""
+    model = _model()
+    model.graph_relationship_names = {"Alpha", "Beta"}
+    model.graph_relationship_namespace_by_id = {
+        "Alpha": "http://example.com/custom",
+        "Beta": "http://example.com/custom",
+    }
+    model.graph_relationship_inverse_by_id = {"Alpha": "Shared", "Beta": "Shared"}
+    service = ModelQueryService(cast(OpcUaClientProtocol, _FakeOpcUaClient([])), model)
+
+    items = await service.get_relationship_types(namespace_uri="http://example.com/custom")
+    assert len(items) == len(set(item["elementId"] for item in items))
+    by_id = {item["elementId"]: item for item in items}
+    assert by_id["Alpha"]["reverseOf"] == "Shared"
+    assert by_id["Beta"]["reverseOf"] == "Shared"
+    assert by_id["Shared"]["reverseOf"] == "Alpha"
+
+
+@pytest.mark.asyncio
 async def test_get_objects_returns_model_nodes_and_filtering() -> None:
     service = ModelQueryService(cast(OpcUaClientProtocol, _FakeOpcUaClient([])), _model())
 

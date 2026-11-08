@@ -155,6 +155,7 @@ def _relationship_type_items(model: BuildResult | None = None) -> list[dict[str,
     inverse_by_id = getattr(model, "graph_relationship_inverse_by_id", None) or {}
     existing = {item["elementId"] for item in items}
     graph_names = {name for name in graph_names if name not in existing}
+    emitted = set(existing)
     for name in sorted(graph_names):
         namespace_uri = model.graph_relationship_namespace_by_id[name]
         display_name = model.graph_relationship_display_name_by_id.get(name, name)
@@ -178,9 +179,11 @@ def _relationship_type_items(model: BuildResult | None = None) -> list[dict[str,
                 "reverseOf": reverse_name,
             }
         )
-        if reverse_name in graph_names:
-            # The reverse is a registered relationship itself; inventing a second record would
-            # leave a dangling `reverseOf` chain.
+        emitted.add(name)
+        if reverse_name in graph_names or reverse_name in emitted:
+            # The reverse is a registered relationship itself, or was already emitted as the
+            # reverse of another forward; a second record would duplicate the elementId and leave
+            # a dangling `reverseOf` chain.
             continue
         items.append(
             {
@@ -191,6 +194,7 @@ def _relationship_type_items(model: BuildResult | None = None) -> list[dict[str,
                 "reverseOf": name,
             }
         )
+        emitted.add(reverse_name)
     return items
 
 

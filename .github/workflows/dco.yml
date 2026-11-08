@@ -12,11 +12,11 @@ permissions:
 jobs:
   dco:
     name: Verify Signed-off-by trailers
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 

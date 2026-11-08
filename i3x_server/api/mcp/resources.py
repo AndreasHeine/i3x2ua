@@ -390,7 +390,10 @@ def _read_resource_content(request: Request, uri: str) -> dict[str, Any]:
             document: dict[str, Any] = {"applied": applied, "contents": json.loads(raw)}
         except json.JSONDecodeError as exc:
             # A file the runtime could not parse is never applied; expose the raw text too.
-            document = {"applied": False, "parseError": str(exc), "contents": raw}
+            # The exception message is logged server-side only and must not flow into the
+            # response body (CodeQL py/stack-trace-exposure).
+            logger.warning("MCP overrides JSON parse failed path=%s: %s", path, exc)
+            document = {"applied": False, "parseError": "mcp_overrides.json is not valid JSON", "contents": raw}
         return {
             "uri": uri,
             "mimeType": "application/json",

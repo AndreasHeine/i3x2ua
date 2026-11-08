@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -159,6 +160,28 @@ def test_read_resource_content_variants(tmp_path: Path, monkeypatch: pytest.Monk
 
     with pytest.raises(HTTPException):
         _read_resource_content(request, "i3x://unknown")
+
+
+def test_read_resource_content_malformed_overrides_stays_sanitized(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Exception text must not flow into the resource response (CodeQL py/stack-trace-exposure)."""
+    overrides_dir = tmp_path / "overrides"
+    overrides_dir.mkdir(parents=True, exist_ok=True)
+    raw = "{this is not valid json"
+    (overrides_dir / "mcp_overrides.json").write_text(raw, encoding="utf-8")
+    monkeypatch.setattr("i3x_server.api.mcp.resources._project_root", lambda: tmp_path)
+
+    request = _request({"mcp_overrides_applied": True})
+    caplog.set_level(logging.WARNING)
+    document = json.loads(_read_resource_content(request, "i3x://mcp-overrides")["text"])
+
+    assert document["applied"] is False
+    assert document["parseError"] == "mcp_overrides.json is not valid JSON"
+    assert document["contents"] == raw
+    assert "MCP overrides JSON parse failed" in caplog.text
 
 
 @pytest.mark.asyncio

@@ -482,14 +482,20 @@ class OpcUaClient:
     # ------------------------------------------------------------------
 
     async def _read_reference_type_browse_names(
-        self, refs: list[ua.ReferenceDescription], names: dict[str, str]
+        self,
+        refs: list[ua.ReferenceDescription],
+        names: dict[str, str],
+        inverse_names: dict[str, str] | None = None,
     ) -> None:
-        await node_reading._read_reference_type_browse_names(self, refs, names)
+        await node_reading._read_reference_type_browse_names(self, refs, names, inverse_names)
 
     def _to_reference_infos(
-        self, refs: list[ua.ReferenceDescription], reference_type_names: dict[str, str]
+        self,
+        refs: list[ua.ReferenceDescription],
+        reference_type_names: dict[str, str],
+        reference_type_inverse_names: dict[str, str] | None = None,
     ) -> list[OpcUaReferenceInfo]:
-        return node_reading._to_reference_infos(refs, reference_type_names)
+        return node_reading._to_reference_infos(refs, reference_type_names, reference_type_inverse_names)
 
     async def _read_node_info(self, node: Any, parent_node_id: str | None) -> OpcUaNodeInfo:
         return await node_reading._read_node_info(self, node, parent_node_id)

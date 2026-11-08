@@ -80,6 +80,7 @@ async def browse_tree(client: OpcUaClient) -> list[OpcUaNodeInfo]:
     output: list[OpcUaNodeInfo] = []
     visited: set[str] = set()
     reference_type_names: dict[str, str] = {}
+    reference_type_inverse_names: dict[str, str] = {}
     stack: list[tuple[Any, str | None]] = [(root, None) for root in roots]
 
     while stack:
@@ -112,14 +113,18 @@ async def browse_tree(client: OpcUaClient) -> list[OpcUaNodeInfo]:
         output.extend(node_infos)
 
         await client._read_reference_type_browse_names(
-            [ref for _, refs in all_refs for ref in refs], reference_type_names
+            [ref for _, refs in all_refs for ref in refs],
+            reference_type_names,
+            reference_type_inverse_names,
         )
         node_info_by_id = {item.node_id: item for item in node_infos}
         for parent_node, refs in all_refs:
             info = node_info_by_id.get(parent_node.nodeid.to_string())
             if info is None:
                 continue
-            info.outgoing_references = client._to_reference_infos(refs, reference_type_names)
+            info.outgoing_references = client._to_reference_infos(
+                refs, reference_type_names, reference_type_inverse_names
+            )
         for parent_node, refs in browsed:
             parent_node_id = parent_node.nodeid.to_string()
             for ref in refs:

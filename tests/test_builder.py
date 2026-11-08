@@ -527,6 +527,16 @@ async def test_model_builder_stores_graph_relationships_bidirectionally() -> Non
     assert result.graph_relationship_namespace_by_id == {"Locations": "http://opcfoundation.org/UA/"}
 
 
+def _assert_symmetric_inverse_registry(result: BuildResult) -> None:
+    """Declared inverse pairs stay unique and point back at their partner (spec :397/:434)."""
+    inverse_by_id = result.graph_relationship_inverse_by_id
+    assert len(set(inverse_by_id.values())) == len(inverse_by_id)
+    for relationship_id, reverse_id in inverse_by_id.items():
+        assert reverse_id != relationship_id
+        if reverse_id in inverse_by_id:
+            assert inverse_by_id[reverse_id] == relationship_id
+
+
 @pytest.mark.asyncio
 async def test_model_builder_prefers_the_natural_inverse_relationship() -> None:
     """The address space's own inverse name wins over an invented `inverseOf_<name>` (spec :397)."""
@@ -567,6 +577,309 @@ async def test_model_builder_prefers_the_natural_inverse_relationship() -> None:
     assert set(rel_items) == {"Monitors", "MonitoredBy"}
     assert rel_items["Monitors"]["reverseOf"] == "MonitoredBy"
     assert rel_items["MonitoredBy"]["reverseOf"] == "Monitors"
+
+
+@pytest.mark.asyncio
+async def test_model_builder_uses_reference_type_inverse_name_attribute() -> None:
+    """An unmodelled reverse direction takes the ``InverseName`` attribute, not a synthetic name."""
+
+    class Client(FakeOpcuaWithGraphReference):
+        async def browse_tree(self) -> list[OpcUaNodeInfo]:
+            nodes = await super().browse_tree()
+            nodes[0].outgoing_references = [
+                OpcUaReferenceInfo(
+                    target_node_id="ns=2;s=Sensor",
+                    reference_type_id="ns=0;i=34",
+                    reference_browse_name="HasNotifier",
+                    reference_inverse_name="NotifierOf",
+                )
+            ]
+            return nodes
+
+    client = cast(OpcUaClientProtocol, Client())
+    result = await ModelBuilder(client).build()
+
+    machine_id = result.node_id_by_name["Machine"]
+    sensor_id = result.node_id_by_name["Sensor"]
+
+    assert result.relationships_by_id[machine_id]["HasNotifier"] == [sensor_id]
+    assert result.relationships_by_id[sensor_id]["NotifierOf"] == [machine_id]
+    assert "inverseOf_HasNotifier" not in result.relationships_by_id[sensor_id]
+    assert result.graph_relationship_inverse_by_id["HasNotifier"] == "NotifierOf"
+
+    items = await ModelQueryService(client, result).get_relationship_types()
+    rel_items = {item["elementId"]: item for item in items if item["elementId"] in {"HasNotifier", "NotifierOf"}}
+    assert set(rel_items) == {"HasNotifier", "NotifierOf"}
+    assert rel_items["HasNotifier"]["reverseOf"] == "NotifierOf"
+    assert rel_items["NotifierOf"]["displayName"] == "NotifierOf"
+    assert rel_items["NotifierOf"]["reverseOf"] == "HasNotifier"
+
+
+@pytest.mark.asyncio
+async def test_model_builder_inverse_name_attribute_reuses_mutual_relationship_id() -> None:
+    """An attribute inverse whose relationship points back at the forward keeps its natural id."""
+
+    class Client(FakeOpcuaWithGraphReference):
+        async def browse_tree(self) -> list[OpcUaNodeInfo]:
+            nodes = await super().browse_tree()
+            nodes[0].outgoing_references = [
+                OpcUaReferenceInfo(
+                    target_node_id="ns=2;s=Sensor",
+                    reference_type_id="ns=0;i=34",
+                    reference_browse_name="HasNotifier",
+                    reference_inverse_name="NotifierOf",
+                )
+            ]
+            nodes[1].outgoing_references = [
+                OpcUaReferenceInfo(
+                    target_node_id="ns=2;s=Machine",
+                    reference_type_id="ns=1;i=5001",
+                    reference_browse_name="NotifierOf",
+                )
+            ]
+            return nodes
+
+        async def get_namespace_infos(self) -> list[OpcUaNamespaceInfo]:
+            return [
+                OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/", display_name="OPC UA"),
+                OpcUaNamespaceInfo(uri="urn:example:custom", display_name="Custom"),
+            ]
+
+    client = cast(OpcUaClientProtocol, Client())
+    result = await ModelBuilder(client).build()
+
+    machine_id = result.node_id_by_name["Machine"]
+    sensor_id = result.node_id_by_name["Sensor"]
+
+    assert result.relationships_by_id[machine_id]["HasNotifier"] == [sensor_id]
+    assert result.relationships_by_id[sensor_id]["NotifierOf"] == [machine_id]
+    assert result.graph_relationship_inverse_by_id["HasNotifier"] == "NotifierOf"
+    assert result.graph_relationship_inverse_by_id["NotifierOf"] == "HasNotifier"
+    _assert_symmetric_inverse_registry(result)
+
+
+@pytest.mark.asyncio
+async def test_model_builder_qualifies_inverse_name_that_is_registered_with_its_own_reverse() -> None:
+    """A foreign inverse keeps its own chain; the forward gets a namespace-qualified inverse id."""
+
+    class Client(FakeOpcuaWithGraphReference):
+        async def browse_tree(self) -> list[OpcUaNodeInfo]:
+            nodes = await super().browse_tree()
+            nodes[0].outgoing_references = [
+                OpcUaReferenceInfo(
+                    target_node_id="ns=2;s=Sensor",
+                    reference_type_id="ns=0;i=34",
+                    reference_browse_name="HasNotifier",
+                    reference_inverse_name="NotifierOf",
+                )
+            ]
+            nodes.append(
+                OpcUaNodeInfo(
+                    node_id="ns=2;s=Alarm",
+                    parent_node_id=None,
+                    browse_name="Alarm",
+                    display_name="Alarm",
+                    node_class="Object",
+                    data_type=None,
+                    type_definition_id="ns=1;i=1003",
+                    event_notifier=False,
+                )
+            )
+            nodes[1].outgoing_references = [
+                OpcUaReferenceInfo(
+                    target_node_id="ns=2;s=Alarm",
+                    reference_type_id="ns=1;i=5001",
+                    reference_browse_name="NotifierOf",
+                )
+            ]
+            return nodes
+
+        async def get_namespace_infos(self) -> list[OpcUaNamespaceInfo]:
+            return [
+                OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/", display_name="OPC UA"),
+                OpcUaNamespaceInfo(uri="urn:example:custom", display_name="Custom"),
+            ]
+
+    client = cast(OpcUaClientProtocol, Client())
+    result = await ModelBuilder(client).build()
+
+    machine_id = result.node_id_by_name["Machine"]
+    sensor_id = result.node_id_by_name["Sensor"]
+    alarm_id = result.node_id_by_name["Alarm"]
+    qualified_inverse = "http://opcfoundation.org/UA/:NotifierOf"
+
+    assert result.graph_relationship_namespace_by_id == {
+        "HasNotifier": "http://opcfoundation.org/UA/",
+        "NotifierOf": "urn:example:custom",
+    }
+    assert result.relationships_by_id[machine_id]["HasNotifier"] == [sensor_id]
+    assert result.relationships_by_id[sensor_id][qualified_inverse] == [machine_id]
+    assert result.relationships_by_id[sensor_id]["NotifierOf"] == [alarm_id]
+    assert result.graph_relationship_inverse_by_id["HasNotifier"] == qualified_inverse
+    assert result.graph_relationship_inverse_by_id["NotifierOf"] == "inverseOf_NotifierOf"
+    _assert_symmetric_inverse_registry(result)
+
+    items = await ModelQueryService(client, result).get_relationship_types()
+    by_id = {item["elementId"]: item for item in items}
+    assert by_id[qualified_inverse]["displayName"] == "NotifierOf"
+    assert by_id[qualified_inverse]["namespaceUri"] == "http://opcfoundation.org/UA/"
+    assert by_id[qualified_inverse]["reverseOf"] == "HasNotifier"
+    assert by_id["inverseOf_NotifierOf"]["reverseOf"] == "NotifierOf"
+
+
+@pytest.mark.asyncio
+async def test_model_builder_never_inverts_reserved_relationship_names() -> None:
+    """Reserved i3X hierarchy/composition names must not become graph inverses (:450/:467)."""
+
+    class Client(FakeOpcuaWithGraphReference):
+        async def browse_tree(self) -> list[OpcUaNodeInfo]:
+            nodes = await super().browse_tree()
+            nodes[0].outgoing_references = [
+                OpcUaReferenceInfo(
+                    target_node_id="ns=2;s=Sensor",
+                    reference_type_id="ns=1;i=5001",
+                    reference_browse_name="HasNotifierLike",
+                    reference_inverse_name="HasParent",
+                )
+            ]
+            return nodes
+
+        async def get_namespace_infos(self) -> list[OpcUaNamespaceInfo]:
+            return [
+                OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/", display_name="OPC UA"),
+                OpcUaNamespaceInfo(uri="urn:example:custom", display_name="Custom"),
+            ]
+
+    client = cast(OpcUaClientProtocol, Client())
+    result = await ModelBuilder(client).build()
+
+    machine_id = result.node_id_by_name["Machine"]
+    sensor_id = result.node_id_by_name["Sensor"]
+
+    assert result.relationships_by_id[machine_id]["HasNotifierLike"] == [sensor_id]
+    assert result.relationships_by_id[sensor_id]["inverseOf_HasNotifierLike"] == [machine_id]
+    assert "HasParent" not in result.relationships_by_id[sensor_id]
+    assert result.graph_relationship_inverse_by_id["HasNotifierLike"] == "inverseOf_HasNotifierLike"
+    _assert_symmetric_inverse_registry(result)
+
+
+@pytest.mark.asyncio
+async def test_model_builder_never_inverts_graph_edges_into_secondary_parent_relationship() -> None:
+    """A graph edge must not invert into the generated `OrganizedBy` secondary-parent edge."""
+
+    class Client(FakeOpcuaWithGraphReference):
+        async def browse_tree(self) -> list[OpcUaNodeInfo]:
+            nodes = await super().browse_tree()
+            nodes[0].outgoing_references = [
+                OpcUaReferenceInfo(
+                    target_node_id="ns=2;s=Sensor",
+                    reference_type_id="ns=0;i=35",
+                    reference_browse_name="Organizes",
+                ),
+                OpcUaReferenceInfo(
+                    target_node_id="ns=2;s=Sensor",
+                    reference_type_id="ns=0;i=32",
+                    reference_browse_name="Locations",
+                ),
+            ]
+            nodes.append(
+                OpcUaNodeInfo(
+                    node_id="ns=2;s=Line",
+                    parent_node_id=None,
+                    browse_name="Line",
+                    display_name="Line",
+                    node_class="Object",
+                    data_type=None,
+                    type_definition_id="ns=1;i=1001",
+                    event_notifier=False,
+                    outgoing_references=[
+                        OpcUaReferenceInfo(
+                            target_node_id="ns=2;s=Sensor",
+                            reference_type_id="ns=0;i=35",
+                            reference_browse_name="Organizes",
+                        ),
+                    ],
+                )
+            )
+            return nodes
+
+    client = cast(OpcUaClientProtocol, Client())
+    result = await ModelBuilder(client).build()
+
+    machine_id = result.node_id_by_name["Machine"]
+    sensor_id = result.node_id_by_name["Sensor"]
+
+    assert result.relationships_by_id[sensor_id]["OrganizedBy"] == [machine_id]
+    assert result.relationships_by_id[sensor_id]["inverseOf_Locations"] == [machine_id]
+    assert "OrganizedBy" not in result.graph_relationship_inverse_by_id["Locations"]
+    assert result.graph_relationship_inverse_by_id["Locations"] == "inverseOf_Locations"
+    assert result.graph_relationship_inverse_by_id["OrganizedBy"] == "inverseOf_OrganizedBy"
+    _assert_symmetric_inverse_registry(result)
+
+
+@pytest.mark.asyncio
+async def test_model_builder_splits_shared_inverse_names_by_namespace() -> None:
+    """Two forwards publishing the same inverse name get distinct ids, so the chain stays symmetric."""
+
+    class Client(FakeOpcuaWithGraphReference):
+        async def browse_tree(self) -> list[OpcUaNodeInfo]:
+            nodes = await super().browse_tree()
+            nodes[0].outgoing_references = [
+                OpcUaReferenceInfo(
+                    target_node_id="ns=2;s=Sensor",
+                    reference_type_id="ns=0;i=5001",
+                    reference_browse_name="SuppliesTo",
+                    reference_inverse_name="SuppliedBy",
+                )
+            ]
+            nodes.append(
+                OpcUaNodeInfo(
+                    node_id="ns=2;s=Line",
+                    parent_node_id=None,
+                    browse_name="Line",
+                    display_name="Line",
+                    node_class="Object",
+                    data_type=None,
+                    type_definition_id="ns=1;i=1001",
+                    event_notifier=False,
+                    outgoing_references=[
+                        OpcUaReferenceInfo(
+                            target_node_id="ns=2;s=Sensor",
+                            reference_type_id="ns=1;i=5002",
+                            reference_browse_name="Feeds",
+                            reference_inverse_name="SuppliedBy",
+                        ),
+                    ],
+                )
+            )
+            return nodes
+
+        async def get_namespace_infos(self) -> list[OpcUaNamespaceInfo]:
+            return [
+                OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/", display_name="OPC UA"),
+                OpcUaNamespaceInfo(uri="urn:example:custom", display_name="Custom"),
+            ]
+
+    client = cast(OpcUaClientProtocol, Client())
+    result = await ModelBuilder(client).build()
+
+    machine_id = result.node_id_by_name["Machine"]
+    line_id = result.node_id_by_name["Line"]
+    sensor_id = result.node_id_by_name["Sensor"]
+
+    assert result.graph_relationship_inverse_by_id["Feeds"] == "SuppliedBy"
+    assert result.graph_relationship_inverse_by_id["SuppliesTo"] == "http://opcfoundation.org/UA/:SuppliedBy"
+    assert result.relationships_by_id[line_id]["Feeds"] == [sensor_id]
+    assert result.relationships_by_id[sensor_id]["SuppliedBy"] == [line_id]
+    assert result.relationships_by_id[sensor_id]["http://opcfoundation.org/UA/:SuppliedBy"] == [machine_id]
+    _assert_symmetric_inverse_registry(result)
+
+    items = await ModelQueryService(client, result).get_relationship_types()
+    assert len(items) == len(set(item["elementId"] for item in items))
+    by_id = {item["elementId"]: item for item in items}
+    assert by_id["SuppliedBy"]["reverseOf"] == "Feeds"
+    assert by_id["http://opcfoundation.org/UA/:SuppliedBy"]["displayName"] == "SuppliedBy"
+    assert by_id["http://opcfoundation.org/UA/:SuppliedBy"]["reverseOf"] == "SuppliesTo"
 
 
 @pytest.mark.asyncio

@@ -51,24 +51,65 @@ async def test_reference_names_come_from_reference_types_not_targets(monkeypatch
         ]
     ]
     reads: list[str] = []
+    inverse_reads: list[str] = []
 
     async def read_names(nodes: list[Any], attr: AttributeIds, batch_size: int | None = None) -> list[ua.DataValue]:
         del batch_size
+        node_ids = [node.nodeid.to_string() for node in nodes]
+        if attr == AttributeIds.InverseName:
+            inverse_reads.extend(node_ids)
+            # Real asyncua shape: LocalizedText attribute value; some servers publish bare strings.
+            inverse_names = {"i=36": ua.LocalizedText("EventSourceOf"), "ns=2;i=5001": "MonitoredBy"}
+            return [ua.DataValue(ua.Variant(inverse_names[node_id])) for node_id in node_ids]
         assert attr == AttributeIds.BrowseName
-        reads.extend(node.nodeid.to_string() for node in nodes)
+        reads.extend(node_ids)
         names = {"i=36": "HasEventSource", "ns=2;i=5001": "Monitors"}
-        return [ua.DataValue(ua.Variant(ua.QualifiedName(names[node.nodeid.to_string()]))) for node in nodes]
+        return [ua.DataValue(ua.Variant(ua.QualifiedName(names[node_id]))) for node_id in node_ids]
 
     monkeypatch.setattr(client, "_read_attribute_batch_limited", read_names)
     cache: dict[str, str] = {}
-    await client._read_reference_type_browse_names(refs, cache)
-    converted = client._to_reference_infos(refs, cache)
+    inverse: dict[str, str] = {}
+    await client._read_reference_type_browse_names(refs, cache, inverse)
+    converted = client._to_reference_infos(refs, cache, inverse)
     assert [ref.reference_browse_name for ref in converted] == ["HasEventSource", "HasEventSource", "Monitors"]
+    assert [ref.reference_inverse_name for ref in converted] == ["EventSourceOf", "EventSourceOf", "MonitoredBy"]
     assert [ref.target_node_id for ref in converted] == [ref.NodeId.to_string() for ref in refs]
     assert [ref.reference_type_id for ref in converted] == [ref.ReferenceTypeId.to_string() for ref in refs]
     assert reads == ["i=36", "ns=2;i=5001"]
-    await client._read_reference_type_browse_names(refs, cache)
+    assert inverse_reads == ["i=36", "ns=2;i=5001"]
+    await client._read_reference_type_browse_names(refs, cache, inverse)
     assert reads == ["i=36", "ns=2;i=5001"]
+    assert inverse_reads == ["i=36", "ns=2;i=5001"]
+
+
+@pytest.mark.asyncio
+async def test_reference_type_inverse_name_read_failure_degrades(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A server that rejects the ``InverseName`` read must not fail the model browse."""
+    client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
+    refs = [
+        ua.ReferenceDescription(
+            NodeId=ua.ExpandedNodeId(ua.Int32(1001), ua.Int16(2)),
+            ReferenceTypeId=ua.NodeId(ua.Int32(36)),
+            BrowseName=ua.QualifiedName("MyVar", 2),
+        )
+    ]
+
+    async def read_names(nodes: list[Any], attr: AttributeIds, batch_size: int | None = None) -> list[ua.DataValue]:
+        del batch_size
+        if attr == AttributeIds.InverseName:
+            raise RuntimeError("server rejects attribute read")
+        return [ua.DataValue(ua.Variant(ua.QualifiedName("HasEventSource"))) for _ in nodes]
+
+    monkeypatch.setattr(client, "_read_attribute_batch_limited", read_names)
+    caplog.set_level("WARNING", logger="i3x_server.infrastructure.opcua.node_reading")
+    names: dict[str, str] = {}
+    inverse: dict[str, str] = {}
+    await client._read_reference_type_browse_names(refs, names, inverse)
+    assert names == {"i=36": "HasEventSource"}
+    assert inverse == {}
+    assert "inverse names unavailable" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -137,6 +178,8 @@ async def test_browse_tree_to_relationship_types_uses_type_names(monkeypatch: py
 
     async def read_names(nodes: list[Any], attr: AttributeIds, batch_size: int | None = None) -> list[ua.DataValue]:
         del batch_size
+        if attr == AttributeIds.InverseName:
+            return [ua.DataValue(ua.Variant(ua.LocalizedText("EventSourceOf"))) for _ in nodes]
         assert attr == AttributeIds.BrowseName
         reads.extend(node.nodeid.to_string() for node in nodes)
         return [ua.DataValue(ua.Variant(ua.QualifiedName("HasEventSource"))) for _ in nodes]
@@ -160,10 +203,12 @@ async def test_browse_tree_to_relationship_types_uses_type_names(monkeypatch: py
     monkeypatch.setattr(client, "resolve_reference_type_supertype_browse_names", supertypes)
     model = await ModelBuilder(client).build()
     items = await ModelQueryService(client, model).get_relationship_types("http://opcfoundation.org/UA/")
-    assert {item["elementId"] for item in items} == {"HasEventSource", "inverseOf_HasEventSource"}
+    assert {item["elementId"] for item in items} == {"HasEventSource", "EventSourceOf"}
+    assert {item["displayName"] for item in items} == {"HasEventSource", "EventSourceOf"}
     assert reads == ["i=36"]
     assert model.graph_relationship_names == {"HasEventSource"}
     assert sum("HasEventSource" in relationships for relationships in model.relationships_by_id.values()) == 2
+    assert sum("EventSourceOf" in relationships for relationships in model.relationships_by_id.values()) == 2
 
 
 class _FakeNode:

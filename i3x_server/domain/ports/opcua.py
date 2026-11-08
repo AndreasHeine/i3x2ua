@@ -44,6 +44,9 @@ class OpcUaReferenceInfo:
     target_node_id: str
     reference_type_id: str
     reference_browse_name: str
+    # ``ReferenceType.InverseName`` attribute as published by the address space (OPC UA Part 3);
+    # ``None`` when the server does not expose the attribute.
+    reference_inverse_name: str | None = None
 
 
 @dataclass(slots=True)

@@ -90,7 +90,10 @@ def _coerce_node_class(value: Any) -> NodeClass | None:
 
 
 async def _read_reference_type_browse_names(
-    client: OpcUaClient, refs: list[ua.ReferenceDescription], names: dict[str, str]
+    client: OpcUaClient,
+    refs: list[ua.ReferenceDescription],
+    names: dict[str, str],
+    inverse_names: dict[str, str] | None = None,
 ) -> None:
     type_ids = sorted({ref.ReferenceTypeId.to_string() for ref in refs} - names.keys())
     if not type_ids:
@@ -103,12 +106,36 @@ async def _read_reference_type_browse_names(
         if not isinstance(browse_name, str) or not browse_name:
             raise ValueError(f"Cannot read BrowseName for reference type {type_id!r}")
         names[type_id] = browse_name
+    if inverse_names is None:
+        return
+    # The ``InverseName`` attribute (OPC UA Part 3) carries the address space's own inverse name
+    # (e.g. ``HasNotifier`` -> ``NotifierOf``). Servers may leave it unset or reject the read; the
+    # model build must not fail on it - the builder then falls back to its per-pair derivation.
+    try:
+        inverse_values = await client._read_attribute_batch_limited(nodes, AttributeIds.InverseName)
+    except Exception:
+        logger.warning(
+            "OPC UA reference type inverse names unavailable endpoint=%s type_count=%d",
+            client._endpoint,
+            len(type_ids),
+            exc_info=True,
+        )
+        return
+    for type_id, value in zip(type_ids, inverse_values, strict=True):
+        inverse_obj = client._extract_attribute_value(value)
+        # The attribute is ``LocalizedText`` (OPC UA Part 3); some servers publish a bare string.
+        inverse_name = getattr(inverse_obj, "Text", inverse_obj)
+        if isinstance(inverse_name, str) and inverse_name:
+            inverse_names[type_id] = inverse_name
 
 
 def _to_reference_infos(
-    refs: list[ua.ReferenceDescription], reference_type_names: dict[str, str]
+    refs: list[ua.ReferenceDescription],
+    reference_type_names: dict[str, str],
+    reference_type_inverse_names: dict[str, str] | None = None,
 ) -> list[OpcUaReferenceInfo]:
     output: list[OpcUaReferenceInfo] = []
+    inverse_names = reference_type_inverse_names or {}
     for ref in refs:
         target_node_id = ref.NodeId.to_string()
         reference_type_id = ref.ReferenceTypeId.to_string()
@@ -118,6 +145,7 @@ def _to_reference_infos(
                 target_node_id=target_node_id,
                 reference_type_id=reference_type_id,
                 reference_browse_name=reference_browse_name,
+                reference_inverse_name=inverse_names.get(reference_type_id),
             )
         )
     return output

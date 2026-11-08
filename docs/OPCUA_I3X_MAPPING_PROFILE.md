@@ -210,16 +210,38 @@ Names containing `:` are also qualified to avoid collisions with qualified IDs.
 Components are not percent-encoded in JSON. Treat IDs as opaque strings: namespace
 URIs and browse names can both contain colons, so do not split IDs on `:`.
 URL-encode the complete value only when placing it in a URL.
-When the address space models the reverse direction of a graph relationship under its own
-browse name (`Monitors` forward, `MonitoredBy` back), that natural name is used for the reverse
-edge and for the inverse relationship type, so the reverse chain is `Monitors` ↔ `MonitoredBy`
-and no duplicate synthetic edge is stored. Only when the address space defines no inverse does
-the gateway generate one; its ID prefixes the forward ID with `inverseOf_` and its display name
-retains the original browse name. These IDs are used consistently in relationship
-type queries and related-object responses. An unresolvable ReferenceType namespace
+The inverse name is derived under a deterministic policy that keeps the registry chain symmetric
+(`reverseOf` must be registered and must point back, i3X implementation guide). i3X reserves few
+standard relationship names, and those overlap OPC UA reference names (`Organizes`/`OrganizedBy`,
+`HasComponent`/`ComponentOf`), so inverse ids are allocated with three rules:
+
+1. Reserved hierarchy/composition names never become graph inverses: `HasParent`, `HasChildren`,
+   `HasComponent`, `ComponentOf` and the generated secondary-parent relationship `OrganizedBy` are
+   skipped as inverse candidates, even when a server publishes them as a `ReferenceType.InverseName`
+   or models them as the opposite edge. Their semantics are bound to `parentId` and `isComposition`,
+   so a graph edge carrying them cannot be validated; the forward gets a synthetic inverse instead.
+2. A name the address space publishes is reused only for a mutual pair. A modelled opposite edge
+   (`Monitors` forward, `MonitoredBy` back) or the `InverseName` attribute (OPC UA Part 3, e.g.
+   `HasNotifier` → `NotifierOf`, `HasCondition` → `IsConditionOf`) wins over an invented name when
+   the inverse relationship itself points back at the forward. An inverse that is registered under a
+   different relationship chain keeps its own reverse; the forward receives its own inverse id
+   instead, so two forwards can never share one `reverseOf`. The attribute is batch-read together
+   with the BrowseName during the model browse; a server that leaves it unset or rejects the read
+   degrades to the next rule without failing the build.
+3. The reverse stays unique per forward relationship: the bare browse name when it is not taken,
+   otherwise `<namespace-uri>:<name>` — the forward ReferenceType defines its inverse, so its
+   namespace is the owner — and finally `inverseOf_<forward-id>`, whose display name retains the
+   original browse name. Degradations are logged as warnings and never fail the build.
+
+These IDs are used consistently in relationship type queries and related-object responses; the
+inverse record is emitted once per relationship type and its `reverseOf` names the forward that
+claimed it. An unresolvable ReferenceType namespace
 fails model construction explicitly rather than publishing an incorrect namespace.
 If distinct namespace/name pairs produce the same expanded qualified string,
 model construction also fails explicitly rather than merging their relationships.
+The generated `OrganizedBy` relationship keeps the synthetic `inverseOf_OrganizedBy` inverse: a
+relationship type can declare only one reverse, and `HasChildren` is already paired with
+`HasParent`, so the natural OPC UA inverse cannot be reused here.
 
 Precedence rule for ambiguous or malformed lineages:
 

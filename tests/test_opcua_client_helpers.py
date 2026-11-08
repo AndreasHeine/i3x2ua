@@ -19,17 +19,15 @@ from asyncua.ua.uaerrors import UaStatusCodeError
 
 from i3x_server.application.services.model_query import ModelQueryService
 from i3x_server.domain.ports.opcua import OpcUaNodeInfo
+from i3x_server.infrastructure.opcua.browse import _chunked, _chunked_nodes, _gather_cancelled_on_failure
 from i3x_server.infrastructure.opcua.client import (
     OpcUaClient,
     OpcUaNamespaceInfo,
     OpcUaOperationalLimits,
     _assert_file_exists,
-    _chunked,
-    _chunked_nodes,
-    _gather_cancelled_on_failure,
-    _to_explicit_ua_variant,
-    _to_json_compatible,
 )
+from i3x_server.infrastructure.opcua.object_types import _to_json_compatible
+from i3x_server.infrastructure.opcua.values import _to_explicit_ua_variant
 from i3x_server.model.builder import ModelBuilder
 
 

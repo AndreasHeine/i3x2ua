@@ -197,6 +197,43 @@ def test_machinery_profile_matches_type_ancestor_namespace_not_instance_namespac
     )
 
 
+def test_resolve_semantic_role_object_container_is_asset_not_property() -> None:
+    """Objects with composition children stay assets; "property" is reserved for overrides."""
+    container = OpcUaNodeInfo(
+        node_id="ns=1;s=Container",
+        parent_node_id=None,
+        browse_name="Container",
+        display_name="Container",
+        node_class="Object",
+        data_type=None,
+        type_definition_id=None,
+    )
+    variable = OpcUaNodeInfo(
+        node_id="ns=1;s=Temperature",
+        parent_node_id="ns=1;s=Container",
+        browse_name="Temperature",
+        display_name="Temperature",
+        node_class="Variable",
+        data_type="Double",
+        type_definition_id=None,
+    )
+    method = OpcUaNodeInfo(
+        node_id="ns=1;s=Reset",
+        parent_node_id="ns=1;s=Container",
+        browse_name="Reset",
+        display_name="Reset",
+        node_class="Method",
+        data_type=None,
+        type_definition_id=None,
+    )
+
+    active_profiles = active_profiles_for_node(container, (), load_default_profiles())
+
+    assert resolve_semantic_role(container, active_profiles) == "asset"
+    assert resolve_semantic_role(variable, active_profiles) == "datapoint"
+    assert resolve_semantic_role(method, active_profiles) == "component"
+
+
 def test_machinery_profile_does_not_match_same_type_name_in_other_namespace() -> None:
     node = OpcUaNodeInfo(
         node_id="ns=1;s=Machine",

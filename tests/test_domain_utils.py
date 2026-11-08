@@ -43,6 +43,11 @@ def test_namespace_uri_for_node_id_handles_missing_and_out_of_range_indices() ->
     assert namespace_uri_for_node_id("ns=99;i=42", infos) == ""
 
 
+def test_namespace_uri_for_node_id_matches_uppercase_namespace_prefix() -> None:
+    infos = _infos()
+    assert namespace_uri_for_node_id("NS=1;i=42", infos) == "http://example.com/Custom/"
+
+
 def test_expanded_node_id_covers_supported_variants() -> None:
     infos = _infos()
     assert expanded_node_id("nsu=http://example.com/Custom/;i=42", infos) == "nsu=http://example.com/Custom/;i=42"
@@ -51,6 +56,19 @@ def test_expanded_node_id_covers_supported_variants() -> None:
     assert expanded_node_id("ns=1;i=42", infos) == "nsu=http://example.com/Custom/;i=42"
     assert expanded_node_id("ns=2;i=42", infos) == "ns=2;i=42"
     assert expanded_node_id("ns=99;i=42", infos) == "ns=99;i=42"
+
+
+def test_expanded_node_id_matches_case_insensitively() -> None:
+    """`NS=1;i=42` must expand like `ns=1;i=42`; identifier kinds are canonicalized."""
+    infos = _infos()
+    assert expanded_node_id("NS=1;i=42", infos) == "nsu=http://example.com/Custom/;i=42"
+    assert expanded_node_id("NS=1;I=42", infos) == "nsu=http://example.com/Custom/;i=42"
+    assert expanded_node_id("NSU=http://example.com/Custom/;i=42", infos) == "NSU=http://example.com/Custom/;i=42"
+    assert expanded_node_id("S=Machine", infos) == "nsu=http://opcfoundation.org/UA/;s=Machine"
+
+
+def test_namespace_uri_from_expanded_node_id_accepts_uppercase_prefix() -> None:
+    assert namespace_uri_from_expanded_node_id("NSU=http://example.com/custom;i=42") == "http://example.com/custom"
 
 
 def test_canonical_node_id_normalizes_indexed_and_expanded_forms() -> None:

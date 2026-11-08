@@ -14,7 +14,12 @@ from typing import Any
 from i3x_server.application.errors import ApplicationServiceError
 from i3x_server.config.settings import get_settings
 from i3x_server.domain.ports.opcua import OpcUaClientProtocol, OpcUaNamespaceInfo
-from i3x_server.domain.utils import canonical_namespace_uri, display_name_for_uri, namespace_uri_for_node_id
+from i3x_server.domain.utils import (
+    canonical_namespace_uri,
+    display_name_for_uri,
+    namespace_uri_for_node_id,
+    normalize_namespace_uri,
+)
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
 from i3x_server.version import get_server_version
@@ -345,7 +350,10 @@ class ModelQueryService:
         items = _relationship_type_items(self.model)
         if namespace_uri is None:
             return items
-        return [item for item in items if item["namespaceUri"] == namespace_uri]
+        # Namespace comparison follows mapping profile rule 6: canonicalized URIs,
+        # so `https://cesmii.org/i3x/` matches the stored `https://cesmii.org/i3x`.
+        normalized_filter = normalize_namespace_uri(namespace_uri)
+        return [item for item in items if normalize_namespace_uri(str(item["namespaceUri"])) == normalized_filter]
 
     async def get_objects(
         self,

@@ -399,7 +399,6 @@ class ModelBuilder:
             semantic_role = resolve_semantic_role(
                 opc_node,
                 active_profiles_resolved,
-                relationship_class="composition" if composition_children else None,
                 type_definition_hierarchy=type_definition_hierarchy_by_id.get(
                     opc_node.type_definition_id or "",
                     (),

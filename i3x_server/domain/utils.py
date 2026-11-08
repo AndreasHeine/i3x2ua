@@ -48,6 +48,9 @@ def canonical_namespace_uri(uri: str, namespace_infos: list[OpcUaNamespaceInfo])
 def namespace_uri_for_node_id(node_id: str, namespace_infos: list[OpcUaNamespaceInfo]) -> str:
     """Extract namespace URI from indexed node ID.
 
+    Matching is case-insensitive, mirroring the other node ID helpers
+    (``NS=1;i=42`` resolves like ``ns=1;i=42``).
+
     Args:
         node_id: OPC UA node ID (indexed format: ns=N;...)
         namespace_infos: Available namespace definitions
@@ -55,7 +58,7 @@ def namespace_uri_for_node_id(node_id: str, namespace_infos: list[OpcUaNamespace
     Returns:
         Corresponding namespace URI, or empty string if not found
     """
-    match = re.search(r"ns=(\d+)", node_id)
+    match = re.search(r"ns=(\d+)", node_id, flags=re.IGNORECASE)
     namespace_index = int(match.group(1)) if match is not None else 0
     if 0 <= namespace_index < len(namespace_infos):
         return namespace_infos[namespace_index].uri
@@ -65,6 +68,10 @@ def namespace_uri_for_node_id(node_id: str, namespace_infos: list[OpcUaNamespace
 def expanded_node_id(node_id: str, namespace_infos: list[OpcUaNamespaceInfo]) -> str:
     """Convert indexed node ID to expanded format (nsu=...;...).
 
+    This is the single implementation shared by the schema builder and the API
+    helpers; matching is case-insensitive, mirroring `is_null_opcua_type_node_id`,
+    so ``NS=1;i=42`` expands like ``ns=1;i=42``.
+
     Args:
         node_id: OPC UA node ID (any format)
         namespace_infos: Available namespace definitions
@@ -72,15 +79,16 @@ def expanded_node_id(node_id: str, namespace_infos: list[OpcUaNamespaceInfo]) ->
     Returns:
         Node ID in expanded format
     """
-    if node_id.startswith("nsu="):
+    if node_id[:4].lower() == "nsu=":
         return node_id
 
-    match = re.match(r"^(?:ns=(\d+);)?([isgb]=.+)$", node_id)
+    match = re.match(r"^(?:ns=(\d+);)?([isgb]=.+)$", node_id, flags=re.IGNORECASE)
     if match is None:
         return node_id
 
     namespace_index = int(match.group(1)) if match.group(1) is not None else 0
-    identifier = match.group(2)
+    identifier_kind = match.group(2)[0].lower()
+    identifier = identifier_kind + match.group(2)[1:]
 
     # Namespace index 0 is the OPC UA standard namespace.
     if namespace_index == 0:
@@ -153,7 +161,7 @@ def namespace_uri_from_expanded_node_id(node_id: str) -> str | None:
     Returns:
         Namespace URI, or None if format is invalid
     """
-    match = re.match(r"^nsu=([^;]+);", node_id)
+    match = re.match(r"^nsu=([^;]+);", node_id, flags=re.IGNORECASE)
     if match is None:
         return None
     namespace_uri = match.group(1)

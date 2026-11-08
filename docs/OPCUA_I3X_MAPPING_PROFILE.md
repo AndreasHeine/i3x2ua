@@ -118,6 +118,9 @@ Argument JSON Schemas permit both arrays and null for `ArrayDimensions`.
 10. Object instance `mapping_confidence`
 - Current values: `high | medium | low`.
 - Used as an explainability hint for profile-driven and generic mappings.
+- The gateway currently produces `high` (profile override, specialized profile,
+  or graph relationship) and `medium` (Variable, composition, or generic
+  fallback); `low` is reserved and not currently produced.
 
 11. Internal model metadata `appliedProfileIds`
 - Ordered list of profile ids matched against the resolved instance type and

@@ -218,6 +218,12 @@ async def test_get_relationship_types_contains_defaults_and_model_graph_items() 
     assert await service.get_relationship_types("http://example.com/custom") == graph_items
     assert await service.get_relationship_types("https://example.com/custom") == []
 
+    # Canonical namespace comparison (mapping profile rule 6): trailing slash and case ignored.
+    assert await service.get_relationship_types(namespace_uri="https://cesmii.org/i3x/") == filtered
+    assert await service.get_relationship_types(namespace_uri="HTTPS://CESMII.ORG/I3X") == filtered
+    assert await service.get_relationship_types(namespace_uri="http://EXAMPLE.com/custom/") == graph_items
+    assert await service.get_relationship_types(namespace_uri="https://example.com/custom/") == []
+
 
 @pytest.mark.asyncio
 async def test_get_relationship_types_uses_modelled_inverse_names() -> None:

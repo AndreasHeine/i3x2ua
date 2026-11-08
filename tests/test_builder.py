@@ -457,6 +457,11 @@ async def test_model_builder_build_maps_nodes_children_properties_and_actions() 
     assert result.relationships_by_id[action_id]["HasParent"] == [root_id]
     assert result.relationships_by_id[property_id]["ComponentOf"] == [root_id]
 
+    # Containers with composition children are assets, not properties (L3).
+    assert result.semantic_role_by_id[root_id] == "asset"
+    assert result.semantic_role_by_id[property_id] == "datapoint"
+    assert result.semantic_role_by_id[action_id] == "component"
+
 
 @pytest.mark.asyncio
 async def test_model_builder_prefers_outgoing_reference_metadata_when_present() -> None:

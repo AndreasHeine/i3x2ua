@@ -17,6 +17,7 @@ from asyncua import ua
 from asyncua.ua.uaprotocol_auto import Argument
 
 from i3x_server.domain.ports.opcua import OpcUaNamespaceInfo, OpcUaObjectTypeInfo, OpcUaObjectTypeMemberInfo
+from i3x_server.domain.utils import expanded_node_id as _expanded_node_id
 
 _MANDATORY_RULES = {"mandatory", "mandatoryplaceholder"}
 
@@ -1782,28 +1783,3 @@ def _definition_name(
     if element_id:
         return element_id
     return f"unresolved-objecttype:{item.browse_name.lower()}-{_def_key(item.node_id)}"
-
-
-def _expanded_node_id(node_id: str, namespace_infos: list[OpcUaNamespaceInfo]) -> str:
-    if node_id.startswith("nsu="):
-        return node_id
-
-    match = re.match(r"^(?:ns=(\d+);)?([isgb]=.+)$", node_id)
-    if match is None:
-        return node_id
-
-    namespace_index = int(match.group(1)) if match.group(1) is not None else 0
-    identifier = match.group(2)
-
-    # Namespace index 0 is the OPC UA standard namespace.
-    if namespace_index == 0:
-        return f"nsu=http://opcfoundation.org/UA/;{identifier}"
-
-    if not (0 <= namespace_index < len(namespace_infos)):
-        return node_id
-
-    namespace_uri = namespace_infos[namespace_index].uri
-    if not namespace_uri:
-        return node_id
-
-    return f"nsu={namespace_uri};{identifier}"

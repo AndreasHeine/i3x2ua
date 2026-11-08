@@ -69,7 +69,27 @@ from i3x_server.domain.ports.opcua import (
     OpcUaWriteMetadataUnsupportedError,
     OpcUaWriteMetadataVerificationError,
 )
-from i3x_server.domain.utils import server_name_from_openapi
+from i3x_server.domain.utils import (
+    canonical_namespace_uri as _canonical_namespace_uri,
+)
+from i3x_server.domain.utils import (
+    expanded_node_id as _expanded_node_id,
+)
+from i3x_server.domain.utils import (
+    is_null_opcua_type_node_id as _is_null_opcua_type_node_id,
+)
+from i3x_server.domain.utils import (
+    namespace_uri_for_node_id as _namespace_uri_for_node_id,
+)
+from i3x_server.domain.utils import (
+    namespace_uri_from_expanded_node_id as _namespace_uri_from_expanded_node_id,
+)
+from i3x_server.domain.utils import (
+    normalize_namespace_uri as _normalize_namespace_uri,
+)
+from i3x_server.domain.utils import (
+    server_name_from_openapi,
+)
 from i3x_server.errors import i3x_http_error
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.objecttype_schema import (
@@ -86,9 +106,12 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "GetObjectHistoryRequest",
     "StreamRequest",
+    "_canonical_namespace_uri",
+    "_expanded_node_id",
+    "_namespace_uri_for_node_id",
+    "_namespace_uri_from_expanded_node_id",
     "_scalar_schema_for_standard_ua_datatype_node_id",
     "stream_subscription_v1",
-    "_expanded_node_id",
     "_raise_invalid_argument",
     "_to_json_safe_value",
 ]
@@ -407,72 +430,10 @@ def _namespace_infos_by_uri(namespace_infos: list[OpcUaNamespaceInfo]) -> dict[s
     return {item.uri: item for item in namespace_infos}
 
 
-def _normalize_namespace_uri(uri: str) -> str:
-    return uri.strip().rstrip("/").lower()
-
-
-def _canonical_namespace_uri(uri: str, namespace_infos: list[OpcUaNamespaceInfo]) -> str:
-    normalized = _normalize_namespace_uri(uri)
-    for item in namespace_infos:
-        if _normalize_namespace_uri(item.uri) == normalized:
-            return item.uri
-    return uri
-
-
-def _namespace_uri_for_node_id(node_id: str, namespace_infos: list[OpcUaNamespaceInfo]) -> str:
-    match = re.search(r"ns=(\d+)", node_id)
-    namespace_index = int(match.group(1)) if match is not None else 0
-    if 0 <= namespace_index < len(namespace_infos):
-        return namespace_infos[namespace_index].uri
-    return ""
-
-
-def _expanded_node_id(node_id: str, namespace_infos: list[OpcUaNamespaceInfo]) -> str:
-    if node_id.startswith("nsu="):
-        return node_id
-
-    match = re.match(r"^(?:ns=(\d+);)?([isgb]=.+)$", node_id)
-    if match is None:
-        return node_id
-
-    namespace_index = int(match.group(1)) if match.group(1) is not None else 0
-    identifier = match.group(2)
-
-    # Namespace index 0 is the OPC UA standard namespace.
-    if namespace_index == 0:
-        return f"nsu=http://opcfoundation.org/UA/;{identifier}"
-
-    if not (0 <= namespace_index < len(namespace_infos)):
-        return node_id
-
-    namespace_uri = namespace_infos[namespace_index].uri
-    if not namespace_uri:
-        return node_id
-
-    return f"nsu={namespace_uri};{identifier}"
-
-
-def _namespace_uri_from_expanded_node_id(node_id: str) -> str | None:
-    match = re.match(r"^nsu=([^;]+);", node_id)
-    if match is None:
-        return None
-    namespace_uri = match.group(1)
-    return namespace_uri or None
-
-
 def _is_opcua_node_id(value: str) -> bool:
     if value.startswith("nsu="):
         return True
     return bool(re.match(r"^(?:ns=\d+;)?[isgb]=.+$", value, flags=re.IGNORECASE))
-
-
-def _is_null_opcua_type_node_id(node_id: str) -> bool:
-    normalized = node_id.strip()
-    if re.match(r"^nsu=[^;]+;i=0$", normalized, flags=re.IGNORECASE):
-        return True
-    if re.match(r"^ns=\d+;i=0$", normalized, flags=re.IGNORECASE):
-        return True
-    return bool(re.match(r"^i=0$", normalized, flags=re.IGNORECASE))
 
 
 def _to_namespace(item: OpcUaNamespaceInfo) -> Namespace:

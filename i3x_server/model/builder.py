@@ -147,6 +147,7 @@ class ModelBuilder:
         composition_candidate_parents_by_child: dict[str, list[tuple[int, str, str]]] = {}
         graph_related_by_source: dict[str, list[tuple[str, str, str]]] = {}
         graph_namespaces_by_name: dict[str, set[str]] = {}
+        graph_inverse_names_by_name: dict[tuple[str, str], str] = {}
 
         def register_graph_relationship(name: str, reference_type_id: str | None) -> str:
             namespace_uri: str | None
@@ -196,7 +197,7 @@ class ModelBuilder:
             ]
             child_ids_by_source[source_id] = child_ids
 
-            reference_entries: list[tuple[str, str | None, str | None]] = []
+            reference_entries: list[tuple[str, str | None, str | None, str | None]] = []
             outgoing_refs = getattr(opc_node, "outgoing_references", [])
             if outgoing_refs:
                 for ref in outgoing_refs:
@@ -208,6 +209,7 @@ class ModelBuilder:
                             target_node_id,
                             getattr(ref, "reference_type_id", None),
                             getattr(ref, "reference_browse_name", None),
+                            getattr(ref, "reference_inverse_name", None),
                         )
                     )
             else:
@@ -216,10 +218,10 @@ class ModelBuilder:
                     fallback_reference_browse_name = (
                         "HasProperty" if child_node.node_class == "Variable" else "Organizes"
                     )
-                    reference_entries.append((child_source, None, fallback_reference_browse_name))
+                    reference_entries.append((child_source, None, fallback_reference_browse_name, None))
 
             seen_relationship_edges: set[tuple[str, str | None]] = set()
-            for target_source_id, reference_type_id, reference_browse_name in reference_entries:
+            for target_source_id, reference_type_id, reference_browse_name, reference_inverse_name in reference_entries:
                 child_node = by_source_node[target_source_id]
                 child_id = stable_i3x_id(identity_node_id_by_source[target_source_id], _kind_for_node(child_node))
                 if (target_source_id, reference_type_id) in seen_relationship_edges:
@@ -256,6 +258,11 @@ class ModelBuilder:
                     )
                 else:
                     reference_namespace = register_graph_relationship(relationship_name, reference_type_id)
+                    if isinstance(reference_inverse_name, str) and reference_inverse_name:
+                        graph_inverse_names_by_name.setdefault(
+                            (relationship_name, reference_namespace),
+                            reference_inverse_name,
+                        )
                     graph_related_by_source.setdefault(source_id, []).append(
                         (relationship_name, reference_namespace, child_id)
                     )
@@ -363,9 +370,29 @@ class ModelBuilder:
                 elif relationship_name.startswith("inverseOf_"):
                     reverse_name = relationship_name[len("inverseOf_") :]
                 else:
-                    reverse_name = f"inverseOf_{relationship_name}"
+                    forward_display = graph_relationship_display_name_by_id.get(relationship_name, relationship_name)
+                    forward_namespace = graph_relationship_namespace_by_id.get(relationship_name)
+                    attribute_inverse = (
+                        graph_inverse_names_by_name.get((forward_display, forward_namespace))
+                        if forward_namespace is not None
+                        else None
+                    )
+                    if attribute_inverse is None or attribute_inverse == forward_display:
+                        reverse_name = f"inverseOf_{relationship_name}"
+                    else:
+                        reverse_name = _graph_inverse_relationship_id(
+                            attribute_inverse,
+                            graph_relationship_ids,
+                        )
                 graph_relationship_inverse_by_id[relationship_name] = reverse_name
                 append_relationship(target_id, reverse_name, source_id)
+
+        # Registry symmetry: an inverse published by the address space can point at a relationship
+        # that is registered elsewhere without deriving its own reverse. Point its `reverseOf` back
+        # at the forward relationship so the declared chain never dangles (IMPLEMENTATION_GUIDE.md:397).
+        for relationship_id, reverse_id in list(graph_relationship_inverse_by_id.items()):
+            if reverse_id in graph_relationship_namespace_by_id and reverse_id not in graph_relationship_inverse_by_id:
+                graph_relationship_inverse_by_id[reverse_id] = relationship_id
 
         nodes_by_id: dict[str, ModelNode] = {}
         node_id_by_name: dict[str, str] = {}
@@ -571,3 +598,20 @@ def _hierarchy_relationship_priority(reference_name: str | None) -> int:
     if normalized == "hasorderedcomponent":
         return 2
     return 99
+
+
+def _graph_inverse_relationship_id(
+    inverse_name: str,
+    graph_relationship_ids: dict[tuple[str, str], str],
+) -> str:
+    """Relationship id for an inverse name published by the address space.
+
+    The ``ReferenceType.InverseName`` attribute (OPC UA Part 3, e.g. ``HasNotifier`` -> ``NotifierOf``)
+    names the inverse of the *forward* type. A graph relationship whose browse name already matches the
+    inverse keeps its registered id - including qualified ids from a namespace collision - so the reverse
+    edge points at the relationship the address space actually models instead of a new synthetic id.
+    """
+    for name, namespace_uri in sorted(graph_relationship_ids):
+        if name == inverse_name:
+            return graph_relationship_ids[(name, namespace_uri)]
+    return inverse_name

@@ -158,10 +158,17 @@ def _relationship_type_items(model: BuildResult | None = None) -> list[dict[str,
     for name in sorted(graph_names):
         namespace_uri = model.graph_relationship_namespace_by_id[name]
         display_name = model.graph_relationship_display_name_by_id.get(name, name)
-        # Prefer the inverse the address space actually models (natural names such as
-        # `MonitoredBy`, spec UNDERSTANDING_RELATIONSHIPS.md:156-157); `inverseOf_<name>` is only
-        # invented when the source defines no reverse relationship (spec :397 requires one).
+        # Prefer the inverse the address space actually models: the natural relationship name of the
+        # opposite direction (e.g. `MonitoredBy`) or the reference type's `InverseName` attribute
+        # (e.g. `NotifierOf`); `inverseOf_<name>` is only invented when the source defines neither
+        # (spec :397 requires one).
         reverse_name = inverse_by_id.get(name) or f"inverseOf_{name}"
+        if reverse_name.startswith("inverseOf_"):
+            reverse_display = f"inverseOf_{display_name}"
+        else:
+            reverse_display = model.graph_relationship_display_name_by_id.get(
+                reverse_name, reverse_name.rsplit(":", 1)[-1]
+            )
         items.append(
             {
                 "elementId": name,
@@ -178,7 +185,7 @@ def _relationship_type_items(model: BuildResult | None = None) -> list[dict[str,
         items.append(
             {
                 "elementId": reverse_name,
-                "displayName": f"inverseOf_{display_name}",
+                "displayName": reverse_display,
                 "namespaceUri": namespace_uri,
                 "relationshipId": reverse_name,
                 "reverseOf": name,

@@ -210,12 +210,17 @@ Names containing `:` are also qualified to avoid collisions with qualified IDs.
 Components are not percent-encoded in JSON. Treat IDs as opaque strings: namespace
 URIs and browse names can both contain colons, so do not split IDs on `:`.
 URL-encode the complete value only when placing it in a URL.
-When the address space models the reverse direction of a graph relationship under its own
-browse name (`Monitors` forward, `MonitoredBy` back), that natural name is used for the reverse
-edge and for the inverse relationship type, so the reverse chain is `Monitors` ↔ `MonitoredBy`
-and no duplicate synthetic edge is stored. Only when the address space defines no inverse does
-the gateway generate one; its ID prefixes the forward ID with `inverseOf_` and its display name
-retains the original browse name. These IDs are used consistently in relationship
+The inverse name is derived in three steps. If the address space models the reverse direction
+of a graph relationship under its own browse name (`Monitors` forward, `MonitoredBy` back), that
+natural name is used for the reverse edge and for the inverse relationship type, so the reverse
+chain is `Monitors` ↔ `MonitoredBy` and no duplicate synthetic edge is stored. If the reverse
+direction is not modelled, the `InverseName` attribute of the forward ReferenceType node
+(OPC UA Part 3, e.g. `HasNotifier` → `NotifierOf`, `HasCondition` → `IsConditionOf`) is used; it
+is batch-read together with the BrowseName during the model browse, and a server that leaves the
+attribute unset or rejects the read degrades to the fallback without failing the build. Only when
+neither source provides an inverse does the gateway generate one; its ID prefixes the forward ID
+with `inverseOf_` and its display name retains the original browse name. An `InverseName` that
+matches an already registered graph relationship reuses that relationship's ID. These IDs are used consistently in relationship
 type queries and related-object responses. An unresolvable ReferenceType namespace
 fails model construction explicitly rather than publishing an incorrect namespace.
 If distinct namespace/name pairs produce the same expanded qualified string,

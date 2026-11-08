@@ -570,6 +570,101 @@ async def test_model_builder_prefers_the_natural_inverse_relationship() -> None:
 
 
 @pytest.mark.asyncio
+async def test_model_builder_uses_reference_type_inverse_name_attribute() -> None:
+    """An unmodelled reverse direction takes the ``InverseName`` attribute, not a synthetic name."""
+
+    class Client(FakeOpcuaWithGraphReference):
+        async def browse_tree(self) -> list[OpcUaNodeInfo]:
+            nodes = await super().browse_tree()
+            nodes[0].outgoing_references = [
+                OpcUaReferenceInfo(
+                    target_node_id="ns=2;s=Sensor",
+                    reference_type_id="ns=0;i=34",
+                    reference_browse_name="HasNotifier",
+                    reference_inverse_name="NotifierOf",
+                )
+            ]
+            return nodes
+
+    client = cast(OpcUaClientProtocol, Client())
+    result = await ModelBuilder(client).build()
+
+    machine_id = result.node_id_by_name["Machine"]
+    sensor_id = result.node_id_by_name["Sensor"]
+
+    assert result.relationships_by_id[machine_id]["HasNotifier"] == [sensor_id]
+    assert result.relationships_by_id[sensor_id]["NotifierOf"] == [machine_id]
+    assert "inverseOf_HasNotifier" not in result.relationships_by_id[sensor_id]
+    assert result.graph_relationship_inverse_by_id["HasNotifier"] == "NotifierOf"
+
+    items = await ModelQueryService(client, result).get_relationship_types()
+    rel_items = {item["elementId"]: item for item in items if item["elementId"] in {"HasNotifier", "NotifierOf"}}
+    assert set(rel_items) == {"HasNotifier", "NotifierOf"}
+    assert rel_items["HasNotifier"]["reverseOf"] == "NotifierOf"
+    assert rel_items["NotifierOf"]["displayName"] == "NotifierOf"
+    assert rel_items["NotifierOf"]["reverseOf"] == "HasNotifier"
+
+
+@pytest.mark.asyncio
+async def test_model_builder_inverse_name_attribute_reuses_registered_relationship_id() -> None:
+    """An attribute inverse that matches a registered graph relationship reuses its id."""
+
+    class Client(FakeOpcuaWithGraphReference):
+        async def browse_tree(self) -> list[OpcUaNodeInfo]:
+            nodes = await super().browse_tree()
+            nodes[0].outgoing_references = [
+                OpcUaReferenceInfo(
+                    target_node_id="ns=2;s=Sensor",
+                    reference_type_id="ns=0;i=34",
+                    reference_browse_name="HasNotifier",
+                    reference_inverse_name="NotifierOf",
+                )
+            ]
+            nodes.append(
+                OpcUaNodeInfo(
+                    node_id="ns=2;s=Alarm",
+                    parent_node_id=None,
+                    browse_name="Alarm",
+                    display_name="Alarm",
+                    node_class="Object",
+                    data_type=None,
+                    type_definition_id="ns=1;i=1003",
+                    event_notifier=False,
+                )
+            )
+            nodes[1].outgoing_references = [
+                OpcUaReferenceInfo(
+                    target_node_id="ns=2;s=Alarm",
+                    reference_type_id="ns=1;i=5001",
+                    reference_browse_name="NotifierOf",
+                )
+            ]
+            return nodes
+
+        async def get_namespace_infos(self) -> list[OpcUaNamespaceInfo]:
+            return [
+                OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/", display_name="OPC UA"),
+                OpcUaNamespaceInfo(uri="urn:example:custom", display_name="Custom"),
+            ]
+
+    client = cast(OpcUaClientProtocol, Client())
+    result = await ModelBuilder(client).build()
+
+    machine_id = result.node_id_by_name["Machine"]
+    sensor_id = result.node_id_by_name["Sensor"]
+    alarm_id = result.node_id_by_name["Alarm"]
+
+    assert result.graph_relationship_namespace_by_id == {
+        "HasNotifier": "http://opcfoundation.org/UA/",
+        "NotifierOf": "urn:example:custom",
+    }
+    assert result.relationships_by_id[machine_id]["HasNotifier"] == [sensor_id]
+    assert result.relationships_by_id[sensor_id]["NotifierOf"] == [machine_id, alarm_id]
+    assert "inverseOf_HasNotifier" not in result.relationships_by_id[sensor_id]
+    assert result.graph_relationship_inverse_by_id["HasNotifier"] == "NotifierOf"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("reference_type_id", "expected_namespace"),
     [

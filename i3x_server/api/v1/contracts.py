@@ -563,6 +563,8 @@ class UpdateObjectHistoryRequest(BaseModel):
 
 class RegisterMonitoredItemsRequest(BaseModel):
     model_config = ConfigDict(
+        # A misspelled field (e.g. `maxdepth`) must fail instead of silently applying the default.
+        extra="forbid",
         json_schema_extra={
             "examples": [
                 {
@@ -572,7 +574,7 @@ class RegisterMonitoredItemsRequest(BaseModel):
                     "maxDepth": 1,
                 }
             ]
-        }
+        },
     )
 
     clientId: ClientId
@@ -589,6 +591,8 @@ class RegisterMonitoredItemsRequest(BaseModel):
 
 
 class UnregisterMonitoredItemsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     clientId: ClientId
     subscriptionId: str
     elementIds: list[str] = Field(min_length=1, max_length=MAX_BULK_ITEMS)
@@ -596,6 +600,7 @@ class UnregisterMonitoredItemsRequest(BaseModel):
 
 class SyncRequest(BaseModel):
     model_config = ConfigDict(
+        extra="forbid",
         json_schema_extra={
             "examples": [
                 {
@@ -604,7 +609,7 @@ class SyncRequest(BaseModel):
                     "lastSequenceNumber": 42,
                 }
             ]
-        }
+        },
     )
 
     clientId: ClientId
@@ -622,11 +627,15 @@ class SyncRequest(BaseModel):
 
 
 class ListSubscriptionsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     clientId: ClientId
     subscriptionIds: list[str] = Field(min_length=1, max_length=MAX_BULK_ITEMS)
 
 
 class DeleteSubscriptionsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     clientId: ClientId
     subscriptionIds: list[str] = Field(min_length=1, max_length=MAX_BULK_ITEMS)
 
@@ -650,7 +659,8 @@ class StreamRequest(BaseModel):
 
 class CreateSubscriptionRequest(BaseModel):
     model_config = ConfigDict(
-        json_schema_extra={"examples": [{"clientId": "example-client", "displayName": "Machine telemetry"}]}
+        extra="forbid",
+        json_schema_extra={"examples": [{"clientId": "example-client", "displayName": "Machine telemetry"}]},
     )
 
     clientId: ClientId = Field(description="Unique client scope identifier. This is not an authentication credential.")

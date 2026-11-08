@@ -47,6 +47,8 @@ _RESPONSE_CHUNK_SIZE = 50
     description=(
         "Return object instances from the current model. "
         "Supports optional filters for typeElementId, metadata inclusion, and root-only listing. "
+        "`root=true` lists assets and event sources without a hierarchy or composition parent; "
+        "`root=false` (or omitting the parameter) applies no root filter and returns all instances. "
         "Supports conditional GET via ETag / If-None-Match (304 Not Modified)."
     ),
     dependencies=[Depends(enable_etag)],
@@ -90,7 +92,13 @@ async def get_objects_v1(
             )
         ]
         if not nodes:
-            nodes = [model.nodes_by_id[node_id] for node_id in model.root_ids if node_id in model.nodes_by_id]
+            # Fallback for models without parent maps: keep the same kind filter, otherwise
+            # properties and actions would be reported as roots (L12).
+            nodes = [
+                node
+                for node in (model.nodes_by_id.get(node_id) for node_id in model.root_ids)
+                if node is not None and node.kind in {"asset", "eventSource"}
+            ]
     else:
         nodes = list(model.nodes_by_id.values())
     if type_element_id is not None:

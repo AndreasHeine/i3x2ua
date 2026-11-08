@@ -9,8 +9,7 @@ Provides:
 
 from __future__ import annotations
 
-import os
-from collections.abc import Generator
+from collections.abc import Callable, Generator, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -491,114 +490,54 @@ class FakeOpcUaClient:
         return None
 
 
+_MCP_ENABLED_ENV = {
+    "I3X_ENABLE_MCP": "1",
+    "I3X_SKIP_OPCUA_CONNECT": "1",
+    "I3X_ENABLE_WRITES": "0",
+    "I3X_MCP_INCLUDE_OPCUA_METADATA": "1",
+}
+# Explicitly disabled: unsetting would let a .env in the working directory enable MCP.
+_MCP_DISABLED_ENV = {**_MCP_ENABLED_ENV, "I3X_ENABLE_MCP": "0"}
+
+
+def _test_client_with_env(
+    monkeypatch: pytest.MonkeyPatch,
+    env: Mapping[str, str],
+    configure: Callable[[FastAPI], None],
+) -> Generator[TestClient, None, None]:
+    """Build an app with the given environment.
+
+    `monkeypatch` restores the variables even when `create_app()` raises, which manual
+    `os.environ` mutation would leak into later tests (L12).
+    """
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    app = create_app()
+    with TestClient(app) as test_client:
+        configure(app)
+        yield test_client
+
+
 @pytest.fixture
-def client() -> Generator[TestClient, None, None]:
+def client(monkeypatch: pytest.MonkeyPatch) -> Generator[TestClient, None, None]:
     """Test client fixture with MCP enabled."""
-    previous_enable_mcp = os.environ.get("I3X_ENABLE_MCP")
-    previous_skip_connect = os.environ.get("I3X_SKIP_OPCUA_CONNECT")
-    previous_enable_writes = os.environ.get("I3X_ENABLE_WRITES")
-    previous_mcp_include_opcua_metadata = os.environ.get("I3X_MCP_INCLUDE_OPCUA_METADATA")
-    os.environ["I3X_ENABLE_MCP"] = "1"
-    os.environ["I3X_SKIP_OPCUA_CONNECT"] = "1"
-    os.environ["I3X_ENABLE_WRITES"] = "0"
-    os.environ["I3X_MCP_INCLUDE_OPCUA_METADATA"] = "1"
-    app = create_app()
-    try:
-        with TestClient(app) as test_client:
-            configure_test_app(app)
-            yield test_client
-    finally:
-        if previous_enable_mcp is None:
-            os.environ.pop("I3X_ENABLE_MCP", None)
-        else:
-            os.environ["I3X_ENABLE_MCP"] = previous_enable_mcp
-        if previous_skip_connect is None:
-            os.environ.pop("I3X_SKIP_OPCUA_CONNECT", None)
-        else:
-            os.environ["I3X_SKIP_OPCUA_CONNECT"] = previous_skip_connect
-        if previous_enable_writes is None:
-            os.environ.pop("I3X_ENABLE_WRITES", None)
-        else:
-            os.environ["I3X_ENABLE_WRITES"] = previous_enable_writes
-        if previous_mcp_include_opcua_metadata is None:
-            os.environ.pop("I3X_MCP_INCLUDE_OPCUA_METADATA", None)
-        else:
-            os.environ["I3X_MCP_INCLUDE_OPCUA_METADATA"] = previous_mcp_include_opcua_metadata
+    yield from _test_client_with_env(monkeypatch, _MCP_ENABLED_ENV, configure_test_app)
 
 
 @pytest.fixture
-def client_without_mcp() -> Generator[TestClient, None, None]:
+def client_without_mcp(monkeypatch: pytest.MonkeyPatch) -> Generator[TestClient, None, None]:
     """Test client fixture with MCP disabled."""
-    previous_enable_mcp = os.environ.get("I3X_ENABLE_MCP")
-    previous_skip_connect = os.environ.get("I3X_SKIP_OPCUA_CONNECT")
-    previous_enable_writes = os.environ.get("I3X_ENABLE_WRITES")
-    previous_mcp_include_opcua_metadata = os.environ.get("I3X_MCP_INCLUDE_OPCUA_METADATA")
-    # Explicitly disabled: unsetting would let a .env in the working directory enable MCP.
-    os.environ["I3X_ENABLE_MCP"] = "0"
-    os.environ["I3X_SKIP_OPCUA_CONNECT"] = "1"
-    os.environ["I3X_ENABLE_WRITES"] = "0"
-    os.environ["I3X_MCP_INCLUDE_OPCUA_METADATA"] = "1"
-    app = create_app()
-    try:
-        with TestClient(app) as test_client:
-            configure_test_app(app)
-            yield test_client
-    finally:
-        if previous_enable_mcp is None:
-            os.environ.pop("I3X_ENABLE_MCP", None)
-        else:
-            os.environ["I3X_ENABLE_MCP"] = previous_enable_mcp
-        if previous_skip_connect is None:
-            os.environ.pop("I3X_SKIP_OPCUA_CONNECT", None)
-        else:
-            os.environ["I3X_SKIP_OPCUA_CONNECT"] = previous_skip_connect
-        if previous_enable_writes is None:
-            os.environ.pop("I3X_ENABLE_WRITES", None)
-        else:
-            os.environ["I3X_ENABLE_WRITES"] = previous_enable_writes
-        if previous_mcp_include_opcua_metadata is None:
-            os.environ.pop("I3X_MCP_INCLUDE_OPCUA_METADATA", None)
-        else:
-            os.environ["I3X_MCP_INCLUDE_OPCUA_METADATA"] = previous_mcp_include_opcua_metadata
+    yield from _test_client_with_env(monkeypatch, _MCP_DISABLED_ENV, configure_test_app)
 
 
 @pytest.fixture
 def client_without_tool_overrides(monkeypatch: pytest.MonkeyPatch) -> Generator[TestClient, None, None]:
     """Test client fixture with MCP tool overrides disabled."""
-    previous_enable_mcp = os.environ.get("I3X_ENABLE_MCP")
-    previous_skip_connect = os.environ.get("I3X_SKIP_OPCUA_CONNECT")
-    previous_enable_writes = os.environ.get("I3X_ENABLE_WRITES")
-    previous_mcp_include_opcua_metadata = os.environ.get("I3X_MCP_INCLUDE_OPCUA_METADATA")
-    os.environ["I3X_ENABLE_MCP"] = "1"
-    os.environ["I3X_SKIP_OPCUA_CONNECT"] = "1"
-    os.environ["I3X_ENABLE_WRITES"] = "0"
-    os.environ["I3X_MCP_INCLUDE_OPCUA_METADATA"] = "1"
     monkeypatch.setattr(
         "i3x_server.mcp.tool_definitions.load_overrides",
         lambda *args, **kwargs: {"tools": {}, "prompts": {}, "excluded_tools": []},
     )
-    app = create_app()
-    try:
-        with TestClient(app) as test_client:
-            configure_test_app(app)
-            yield test_client
-    finally:
-        if previous_enable_mcp is None:
-            os.environ.pop("I3X_ENABLE_MCP", None)
-        else:
-            os.environ["I3X_ENABLE_MCP"] = previous_enable_mcp
-        if previous_skip_connect is None:
-            os.environ.pop("I3X_SKIP_OPCUA_CONNECT", None)
-        else:
-            os.environ["I3X_SKIP_OPCUA_CONNECT"] = previous_skip_connect
-        if previous_enable_writes is None:
-            os.environ.pop("I3X_ENABLE_WRITES", None)
-        else:
-            os.environ["I3X_ENABLE_WRITES"] = previous_enable_writes
-        if previous_mcp_include_opcua_metadata is None:
-            os.environ.pop("I3X_MCP_INCLUDE_OPCUA_METADATA", None)
-        else:
-            os.environ["I3X_MCP_INCLUDE_OPCUA_METADATA"] = previous_mcp_include_opcua_metadata
+    yield from _test_client_with_env(monkeypatch, _MCP_ENABLED_ENV, configure_test_app)
 
 
 def assert_documented_response(client: TestClient, method: str, path: str, status: int, payload: Any) -> None:

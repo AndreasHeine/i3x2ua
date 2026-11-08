@@ -4,23 +4,19 @@
   let rows = [];
   let error = '';
 
-  const esc = (value) =>
-    String(value)
-      .replaceAll('&', '&amp;')
-      .replaceAll('<', '&lt;')
-      .replaceAll('>', '&gt;')
-      .replaceAll('"', '&quot;')
-      .replaceAll("'", '&#39;');
-
   onMount(async () => {
     try {
       const response = await fetch('/mcp/tools');
+      if (!response.ok) {
+        error = `MCP tools endpoint returned HTTP ${response.status}. Enable MCP with I3X_ENABLE_MCP=1.`;
+        return;
+      }
       const payload = await response.json();
       const tools = payload.tools || {};
       const names = Object.keys(tools);
 
       if (names.length === 0) {
-        error = 'No MCP tools available.';
+        error = 'No MCP tools available. Enable MCP with I3X_ENABLE_MCP=1.';
         return;
       }
 
@@ -28,9 +24,9 @@
         const item = tools[name] || {};
         const schema = item.inputSchema || item.input_schema || {};
         return {
-          name: esc(name),
-          description: esc(item.description || 'No description available'),
-          schema: esc(JSON.stringify(schema, null, 2))
+          name,
+          description: item.description || 'No description available',
+          schema: JSON.stringify(schema, null, 2)
         };
       });
     } catch (e) {
@@ -65,9 +61,9 @@
         <tbody>
           {#each rows as row}
             <tr>
-              <td class="tool-name">{@html row.name}</td>
-              <td>{@html row.description}</td>
-              <td><pre class="schema">{@html row.schema}</pre></td>
+              <td class="tool-name">{row.name}</td>
+              <td>{row.description}</td>
+              <td><pre class="schema">{row.schema}</pre></td>
             </tr>
           {/each}
         </tbody>

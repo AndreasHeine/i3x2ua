@@ -27,6 +27,7 @@ from i3x_server.infrastructure.subscriptions.service import (
     _ValueSignal,
 )
 from i3x_server.schemas.i3x import ModelNode
+from i3x_server.schemas.opcua_value import normalize_opcua_value
 from i3x_server.schemas.state import BuildResult
 
 
@@ -127,8 +128,8 @@ def test_argument_dimensions_do_not_create_spurious_updates(empty_first: bool) -
     empty_argument = ua.Argument(Name="EventId", ValueRank=-1, ArrayDimensions=[])
     first, second = (empty_argument, null_argument) if empty_first else (null_argument, empty_argument)
 
-    service._append_update(state, "ns=2;s=InputArguments", [first])
-    service._append_update(state, "ns=2;s=InputArguments", [second])
+    service._append_update(state, "ns=2;s=InputArguments", normalize_opcua_value([first]))
+    service._append_update(state, "ns=2;s=InputArguments", normalize_opcua_value([second]))
 
     assert state.sequence_number == 1
     assert len(state.updates) == 1
@@ -136,8 +137,71 @@ def test_argument_dimensions_do_not_create_spurious_updates(empty_first: bool) -
     assert empty_argument.ArrayDimensions == []
 
     changed = ua.Argument(Name="Comment", ValueRank=-1, ArrayDimensions=[])
-    service._append_update(state, "ns=2;s=InputArguments", [changed])
+    service._append_update(state, "ns=2;s=InputArguments", normalize_opcua_value([changed]))
     assert state.sequence_number == 2
+
+
+@pytest.mark.asyncio
+async def test_negative_ack_beyond_minus_one_discards_all_updates() -> None:
+    """Any negative ack is the documented `-1` "drop everything" sentinel (L9)."""
+    service = SubscriptionService(cast(OpcUaClientProtocol, FakeOpcUaClient()), interval_seconds=1)
+    created = await service.create_subscription(client_id="c1", display_name=None)
+    subscription_id = created.subscription_id
+
+    async with service._lock:
+        state = service._subscriptions[subscription_id]
+        service._append_update(state, "ns=2;s=Temperature", 1.0)
+    assert state.updates
+
+    synced = await service.sync("c1", subscription_id, acknowledge_sequence=-5)
+    assert synced is not None
+    assert synced.updates == []
+    assert state.updates == []
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_stream_active_sync_reports_overflow_without_consuming() -> None:
+    """Polling while a stream is open must reveal dropped updates (L9)."""
+    service = SubscriptionService(
+        cast(OpcUaClientProtocol, FakeOpcUaClient()),
+        interval_seconds=1,
+        max_updates_per_subscription=2,
+    )
+    created = await service.create_subscription(client_id="c1", display_name=None)
+    subscription_id = created.subscription_id
+
+    async with service._lock:
+        state = service._subscriptions[subscription_id]
+        # Four updates against a queue of two drops sequences 1 and 2.
+        service._append_update(state, "ns=2;s=Temperature", 1.0)
+        service._append_update(state, "ns=2;s=Pressure", 2.0)
+        service._append_update(state, "ns=2;s=Temperature", 3.0)
+        service._append_update(state, "ns=2;s=Speed", 4.0)
+    assert state.dropped_from_sequence == 1
+    assert state.dropped_to_sequence == 2
+
+    generation = await service.activate_stream("c1", subscription_id)
+    assert generation is not None
+    synced = await service.sync("c1", subscription_id)
+    assert synced is not None
+    assert synced.stream_active is True
+    assert synced.queue_overflow is True
+    assert synced.dropped_from_sequence == 1
+    assert synced.dropped_to_sequence == 2
+
+    # The markers survive the stream-active rejection and are consumed by the
+    # first sync without an open stream.
+    await service.deactivate_stream(subscription_id, generation)
+    synced_after = await service.sync("c1", subscription_id)
+    assert synced_after is not None
+    assert synced_after.queue_overflow is True
+    assert synced_after.dropped_from_sequence == 1
+    assert synced_after.dropped_to_sequence == 2
+    third_sync = await service.sync("c1", subscription_id)
+    assert third_sync is not None
+    assert third_sync.queue_overflow is False
+    await service.close()
 
 
 def _model() -> BuildResult:

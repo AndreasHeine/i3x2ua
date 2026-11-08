@@ -149,7 +149,8 @@ MCP_INSTRUCTIONS = (
     "Discover elementIds before querying values. Value/history maxDepth traverses composition only, "
     "not hierarchy: 1 reads only the object, 2 includes direct components, 0 is unlimited. "
     "For many values below one known container, call readContainerValues with its exact containerId "
-    "instead of generating a long elementIds array. "
+    "instead of generating a long elementIds array; it collects properties at any depth below that "
+    "container (bounded depth and node count), not only direct components. "
     "Preserve value, quality, and source timestamp; latest known values need not be fresh. "
     "Inspect per-item failures even when HTTP succeeds. PUT/write operations are REST-only. "
     "Subscription tools change monitoring state; acknowledge only updates already processed. "
@@ -426,8 +427,9 @@ def _resource_catalog(request: Request) -> list[dict[str, Any]]:
             "uri": "i3x://mcp-overrides",
             "name": "MCP overrides",
             "description": (
-                "Raw contents of overrides/mcp_overrides.json. An invalid file is ignored by the runtime, "
-                "so the effective catalog may differ from these contents"
+                "Contents of overrides/mcp_overrides.json wrapped as {applied, contents}. "
+                "An invalid file is ignored by the runtime, so `applied=false` means the "
+                "effective catalog differs from these contents"
             ),
             "mimeType": "application/json",
         },
@@ -649,10 +651,17 @@ def _read_resource_content(request: Request, uri: str) -> dict[str, Any]:
         path = project_root / "overrides" / "mcp_overrides.json"
         if not path.exists():
             _raise_invalid_resource(uri)
+        raw = path.read_text(encoding="utf-8")
+        applied = bool(getattr(request.app.state, "mcp_overrides_applied", False))
+        try:
+            document: dict[str, Any] = {"applied": applied, "contents": json.loads(raw)}
+        except json.JSONDecodeError as exc:
+            # A file the runtime could not parse is never applied; expose the raw text too.
+            document = {"applied": False, "parseError": str(exc), "contents": raw}
         return {
             "uri": uri,
             "mimeType": "application/json",
-            "text": path.read_text(encoding="utf-8"),
+            "text": json.dumps(document, ensure_ascii=False),
         }
 
     prompt_prefix = "i3x://prompts/"
@@ -698,7 +707,9 @@ def _compact_bulk_results(body: dict[str, Any], project_result: Any) -> dict[str
 
 def _compact_tool_body(tool_name: str, body: Any) -> Any:
     if not isinstance(body, dict):
-        return body
+        # `outputSchema` declares an object; a non-object body (array/scalar from a
+        # route that returns one) would violate it, so wrap it under a stable key (L11).
+        return {"data": body}
 
     if tool_name == "getObjectsV1" and isinstance(body.get("result"), list):
         compacted = dict(body)
@@ -1059,7 +1070,10 @@ async def mcp_get(request: Request) -> Response:
         try:
             while True:
                 try:
-                    message = await asyncio.wait_for(stream.get(), timeout=MCP_SSE_KEEPALIVE_SECONDS)
+                    # `asyncio.timeout` bounds the wait without cancelling a separate task,
+                    # so a notification delivered at the boundary cannot be dropped (L11).
+                    async with asyncio.timeout(MCP_SSE_KEEPALIVE_SECONDS):
+                        message = await stream.get()
                 except TimeoutError:
                     if await request.is_disconnected():
                         break
@@ -1171,8 +1185,9 @@ async def mcp_post(request: Request) -> Response:
         if validation_error is not None:
             return JSONResponse(status_code=400, content=validation_error)
         if message.get("method") == "initialize":
+            # JSON-RPC-level errors are delivered as HTTP 200 bodies (like every other
+            # `-32601` here); HTTP 400 is reserved for transport validation failures (L11).
             return JSONResponse(
-                status_code=400,
                 content=_jsonrpc_error(message.get("id"), -32601, "Method not found: initialize"),
             )
         modern = True

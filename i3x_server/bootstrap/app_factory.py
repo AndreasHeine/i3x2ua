@@ -39,7 +39,7 @@ from i3x_server.http_caching import MODEL_REVISION_HEADER, ModelRevisionMiddlewa
 from i3x_server.infrastructure.opcua.client import OpcUaClient
 from i3x_server.infrastructure.subscriptions.service import SubscriptionService
 from i3x_server.mcp.invocation import get_api_prefix, init_mcp_metrics
-from i3x_server.mcp.tool_definitions import build_mcp_tools, load_prompt_overrides
+from i3x_server.mcp.tool_definitions import build_mcp_tools, load_overrides, load_prompt_overrides
 from i3x_server.model.builder import ModelBuilder
 from i3x_server.prompts.registry import PromptRegistry
 from i3x_server.schemas.state import BuildResult
@@ -395,6 +395,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             raise ValueError(f"OpenAPI spec must be dict, got {type(openapi_spec)}")
 
         app.state.mcp_tools = build_mcp_tools(openapi_spec)
+        # The overrides file may be rejected by validation (runtime then applies nothing).
+        # Record whether it was applied so `i3x://mcp-overrides` cannot be mistaken for the
+        # effective catalog (L11).
+        app.state.mcp_overrides_applied = bool(load_overrides())
         app.state.mcp_api_prefix = get_api_prefix(openapi_spec)
         app.state.mcp_transport_sessions = {}
         prompt_overrides = load_prompt_overrides()

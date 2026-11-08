@@ -588,6 +588,16 @@ uv run pytest -q --cov=i3x_server --cov-report=term-missing
 Mypy uses explicit package bases from the repository root so namespace packages
 such as `samples` have consistent module names during discovery and imports.
 
+### Frontend pages
+
+The viewer pages live in `frontend/` and are built with `npm run build` (from `frontend/`),
+which writes the prerendered site to `dist/`. `dist/` is build output and not tracked.
+
+The Content-Security-Policy inline script hashes are computed once at server startup from
+the HTML files in `dist/`. A rebuild while the server is running (the Windows default is
+`I3X_RELOAD=0`) therefore serves a boot script the old CSP does not allow and the pages stay
+inert: rebuild, then restart the server.
+
 ## Production Deployment and i3X Strict Compliance
 
 This application implements the i3X API specification and is designed to run **behind a reverse proxy / api gateway** that is responsible for:

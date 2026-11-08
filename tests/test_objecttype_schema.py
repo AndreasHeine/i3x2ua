@@ -895,11 +895,12 @@ def test_enum_like_fields_in_standard_datatypes_do_not_degrade_to_object(
         data_type_id,
         [OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/", display_name="UA")],
     )
-    if not isinstance(schema, dict):
-        pytest.skip(f"Datatype schema unavailable in this asyncua build: {data_type_id}")
+    # These standard datatypes ship with the pinned asyncua build; skipping silently would turn
+    # this regression guard into a no-op when the dependency is bumped (L12).
+    assert isinstance(schema, dict), f"Datatype schema unavailable in this asyncua build: {data_type_id}"
     properties = schema.get("properties")
-    if not isinstance(properties, dict) or field_name not in properties:
-        pytest.skip(f"Field unavailable in this asyncua build: {data_type_id}.{field_name}")
+    assert isinstance(properties, dict), f"Datatype schema has no properties: {data_type_id}"
+    assert field_name in properties, f"Field unavailable in this asyncua build: {data_type_id}.{field_name}"
 
     field_schema = properties[field_name]
     assert isinstance(field_schema, dict)

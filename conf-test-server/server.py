@@ -100,6 +100,21 @@ class WritableHistoryDict(HistoryDict):
             del records[:-count]
 
 
+def _is_rectangular_array(values: Any) -> bool:
+    """Nested arrays must have equal lengths at every level (mirrors gateway validation)."""
+    if not isinstance(values, list):
+        return True
+    if not values:
+        return True
+    if isinstance(values[0], list):
+        if not all(isinstance(item, list) for item in values):
+            return False
+        if len({len(item) for item in values}) != 1:
+            return False
+        return all(_is_rectangular_array(item) for item in values)
+    return not any(isinstance(item, list) for item in values)
+
+
 class FixtureHistoryManager(HistoryManager):
     def __init__(self, iserver: InternalServer) -> None:
         super().__init__(iserver)
@@ -134,7 +149,9 @@ class FixtureHistoryManager(HistoryManager):
                         ua.VariantType.Null,
                     ):
                         operation_code = StatusCodes.BadTypeMismatch
-                    elif value.Value.is_array:
+                    elif value.Value.is_array and not _is_rectangular_array(value.Value):
+                        # Rectangular array writes are supported by the gateway (`history.py`);
+                        # rejecting every array here would leave that path untestable.
                         operation_code = StatusCodes.BadTypeMismatch
                     else:
                         self.fixture_storage.upsert(details.NodeId, value)
@@ -468,14 +485,18 @@ class ConformanceFixtureServer:
 
         for signal_node in self._signals:
             try:
-                values = await signal_node.node.read_raw_history(
-                    starttime=start,
-                    endtime=now,
-                    numvalues=3,
-                    return_bounds=False,
-                )
-            except TypeError:
-                values = await signal_node.node.read_raw_history(start, now, 3, False)
+                try:
+                    values = await signal_node.node.read_raw_history(
+                        starttime=start,
+                        endtime=now,
+                        numvalues=3,
+                        return_bounds=False,
+                    )
+                except TypeError:
+                    # Older asyncua signatures take positional arguments. The fallback runs
+                    # inside the handler, so it needs its own guard: an unguarded failure
+                    # would abort startup instead of skipping this signal.
+                    values = await signal_node.node.read_raw_history(start, now, 3, False)
             except Exception:
                 logger.exception("Startup history verification failed for signal=%s", signal_node.name)
                 continue

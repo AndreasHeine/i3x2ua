@@ -676,6 +676,10 @@ class OpcUaClient:
         started = perf_counter()
         logger.info("OPC UA disconnect started endpoint=%s", self._endpoint)
         await self._stop_connection_tasks()
+        # Drop reconnect bookkeeping: a later `connect()` must not run the reconnect
+        # handler for a stale event or re-fire listeners with a recreated-session flag (L10).
+        self._reconnected_event.clear()
+        self._reconnect_session_recreated = False
         await self._client.disconnect()
         self._set_connection_state("Disconnected")
         self._limits_cache = None
@@ -969,7 +973,10 @@ class OpcUaClient:
         limits = await self.get_operational_limits()
         max_nodes = limits.max_nodes_per_read or len(entries)
         batch_size = max(1, min(max_nodes // len(_NODE_INFO_ATTRIBUTES), len(entries)))
-        output: list[OpcUaNodeInfo] = []
+        # Keep the caller's browse order stable: batch and fallback results fill
+        # positional slots instead of appending fallbacks after all batches (L10).
+        index_by_node_id = {node.nodeid.to_string(): index for index, (node, _parent) in enumerate(entries)}
+        slots: list[OpcUaNodeInfo | None] = [None] * len(entries)
 
         for entry_batch in _chunked_nodes(entries, batch_size):
             nodes = [node for node, _ in entry_batch]
@@ -985,7 +992,10 @@ class OpcUaClient:
                     len(entry_batch),
                     exc_info=True,
                 )
-                output.extend(await self._read_node_infos_fallback(entry_batch))
+                for info in await self._read_node_infos_fallback(entry_batch):
+                    slot_index = index_by_node_id.get(info.node_id)
+                    if slot_index is not None and slots[slot_index] is None:
+                        slots[slot_index] = info
                 continue
 
             object_or_variable_nodes: list[Any] = []
@@ -1050,28 +1060,32 @@ class OpcUaClient:
                 )
                 executable_value = class_attributes.get(AttributeIds.Executable)
                 user_executable_value = class_attributes.get(AttributeIds.UserExecutable)
-                output.append(
-                    OpcUaNodeInfo(
-                        node_id=node_id,
-                        parent_node_id=parent_by_node_id[node_id],
-                        browse_name=browse_name,
-                        display_name=display_name,
-                        node_class=node_class.name,
-                        data_type=data_type,
-                        type_definition_id=_normalize_type_definition_id(type_definitions_by_node_id.get(node_id)),
-                        event_notifier=bool(class_attributes.get(AttributeIds.EventNotifier, False)),
-                        description=descriptions_by_node_id.get(node_id),
-                        access_level=_coerce_access_level(class_attributes.get(AttributeIds.AccessLevel)),
-                        user_access_level=_coerce_access_level(class_attributes.get(AttributeIds.UserAccessLevel)),
-                        executable=executable_value if isinstance(executable_value, bool) else None,
-                        user_executable=user_executable_value if isinstance(user_executable_value, bool) else None,
-                    )
+                slot_index = index_by_node_id.get(node_id)
+                if slot_index is None or slots[slot_index] is not None:
+                    continue
+                slots[slot_index] = OpcUaNodeInfo(
+                    node_id=node_id,
+                    parent_node_id=parent_by_node_id[node_id],
+                    browse_name=browse_name,
+                    display_name=display_name,
+                    node_class=node_class.name,
+                    data_type=data_type,
+                    type_definition_id=_normalize_type_definition_id(type_definitions_by_node_id.get(node_id)),
+                    event_notifier=bool(class_attributes.get(AttributeIds.EventNotifier, False)),
+                    description=descriptions_by_node_id.get(node_id),
+                    access_level=_coerce_access_level(class_attributes.get(AttributeIds.AccessLevel)),
+                    user_access_level=_coerce_access_level(class_attributes.get(AttributeIds.UserAccessLevel)),
+                    executable=executable_value if isinstance(executable_value, bool) else None,
+                    user_executable=user_executable_value if isinstance(user_executable_value, bool) else None,
                 )
 
             if fallback_entries:
-                output.extend(await self._read_node_infos_fallback(fallback_entries))
+                for info in await self._read_node_infos_fallback(fallback_entries):
+                    slot_index = index_by_node_id.get(info.node_id)
+                    if slot_index is not None and slots[slot_index] is None:
+                        slots[slot_index] = info
 
-        return output
+        return [item for item in slots if item is not None]
 
     def _extract_class_node_info_attribute(
         self,
@@ -1138,7 +1152,7 @@ class OpcUaClient:
             )
             await self._wait_for_reconnect(exc)
             retry_nodes = [self._client.get_node(node.nodeid) for node in nodes]
-            values = await self._client.read_attributes(retry_nodes, attr=attr)
+            values = await self._retry_call(self._client.read_attributes(retry_nodes, attr=attr))
             self._record_read_data_values(values)
             return values
 
@@ -1187,7 +1201,7 @@ class OpcUaClient:
                     len(node_attributes),
                 )
                 await self._wait_for_reconnect(exc)
-                values = await self._client.uaclient.read(params)
+                values = await self._retry_call(self._client.uaclient.read(params))
             elif self._is_too_many_operations_error(exc) and len(node_attributes) > 1:
                 split_at = max(1, len(node_attributes) // 2)
                 logger.warning(
@@ -1610,6 +1624,7 @@ class OpcUaClient:
             logger.warning(
                 "OPC UA namespace metadata read from i=11715 failed endpoint=%s; using fallback names",
                 self._endpoint,
+                exc_info=True,
             )
 
         resolved_versions = {
@@ -2122,10 +2137,60 @@ class OpcUaClient:
                 next_params.ContinuationPoints = [
                     continuation_point for _, continuation_point, _ in continuation_entries
                 ]
-                next_results = await self._browse_next_with_retry(
-                    next_params=next_params,
-                    node_ids=[node.nodeid.to_string() for node, _, _ in continuation_entries],
-                )
+                try:
+                    next_results = await self._browse_next_with_retry(
+                        next_params=next_params,
+                        node_ids=[node.nodeid.to_string() for node, _, _ in continuation_entries],
+                    )
+                except UaStatusCodeError as exc:
+                    if not self._is_continuation_point_invalid(exc):
+                        raise
+                    # Session recreation invalidated the continuation points: re-browse the
+                    # affected nodes against the live session and continue from the fresh
+                    # points instead of aborting the whole tree read (L10).
+                    logger.warning(
+                        "OPC UA browse-next continuation points stale endpoint=%s node_count=%d; re-browsing nodes",
+                        self._endpoint,
+                        len(continuation_entries),
+                        exc_info=True,
+                    )
+                    recovery_descriptions: list[ua.BrowseDescription] = []
+                    for node, _, _ in continuation_entries:
+                        desc = ua.BrowseDescription()
+                        desc.NodeId = node.nodeid
+                        desc.BrowseDirection = browse_direction
+                        desc.ReferenceTypeId = ua.NodeId(ua.Int32(reference_type_id))
+                        desc.IncludeSubtypes = include_subtypes
+                        desc.NodeClassMask = ua.NodeClass.Unspecified
+                        desc.ResultMask = ua.BrowseResultMask.All
+                        recovery_descriptions.append(desc)
+                    recovery_params = ua.BrowseParameters()
+                    recovery_params.View = ua.ViewDescription()
+                    recovery_params.RequestedMaxReferencesPerNode = 0
+                    recovery_params.NodesToBrowse = recovery_descriptions
+                    recovery_results = await self._browse_with_retry(
+                        params=recovery_params,
+                        batch_size=len(recovery_descriptions),
+                    )
+                    if len(recovery_results) != len(continuation_entries):
+                        raise RuntimeError(
+                            f"Browse returned {len(recovery_results)} results for "
+                            f"{len(continuation_entries)} re-browsed nodes"
+                        ) from exc
+                    stale_entries = continuation_entries
+                    continuation_entries = []
+                    for (node, _, refs), recovery_result in zip(stale_entries, recovery_results, strict=True):
+                        seen = {(item.NodeId.to_string(), item.BrowseName.to_string()) for item in refs}
+                        for fresh_ref in recovery_result.References:
+                            key = (fresh_ref.NodeId.to_string(), fresh_ref.BrowseName.to_string())
+                            if key not in seen:
+                                refs.append(fresh_ref)
+                                seen.add(key)
+                                browse_next_references_total += 1
+                        if recovery_result.ContinuationPoint:
+                            continuation_entries.append((node, recovery_result.ContinuationPoint, refs))
+                    continue
+
                 self._runtime_metrics.browse_next_calls += 1
                 if len(next_results) != len(continuation_entries):
                     raise RuntimeError(
@@ -2166,7 +2231,7 @@ class OpcUaClient:
                 batch_size,
             )
             await self._wait_for_reconnect(exc)
-            results = await self._client.uaclient.browse(params)
+            results = await self._retry_call(self._client.uaclient.browse(params))
             self._record_browse_results(results)
             return results
 
@@ -2189,7 +2254,7 @@ class OpcUaClient:
                 len(node_ids),
             )
             await self._wait_for_reconnect(exc)
-            results = await self._client.uaclient.browse_next(next_params)
+            results = await self._retry_call(self._client.uaclient.browse_next(next_params))
             self._record_browse_results(results)
             return results
 
@@ -2211,7 +2276,7 @@ class OpcUaClient:
                     self._endpoint,
                 )
                 await self._wait_for_reconnect(exc)
-                value = await self._client.get_node(node_id).read_value()
+                value = await self._retry_call(self._client.get_node(node_id).read_value())
                 self._record_read_success()
                 logger.debug(
                     "OPC UA read ok after reconnect node_id=%s duration_s=%.3f",
@@ -2240,7 +2305,7 @@ class OpcUaClient:
                     self._endpoint,
                 )
                 await self._wait_for_reconnect(exc)
-                retry_name = await self._client.get_node(node_id).read_browse_name()
+                retry_name = await self._retry_call(self._client.get_node(node_id).read_browse_name())
                 resolved_retry = getattr(retry_name, "Name", None)
                 if isinstance(resolved_retry, str) and resolved_retry:
                     return resolved_retry
@@ -2339,7 +2404,7 @@ class OpcUaClient:
                         )
                         await self._wait_for_reconnect(exc)
                         try:
-                            retry_value = await self._client.get_node(node_id).read_data_value()
+                            retry_value = await self._retry_call(self._client.get_node(node_id).read_data_value())
                             self._record_read_data_values([retry_value])
                             return retry_value
                         except Exception as retry_exc:
@@ -2351,6 +2416,7 @@ class OpcUaClient:
                                 )
                                 raise
                     elif self._is_transport_read_failure(exc):
+                        self._record_failed_request()
                         logger.warning(
                             "OPC UA data-value read unavailable node_id=%s; aborting remaining reads",
                             node_id,
@@ -2405,8 +2471,8 @@ class OpcUaClient:
                 )
                 await self._wait_for_reconnect(exc)
                 retry_node = self._client.get_node(node_id)
-                retry_values = await retry_node.read_attributes(
-                    [AttributeIds.AccessLevel, AttributeIds.UserAccessLevel]
+                retry_values = await self._retry_call(
+                    retry_node.read_attributes([AttributeIds.AccessLevel, AttributeIds.UserAccessLevel])
                 )
                 access_level = _attribute_scalar_value(retry_values[0]) if len(retry_values) > 0 else None
                 user_access_level = _attribute_scalar_value(retry_values[1]) if len(retry_values) > 1 else None
@@ -2496,7 +2562,7 @@ class OpcUaClient:
                 )
                 await self._wait_for_reconnect(exc)
                 retry_node = self._client.get_node(node_id)
-                retry_variant_type = await retry_node.read_data_type_as_variant_type()
+                retry_variant_type = await self._retry_call(retry_node.read_data_type_as_variant_type())
                 return (
                     str(getattr(retry_variant_type, "name", retry_variant_type))
                     if retry_variant_type is not None
@@ -2512,6 +2578,10 @@ class OpcUaClient:
         quality: str,
         timestamp: datetime,
     ) -> None:
+        if timestamp.tzinfo is None:
+            # A naive timestamp would be reinterpreted in the host timezone by the read-back
+            # comparison below; the historical write path rejects it the same way (`history.py`).
+            raise ValueError("Current-value timestamp must include a timezone")
         node = self._client.get_node(node_id)
         explicit_variant = _to_explicit_ua_variant(value, variant_type)
         payload = ua.DataValue(
@@ -2711,7 +2781,7 @@ class OpcUaClient:
                     len(node_ids),
                 )
                 await self._wait_for_reconnect(exc)
-                results = await self._client.uaclient.history_read(params)
+                results = await self._retry_call(self._client.uaclient.history_read(params))
             elif self._is_too_many_operations_error(exc) and len(node_ids) > 1:
                 split_at = max(1, len(node_ids) // 2)
                 logger.warning(
@@ -2724,6 +2794,7 @@ class OpcUaClient:
                 right = await self._read_history_batch(details, node_ids[split_at:], points[split_at:])
                 return left + right
             else:
+                self._record_failed_request()
                 raise
 
         if len(results) != len(node_ids):
@@ -2828,6 +2899,12 @@ class OpcUaClient:
     def _is_too_many_operations_error(self, exc: Exception) -> bool:
         text = str(exc).lower()
         return "badtoomanyoperations" in text or "too many operations" in text
+
+    def _is_continuation_point_invalid(self, exc: Exception) -> bool:
+        """BrowseNext points dropped by session recreation report this status (L10)."""
+        if isinstance(exc, UaStatusCodeError):
+            return bool(exc.code == StatusCodes.BadContinuationPointInvalid)
+        return "badcontinuationpointinvalid" in str(exc).lower()
 
     def add_reconnect_listener(self, listener: Callable[[], Awaitable[None]]) -> None:
         self._reconnect_listeners.append(listener)
@@ -2967,6 +3044,18 @@ class OpcUaClient:
 
     def _record_failed_request(self) -> None:
         self._request_metrics.failed_request_count += 1
+
+    async def _retry_call(self, awaitable: Awaitable[_T]) -> _T:
+        """Await a post-reconnect retry; a failing retry counts as a failed request (L10).
+
+        Only the first attempt used to be recorded, so retries after a reconnect
+        left `failed_request_count` undercounting.
+        """
+        try:
+            return await awaitable
+        except Exception:
+            self._record_failed_request()
+            raise
 
     def _record_browse_results(self, results: list[ua.BrowseResult]) -> None:
         if not results:

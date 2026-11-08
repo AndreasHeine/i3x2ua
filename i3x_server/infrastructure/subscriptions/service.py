@@ -690,10 +690,20 @@ class SubscriptionService:
             if state.stream_connected and not allow_when_stream_active:
                 # Keep the TTL refreshed: a client polling while a stream is open is still active,
                 # otherwise the subscription expires mid-stream (400 "stream is active" until TTL).
+                # Report the overflow markers without consuming them: polling can see dropped
+                # updates while the stream delivers a silent sequence jump.
                 self._touch(state)
-                return SubscriptionSyncResult(updates=[], stream_active=True)
+                return SubscriptionSyncResult(
+                    updates=[],
+                    stream_active=True,
+                    queue_overflow=state.dropped_from_sequence is not None,
+                    dropped_from_sequence=state.dropped_from_sequence,
+                    dropped_to_sequence=state.dropped_to_sequence,
+                )
 
-            if acknowledge_sequence == -1:
+            if acknowledge_sequence is not None and acknowledge_sequence < 0:
+                # Any negative ack is a "drop everything" sentinel; `-1` is documented, but
+                # other negatives used to fall through and discard nothing.
                 state.updates.clear()
             elif isinstance(acknowledge_sequence, int):
                 if 0 <= acknowledge_sequence <= state.sequence_number:
@@ -894,6 +904,10 @@ class SubscriptionService:
         value: Any,
         signal: _ValueSignal = _NO_SIGNAL,
     ) -> None:
+        # Normalise before taking the lock: the value coercion (variant decode,
+        # container unpack) is the expensive part and must not serialise other
+        # subscriptions behind it.
+        normalized_value = normalize_opcua_value(value)
         async with self._lock:
             state = self._subscriptions.get(subscription_id)
             if state is None:
@@ -913,7 +927,7 @@ class SubscriptionService:
                 elif mapped_element is None:
                     return
 
-            self._append_update(state, resolved_node_id, value, signal)
+            self._append_update(state, resolved_node_id, normalized_value, signal)
             logger.debug(
                 "Subscription datachange callback subscription_id=%s mode=%s node_id=%s",
                 subscription_id,
@@ -1329,10 +1343,14 @@ class SubscriptionService:
         """Single batched read loop covering every node currently in polling mode."""
         try:
             while True:
-                async with self._lock:
-                    node_ids = sorted(
-                        node_id for node_id, monitor in self._node_monitors.items() if monitor.mode == "polling"
-                    )
+                # Only acquire the lock when there are monitored nodes; an idle service
+                # must not serialise admissions behind a tick that reads nothing.
+                node_ids: list[str] = []
+                if self._node_monitors:
+                    async with self._lock:
+                        node_ids = sorted(
+                            node_id for node_id, monitor in self._node_monitors.items() if monitor.mode == "polling"
+                        )
 
                 if node_ids:
                     try:
@@ -1378,15 +1396,19 @@ class SubscriptionService:
             logger.exception("Initial subscription snapshot failed", extra={"subscription_id": subscription_id})
             return
 
+        decoded: list[tuple[str, Any, _ValueSignal]] = []
+        for node_id, data_value in zip(node_ids, data_values, strict=True):
+            payload, quality, timestamp = decode_data_value(data_value)
+            decoded.append((node_id, normalize_opcua_value(payload), _ValueSignal(quality, timestamp)))
+
         async with self._lock:
             state = self._subscriptions.get(subscription_id)
             if state is None:
                 return
-            for node_id, data_value in zip(node_ids, data_values, strict=True):
+            for node_id, payload, signal in decoded:
                 if node_id not in state.monitored_node_ids:
                     continue
-                payload, quality, timestamp = decode_data_value(data_value)
-                self._append_update(state, node_id, payload, _ValueSignal(quality, timestamp))
+                self._append_update(state, node_id, payload, signal)
             self._touch(state)
 
     def _append_update(
@@ -1396,7 +1418,7 @@ class SubscriptionService:
         value: Any,
         signal: _ValueSignal = _NO_SIGNAL,
     ) -> None:
-        value = normalize_opcua_value(value)
+        # `value` is expected to be normalised already by the caller (outside the lock).
         quality = signal.quality or ("GoodNoData" if value is None else "Good")
         if value is None and quality in ("Good", "Uncertain"):
             quality = "GoodNoData"

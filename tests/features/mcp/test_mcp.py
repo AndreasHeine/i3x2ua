@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-import pytest
 from fastapi.testclient import TestClient
 
 from i3x_server.mcp import get_api_prefix, load_overrides
@@ -318,6 +317,13 @@ def test_mcp_non_subscription_tools_runtime_smoke(client: TestClient) -> None:
         _operation_id_for(client, "POST", "/v1/subscriptions/list"),
     }
 
+    # The fixture model has a matching node for every tool, so a runtime call must succeed.
+    # Tools that legitimately cannot succeed against a server lacking the capability (501
+    # unsupported, 404 unknown elementId) must be listed here explicitly instead of letting a
+    # broad status range hide a broken dispatch (L12).
+    KNOWN_UNSUPPORTED_TOOLS: dict[str, set[int]] = {}
+
+    allowed_by_tool = {name: {200, 206} | statuses for name, statuses in KNOWN_UNSUPPORTED_TOOLS.items()}
     for tool_name, tool in tools.items():
         if tool_name in skipped_tools:
             continue
@@ -328,16 +334,9 @@ def test_mcp_non_subscription_tools_runtime_smoke(client: TestClient) -> None:
         arguments = _with_runtime_argument_overrides(tool_name, arguments, subscription_id=None)
 
         response = client.post("/mcp/call", json={"tool": tool_name, "arguments": arguments})
-        assert response.status_code in {200, 206, 404, 501}, (
+        assert response.status_code in allowed_by_tool.get(tool_name, {200, 206}), (
             f"Unexpected status for {tool_name} with args {arguments}: {response.status_code} {response.text}"
         )
-
-        if response.status_code == 400:
-            payload = response.json()
-            message = payload.get("error", {}).get("message", "")
-            assert "Missing required arguments" not in message
-            assert "Unexpected arguments" not in message
-            assert "Missing required body" not in message
 
 
 def test_mcp_subscription_tools_runtime_lifecycle(client: TestClient) -> None:
@@ -784,8 +783,9 @@ def test_mcp_call_allows_omitting_optional_query_parameters(client: TestClient) 
             candidate_name = name
             break
 
-    if candidate_name is None:
-        pytest.skip("No MCP tool with fully optional query parameters is available")
+    # The catalog must keep at least one GET tool whose query parameters are all optional
+    # (`getObjectsV1`); a silent skip would turn this guard into a no-op (L12).
+    assert candidate_name is not None, "No MCP tool with fully optional query parameters is available"
 
     response = client.post("/mcp/call", json={"tool": candidate_name, "arguments": {}})
     assert response.status_code == 200

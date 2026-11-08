@@ -53,6 +53,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections import deque
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any, cast
 
@@ -173,6 +174,30 @@ class I3XClient:
     def _post(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
         return self._request("POST", path, body=body)
 
+    def _batch_post(self, path: str, element_ids: list[str], extra_body: dict[str, Any]) -> Iterator[dict[str, Any]]:
+        """POST one chunked bulk request per slice of `element_ids` and yield each payload."""
+        for chunk in _chunks(element_ids, _BATCH_SIZE):
+            yield self._post(path, {"elementIds": chunk, **extra_body})
+
+    @staticmethod
+    def _failed_element_ids(payload: dict[str, Any]) -> list[str]:
+        """ElementIds of failed items in a bulk response.
+
+        A bulk call answers HTTP 200 even when individual items failed (404 for an
+        unknown elementId, 502 upstream), so dropping them silently makes a tree or a
+        value set look complete when it is not.
+        """
+        return [str(item.get("elementId", "?")) for item in payload.get("results", []) if not item.get("success")]
+
+    @staticmethod
+    def _report_failures(operation: str, failures: list[str]) -> None:
+        if not failures:
+            return
+        preview = ", ".join(failures[:10])
+        hidden = len(failures) - 10
+        suffix = f" (+{hidden} more)" if hidden > 0 else ""
+        print(f"Warning: {operation} reported {len(failures)} failed item(s): {preview}{suffix}", file=sys.stderr)
+
     def get_info(self) -> dict[str, Any]:
         return self._get("/info")
 
@@ -183,31 +208,37 @@ class I3XClient:
     def list_objects(self, element_ids: list[str]) -> list[dict[str, Any]]:
         """Batched lookup of Objects (with metadata) by elementId, chunked to _BATCH_SIZE."""
         results: list[dict[str, Any]] = []
-        for chunk in _chunks(element_ids, _BATCH_SIZE):
-            payload = self._post("/objects/list", {"elementIds": chunk, "includeMetadata": True})
+        failures: list[str] = []
+        for payload in self._batch_post("/objects/list", element_ids, {"includeMetadata": True}):
+            failures.extend(self._failed_element_ids(payload))
             for item in payload.get("results", []):
                 if item.get("success"):
                     results.append(item["result"])
+        self._report_failures("POST /objects/list", failures)
         return results
 
     def query_object_types(self, type_element_ids: list[str]) -> list[dict[str, Any]]:
         """Batched, cache-aware ObjectType/schema resolution."""
         missing = [tid for tid in type_element_ids if tid not in self.object_types_by_id]
-        for chunk in _chunks(missing, _BATCH_SIZE):
-            payload = self._post("/objecttypes/query", {"elementIds": chunk})
+        failures: list[str] = []
+        for payload in self._batch_post("/objecttypes/query", missing, {}):
+            failures.extend(self._failed_element_ids(payload))
             for item in payload.get("results", []):
                 if item.get("success"):
                     self.object_types_by_id[item["elementId"]] = item["result"]
+        self._report_failures("POST /objecttypes/query", failures)
         return [self.object_types_by_id[tid] for tid in type_element_ids if tid in self.object_types_by_id]
 
     def get_values(self, element_ids: list[str], max_depth: int = 0) -> dict[str, dict[str, Any]]:
         """Batched current-value read; returns elementId -> CurrentValueResult."""
         values: dict[str, dict[str, Any]] = {}
-        for chunk in _chunks(element_ids, _BATCH_SIZE):
-            payload = self._post("/objects/value", {"elementIds": chunk, "maxDepth": max_depth})
+        failures: list[str] = []
+        for payload in self._batch_post("/objects/value", element_ids, {"maxDepth": max_depth}):
+            failures.extend(self._failed_element_ids(payload))
             for item in payload.get("results", []):
                 if item.get("success"):
                     values[item["elementId"]] = item["result"]
+        self._report_failures("POST /objects/value", failures)
         return values
 
     def discover(self, max_nodes: int = 200, max_depth: int | None = None) -> None:
@@ -288,9 +319,16 @@ class I3XClient:
         # O(n): parent_id is set during discover(), no need to rescan all objects per node.
         roots = [o for o in self.objects_by_id.values() if o.parent_id is None]
         for root in roots:
-            self._print_node(root, indent=0)
+            self._print_node(root, indent=0, visited=set())
 
-    def _print_node(self, obj: DiscoveredObject, indent: int) -> None:
+    def _print_node(self, obj: DiscoveredObject, indent: int, visited: set[str]) -> None:
+        # Relationships can be cyclic (a component pointing back at its parent), and the
+        # same target may appear under HasChildren and HasComponent; without this guard the
+        # walk recurses forever and prints duplicates.
+        if obj.element_id in visited:
+            return
+        visited.add(obj.element_id)
+
         object_type = self.object_types_by_id.get(obj.type_element_id, {})
         type_name = object_type.get("displayName", obj.type_element_id)
         marker = "[composition]" if obj.is_composition else ""
@@ -301,7 +339,7 @@ class I3XClient:
         for child_id in children + components:
             child = self.objects_by_id.get(child_id)
             if child is not None:
-                self._print_node(child, indent + 1)
+                self._print_node(child, indent + 1, visited)
 
     def print_values_for_composition_roots(self) -> None:
         """Match component values back to their schema property names."""

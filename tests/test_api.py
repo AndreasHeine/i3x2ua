@@ -9,7 +9,6 @@ documented-response validator come from ``tests/conftest.py``.
 from __future__ import annotations
 
 import json
-import os
 from collections.abc import Generator, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -39,7 +38,7 @@ from i3x_server.infrastructure.subscriptions.service import SubscriptionService
 from i3x_server.mcp import load_overrides, load_tool_overrides
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
-from tests.conftest import assert_documented_response
+from tests.conftest import _MCP_DISABLED_ENV, _MCP_ENABLED_ENV, assert_documented_response
 
 
 @dataclass(slots=True)
@@ -447,73 +446,28 @@ class FakeOpcUaClient:
         return None
 
 
-@pytest.fixture
-def client() -> Generator[TestClient, None, None]:
-    previous_enable_mcp = os.environ.get("I3X_ENABLE_MCP")
-    previous_skip_connect = os.environ.get("I3X_SKIP_OPCUA_CONNECT")
-    previous_enable_writes = os.environ.get("I3X_ENABLE_WRITES")
-    previous_mcp_include_opcua_metadata = os.environ.get("I3X_MCP_INCLUDE_OPCUA_METADATA")
-    os.environ["I3X_ENABLE_MCP"] = "1"
-    os.environ["I3X_SKIP_OPCUA_CONNECT"] = "1"
-    os.environ["I3X_ENABLE_WRITES"] = "0"
-    os.environ["I3X_MCP_INCLUDE_OPCUA_METADATA"] = "1"
+def _test_client_with_env(monkeypatch: pytest.MonkeyPatch, env: Mapping[str, str]) -> Generator[TestClient, None, None]:
+    """Build an app with the given environment.
+
+    `monkeypatch` restores the variables even when `create_app()` raises, which manual
+    `os.environ` mutation would leak into later tests (L12).
+    """
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
     app = create_app()
-    try:
-        with TestClient(app) as test_client:
-            _configure_test_app(app)
-            yield test_client
-    finally:
-        if previous_enable_mcp is None:
-            os.environ.pop("I3X_ENABLE_MCP", None)
-        else:
-            os.environ["I3X_ENABLE_MCP"] = previous_enable_mcp
-        if previous_skip_connect is None:
-            os.environ.pop("I3X_SKIP_OPCUA_CONNECT", None)
-        else:
-            os.environ["I3X_SKIP_OPCUA_CONNECT"] = previous_skip_connect
-        if previous_enable_writes is None:
-            os.environ.pop("I3X_ENABLE_WRITES", None)
-        else:
-            os.environ["I3X_ENABLE_WRITES"] = previous_enable_writes
-        if previous_mcp_include_opcua_metadata is None:
-            os.environ.pop("I3X_MCP_INCLUDE_OPCUA_METADATA", None)
-        else:
-            os.environ["I3X_MCP_INCLUDE_OPCUA_METADATA"] = previous_mcp_include_opcua_metadata
+    with TestClient(app) as test_client:
+        _configure_test_app(app)
+        yield test_client
 
 
 @pytest.fixture
-def client_without_mcp() -> Generator[TestClient, None, None]:
-    previous_enable_mcp = os.environ.get("I3X_ENABLE_MCP")
-    previous_skip_connect = os.environ.get("I3X_SKIP_OPCUA_CONNECT")
-    previous_enable_writes = os.environ.get("I3X_ENABLE_WRITES")
-    previous_mcp_include_opcua_metadata = os.environ.get("I3X_MCP_INCLUDE_OPCUA_METADATA")
-    # Explicitly disabled: unsetting would let a .env in the working directory enable MCP.
-    os.environ["I3X_ENABLE_MCP"] = "0"
-    os.environ["I3X_SKIP_OPCUA_CONNECT"] = "1"
-    os.environ["I3X_ENABLE_WRITES"] = "0"
-    os.environ["I3X_MCP_INCLUDE_OPCUA_METADATA"] = "1"
-    app = create_app()
-    try:
-        with TestClient(app) as test_client:
-            _configure_test_app(app)
-            yield test_client
-    finally:
-        if previous_enable_mcp is None:
-            os.environ.pop("I3X_ENABLE_MCP", None)
-        else:
-            os.environ["I3X_ENABLE_MCP"] = previous_enable_mcp
-        if previous_skip_connect is None:
-            os.environ.pop("I3X_SKIP_OPCUA_CONNECT", None)
-        else:
-            os.environ["I3X_SKIP_OPCUA_CONNECT"] = previous_skip_connect
-        if previous_enable_writes is None:
-            os.environ.pop("I3X_ENABLE_WRITES", None)
-        else:
-            os.environ["I3X_ENABLE_WRITES"] = previous_enable_writes
-        if previous_mcp_include_opcua_metadata is None:
-            os.environ.pop("I3X_MCP_INCLUDE_OPCUA_METADATA", None)
-        else:
-            os.environ["I3X_MCP_INCLUDE_OPCUA_METADATA"] = previous_mcp_include_opcua_metadata
+def client(monkeypatch: pytest.MonkeyPatch) -> Generator[TestClient, None, None]:
+    yield from _test_client_with_env(monkeypatch, _MCP_ENABLED_ENV)
+
+
+@pytest.fixture
+def client_without_mcp(monkeypatch: pytest.MonkeyPatch) -> Generator[TestClient, None, None]:
+    yield from _test_client_with_env(monkeypatch, _MCP_DISABLED_ENV)
 
 
 def test_v1_info_write_capability_enabled_with_flag(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -875,13 +829,29 @@ def test_v1_subscription_register_missing_subscription_returns_404(client: TestC
     assert payload["error"]["code"] == 404
 
 
+def test_v1_subscription_register_rejects_misspelled_field_returns_400(client: TestClient) -> None:
+    """A misspelled field must fail loudly instead of silently applying the default."""
+    response = client.post(
+        "/v1/subscriptions/register",
+        json={
+            "clientId": "my-app-instance-001",
+            "subscriptionId": "sub-1",
+            "elementIds": ["property-abc"],
+            "maxdepth": 1,
+        },
+    )
+    assert response.status_code == 400
+    payload = response.json()
+    assert payload["success"] is False
+    assert payload["error"]["code"] == 400
+
+
 def test_v1_subscription_unregister_missing_client_id_returns_400(client: TestClient) -> None:
     response = client.post(
         "/v1/subscriptions/unregister",
         json={
             "subscriptionId": "sub-1",
             "elementIds": ["property-abc"],
-            "maxDepth": 1,
         },
     )
     assert response.status_code == 400
@@ -897,7 +867,6 @@ def test_v1_subscription_unregister_missing_subscription_returns_404(client: Tes
             "clientId": "my-app-instance-001",
             "subscriptionId": "missing",
             "elementIds": ["property-abc"],
-            "maxDepth": 1,
         },
     )
     assert response.status_code == 404

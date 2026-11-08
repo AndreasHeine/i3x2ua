@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from i3x_server.schemas.i3x import ModelNode
+from i3x_server.schemas.opcua_value import normalize_opcua_value
 from tests.conftest import assert_documented_response, fastapi_app
 
 
@@ -248,7 +249,7 @@ def test_v1_subscription_sync_serializes_binary_values(client: TestClient) -> No
 
     service = fastapi_app(client).state.subscription_service
     state = service._subscriptions[subscription_id]
-    service._append_update(state, "ns=2;s=RawBytes", b"\xff\x00")
+    service._append_update(state, "ns=2;s=RawBytes", normalize_opcua_value(b"\xff\x00"))
 
     synced = client.post(
         "/v1/subscriptions/sync",

@@ -1,39 +1,41 @@
+"""Object-type and DataType JSON Schema builders.
+
+Builds JSON Schema documents from OPC UA ObjectTypes (lineage-merged ``allOf``
+with ``$defs``) and from structured DataType definitions. The annotation
+machinery lives in ``objecttype_annotations.py``, the definition registry and
+``$ref`` post-processing in ``objecttype_registry.py``. For private internals,
+tests and monkeypatching must target the source modules.
+"""
+
 from __future__ import annotations
 
-import importlib
-import json
 import re
-import sys
-import typing
 from collections.abc import Iterable, Mapping
-from copy import deepcopy
-from dataclasses import MISSING, fields, is_dataclass
+from dataclasses import fields, is_dataclass
 from datetime import datetime
 from enum import Enum
-from types import ModuleType, UnionType
-from typing import Any, cast, get_args, get_origin
+from typing import Any, cast
 
 from asyncua import ua
 from asyncua.ua.uaprotocol_auto import Argument
 
 from i3x_server.domain.ports.opcua import OpcUaNamespaceInfo, OpcUaObjectTypeInfo, OpcUaObjectTypeMemberInfo
 from i3x_server.domain.utils import expanded_node_id as _expanded_node_id
-
-_MANDATORY_RULES = {"mandatory", "mandatoryplaceholder"}
-
-_CANONICAL_STRUCTURE_CORE_KEYS: dict[str, str] = {
-    "nodeid": "canonical-structure:nodeid",
-    "expandednodeid": "canonical-structure:expandednodeid",
-    "localizedtext": "canonical-structure:localizedtext",
-}
-
-_CANONICAL_TYPE_NAME_RULES: tuple[tuple[str, str, str], ...] = (
-    ("ISA95", "DataType", "canonical-structure:isa95-datatype:"),
+from i3x_server.schemas import objecttype_annotations, objecttype_registry
+from i3x_server.schemas.objecttype_registry import (
+    deduplicate_schema_fragments,
+    remove_opcua_schema_fields,
 )
 
+__all__ = [
+    "build_data_type_schema",
+    "build_object_type_schema",
+    "deduplicate_schema_fragments",
+    "json_schema_for_opcua_type",
+    "remove_opcua_schema_fields",
+]
 
-def _is_filtered_structure_field(name: str) -> bool:
-    return name.strip().lower() == "encoding"
+_MANDATORY_RULES = {"mandatory", "mandatoryplaceholder"}
 
 
 def _ua_object_id_name(identifier: int) -> str | None:
@@ -43,44 +45,6 @@ def _ua_object_id_name(identifier: int) -> str | None:
         if isinstance(candidate, str) and candidate:
             return candidate
     return None
-
-
-class _SchemaRegistry:
-    def __init__(self) -> None:
-        self.defs: dict[str, Any] = {}
-        self._definition_by_key: dict[str, str] = {}
-        self._used_definition_names: set[str] = set()
-
-    def has(self, key: str) -> bool:
-        return key in self._definition_by_key
-
-    def ref_for(self, key: str) -> dict[str, str]:
-        definition_name = self._definition_by_key[key]
-        return {"$ref": f"#/$defs/{definition_name}"}
-
-    def definition_name_for(self, key: str) -> str:
-        return self._definition_by_key[key]
-
-    def reserve(self, key: str, definition_name: str) -> None:
-        self._definition_by_key[key] = definition_name
-        self._used_definition_names.add(definition_name)
-
-    def set_definition(self, definition_name: str, schema: dict[str, Any]) -> None:
-        self.defs[definition_name] = schema
-
-    def allocate(self, key: str, preferred_name: str) -> str:
-        if key in self._definition_by_key:
-            return self._definition_by_key[key]
-
-        base_name = _safe_definition_name(preferred_name)
-        candidate = base_name
-        index = 2
-        while candidate in self._used_definition_names:
-            candidate = f"{base_name}_{index}"
-            index += 1
-
-        self.reserve(key, candidate)
-        return candidate
 
 
 def json_schema_for_opcua_type(data_type: str | None) -> dict[str, Any]:
@@ -125,17 +89,17 @@ def json_schema_for_opcua_type(data_type: str | None) -> dict[str, Any]:
     if "datetime" in normalized:
         return {"type": "string", "format": "date-time"}
 
-    type_candidate = _resolve_structure_type_by_name(type_name_token)
+    type_candidate = objecttype_annotations._resolve_structure_type_by_name(type_name_token)
     if isinstance(type_candidate, type):
         if type_candidate is bool:
             return {"type": "boolean"}
         if type_candidate.__name__.lower() in {"number"}:
             return {"type": "number"}
-        if _is_integer_annotation_type(type_candidate):
+        if objecttype_annotations._is_integer_annotation_type(type_candidate):
             return {"type": "integer"}
-        if _is_number_annotation_type(type_candidate):
+        if objecttype_annotations._is_number_annotation_type(type_candidate):
             return {"type": "number"}
-        if _is_datetime_annotation_type(type_candidate):
+        if objecttype_annotations._is_datetime_annotation_type(type_candidate):
             return {"type": "string", "format": "date-time"}
 
     return {}
@@ -151,7 +115,7 @@ def build_object_type_schema(
     resolved_data_type_schemas: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     lineage = _lineage(item, object_types_by_node_id)
-    registry = _SchemaRegistry()
+    registry = objecttype_registry._SchemaRegistry()
 
     all_of: list[dict[str, str]] = []
     merged_properties: dict[str, Any] = {}
@@ -159,7 +123,9 @@ def build_object_type_schema(
     required_seen: set[str] = set()
 
     for ancestor in lineage:
-        definition_key = _def_key(_definition_name(ancestor, element_ids_by_node_id))
+        definition_key = objecttype_registry._def_key(
+            objecttype_registry._definition_name(ancestor, element_ids_by_node_id)
+        )
         ancestor_schema, ancestor_required = _schema_for_single_type(
             ancestor,
             namespace_infos,
@@ -201,7 +167,7 @@ def build_object_type_schema(
         schema["x-opcua-isAbstract"] = is_abstract
     if merged_required:
         schema["required"] = merged_required
-    _dedupe_defs_and_rewrite_local_refs(schema)
+    objecttype_registry._dedupe_defs_and_rewrite_local_refs(schema)
     if not include_opcua_fields:
         return cast(dict[str, Any], remove_opcua_schema_fields(schema))
     return schema
@@ -230,7 +196,7 @@ def _lineage(
 def _schema_for_single_type(
     item: OpcUaObjectTypeInfo,
     namespace_infos: list[OpcUaNamespaceInfo],
-    registry: _SchemaRegistry,
+    registry: objecttype_registry._SchemaRegistry,
     resolved_data_type_schemas: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     properties: dict[str, Any] = {}
@@ -273,7 +239,7 @@ def _schema_for_single_type(
 def _schema_for_member(
     member: OpcUaObjectTypeMemberInfo,
     namespace_infos: list[OpcUaNamespaceInfo],
-    registry: _SchemaRegistry,
+    registry: objecttype_registry._SchemaRegistry,
     resolved_data_type_schemas: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     data_type_id = getattr(member, "data_type", None)
@@ -365,7 +331,7 @@ def _schema_for_structured_value(
     variant_type: str | None,
     is_array: bool | None,
     namespace_infos: list[OpcUaNamespaceInfo],
-    registry: _SchemaRegistry,
+    registry: objecttype_registry._SchemaRegistry,
 ) -> dict[str, Any] | None:
     variant = _extract_variant(value)
     unwrapped = _unwrap_opcua_wrapper(value)
@@ -417,7 +383,7 @@ def _schema_for_array_items(
     data_type: str | None,
     variant_type: str | None,
     namespace_infos: list[OpcUaNamespaceInfo],
-    registry: _SchemaRegistry,
+    registry: objecttype_registry._SchemaRegistry,
 ) -> dict[str, Any] | None:
     if isinstance(values, (list, tuple)) and values:
         inferred = _schema_for_structured_value(values[0], data_type, variant_type, False, namespace_infos, registry)
@@ -444,10 +410,10 @@ def _schema_for_array_items(
 def _reference_or_register_structure(
     schema_key: str,
     structure_value: Any,
-    registry: _SchemaRegistry,
+    registry: objecttype_registry._SchemaRegistry,
     metadata: dict[str, Any],
 ) -> dict[str, Any]:
-    canonical_key = _canonical_schema_key_for_structure_value(structure_value)
+    canonical_key = objecttype_annotations._canonical_schema_key_for_structure_value(structure_value)
 
     if registry.has(schema_key):
         ref = registry.ref_for(schema_key)
@@ -462,8 +428,12 @@ def _reference_or_register_structure(
         if canonical_key and not registry.has(canonical_key):
             registry.reserve(canonical_key, definition_name)
         structure_type = type(structure_value)
-        if canonical_key and not isinstance(structure_value, Mapping) and _is_structured_class(structure_type):
-            structure_schema = _structure_schema_for_type(structure_type, registry)
+        if (
+            canonical_key
+            and not isinstance(structure_value, Mapping)
+            and objecttype_annotations._is_structured_class(structure_type)
+        ):
+            structure_schema = objecttype_annotations._structure_schema_for_type(structure_type, registry)
         else:
             structure_schema = _structure_object_schema(structure_value, registry)
         for key, value in metadata.items():
@@ -473,9 +443,9 @@ def _reference_or_register_structure(
     return ref
 
 
-def _structure_object_schema(value: Any, registry: _SchemaRegistry) -> dict[str, Any]:
+def _structure_object_schema(value: Any, registry: objecttype_registry._SchemaRegistry) -> dict[str, Any]:
     if isinstance(value, Argument):
-        return _structure_schema_for_type(type(value), registry)
+        return objecttype_annotations._structure_schema_for_type(type(value), registry)
     fields = _structure_fields(value)
     properties: dict[str, Any] = {}
 
@@ -497,18 +467,24 @@ def _structure_object_schema(value: Any, registry: _SchemaRegistry) -> dict[str,
 
 def _structure_fields(value: Any) -> dict[str, Any]:
     if isinstance(value, Mapping):
-        return {str(key): item for key, item in value.items() if not _is_filtered_structure_field(str(key))}
+        return {
+            str(key): item
+            for key, item in value.items()
+            if not objecttype_annotations._is_filtered_structure_field(str(key))
+        }
     if is_dataclass(value):
         return {
             item.name: getattr(value, item.name)
             for item in fields(value)
-            if not _is_filtered_structure_field(item.name)
+            if not objecttype_annotations._is_filtered_structure_field(item.name)
         }
     if hasattr(value, "__dict__"):
         return {
             str(key): item
             for key, item in vars(value).items()
-            if not key.startswith("_") and not callable(item) and not _is_filtered_structure_field(str(key))
+            if not key.startswith("_")
+            and not callable(item)
+            and not objecttype_annotations._is_filtered_structure_field(str(key))
         }
     return {}
 
@@ -617,7 +593,7 @@ def _structure_schema_key(value: Any) -> str:
 def _schema_from_data_type(
     data_type: str | None,
     namespace_infos: list[OpcUaNamespaceInfo],
-    registry: _SchemaRegistry,
+    registry: objecttype_registry._SchemaRegistry,
 ) -> dict[str, Any] | None:
     if not data_type:
         return None
@@ -630,12 +606,14 @@ def _schema_from_data_type(
             structure_type = _resolve_structure_type(indexed_node_id)
     if structure_type is None:
         return None
-    if not _is_structured_class(structure_type):
+    if not objecttype_annotations._is_structured_class(structure_type):
         return None
 
     schema_key = f"opcua-datatype:{normalized_data_type.lower()}"
     metadata = {"x-opcua-structureDataType": normalized_data_type}
-    return _reference_or_register_structure_from_type(schema_key, structure_type, registry, metadata)
+    return objecttype_annotations._reference_or_register_structure_from_type(
+        schema_key, structure_type, registry, metadata
+    )
 
 
 def build_data_type_schema(
@@ -644,52 +622,19 @@ def build_data_type_schema(
     *,
     include_opcua_fields: bool = True,
 ) -> dict[str, Any] | None:
-    registry = _SchemaRegistry()
+    registry = objecttype_registry._SchemaRegistry()
     schema = _schema_from_data_type(data_type, namespace_infos, registry)
     if schema is None:
         return None
 
-    inlined = _inline_registered_reference(schema, registry)
-    expanded = _expand_schema_refs(inlined, registry.defs)
+    inlined = objecttype_registry._inline_registered_reference(schema, registry)
+    expanded = objecttype_registry._expand_schema_refs(inlined, registry.defs)
     if isinstance(expanded, Mapping):
         schema_dict = dict(expanded)
         if not include_opcua_fields:
             return cast(dict[str, Any], remove_opcua_schema_fields(schema_dict))
         return schema_dict
     return None
-
-
-def deduplicate_schema_fragments(schemas: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Share equal JSON containers within one read-only schema collection."""
-    pool: dict[str, Any] = {}
-
-    def intern(value: Any) -> Any:
-        candidate: dict[str, Any] | list[Any]
-        if isinstance(value, dict):
-            candidate = {key: intern(item) for key, item in value.items()}
-        elif isinstance(value, list):
-            candidate = [intern(item) for item in value]
-        else:
-            return value
-        # Preserve object order and distinguish JSON scalar types in the key.
-        key = json.dumps(candidate, separators=(",", ":"), ensure_ascii=True)
-        if key not in pool:
-            pool[key] = candidate
-        return pool[key]
-
-    return [intern(schema) for schema in schemas]
-
-
-def remove_opcua_schema_fields(schema: Any) -> Any:
-    if isinstance(schema, Mapping):
-        return {
-            key: remove_opcua_schema_fields(value)
-            for key, value in schema.items()
-            if not str(key).startswith("x-opcua-")
-        }
-    if isinstance(schema, list):
-        return [remove_opcua_schema_fields(item) for item in schema]
-    return schema
 
 
 def _resolve_structure_type(data_type: str) -> type[Any] | None:
@@ -700,7 +645,7 @@ def _resolve_structure_type(data_type: str) -> type[Any] | None:
     if id_match is not None:
         symbolic_name = _ua_object_id_name(int(id_match.group(1)))
 
-    name_candidate = _resolve_structure_type_by_name(symbolic_name or canonical)
+    name_candidate = objecttype_annotations._resolve_structure_type_by_name(symbolic_name or canonical)
     if isinstance(name_candidate, type):
         return name_candidate
 
@@ -717,787 +662,6 @@ def _resolve_structure_type(data_type: str) -> type[Any] | None:
             if key_text == canonical:
                 return value if isinstance(value, type) else None
     return None
-
-
-def _reference_or_register_structure_from_type(
-    schema_key: str,
-    structure_type: type[Any],
-    registry: _SchemaRegistry,
-    metadata: dict[str, Any],
-) -> dict[str, Any]:
-    canonical_key = _canonical_schema_key_for_type(structure_type)
-
-    if registry.has(schema_key):
-        _merge_metadata_into_registered_definition(registry, schema_key, metadata)
-        ref = registry.ref_for(schema_key)
-    elif canonical_key and registry.has(canonical_key):
-        registry.reserve(schema_key, registry.definition_name_for(canonical_key))
-        _merge_metadata_into_registered_definition(registry, schema_key, metadata)
-        ref = registry.ref_for(schema_key)
-    else:
-        definition_name = registry.allocate(schema_key, structure_type.__name__)
-        if canonical_key and not registry.has(canonical_key):
-            registry.reserve(canonical_key, definition_name)
-        structure_schema = _structure_schema_for_type(structure_type, registry)
-        for key, value in metadata.items():
-            structure_schema[key] = value
-        registry.set_definition(definition_name, structure_schema)
-        ref = registry.ref_for(schema_key)
-    return ref
-
-
-def _canonical_schema_key_for_type(structure_type: type[Any]) -> str | None:
-    type_name = structure_type.__name__
-    core_name = _structure_core_name(type_name)
-
-    direct_key = _canonical_structure_key_for_core_name(core_name)
-    if direct_key is not None:
-        return direct_key
-
-    for prefix, suffix, key_prefix in _CANONICAL_TYPE_NAME_RULES:
-        if type_name.startswith(prefix) and type_name.endswith(suffix):
-            return f"{key_prefix}{core_name}"
-
-    return None
-
-
-def _canonical_schema_key_for_structure_value(structure_value: Any) -> str | None:
-    type_name = type(structure_value).__name__
-    core_name = _structure_core_name(type_name)
-    direct_key = _canonical_structure_key_for_core_name(core_name)
-    if direct_key is not None:
-        return direct_key
-
-    if isinstance(structure_value, Mapping):
-        keys = {str(key).lower() for key in structure_value.keys()}
-        if keys.issubset({"encoding", "locale", "text"}) and {"locale", "text"}.issubset(keys):
-            return _CANONICAL_STRUCTURE_CORE_KEYS["localizedtext"]
-
-    return None
-
-
-def _canonical_structure_key_for_core_name(core_name: str) -> str | None:
-    return _CANONICAL_STRUCTURE_CORE_KEYS.get(core_name)
-
-
-def _merge_metadata_into_registered_definition(
-    registry: _SchemaRegistry,
-    schema_key: str,
-    metadata: dict[str, Any],
-) -> None:
-    if not metadata or not registry.has(schema_key):
-        return
-
-    definition_name = registry.definition_name_for(schema_key)
-    definition = registry.defs.get(definition_name)
-    if not isinstance(definition, dict):
-        return
-
-    for key, value in metadata.items():
-        definition.setdefault(key, value)
-
-
-def _structure_schema_for_type(structure_type: type[Any], registry: _SchemaRegistry) -> dict[str, Any]:
-    if _is_nodeid_structure_type(structure_type):
-        return _nodeid_discriminated_schema_for_type(structure_type, registry)
-
-    properties: dict[str, Any] = {}
-
-    if is_dataclass(structure_type):
-        vartype_overrides = _vartype_overrides_for_structure(structure_type)
-        ua_type_overrides = _ua_type_overrides_for_structure(structure_type)
-        for item in fields(structure_type):
-            if _is_filtered_structure_field(item.name):
-                continue
-            evaluated_annotation = _evaluate_generated_annotation(item.type, structure_type, item.name)
-            field_schema = _schema_for_annotation(
-                evaluated_annotation if evaluated_annotation is not None else item.type, registry
-            )
-            ua_type_override = ua_type_overrides.get(item.name)
-            if ua_type_override and _is_stringish_schema(field_schema):
-                field_schema = _schema_for_annotation_string(ua_type_override, registry)
-            override = vartype_overrides.get(item.name)
-            if override and _is_stringish_schema(field_schema):
-                field_schema = _schema_for_annotation_string(override, registry)
-            if _is_stringish_schema(field_schema):
-                hinted_schema = _schema_from_field_runtime_hints(item, registry)
-                if hinted_schema is not None:
-                    field_schema = hinted_schema
-            properties[item.name] = field_schema
-    else:
-        annotations = getattr(structure_type, "__annotations__", {})
-        if isinstance(annotations, Mapping):
-            for name, annotation in annotations.items():
-                if _is_filtered_structure_field(str(name)):
-                    continue
-                properties[str(name)] = _schema_for_annotation(annotation, registry)
-
-    if issubclass(structure_type, Argument):
-        properties["ArrayDimensions"]["type"] = ["array", "null"]
-
-    return {
-        "type": "object",
-        "title": structure_type.__name__,
-        "properties": properties,
-        "additionalProperties": False,
-    }
-
-
-def _is_nodeid_structure_type(structure_type: type[Any]) -> bool:
-    return structure_type.__name__ in {"NodeId", "ExpandedNodeId"}
-
-
-def _nodeid_discriminated_schema_for_type(
-    structure_type: type[Any],
-    registry: _SchemaRegistry,
-) -> dict[str, Any]:
-    base_schema = _nodeid_common_schema_for_type(structure_type, registry)
-    base_schema["oneOf"] = _nodeid_identifier_branches()
-    return base_schema
-
-
-def _nodeid_common_schema_for_type(
-    structure_type: type[Any],
-    registry: _SchemaRegistry,
-) -> dict[str, Any]:
-    common_properties: dict[str, Any] = {}
-    required_fields: list[str] = []
-
-    annotations = getattr(structure_type, "__annotations__", {})
-    if isinstance(annotations, Mapping):
-        for name, annotation in annotations.items():
-            if _is_filtered_structure_field(str(name)):
-                continue
-            if str(name) == "Identifier":
-                # Identifier semantics are constrained by oneOf branches below.
-                common_properties[str(name)] = {}
-            else:
-                common_properties[str(name)] = _schema_for_annotation(annotation, registry)
-            required_fields.append(str(name))
-
-    return {
-        "type": "object",
-        "title": structure_type.__name__,
-        "properties": common_properties,
-        "required": required_fields,
-        "additionalProperties": False,
-    }
-
-
-def _nodeid_identifier_branches() -> list[dict[str, Any]]:
-    return [
-        {
-            "properties": {
-                "NodeIdType": {"const": 0},
-                "Identifier": {"type": "integer", "minimum": 0, "maximum": 255},
-            },
-            "required": ["NodeIdType", "Identifier"],
-        },
-        {
-            "properties": {
-                "NodeIdType": {"const": 1},
-                "Identifier": {"type": "integer", "minimum": 0, "maximum": 4294967295},
-            },
-            "required": ["NodeIdType", "Identifier"],
-        },
-        {
-            "properties": {
-                "NodeIdType": {"const": 2},
-                "Identifier": {"type": "integer"},
-            },
-            "required": ["NodeIdType", "Identifier"],
-        },
-        {
-            "properties": {
-                "NodeIdType": {"const": 3},
-                "Identifier": {"type": "string"},
-            },
-            "required": ["NodeIdType", "Identifier"],
-        },
-        {
-            "properties": {
-                "NodeIdType": {"const": 4},
-                "Identifier": {"type": "string", "format": "uuid"},
-            },
-            "required": ["NodeIdType", "Identifier"],
-        },
-        {
-            "properties": {
-                "NodeIdType": {"const": 5},
-                "Identifier": {"type": "string", "contentEncoding": "base64"},
-            },
-            "required": ["NodeIdType", "Identifier"],
-        },
-    ]
-
-
-def _schema_for_annotation(annotation: Any, registry: _SchemaRegistry) -> dict[str, Any]:
-    forward_arg = getattr(annotation, "__forward_arg__", None)
-    if isinstance(forward_arg, str) and forward_arg.strip():
-        return _schema_for_annotation_string(forward_arg, registry)
-
-    origin = get_origin(annotation)
-    args = get_args(annotation)
-
-    if origin in {list, tuple}:
-        item_annotation = args[0] if args else Any
-        return {"type": "array", "items": _schema_for_annotation(item_annotation, registry)}
-
-    if origin is typing.Union or origin is UnionType:
-        non_none_args = [arg for arg in args if arg is not type(None)]
-        if not non_none_args:
-            return {"type": "null"}
-        if len(non_none_args) == 1 and len(non_none_args) != len(args):
-            # Optional[X]: one type plus None, expressed as a nullable type rather than an anyOf.
-            nested = _schema_for_annotation(non_none_args[0], registry)
-            nested_type = nested.get("type")
-            if isinstance(nested_type, str):
-                nested["type"] = [nested_type, "null"]
-            elif isinstance(nested_type, list) and "null" not in nested_type:
-                nested["type"] = [*nested_type, "null"]
-            return nested
-        # A genuine union (``Union[int, str]``) must stay a union: collapsing it to a single type -
-        # or to the generic string fallback below - rejects values the server legitimately allows.
-        return {"anyOf": [_schema_for_annotation(arg, registry) for arg in args]}
-
-    if annotation is type(None):
-        return {"type": "null"}
-
-    if isinstance(annotation, str):
-        return _schema_for_annotation_string(annotation, registry)
-
-    if isinstance(annotation, type):
-        if annotation is str or _is_string_annotation_type(annotation):
-            return {"type": "string"}
-        if annotation is bool:
-            return {"type": "boolean"}
-        if issubclass(annotation, Enum):
-            enum_values = [item.value for item in annotation]
-            if enum_values and all(isinstance(value, int) and not isinstance(value, bool) for value in enum_values):
-                return {
-                    "type": "integer",
-                    "enum": enum_values,
-                    "x-opcua-enumNames": [item.name for item in annotation],
-                }
-            return {"type": "string", "enum": [item.name for item in annotation]}
-        if _is_integer_annotation_type(annotation):
-            return {"type": "integer"}
-        if _is_number_annotation_type(annotation):
-            return {"type": "number"}
-        if _is_datetime_annotation_type(annotation):
-            return {"type": "string", "format": "date-time"}
-        if _is_variant_annotation_type(annotation):
-            return {}
-        if _is_structured_class(annotation):
-            return _reference_or_register_structure_from_type(
-                f"py-annotation:{annotation.__module__.lower()}.{annotation.__name__.lower()}",
-                annotation,
-                registry,
-                {},
-            )
-
-    return {"type": "string"}
-
-
-def _schema_for_annotation_string(annotation: str, registry: _SchemaRegistry) -> dict[str, Any]:
-    normalized = annotation.strip("'\" ").strip()
-    normalized = re.sub(r"^typing\.", "", normalized)
-    normalized = re.sub(r"^collections\.abc\.", "", normalized)
-    lowered = normalized.lower()
-
-    if "|" in normalized:
-        parts = [part.strip() for part in normalized.split("|") if part.strip()]
-        if parts:
-            non_none = [part for part in parts if part.lower() not in {"none", "nonetype"}]
-            if len(non_none) == 1 and len(non_none) != len(parts):
-                nested = _schema_for_annotation_string(non_none[0], registry)
-                nested_type = nested.get("type")
-                if isinstance(nested_type, str):
-                    nested["type"] = [nested_type, "null"]
-                elif isinstance(nested_type, list) and "null" not in nested_type:
-                    nested["type"] = [*nested_type, "null"]
-                return nested
-            return {"anyOf": [_schema_for_annotation_string(part, registry) for part in parts]}
-
-    if lowered.startswith("optional[") and lowered.endswith("]"):
-        inner = normalized[9:-1]
-        nested = _schema_for_annotation_string(inner, registry)
-        nested_type = nested.get("type")
-        if isinstance(nested_type, str):
-            nested["type"] = [nested_type, "null"]
-        elif isinstance(nested_type, list) and "null" not in nested_type:
-            nested["type"] = [*nested_type, "null"]
-        return nested
-
-    if lowered.startswith("union[") and lowered.endswith("]"):
-        union_body = normalized[6:-1]
-        parts = [part.strip() for part in union_body.split(",") if part.strip()]
-        if parts:
-            return {"anyOf": [_schema_for_annotation_string(part, registry) for part in parts]}
-
-    if lowered.endswith("[]"):
-        item_token = normalized[:-2]
-        return {"type": "array", "items": _schema_for_annotation_string(item_token, registry)}
-    if lowered.startswith("list[") and lowered.endswith("]"):
-        item_token = normalized[5:-1]
-        return {"type": "array", "items": _schema_for_annotation_string(item_token, registry)}
-    if lowered.startswith("sequence[") and lowered.endswith("]"):
-        item_token = normalized[9:-1]
-        return {"type": "array", "items": _schema_for_annotation_string(item_token, registry)}
-
-    scalar_map: dict[str, dict[str, Any]] = {
-        "ua.string": {"type": "string"},
-        "string": {"type": "string"},
-        "ua.euinformation": {"type": "object"},
-        "euinformation": {"type": "object"},
-        "ua.basedatatype": {},
-        "basedatatype": {},
-        "ua.boolean": {"type": "boolean"},
-        "boolean": {"type": "boolean"},
-        "bool": {"type": "boolean"},
-        "ua.byte": {"type": "integer"},
-        "ua.sbyte": {"type": "integer"},
-        "ua.int16": {"type": "integer"},
-        "ua.int32": {"type": "integer"},
-        "ua.int64": {"type": "integer"},
-        "ua.uint16": {"type": "integer"},
-        "ua.uint32": {"type": "integer"},
-        "ua.uint64": {"type": "integer"},
-        "ua.double": {"type": "number"},
-        "ua.float": {"type": "number"},
-        "ua.datetime": {"type": "string", "format": "date-time"},
-        "datetime": {"type": "string", "format": "date-time"},
-    }
-    if lowered in scalar_map:
-        return scalar_map[lowered]
-
-    structure_type = _resolve_structure_type_by_name(normalized)
-    if isinstance(structure_type, type):
-        if issubclass(structure_type, Enum):
-            return _schema_for_annotation(structure_type, registry)
-        if _is_structured_class(structure_type):
-            return _reference_or_register_structure_from_type(
-                f"ua-annotation:{structure_type.__module__.lower()}.{structure_type.__name__.lower()}",
-                structure_type,
-                registry,
-                {},
-            )
-
-    imported_type = _resolve_type_from_module_path(normalized)
-    if isinstance(imported_type, type) and _is_structured_class(imported_type):
-        return _reference_or_register_structure_from_type(
-            f"module-annotation:{imported_type.__module__.lower()}.{imported_type.__name__.lower()}",
-            imported_type,
-            registry,
-            {},
-        )
-
-    # If this token denotes a structured datatype but cannot be resolved,
-    # represent it as an object instead of degrading to string.
-    simple_name = normalized.split(".")[-1]
-    if simple_name.lower().endswith("datatype"):
-        return {"type": "object", "title": simple_name}
-
-    return {"type": "string"}
-
-
-def _resolve_structure_type_by_name(type_name: str) -> type[Any] | None:
-    candidates = [type_name.strip("'").strip()]
-    if "." in candidates[0]:
-        candidates.append(candidates[0].split(".")[-1])
-    if candidates[0].lower().startswith("ua."):
-        candidates.append(candidates[0][3:])
-
-    for candidate in candidates:
-        resolved = getattr(ua, candidate, None)
-        if isinstance(resolved, type):
-            return resolved
-
-    lowered_candidates = {candidate.lower() for candidate in candidates}
-    registries = [
-        getattr(ua, "extension_objects_by_datatype", None),
-        getattr(ua, "extension_objects_by_typeid", None),
-        getattr(ua, "EXTENSION_OBJECT_CLASSES_BY_DATATYPE", None),
-    ]
-    for registry in registries:
-        if not isinstance(registry, Mapping):
-            continue
-        for value in registry.values():
-            if not isinstance(value, type):
-                continue
-            if value.__name__.lower() in lowered_candidates:
-                return value
-
-    loaded_modules: list[ModuleType] = [
-        module
-        for module_name, module in sys.modules.items()
-        if module_name.startswith("asyncua.common.structures") and isinstance(module, ModuleType)
-    ]
-    for module in loaded_modules:
-        for candidate_name in dir(module):
-            if candidate_name.lower() in lowered_candidates:
-                resolved_candidate = getattr(module, candidate_name, None)
-                if isinstance(resolved_candidate, type):
-                    return resolved_candidate
-
-    return None
-
-
-def _resolve_type_from_module_path(type_name: str) -> type[Any] | None:
-    normalized = type_name.strip("'\" ").strip()
-    if "." not in normalized:
-        return None
-
-    module_name, attr_name = normalized.rsplit(".", 1)
-    try:
-        module = importlib.import_module(module_name)
-    except Exception:
-        return None
-
-    direct = getattr(module, attr_name, None)
-    if isinstance(direct, type):
-        return direct
-
-    lowered = attr_name.lower()
-    for candidate_name in dir(module):
-        if candidate_name.lower() == lowered:
-            candidate = getattr(module, candidate_name, None)
-            if isinstance(candidate, type):
-                return candidate
-
-    return None
-
-
-def _is_structured_class(candidate: type[Any]) -> bool:
-    if is_dataclass(candidate):
-        return True
-    annotations = getattr(candidate, "__annotations__", None)
-    if isinstance(annotations, Mapping) and annotations:
-        return True
-    return False
-
-
-def _vartype_overrides_for_structure(structure_type: type[Any]) -> dict[str, str]:
-    doc = getattr(structure_type, "__doc__", None)
-    if not isinstance(doc, str) or not doc:
-        return {}
-
-    overrides: dict[str, str] = {}
-    matches = re.findall(r":vartype\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([^\n\r]+)", doc)
-    for field_name, type_token in matches:
-        token = type_token.strip().strip("'\"")
-        if token:
-            overrides[field_name] = token
-    return overrides
-
-
-def _ua_type_overrides_for_structure(structure_type: type[Any]) -> dict[str, str]:
-    raw = getattr(structure_type, "ua_types", None)
-    if raw is None:
-        return {}
-
-    overrides: dict[str, str] = {}
-    if isinstance(raw, Mapping):
-        for key, value in raw.items():
-            if isinstance(key, str) and isinstance(value, str):
-                token = value.strip().strip("'\"")
-                if token:
-                    overrides[key] = token
-        return overrides
-
-    if isinstance(raw, list):
-        for item in raw:
-            if not (isinstance(item, tuple) and len(item) >= 2):
-                continue
-            field_name = item[0]
-            field_type = item[1]
-            if isinstance(field_name, str) and isinstance(field_type, str):
-                token = field_type.strip().strip("'\"")
-                if token:
-                    overrides[field_name] = token
-    return overrides
-
-
-def _schema_from_field_runtime_hints(field_info: Any, registry: _SchemaRegistry) -> dict[str, Any] | None:
-    metadata = getattr(field_info, "metadata", None)
-    if isinstance(metadata, Mapping):
-        for value in metadata.values():
-            candidate = _schema_from_hint_token(value, registry)
-            if candidate is not None and not _is_stringish_schema(candidate):
-                return candidate
-
-    default_value = getattr(field_info, "default", MISSING)
-    if default_value is not MISSING:
-        candidate = _schema_from_hint_token(default_value, registry)
-        if candidate is not None and not _is_stringish_schema(candidate):
-            return candidate
-
-    default_factory = getattr(field_info, "default_factory", MISSING)
-    if default_factory is not MISSING:
-        candidate = _schema_from_hint_token(default_factory, registry)
-        if candidate is not None and not _is_stringish_schema(candidate):
-            return candidate
-        if callable(default_factory):
-            try:
-                produced = default_factory()
-            except Exception:
-                produced = None
-            if produced is not None:
-                produced_schema = _schema_for_structured_value(produced, None, None, None, [], registry)
-                if produced_schema is not None and not _is_stringish_schema(produced_schema):
-                    return produced_schema
-
-    return None
-
-
-def _evaluate_generated_annotation(annotation: Any, owner_type: type[Any], field_name: str | None = None) -> Any | None:
-    if not isinstance(annotation, str):
-        return None
-
-    module = sys.modules.get(owner_type.__module__)
-    if module is None:
-        return None
-
-    globals_dict = dict(vars(module))
-    globals_dict.setdefault("typing", typing)
-    globals_dict.setdefault("ua", ua)
-    globals_dict.setdefault("__SELF__", owner_type)
-
-    if field_name and "_dep_" in annotation:
-        guessed_type = _guess_generated_dependency_type(field_name, owner_type)
-        if guessed_type is not None:
-            for dep_name in set(re.findall(r"_dep_\d+", annotation)):
-                globals_dict.setdefault(dep_name, guessed_type)
-
-    try:
-        return eval(annotation, globals_dict, {})
-    except Exception:
-        return None
-
-
-def _schema_from_hint_token(token: Any, registry: _SchemaRegistry) -> dict[str, Any] | None:
-    if isinstance(token, str):
-        return _schema_for_annotation_string(token, registry)
-    if isinstance(token, type):
-        return _schema_for_annotation(token, registry)
-
-    if callable(token) and isinstance(getattr(token, "__name__", None), str):
-        maybe_type = _resolve_structure_type_by_name(token.__name__)
-        if isinstance(maybe_type, type):
-            return _schema_for_annotation(maybe_type, registry)
-
-    instance_type = type(token)
-    if _is_structured_class(instance_type):
-        return _schema_for_annotation(instance_type, registry)
-
-    return None
-
-
-def _is_stringish_schema(schema: dict[str, Any]) -> bool:
-    schema_type = schema.get("type")
-    if schema_type == "string":
-        return True
-    if isinstance(schema_type, list) and all(item in {"string", "null"} for item in schema_type):
-        return True
-    if schema_type == "array":
-        items = schema.get("items")
-        if isinstance(items, dict):
-            items_type = items.get("type")
-            if items_type == "string":
-                return True
-            if isinstance(items_type, list) and all(item in {"string", "null"} for item in items_type):
-                return True
-    return False
-
-
-def _guess_generated_dependency_type(field_name: str, owner_type: type[Any]) -> type[Any] | None:
-    candidates = _available_generated_structure_types(owner_type.__module__)
-    if not candidates:
-        return None
-
-    preferred_stems = _preferred_field_stems(field_name)
-    stems = _candidate_field_stems(field_name)
-    best_score = -1
-    best_type: type[Any] | None = None
-
-    for candidate in candidates:
-        core = _structure_core_name(candidate.__name__)
-        score = 0
-        for stem in preferred_stems:
-            if stem == core:
-                score = max(score, 200)
-            elif core in stem:
-                score = max(score, 150)
-            elif stem in core:
-                score = max(score, 120)
-        for stem in stems:
-            if stem == core:
-                score = max(score, 100)
-            elif core in stem:
-                score = max(score, 80)
-            elif stem in core:
-                score = max(score, 60)
-        if score > best_score:
-            best_score = score
-            best_type = candidate
-
-    return best_type if best_score >= 60 else None
-
-
-def _available_generated_structure_types(module_name: str) -> list[type[Any]]:
-    output: list[type[Any]] = []
-    seen: set[type[Any]] = set()
-
-    module = sys.modules.get(module_name)
-    if module is not None:
-        for candidate_name in dir(module):
-            candidate = getattr(module, candidate_name, None)
-            if isinstance(candidate, type) and _is_structured_class(candidate) and candidate not in seen:
-                seen.add(candidate)
-                output.append(candidate)
-
-    registries = [
-        getattr(ua, "extension_objects_by_datatype", None),
-        getattr(ua, "extension_objects_by_typeid", None),
-        getattr(ua, "EXTENSION_OBJECT_CLASSES_BY_DATATYPE", None),
-    ]
-    for registry in registries:
-        if not isinstance(registry, Mapping):
-            continue
-        for candidate in registry.values():
-            if not isinstance(candidate, type) or candidate in seen:
-                continue
-            if candidate.__module__ == module_name or candidate.__module__.startswith("asyncua.common.structures"):
-                seen.add(candidate)
-                output.append(candidate)
-
-    return output
-
-
-def _candidate_field_stems(field_name: str) -> list[str]:
-    parts = re.findall(r"[A-Z]+(?=[A-Z][a-z]|\b)|[A-Z]?[a-z]+|\d+", field_name)
-    joined = "".join(part.lower() for part in parts)
-    lowered_parts = [part.lower() for part in parts]
-    stems = {joined, *lowered_parts}
-    suffixes = [
-        "id",
-        "ids",
-        "requirements",
-        "requirement",
-        "parameters",
-        "parameter",
-        "properties",
-        "property",
-    ]
-    for suffix in suffixes:
-        if joined.endswith(suffix):
-            trimmed = joined[: -len(suffix)]
-            if trimmed:
-                stems.add(trimmed)
-    if joined.endswith("ies"):
-        stems.add(joined[:-3] + "y")
-    if joined.endswith("s") and len(joined) > 1:
-        stems.add(joined[:-1])
-    return sorted(stems, key=len, reverse=True)
-
-
-def _preferred_field_stems(field_name: str) -> list[str]:
-    parts = [part.lower() for part in re.findall(r"[A-Z]+(?=[A-Z][a-z]|\b)|[A-Z]?[a-z]+|\d+", field_name)]
-    if not parts:
-        return []
-
-    singular_map = {
-        "parameters": "parameter",
-        "parameter": "parameter",
-        "properties": "property",
-        "property": "property",
-        "requirements": None,
-        "requirement": None,
-        "ids": None,
-        "id": None,
-        "states": "state",
-        "state": "state",
-    }
-
-    last = parts[-1]
-    singular_value = singular_map.get(last)
-    if singular_value:
-        return [singular_value]
-
-    if last in {"requirements", "requirement", "ids", "id"} and len(parts) >= 2:
-        prefix = "".join(parts[:-1])
-        singular_prefix = prefix[:-1] if prefix.endswith("s") else prefix
-        return [prefix, singular_prefix]
-
-    joined = "".join(parts)
-    singular_joined = joined[:-1] if joined.endswith("s") else joined
-    return [joined, singular_joined]
-
-
-def _structure_core_name(type_name: str) -> str:
-    lowered = type_name.lower()
-    if lowered.startswith("isa95"):
-        lowered = lowered[5:]
-    if lowered.endswith("datatype"):
-        lowered = lowered[:-8]
-    return lowered
-
-
-def _is_integer_annotation_type(annotation: type[Any]) -> bool:
-    try:
-        if issubclass(annotation, bool):
-            return False
-        if issubclass(annotation, int):
-            return True
-    except TypeError:
-        pass
-    return annotation.__name__.lower() in {
-        "byte",
-        "sbyte",
-        "int16",
-        "int32",
-        "int64",
-        "uint16",
-        "uint32",
-        "uint64",
-        "uint128",
-    }
-
-
-def _is_number_annotation_type(annotation: type[Any]) -> bool:
-    if _is_integer_annotation_type(annotation):
-        return True
-    try:
-        if issubclass(annotation, float):
-            return True
-    except TypeError:
-        pass
-    return annotation.__name__.lower() in {"float", "double", "decimal", "decimalstring"}
-
-
-def _is_string_annotation_type(annotation: type[Any]) -> bool:
-    try:
-        if issubclass(annotation, str):
-            return True
-    except TypeError:
-        pass
-    return annotation.__name__.lower() in {
-        "string",
-        "chararray",
-        "bytestring",
-        "xmlelement",
-        "qualifiedname",
-    }
-
-
-def _is_datetime_annotation_type(annotation: type[Any]) -> bool:
-    if annotation is datetime:
-        return True
-    return annotation.__name__.lower() in {"datetime", "utctime"}
-
-
-def _is_variant_annotation_type(annotation: type[Any]) -> bool:
-    return annotation.__name__.lower() in {"variant", "basedatatype"}
 
 
 def _node_id_to_string(value: Any) -> str | None:
@@ -1577,116 +741,6 @@ def _is_null_node_id(value: str) -> bool:
     return bool(re.match(r"^(?:ns=\d+;|nsu=[^;]+;)?i=0$", normalized))
 
 
-def _inline_registered_reference(schema: dict[str, Any], registry: _SchemaRegistry) -> dict[str, Any]:
-    ref = schema.get("$ref")
-    if not isinstance(ref, str) or not ref.startswith("#/$defs/"):
-        return schema
-
-    definition_name = ref.split("#/$defs/", 1)[1]
-    target = registry.defs.get(definition_name)
-    if not isinstance(target, dict):
-        return schema
-
-    inlined = deepcopy(target)
-    for key, value in schema.items():
-        if key == "$ref":
-            continue
-        inlined[key] = value
-    return inlined
-
-
-def _expand_schema_refs(schema: Any, defs: Mapping[str, Any], stack: tuple[str, ...] = ()) -> Any:
-    if isinstance(schema, list):
-        return [_expand_schema_refs(item, defs, stack) for item in schema]
-    if not isinstance(schema, Mapping):
-        return schema
-
-    ref = schema.get("$ref")
-    if isinstance(ref, str) and ref.startswith("#/$defs/"):
-        definition_name = ref.split("#/$defs/", 1)[1]
-        if definition_name in stack:
-            return dict(schema)
-        target = defs.get(definition_name)
-        if isinstance(target, Mapping):
-            merged: dict[str, Any] = deepcopy(dict(target))
-            for key, value in schema.items():
-                if key == "$ref":
-                    continue
-                merged[key] = value
-            return _expand_schema_refs(merged, defs, stack + (definition_name,))
-
-    expanded: dict[str, Any] = {}
-    for key, value in schema.items():
-        expanded[key] = _expand_schema_refs(value, defs, stack)
-    return expanded
-
-
-def _dedupe_defs_and_rewrite_local_refs(schema: dict[str, Any]) -> None:
-    defs = schema.get("$defs")
-    if not isinstance(defs, Mapping):
-        return
-
-    alias_by_name: dict[str, str] = {}
-    name_by_fingerprint: dict[str, str] = {}
-    deduped_defs: dict[str, Any] = {}
-
-    for name, definition in defs.items():
-        definition_name = str(name)
-        fingerprint = _schema_fingerprint(definition)
-        winner = name_by_fingerprint.get(fingerprint)
-        if winner is None:
-            name_by_fingerprint[fingerprint] = definition_name
-            alias_by_name[definition_name] = definition_name
-            deduped_defs[definition_name] = definition
-            continue
-        alias_by_name[definition_name] = winner
-
-    if all(source == target for source, target in alias_by_name.items()):
-        return
-
-    _rewrite_local_defs_refs(schema, alias_by_name)
-    schema["$defs"] = deduped_defs
-
-
-def _rewrite_local_defs_refs(value: Any, alias_by_name: Mapping[str, str]) -> Any:
-    if isinstance(value, list):
-        for index, item in enumerate(value):
-            value[index] = _rewrite_local_defs_refs(item, alias_by_name)
-        return value
-    if not isinstance(value, dict):
-        return value
-
-    ref = value.get("$ref")
-    if isinstance(ref, str) and ref.startswith("#/$defs/"):
-        definition_name = ref.split("#/$defs/", 1)[1]
-        replacement = alias_by_name.get(definition_name)
-        if replacement is not None:
-            value["$ref"] = f"#/$defs/{replacement}"
-
-    for key, nested in value.items():
-        value[key] = _rewrite_local_defs_refs(nested, alias_by_name)
-    return value
-
-
-def _schema_fingerprint(value: Any) -> str:
-    normalized = _normalize_schema_value(value)
-    try:
-        return json.dumps(normalized, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-    except TypeError:
-        return repr(normalized)
-
-
-def _normalize_schema_value(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        return {
-            str(key): _normalize_schema_value(item)
-            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
-        }
-    if isinstance(value, list):
-        return [_normalize_schema_value(item) for item in value]
-    return value
-
-
 def _members(item: OpcUaObjectTypeInfo) -> Iterable[OpcUaObjectTypeMemberInfo]:
     members = getattr(item, "members", None)
     if isinstance(members, list):
@@ -1752,34 +806,3 @@ def _references_for_member(
         reference["order"] = reference_order
 
     return [reference]
-
-
-def _def_key(node_id: str) -> str:
-    return node_id.replace("~", "~0").replace("/", "~1")
-
-
-def _safe_definition_name(raw_name: str) -> str:
-    cleaned = re.sub(r"[^A-Za-z0-9_]", "_", raw_name)
-    cleaned = re.sub(r"_+", "_", cleaned).strip("_")
-    if not cleaned:
-        return "Definition"
-    if cleaned[0].isdigit():
-        return f"D_{cleaned}"
-    return cleaned
-
-
-def _definition_name(
-    item: OpcUaObjectTypeInfo,
-    element_ids_by_node_id: Mapping[str, str],
-) -> str:
-    """Definition name for an ancestor ObjectType.
-
-    An unresolved ancestor must be keyed by its node id, not only by BrowseName: ObjectTypes in
-    different namespaces can share a BrowseName, and one of them is frequently a subtype of the other.
-    A shared name makes ``set_definition`` overwrite one schema, and both ``allOf`` entries then point
-    at the surviving schema - write validation would check the wrong required fields and types.
-    """
-    element_id = element_ids_by_node_id.get(item.node_id)
-    if element_id:
-        return element_id
-    return f"unresolved-objecttype:{item.browse_name.lower()}-{_def_key(item.node_id)}"

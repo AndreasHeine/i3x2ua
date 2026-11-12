@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
+import subprocess
+import sys
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock
@@ -420,3 +422,27 @@ async def test_lifespan_deregisters_signal_handlers_on_shutdown(monkeypatch: pyt
         during = signal.getsignal(signal.SIGINT)
         assert during != before, "lifespan must install a SIGINT handler"
     assert signal.getsignal(signal.SIGINT) != during, "lifespan must deregister the SIGINT handler"
+
+
+def test_api_v1_imports_first_without_bootstrap_cycle() -> None:
+    """`api.v1` must import cleanly as the first package imported.
+
+    Routes import ``bootstrap.dependencies`` at module level, so an eager
+    ``create_app`` re-export in ``bootstrap/__init__.py`` resolved
+    ``bootstrap`` -> ``app_factory`` -> ``api.v1.router`` while ``api.v1`` was
+    still initializing and raised a circular ``ImportError``.
+    """
+    result = subprocess.run(
+        [sys.executable, "-c", "import i3x_server.api.v1"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_bootstrap_create_app_is_reexported_lazily() -> None:
+    from i3x_server.bootstrap import create_app
+
+    assert callable(create_app)

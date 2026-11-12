@@ -9,7 +9,7 @@ from i3x_server.errors import i3x_http_error
 from i3x_server.mcp.model_access import MCP_MODEL_ACCESS_SCHEMAS, validate_model_access_arguments
 from i3x_server.model.revision import model_revision
 from i3x_server.schemas.i3x import ModelNode
-from i3x_server.schemas.state import BuildResult
+from i3x_server.schemas.state import BuildResult, _McpToolIndex
 
 __all__ = [
     "MCP_MODEL_CONTEXT_MAX_ITEMS",
@@ -268,6 +268,64 @@ def _model_relationships(model: BuildResult, node: ModelNode) -> dict[str, list[
     return node.relationships
 
 
+def _mcp_tool_index(model: BuildResult) -> _McpToolIndex:
+    """Derived MCP lookup tables for one model revision.
+
+    ``searchModelElements`` and ``traceRelationshipPath`` used to derive the searchable text
+    and the relationship adjacency from the model on every call, which is O(N) work per tool
+    invocation. Both are content-derived, so they are cached on the ``BuildResult`` and
+    rebuilt only when its revision changes.
+    """
+    revision = model_revision(model)
+    cached = model._mcp_tool_index_cache
+    if cached is not None and cached.revision == revision:
+        return cached
+
+    index = _McpToolIndex(revision)
+    outgoing_sets: dict[str, set[tuple[str, str, str]]] = {element_id: set() for element_id in model.nodes_by_id}
+    incoming_sets: dict[str, set[tuple[str, str, str]]] = {element_id: set() for element_id in model.nodes_by_id}
+
+    for element_id, node in model.nodes_by_id.items():
+        relationships = _model_relationships(model, node)
+        relationship_names = tuple(relationships)
+        index.relationship_names_by_id[element_id] = relationship_names
+
+        semantic_role = model.semantic_role_by_id.get(element_id, node.semantic_role)
+        mapping_confidence = model.mapping_confidence_by_id.get(element_id, node.mapping_confidence)
+        namespace_uri = model.namespace_uri_by_id.get(element_id) or node.metadata.get("namespaceUri")
+        profile_ids = model.applied_profile_ids_by_id.get(element_id, node.metadata.get("appliedProfileIds", []))
+        index.searchable_by_id[element_id] = tuple(
+            value.casefold()
+            for value in (
+                node.id,
+                node.name,
+                node.kind,
+                node.type or "",
+                node.source_node_id,
+                node.source_type_id or "",
+                str(semantic_role),
+                str(mapping_confidence),
+                str(namespace_uri or ""),
+                str(node.metadata.get("description", "")),
+                " ".join(str(profile_id) for profile_id in profile_ids),
+                " ".join(relationship_names),
+            )
+        )
+
+        for relationship_type, targets in relationships.items():
+            plane = _relationship_plane(relationship_type)
+            for target_element_id in targets:
+                if target_element_id not in model.nodes_by_id:
+                    continue
+                outgoing_sets[element_id].add((target_element_id, relationship_type, plane))
+                incoming_sets[target_element_id].add((element_id, relationship_type, plane))
+
+    index.outgoing_by_id = {element_id: tuple(sorted(edges)) for element_id, edges in outgoing_sets.items()}
+    index.incoming_by_id = {element_id: tuple(sorted(edges)) for element_id, edges in incoming_sets.items()}
+    model._mcp_tool_index_cache = index
+    return index
+
+
 def _relationship_plane(relationship_type: str) -> str:
     if relationship_type in {"HasParent", "HasChildren"}:
         return "hierarchy"
@@ -369,16 +427,17 @@ def _validate_model_tool_arguments(tool_name: str, arguments: Mapping[str, Any])
 def _search_model_elements(model: BuildResult, arguments: Mapping[str, Any]) -> dict[str, Any]:
     text = arguments.get("text")
     search_text = text.strip().casefold() if isinstance(text, str) else ""
+    index = _mcp_tool_index(model)
     matched: list[ModelNode] = []
-    for node in model.nodes_by_id.values():
-        semantic_role = model.semantic_role_by_id.get(node.id, node.semantic_role)
-        mapping_confidence = model.mapping_confidence_by_id.get(node.id, node.mapping_confidence)
-        namespace_uri = model.namespace_uri_by_id.get(node.id) or node.metadata.get("namespaceUri")
+    for element_id, node in model.nodes_by_id.items():
+        semantic_role = model.semantic_role_by_id.get(element_id, node.semantic_role)
+        mapping_confidence = model.mapping_confidence_by_id.get(element_id, node.mapping_confidence)
+        namespace_uri = model.namespace_uri_by_id.get(element_id) or node.metadata.get("namespaceUri")
         profile_ids = model.applied_profile_ids_by_id.get(
-            node.id,
+            element_id,
             node.metadata.get("appliedProfileIds", []),
         )
-        relationship_names = _model_relationships(model, node)
+        relationship_names = index.relationship_names_by_id[element_id]
         if arguments.get("kind") is not None and node.kind != arguments["kind"]:
             continue
         if arguments.get("semanticRole") is not None and semantic_role != arguments["semanticRole"]:
@@ -396,23 +455,8 @@ def _search_model_elements(model: BuildResult, arguments: Mapping[str, Any]) -> 
             continue
         if arguments.get("relationshipType") is not None and arguments["relationshipType"] not in relationship_names:
             continue
-        if search_text:
-            searchable = (
-                node.id,
-                node.name,
-                node.kind,
-                node.type or "",
-                node.source_node_id,
-                node.source_type_id or "",
-                str(semantic_role),
-                str(mapping_confidence),
-                str(namespace_uri or ""),
-                str(node.metadata.get("description", "")),
-                " ".join(str(profile_id) for profile_id in profile_ids),
-                " ".join(relationship_names),
-            )
-            if not any(search_text in value.casefold() for value in searchable):
-                continue
+        if search_text and not any(search_text in value for value in index.searchable_by_id[element_id]):
+            continue
         matched.append(node)
 
     matched.sort(key=lambda node: (node.name.casefold(), node.id))
@@ -625,30 +669,21 @@ def _trace_relationship_path(model: BuildResult, arguments: Mapping[str, Any]) -
     direction = arguments.get("direction", "either")
     max_depth = arguments.get("maxDepth", 8)
 
-    outgoing_by_id: dict[str, set[tuple[str, str, str]]] = {element_id: set() for element_id in model.nodes_by_id}
-    incoming_by_id: dict[str, set[tuple[str, str, str]]] = {element_id: set() for element_id in model.nodes_by_id}
-    for relationship_source_id, source in model.nodes_by_id.items():
-        for relationship_type, targets in _model_relationships(model, source).items():
-            plane = _relationship_plane(relationship_type)
-            if plane not in planes:
-                continue
-            for target_element_id in targets:
-                if target_element_id not in model.nodes_by_id:
-                    continue
-                outgoing_by_id[relationship_source_id].add((target_element_id, relationship_type, plane))
-                incoming_by_id[target_element_id].add((relationship_source_id, relationship_type, plane))
+    index = _mcp_tool_index(model)
 
     def neighbors(element_id: str) -> list[tuple[str, str, str, str]]:
         found: set[tuple[str, str, str, str]] = set()
         if direction in {"outgoing", "either"}:
             found.update(
                 (neighbor_id, relationship_type, plane, "outgoing")
-                for neighbor_id, relationship_type, plane in outgoing_by_id[element_id]
+                for neighbor_id, relationship_type, plane in index.outgoing_by_id[element_id]
+                if plane in planes
             )
         if direction in {"incoming", "either"}:
             found.update(
                 (neighbor_id, relationship_type, plane, "incoming")
-                for neighbor_id, relationship_type, plane in incoming_by_id[element_id]
+                for neighbor_id, relationship_type, plane in index.incoming_by_id[element_id]
+                if plane in planes
             )
         plane_priority = {"hierarchy": 0, "composition": 1, "graph": 2}
         return sorted(found, key=lambda item: (item[0], plane_priority[item[2]], item[1], item[3]))

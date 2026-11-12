@@ -19,6 +19,22 @@ class _ModelAccessIndex:
 
 
 @dataclass(slots=True)
+class _McpToolIndex:
+    """Derived lookup tables for the MCP model tools, built once per model revision.
+
+    ``searchable_by_id`` keeps the casefolded search fields per element (substring
+    matching stays field-by-field), and the adjacency maps hold every relationship as
+    ``(target, relationship type, plane)`` so path tracing does not rebuild the graph.
+    """
+
+    revision: str
+    searchable_by_id: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    relationship_names_by_id: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    outgoing_by_id: dict[str, tuple[tuple[str, str, str], ...]] = field(default_factory=dict)
+    incoming_by_id: dict[str, tuple[tuple[str, str, str], ...]] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
 class BuildResult:
     nodes_by_id: dict[str, ModelNode]
     root_ids: list[str]
@@ -56,6 +72,9 @@ class BuildResult:
     build_completed_at_utc: str | None = None
     revision: str = ""
     _model_access_index_cache: _ModelAccessIndex | None = field(default=None, init=False, repr=False, compare=False)
+    # Derived MCP tool lookup tables (search fields + relationship adjacency), rebuilt only
+    # when the model revision changes; dataclasses.replace() resets it.
+    _mcp_tool_index_cache: _McpToolIndex | None = field(default=None, init=False, repr=False, compare=False)
     _reverse_parent_index_cache: tuple[tuple[int, int], dict[str, str]] | None = field(
         default=None, init=False, repr=False, compare=False
     )

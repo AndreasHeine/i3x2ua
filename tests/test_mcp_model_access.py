@@ -15,7 +15,12 @@ from i3x_server.api.v1.objecttype_helpers import _object_type_context_revision, 
 from i3x_server.application.ports.opcua import OpcUaNamespaceInfo, OpcUaObjectTypeInfo
 from i3x_server.mcp import build_mcp_tools, invoke_mcp_tool, load_overrides
 from i3x_server.mcp.model_access import MCP_MODEL_ACCESS_SCHEMAS, invoke_model_access_tool
-from i3x_server.mcp.model_tools import _validate_model_tool_arguments
+from i3x_server.mcp.model_tools import (
+    _mcp_tool_index,
+    _search_model_elements,
+    _trace_relationship_path,
+    _validate_model_tool_arguments,
+)
 from i3x_server.model.revision import model_revision
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
@@ -509,6 +514,26 @@ _COMPOSITE_ARGUMENTS: dict[str, dict[str, Any]] = {
     "summarizeSubtree": {"rootElementId": "station-a"},
     "traceRelationshipPath": {"sourceElementId": "station-a", "targetElementId": "station-b"},
 }
+
+
+def test_mcp_tool_index_is_reused_until_the_revision_changes(model: BuildResult) -> None:
+    """Search fields and relationship adjacency are derived once per model revision."""
+    model.relationships_by_id = {"station-a": {"HasComponent": ["temp"]}}
+
+    index = _mcp_tool_index(model)
+    assert index.outgoing_by_id["station-a"] == (("temp", "HasComponent", "composition"),)
+    assert index.incoming_by_id["temp"] == (("station-a", "HasComponent", "composition"),)
+    assert "station" in "".join(index.searchable_by_id["station-a"])
+
+    search = _search_model_elements(model, {"text": "station"})
+    assert search["total"] == 2
+    assert _trace_relationship_path(model, {"sourceElementId": "station-a", "targetElementId": "temp"})["found"] is True
+    assert model._mcp_tool_index_cache is index
+
+    model.revision = "next-revision"
+    rebuilt = _mcp_tool_index(model)
+    assert rebuilt is not index
+    assert model._mcp_tool_index_cache is rebuilt
 
 
 @pytest.mark.asyncio

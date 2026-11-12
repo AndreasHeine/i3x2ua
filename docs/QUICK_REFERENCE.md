@@ -310,11 +310,19 @@ command:
   - "4"  # Increase from 1
 ```
 
-### Enable Caching Headers
-Add to NGINX config in `entrypoint.sh`:
-```nginx
-add_header Cache-Control "public, max-age=3600" always;
+### Shed Load Instead Of Queueing
+The shipped command already caps concurrent requests; tune it per deployment:
+```yaml
+command:
+  - --limit-concurrency
+  - "200"  # Over-limit requests answer 503 immediately
 ```
+`run.py` takes the same value from `I3X_UVICORN_LIMIT_CONCURRENCY`.
+
+### Cache The SPA Assets
+The generated NGINX config already serves the hashed `/_app/` assets from disk with
+`Cache-Control: public, immutable`; keep that block when customizing `entrypoint.sh`.
+API responses stay `no-cache` (the app revalidates them with ETags).
 
 ### Load Balancing Algorithm
 In `.env`:

@@ -182,6 +182,7 @@ class FakeOpcUaClient:
             ]
         }
         self._reads = 0
+        self.server_status_reads = 0
         self._listeners: list[Any] = []
         self._connection_snapshot = OpcUaConnectionSnapshot(
             state="Connected",
@@ -384,6 +385,7 @@ class FakeOpcUaClient:
         self._request_metrics.write_count += 1
 
     async def read_server_status_data_value(self) -> Any:
+        self.server_status_reads += 1
         return SimpleNamespace(
             Value=SimpleNamespace(
                 Value={
@@ -476,6 +478,56 @@ def test_v1_info_write_capability_enabled_with_flag(client: TestClient, monkeypa
     assert response.status_code == 200
     payload = response.json()
     assert payload["result"]["capabilities"]["update"]["current"] is True
+
+
+def test_health_route_is_static_and_not_in_openapi(client: TestClient) -> None:
+    """`/health` answers the container probe without touching OPC UA and stays out of docs."""
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+    assert "/health" not in client.get("/openapi.json").json()["paths"]
+
+
+def test_ua_status_serves_cached_snapshot_within_ttl(client: TestClient) -> None:
+    """Polls inside the snapshot TTL must not add upstream ServerStatus reads."""
+    fake = _fastapi_app(client).state.opcua_client
+
+    first = client.get("/ua/status").json()
+    second = client.get("/ua/status").json()
+
+    assert first["success"] is True
+    assert first["result"] == second["result"]
+    assert fake.server_status_reads == 1
+
+
+def test_ua_status_rereads_after_snapshot_expiry(client: TestClient) -> None:
+    fake = _fastapi_app(client).state.opcua_client
+    client.get("/ua/status")
+
+    # Age the snapshot past the TTL instead of sleeping, so the test stays deterministic.
+    _fastapi_app(client).state.ua_status_snapshot.fetched_at -= 10.0
+    response = client.get("/ua/status").json()
+
+    assert fake.server_status_reads == 2
+    assert response["result"]["State"] == "Running"
+
+
+def test_ua_status_snapshot_invalidated_on_connection_state_change(client: TestClient) -> None:
+    """A reconnect must drop the snapshot even while it is still fresh."""
+    app = _fastapi_app(client)
+    fake = app.state.opcua_client
+    client.get("/ua/status")
+
+    fake._connection_snapshot = OpcUaConnectionSnapshot(
+        state="Reconnecting",
+        endpoint="opc.tcp://opcua.umati.app:4843",
+        since=datetime(2026, 1, 1, 9, 4, 0, tzinfo=timezone.utc),
+    )
+    client.get("/ua/status")
+
+    assert fake.server_status_reads == 2
+    assert app.state.ua_status_snapshot.connection_state == "Reconnecting"
 
 
 def test_v1_objecttypes_opcua_metadata_contract(client: TestClient) -> None:

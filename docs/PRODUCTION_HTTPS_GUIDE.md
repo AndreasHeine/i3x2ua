@@ -338,6 +338,8 @@ services:
       - "*"
       - --workers
       - "4"
+      - --limit-concurrency
+      - "200"
     environment:
       I3X_OPCUA_ENDPOINT: ${I3X_OPCUA_ENDPOINT_1}
       I3X_OPCUA_USERNAME: ${I3X_OPCUA_USERNAME_1}
@@ -355,7 +357,7 @@ services:
       - no-new-privileges:true
     pids_limit: 256
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/v1/info', timeout=3)"]
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8000/health"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -381,6 +383,8 @@ services:
       - "*"
       - --workers
       - "4"
+      - --limit-concurrency
+      - "200"
     environment:
       I3X_OPCUA_ENDPOINT: ${I3X_OPCUA_ENDPOINT_2}
       I3X_OPCUA_USERNAME: ${I3X_OPCUA_USERNAME_2}
@@ -398,7 +402,7 @@ services:
       - no-new-privileges:true
     pids_limit: 256
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/v1/info', timeout=3)"]
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8001/health"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -424,6 +428,8 @@ services:
       - "*"
       - --workers
       - "4"
+      - --limit-concurrency
+      - "200"
     environment:
       I3X_OPCUA_ENDPOINT: ${I3X_OPCUA_ENDPOINT_3}
       I3X_OPCUA_USERNAME: ${I3X_OPCUA_USERNAME_3}
@@ -441,7 +447,7 @@ services:
       - no-new-privileges:true
     pids_limit: 256
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8002/v1/info', timeout=3)"]
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8002/health"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -451,7 +457,10 @@ services:
 
   nginx:
     build:
-      context: ./nginx
+      # Repository root context: the nginx image bakes the SPA dist so it can serve
+      # hashed /_app/ assets from disk (missing files fall back to the backend).
+      context: .
+      dockerfile: nginx/Dockerfile
     container_name: i3x2ua-nginx
     restart: unless-stopped
     depends_on:

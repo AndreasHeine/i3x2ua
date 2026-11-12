@@ -21,7 +21,9 @@ services:
       - --forwarded-allow-ips
       - "*"
       - "--workers"
-      - "1"  # Number of worker processes for uvicorn.
+      - "1"  # Single worker on purpose: subscription state and MCP sessions are process-local.
+      - "--limit-concurrency"
+      - "200" # Shed load spikes with 503 instead of piling requests onto the event loop.
       - "--no-access-log"
       - "--timeout-keep-alive"
       - "75" # Raise keep-alive timeout above Nginx's 60s
@@ -73,7 +75,8 @@ services:
       - no-new-privileges:true
     pids_limit: 256
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/v1/info', timeout=3)"]
+      # Static readiness route; busybox wget is cheaper than spawning Python per probe.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8000/health"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -96,7 +99,10 @@ services:
 
   nginx:
     build:
-      context: ./nginx
+      # Repository root context: the nginx image bakes the SPA dist so the proxy can serve
+      # hashed assets from disk (NGINX_FRONTEND_DIST defaults to /srv/frontend/dist).
+      context: .
+      dockerfile: nginx/Dockerfile
     container_name: i3x2ua-nginx
     restart: unless-stopped
     ulimits:

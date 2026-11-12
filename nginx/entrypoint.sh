@@ -25,6 +25,8 @@ cert_file="${NGINX_SSL_CERTIFICATE:-/etc/nginx/certs/fullchain.pem}"
 key_file="${NGINX_SSL_CERTIFICATE_KEY:-/etc/nginx/certs/privkey.pem}"
 realm="${NGINX_BASIC_AUTH_REALM:-i3x2ua}"
 redirect_https_port="${NGINX_HTTPS_REDIRECT_PORT:-443}"
+# Prebuilt SPA assets baked into this image (same checkout as the backend image).
+frontend_dist="${NGINX_FRONTEND_DIST:-/srv/frontend/dist}"
 
 if [ "$redirect_https_port" = "443" ]; then
   https_redirect_target="https://\$host\$request_uri"
@@ -113,6 +115,36 @@ EOF
 
 mkdir -p /etc/nginx/conf.d
 
+# Content-hashed SPA assets ("_app/immutable/...") are served straight from the dist
+# directory instead of a uvicorn static-file read plus gzip per page load. Hashed
+# filenames change with every build, so "immutable" edge caching is safe; version.json
+# keeps a fixed name and must never be cached. Files missing from this image's dist fall
+# back to the backend, which serves the same dist. Assets carry no secrets, so they stay
+# unauthenticated even when Basic Auth protects the pages and API.
+asset_block=""
+if [ -d "$frontend_dist/_app" ]; then
+  asset_block=$(cat <<EOF
+
+  location = /_app/version.json {
+    root $frontend_dist;
+    add_header Cache-Control "public, no-store";
+    try_files \$uri @frontend_asset_fallback;
+  }
+
+  location ^~ /_app/ {
+    root $frontend_dist;
+    expires max;
+    add_header Cache-Control "public, immutable";
+    try_files \$uri @frontend_asset_fallback;
+  }
+
+  location @frontend_asset_fallback {
+$(printf '%s\n' "$proxy_block")
+  }
+EOF
+)
+fi
+
 if is_truthy "$https_enabled"; then
   if [ ! -r "$cert_file" ] || [ ! -r "$key_file" ]; then
     echo "NGINX_HTTPS_ENABLED is enabled but certificate or key file is missing" >&2
@@ -153,6 +185,7 @@ $(printf '%s\n' "$auth_block")
 $(printf '%s\n' "$mcp_proxy_block")
   }
 
+$(printf '%s\n' "$asset_block")
   location / {
 $(printf '%s\n' "$auth_block")
 $(printf '%s\n' "$proxy_block")
@@ -181,6 +214,7 @@ $(printf '%s\n' "$auth_block")
 $(printf '%s\n' "$mcp_proxy_block")
   }
 
+$(printf '%s\n' "$asset_block")
   location / {
 $(printf '%s\n' "$auth_block")
 $(printf '%s\n' "$proxy_block")

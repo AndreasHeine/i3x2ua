@@ -389,6 +389,10 @@ Optional OPC UA diagnostic endpoints are exposed under `/ua`:
 - client state and connectivity (`/ua/status`, `/ua/connection`)
 - session limits and metrics (`/ua/limits`, `/ua/metrics`)
 
+`/ua/status` serves the ServerStatus struct from a short-lived snapshot (3s), so the viewer
+page's polling does not turn into an OPC UA round-trip per poll; reported values are at most
+that old, and a reconnect invalidates the snapshot immediately.
+
 Optional MCP endpoints are exposed only when `I3X_ENABLE_MCP=1`:
 
 - **MCP endpoint**: accepts JSON-RPC requests at `POST /mcp`. Legacy clients may use session-scoped SSE with `GET /mcp`; initialization returns `Mcp-Session-Id`, which can be closed with `DELETE /mcp`. Modern `2026-07-28` requests are stateless. Legacy transport sessions are bounded (200): sessions without an SSE stream that have not been used for 15 minutes are dropped, and a new `initialize` is rejected with a JSON-RPC error once the limit is reached. Sessions are closed when the application shuts down.
@@ -540,6 +544,20 @@ If `BUILD_VERSION` is not set, the API falls back to `master`.
 
 The stack now starts the API behind an nginx reverse proxy. The app container stays internal, while nginx exposes HTTP and optional HTTPS.
 
+nginx serves the prebuilt SPA assets (`/_app/`) straight from the dist directory baked into
+its image, with immutable cache headers; page HTML and the API stay proxied to the app
+container. Hashed asset names change with every build, so `immutable` is safe, and a file
+that is not present in the image falls back to the backend. Request bodies are accepted up
+to `client_max_body_size 8m`, well above the largest legal bulk payload
+(`MAX_BULK_ITEMS=500`), so bulk writes are rejected by the app's validation and not by a
+413 at the edge.
+
+The app container runs uvicorn with a single worker plus `--limit-concurrency 200`:
+subscription state and MCP sessions are process-local, so extra workers would strand them,
+and the limit sheds load spikes with 503 instead of queueing them on the event loop.
+Container health checks probe the static `/health` readiness route, which never touches the
+OPC UA connection.
+
 The default compose setup also enables container hardening (`read_only`, `tmpfs`, dropped Linux capabilities, `no-new-privileges`).
 
 Optional environment variables:
@@ -547,10 +565,12 @@ Optional environment variables:
 - `I3X_ENABLE_MCP=1` to enable MCP support; it is disabled by default
 - `I3X_ENABLE_WRITES=1` to enable current-value writes (`PUT /v1/objects/value`) and historical writes (`PUT /v1/objects/history`)
 - `I3X_OPCUA_CERTS_DIR=./certs` to mount OPC UA client/server certificate files into the app container (`/app/certs`)
+- `I3X_UVICORN_LIMIT_CONCURRENCY` to change the uvicorn concurrency limit used by `run.py` (`200` by default, `0` disables it)
 - `NGINX_HTTPS_ENABLED=1` to enable TLS termination
 - `NGINX_SSL_CERTS_DIR=./certs` with `fullchain.pem` and `privkey.pem`
 - `NGINX_BASIC_AUTH_ENABLED=1` with `NGINX_BASIC_AUTH_USER` and `NGINX_BASIC_AUTH_PASSWORD`
 - `NGINX_SERVER_NAME` for the public host name
+- `NGINX_FRONTEND_DIST` to serve SPA assets from a different dist directory (`/srv/frontend/dist` by default)
 
 If you enable HTTPS, mount or place the certificate files in the configured cert directory before starting Compose.
 

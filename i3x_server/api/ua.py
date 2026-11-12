@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from dataclasses import fields, is_dataclass
 from datetime import datetime, timezone
+from time import monotonic
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 
 from i3x_server.api.v1.contracts import HttpErrorResponse
@@ -13,6 +14,12 @@ from i3x_server.bootstrap.dependencies import get_opcua_client
 from i3x_server.errors import i3x_http_error
 
 router = APIRouter(prefix="/ua", tags=["Diagnostics"])
+
+# The /view page polls /ua/status every couple of seconds, and ServerStatus is a live
+# OPC UA round-trip. The struct is therefore cached briefly: only CurrentTime moves
+# between reads, so serving the snapshot for a few seconds is a small, bounded staleness
+# instead of a server round-trip per poll.
+_SERVER_STATUS_TTL_SECONDS = 3.0
 
 
 class UaSuccessResponse(BaseModel):
@@ -82,6 +89,28 @@ def _to_json_safe(value: Any) -> Any:
     return str(value)
 
 
+class _ServerStatusSnapshot:
+    """Last successful ServerStatus read plus when it was taken and on which connection."""
+
+    __slots__ = ("connection_state", "fetched_at", "payload")
+
+    def __init__(self, payload: Any, connection_state: str, fetched_at: float) -> None:
+        self.payload = payload
+        self.connection_state = connection_state
+        self.fetched_at = fetched_at
+
+
+def _connection_state(opcua_client: OpcUaClientProtocol) -> str:
+    """Local connection state used to invalidate the cached ServerStatus after a reconnect."""
+    snapshot_reader = getattr(opcua_client, "get_connection_snapshot", None)
+    if not callable(snapshot_reader):
+        return ""
+    try:
+        return str(snapshot_reader().state)
+    except Exception:
+        return ""
+
+
 @router.get(
     "/status",
     response_model=UaSuccessResponse,
@@ -89,7 +118,19 @@ def _to_json_safe(value: Any) -> Any:
         502: {"model": HttpErrorResponse, "description": "Failed to read upstream OPC UA ServerStatus."},
     },
 )
-async def get_ua_status(opcua_client: OpcUaClientProtocol = Depends(get_opcua_client)) -> UaSuccessResponse:
+async def get_ua_status(
+    request: Request,
+    opcua_client: OpcUaClientProtocol = Depends(get_opcua_client),
+) -> UaSuccessResponse:
+    connection_state = _connection_state(opcua_client)
+    cached = getattr(request.app.state, "ua_status_snapshot", None)
+    if (
+        isinstance(cached, _ServerStatusSnapshot)
+        and cached.connection_state == connection_state
+        and monotonic() - cached.fetched_at < _SERVER_STATUS_TTL_SECONDS
+    ):
+        return UaSuccessResponse(result=cached.payload)
+
     try:
         data_value = await opcua_client.read_server_status_data_value()
     except Exception as exc:
@@ -102,7 +143,9 @@ async def get_ua_status(opcua_client: OpcUaClientProtocol = Depends(get_opcua_cl
 
     variant = getattr(data_value, "Value", None)
     payload = getattr(variant, "Value", variant)
-    return UaSuccessResponse(result=_to_json_safe(payload))
+    result = _to_json_safe(payload)
+    request.app.state.ua_status_snapshot = _ServerStatusSnapshot(result, connection_state, monotonic())
+    return UaSuccessResponse(result=result)
 
 
 @router.get("/connection", response_model=UaSuccessResponse)

@@ -25,6 +25,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipMiddleware
 
+from i3x_server.api.health import router as health_router
 from i3x_server.api.mcp import router as mcp_router
 from i3x_server.api.mcp.jsonrpc import shutdown_mcp_transport
 from i3x_server.api.openapi import DocumentedFastAPI
@@ -760,6 +761,8 @@ def create_app() -> FastAPI:
     }
     app.include_router(v1_router, responses=error_responses)
     app.include_router(ua_router, responses=error_responses)
+    # Container readiness probe; excluded from the OpenAPI schema (docs/PRODUCTION_HTTPS_GUIDE.md).
+    app.include_router(health_router)
     if mcp_enabled:
         app.include_router(mcp_router, responses=error_responses)
 

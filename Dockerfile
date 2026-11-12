@@ -5,31 +5,39 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# Node/npm live in the dedicated frontend stage below; the Python builder only needs the
+# toolchain for compiled wheels.
 RUN apk add --no-cache \
         build-base \
         cargo \
         openssl-dev \
-        nodejs \
-        npm \
         pkgconf
 
-RUN python -m pip install --no-cache-dir --upgrade pip setuptools \
-    && pip install --no-cache-dir uv
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -m pip install --upgrade pip setuptools \
+    && pip install uv
 
 COPY pyproject.toml uv.lock README.md /app/
 COPY i3x_server /app/i3x_server
-COPY frontend /app/frontend
 
 ARG INSTALL_OTEL=false
-RUN if [ "$INSTALL_OTEL" = "true" ]; then \
+RUN --mount=type=cache,target=/root/.cache/uv \
+    if [ "$INSTALL_OTEL" = "true" ]; then \
         uv sync --no-dev --frozen --extra otel; \
     else \
         uv sync --no-dev --frozen; \
     fi
 
-RUN cd /app/frontend \
-    && npm ci \
-    && npm run build
+
+FROM node:24-alpine AS frontend
+
+WORKDIR /app/frontend
+
+COPY frontend/package.json frontend/package-lock.json /app/frontend/
+RUN --mount=type=cache,target=/root/.npm npm ci --prefer-offline
+
+COPY frontend /app/frontend
+RUN --mount=type=cache,target=/root/.npm npm run build
 
 
 FROM python:3.15.2-alpine AS runtime
@@ -59,7 +67,7 @@ RUN apk add --no-cache \
 
 COPY --from=builder /app/.venv /app/.venv
 COPY i3x_server /app/i3x_server
-COPY --from=builder /app/dist /app/dist
+COPY --from=frontend /app/dist /app/dist
 COPY static /app/static
 # MCP tool/prompt overrides are resolved relative to /app/overrides; without this the
 # shipped image silently runs with the built-in definitions.
@@ -71,8 +79,13 @@ USER app
 
 EXPOSE 8000
 
+# /health is a static readiness route; probing it avoids spawning a Python interpreter
+# every 30s and does not touch the OPC UA connection.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/v1/info', timeout=3)"
+    CMD wget -q -O /dev/null http://127.0.0.1:8000/health
 
 ENTRYPOINT ["/sbin/tini", "--"]
-CMD ["python", "-m", "uvicorn", "i3x_server.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# --limit-concurrency sheds load with 503 instead of piling requests onto the single
+# event loop. Workers stay at 1 on purpose: subscription state and MCP sessions are
+# process-local, so multiple workers would strand them (see docs/SCALING_GUIDE.md).
+CMD ["python", "-m", "uvicorn", "i3x_server.main:app", "--host", "0.0.0.0", "--port", "8000", "--limit-concurrency", "200"]

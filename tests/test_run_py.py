@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import os
+import sys
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -85,3 +87,28 @@ def test_load_local_env_keeps_unclosed_quote_verbatim(isolated_environ: dict[str
     env_file.write_text('I3X_WEIRD="unclosed\n', encoding="utf-8")
     run._load_local_env(str(env_file))
     assert isolated_environ["I3X_WEIRD"] == '"unclosed'
+
+
+def _command(**kwargs: Any) -> list[str]:
+    defaults: dict[str, Any] = {"host": "127.0.0.1", "port": "8000", "reload_enabled": False, "uvicorn_loop": "none"}
+    defaults.update(kwargs)
+    return run._uvicorn_command(**defaults)
+
+
+def test_uvicorn_command_applies_default_concurrency_limit(isolated_environ: dict[str, str]) -> None:
+    assert _command()[-2:] == ["--limit-concurrency", "200"]
+
+
+def test_uvicorn_command_honours_concurrency_limit_override(isolated_environ: dict[str, str]) -> None:
+    isolated_environ["I3X_UVICORN_LIMIT_CONCURRENCY"] = "50"
+    assert _command()[-2:] == ["--limit-concurrency", "50"]
+
+
+def test_uvicorn_command_disables_concurrency_limit_with_zero(isolated_environ: dict[str, str]) -> None:
+    isolated_environ["I3X_UVICORN_LIMIT_CONCURRENCY"] = "0"
+    assert "--limit-concurrency" not in _command()
+
+
+def test_uvicorn_command_inserts_reload_before_app_target(isolated_environ: dict[str, str]) -> None:
+    command = _command(reload_enabled=True)
+    assert command[:6] == [sys.executable, "-m", "uvicorn", "i3x_server.main:app", "--reload", "--host"]

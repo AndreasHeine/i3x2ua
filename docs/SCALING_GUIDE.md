@@ -168,6 +168,7 @@ OPC UA Server
 - Shared cache state
 - Simplest deployment
 - Full subscription compatibility
+- Bounded request admission (`--limit-concurrency`)
 - Recommended default deployment
 
 ## Recommended For
@@ -178,6 +179,19 @@ OPC UA Server
 - Packaging systems
 - Test stations
 - Production cells
+
+## Load Shedding
+
+The OPC UA side is bounded (browse/read/refresh concurrency), but the HTTP side is not, so
+a load spike on a single worker piles requests onto one event loop: memory grows and long-lived
+SSE streams starve. The shipped deployment therefore keeps `--workers 1` (subscription state and
+legacy MCP sessions are process-local, so extra workers would strand them) and adds
+`--limit-concurrency 200`. uvicorn answers over-limit requests with 503 immediately, which is
+observable to clients and keeps the loop responsive instead of queueing until the container OOMs.
+
+`run.py` reads the limit from `I3X_UVICORN_LIMIT_CONCURRENCY` (default `200`, `0` disables it).
+Raise it together with the OPC UA concurrency budgets when the upstream server can absorb more
+traffic; lowering it protects a constrained upstream and a small container.
 
 ---
 

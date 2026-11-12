@@ -47,10 +47,38 @@
     load(endpoint);
 
     if (refreshMs > 0) {
-      const timer = setInterval(() => {
+      // Polling only makes sense while the tab is visible: a hidden page would keep
+      // hitting /ua/status every 2s (and the OPC UA traffic behind it) for nobody.
+      let timer = null;
+      const startPolling = () => {
+        if (timer !== null) return;
+        timer = setInterval(() => {
+          load(endpoint);
+        }, refreshMs);
+      };
+      const stopPolling = () => {
+        if (timer === null) return;
+        clearInterval(timer);
+        timer = null;
+      };
+      const onVisibilityChange = () => {
+        if (document.hidden) {
+          stopPolling();
+          return;
+        }
         load(endpoint);
-      }, refreshMs);
-      return () => clearInterval(timer);
+        startPolling();
+      };
+
+      if (!document.hidden) {
+        startPolling();
+      }
+      document.addEventListener('visibilitychange', onVisibilityChange);
+
+      return () => {
+        stopPolling();
+        document.removeEventListener('visibilitychange', onVisibilityChange);
+      };
     }
 
     return undefined;

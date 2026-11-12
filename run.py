@@ -44,6 +44,35 @@ def _prepare_environment(env_path: str = ".env") -> None:
         os.environ.setdefault("I3X_HOST", "127.0.0.1")
 
 
+def _uvicorn_command(host: str, port: str, reload_enabled: bool, uvicorn_loop: str) -> list[str]:
+    """Build the uvicorn command line.
+
+    ``--limit-concurrency`` sheds load spikes with 503 instead of queueing them on the
+    event loop; the value is tunable because the HTTP side has no OPC UA budget attached
+    to it. ``0`` or an empty value disables the limit (unlimited concurrency).
+    """
+    command = [
+        sys.executable,
+        "-m",
+        "uvicorn",
+        "i3x_server.main:app",
+        "--host",
+        host,
+        "--port",
+        port,
+        "--loop",
+        uvicorn_loop,
+    ]
+    if reload_enabled:
+        command.insert(4, "--reload")
+
+    limit_concurrency = os.getenv("I3X_UVICORN_LIMIT_CONCURRENCY", "200").strip()
+    if limit_concurrency and limit_concurrency != "0":
+        command += ["--limit-concurrency", limit_concurrency]
+
+    return command
+
+
 if __name__ == "__main__":
     _prepare_environment()
     host = os.getenv("I3X_HOST", "0.0.0.0")
@@ -61,19 +90,6 @@ if __name__ == "__main__":
     else:
         uvicorn_loop = requested_loop or "auto"
 
-    command = [
-        sys.executable,
-        "-m",
-        "uvicorn",
-        "i3x_server.main:app",
-        "--host",
-        host,
-        "--port",
-        port,
-        "--loop",
-        uvicorn_loop,
-    ]
-    if reload_enabled:
-        command.insert(4, "--reload")
+    command = _uvicorn_command(host=host, port=port, reload_enabled=reload_enabled, uvicorn_loop=uvicorn_loop)
 
     raise SystemExit(subprocess.call(command))

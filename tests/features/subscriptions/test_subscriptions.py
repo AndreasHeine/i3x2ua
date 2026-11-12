@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import time
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -45,20 +46,29 @@ def test_v1_subscription_lifecycle(client: TestClient) -> None:
     assert list_payload["results"][0]["result"]["subscriptionId"] == subscription_id
     assert list_payload["results"][0]["result"]["mode"] in {"polling", "native"}
 
-    time.sleep(1.2)
+    # Poll sync until the gateway surfaces updates instead of sleeping a fixed 1.2s: the
+    # initial-value snapshot is queued at registration, so the result must become
+    # non-empty within the polling budget.
+    deadline = time.monotonic() + 2.5
+    result: list[Any] = []
+    while time.monotonic() < deadline:
+        synced = client.post(
+            "/v1/subscriptions/sync",
+            json={"clientId": client_id, "subscriptionId": subscription_id, "acknowledgeSequence": 0},
+        )
+        assert synced.status_code == 200
+        sync_payload = synced.json()
+        assert sync_payload["success"] is True
+        assert isinstance(sync_payload["result"], list)
+        result = sync_payload["result"]
+        if result:
+            break
+        time.sleep(0.05)
 
-    synced = client.post(
-        "/v1/subscriptions/sync",
-        json={"clientId": client_id, "subscriptionId": subscription_id, "acknowledgeSequence": 0},
-    )
-    assert synced.status_code == 200
-    sync_payload = synced.json()
-    assert sync_payload["success"] is True
-    assert isinstance(sync_payload["result"], list)
-    if sync_payload["result"]:
-        assert sync_payload["result"][0]["sequenceNumber"] >= 1
-        assert isinstance(sync_payload["result"][0]["updates"], list)
-        assert sync_payload["result"][0]["updates"][0]["elementId"]
+    assert result, "sync must surface subscription updates within the polling budget"
+    assert result[0]["sequenceNumber"] >= 1
+    assert isinstance(result[0]["updates"], list)
+    assert result[0]["updates"][0]["elementId"]
 
 
 def test_v1_subscription_client_id_is_one_normalized_scope(client: TestClient) -> None:

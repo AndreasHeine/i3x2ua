@@ -26,6 +26,9 @@ from typing import Any
 FIXTURE_STARTUP_TIMEOUT_SECONDS = 30.0
 GATEWAY_STARTUP_TIMEOUT_SECONDS = 60.0
 SUITE_TIMEOUT_SECONDS = 300.0
+# The compliance gate: anything weaker (partial verdicts, unknown verdict) fails CI even if
+# the suite itself exits 0, so a report cannot silently downgrade the requirement.
+REQUIRED_VERDICT = "Full 1.0 Compliance"
 
 
 def _load_orchestrator() -> Any:
@@ -165,10 +168,17 @@ def main() -> int:
     if json_path is not None and json_path.is_file():
         report = json.loads(json_path.read_text(encoding="utf-8"))
         counts = report.get("summary", {}).get("counts", {})
+        verdict = report.get("summary", {}).get("verdict")
         print(
-            f"[conformance] verdict={report.get('summary', {}).get('verdict')} "
+            f"[conformance] verdict={verdict} "
             f"pass={counts.get('pass')} fail={counts.get('fail')} warn={counts.get('warn')} skip={counts.get('skip')}"
         )
+        if exit_code == 0 and verdict != REQUIRED_VERDICT:
+            print(f"[conformance] gate failed: verdict {verdict!r} != required {REQUIRED_VERDICT!r}")
+            return 1
+    elif exit_code == 0:
+        # Without a report the verdict cannot be verified; the exit code alone is weaker.
+        print("[conformance] verdict gate not checked (no --json report written)")
     print(f"[conformance] suite exit code {exit_code}")
     return exit_code
 

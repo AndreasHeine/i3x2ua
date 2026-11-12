@@ -52,6 +52,9 @@ addopts = [
 # ``infrastructure/opcua/client.py`` stays omitted with justification: it is the real asyncua
 # adapter (transport, subscriptions, browse) and is only exercised against a live OPC UA server;
 # the unit suites drive the fake client, so instrumenting it would measure unreachable branches.
+# Branch coverage is measured so error-handling branches (the asyncua boundary, retry paths,
+# validation failures) are visible and gated, not just line counts.
+branch = true
 omit = [
     "i3x_server/infrastructure/opcua/client.py",
     "i3x_server/__init__.py",

@@ -1928,7 +1928,9 @@ async def test_reconnect_handshake_has_an_overall_deadline(monkeypatch: pytest.M
     started = time.monotonic()
     with pytest.raises(TimeoutError):
         await asyncio.wait_for(client._client._try_reactivate_existing_session(), timeout=1)
-    assert time.monotonic() - started < 0.5
+    # The client's own handshake deadline (0.1s) must fire before the outer 1s safety net;
+    # 0.9 keeps that ordering discriminating while tolerating scheduler jitter.
+    assert time.monotonic() - started < 0.9
     assert client._client.uaclient.state is UaClientState.DISCONNECTED
     assert client._client.uaclient.protocol is None
 

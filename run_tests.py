@@ -2,44 +2,32 @@
 
 Commands:
 1) uv run --group dev ruff check .
-2) uv run --group dev ruff format .
+2) uv run --group dev ruff format --check .
 3) uv run --group dev mypy .
 4) uv run --group dev lint-imports
 5) uv run --group dev pytest -q --cov=i3x_server --cov-report=term-missing
+6) uv run --group dev python scripts/check_coverage.py
+
+The coverage gate itself lives in ``scripts/check_coverage.py`` (line and branch thresholds),
+which CI uses too, so local and CI gates cannot drift apart.
 """
 
 from __future__ import annotations
 
 import subprocess
 import sys
-import xml.etree.ElementTree as ET
-from pathlib import Path
 
 BASE_COMMAND = ["uv", "run", "--group", "dev"]
-TARGET_COVERAGE_PERCENT = 85.0
-# pytest writes ``coverage.xml`` via ``--cov-report=xml`` (pyproject.toml addopts).
-COVERAGE_XML_PATH = Path("coverage.xml")
 
 COMMANDS: list[list[str]] = [
     [*BASE_COMMAND, "ruff", "check", "."],
-    [*BASE_COMMAND, "ruff", "format", "."],
+    # ``--check`` mirrors CI: the runner reports formatting drift instead of rewriting files.
+    [*BASE_COMMAND, "ruff", "format", "--check", "."],
     [*BASE_COMMAND, "mypy", "."],
     [*BASE_COMMAND, "lint-imports"],
     [*BASE_COMMAND, "pytest", "-q", "--cov=i3x_server", "--cov-report=term-missing"],
+    [*BASE_COMMAND, "python", "scripts/check_coverage.py"],
 ]
-
-
-def _read_total_coverage_percent(path: Path) -> float | None:
-    if not path.exists():
-        return None
-    try:
-        root = ET.parse(path).getroot()
-        line_rate_raw = root.attrib.get("line-rate")
-        if line_rate_raw is None:
-            return None
-        return float(line_rate_raw) * 100.0
-    except (ET.ParseError, ValueError):
-        return None
 
 
 def main() -> int:
@@ -49,20 +37,6 @@ def main() -> int:
         if completed.returncode != 0:
             print(f"\nCommand failed with exit code {completed.returncode}: {' '.join(command)}")
             return completed.returncode
-
-    total_coverage = _read_total_coverage_percent(COVERAGE_XML_PATH)
-    if total_coverage is None:
-        print(f"\nCoverage target check failed: {COVERAGE_XML_PATH} not found or unreadable.")
-        return 1
-    if total_coverage >= TARGET_COVERAGE_PERCENT:
-        print(f"\nCoverage target reached: {total_coverage:.2f}% >= {TARGET_COVERAGE_PERCENT:.2f}%.")
-    else:
-        missing = TARGET_COVERAGE_PERCENT - total_coverage
-        print(
-            f"\nCoverage target not reached: {total_coverage:.2f}% < {TARGET_COVERAGE_PERCENT:.2f}% "
-            f"(need +{missing:.2f}%)."
-        )
-        return 1
 
     print("\nAll checks completed successfully.")
     return 0

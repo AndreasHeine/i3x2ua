@@ -42,19 +42,27 @@ new branches (visible via `coverage.xml` branch data after PR-01).
 ## PR-01 — Gates & determinism (Phase 1)
 
 - `[tool.coverage.run] branch = true` in `pyproject.toml`; keep existing omit list.
-- Coverage gate alignment: CI `--cov-fail-under=85` (matches `run_tests.py`'s 85) and a new
-  branch gate at the measured baseline (e.g. `--cov-fail-under` for branch via
-  `coverage report --fail-under` after measuring; set to measured value minus small slack).
+- Coverage gate alignment: new `scripts/check_coverage.py` parses `coverage.xml` and gates
+  line-rate ≥ 85 % and branch-rate ≥ 75 % (measured baseline: 87,19 % line / 76,74 % branch).
+  CI (`quality.yml` pytest job) and `run_tests.py` both call the script, so the gates cannot
+  drift apart; CI no longer uses `--cov-fail-under=80`, and `run_tests.py` switched from
+  `ruff format` (writes files) to `ruff format --check` (mirrors CI).
 - Wire conformance gate into CI: new `conformance` job in `.github/workflows/quality.yml`
-  (ubuntu, node 24, `uv sync`, run `scripts/run_conformance_headless.py --json`, upload report
-  artifact; do not overwrite committed `i3x-conformance-report.json`).
-- Deterministic test fixes: replace fixed sleeps (`tests/test_subscription_service.py:611,936,1003`,
-  `tests/features/subscriptions/test_subscriptions.py:48`) with event/queue signaling or polling
-  until condition; remove/replace wall-clock assertion `< 0.5`
-  (`tests/test_opcua_client_helpers.py:1931`) with deterministic fake-clock or generous bound +
-  semantics assertion.
-- Tests added: the rewritten tests keep asserting the same semantics (sequence gaps, drop counts,
-  update ordering) — no behavior change, only determinism.
+  (checkout with recursive submodules, node 24, `uv sync --frozen`, run
+  `scripts/run_conformance_headless.py --json i3x-conformance-report-ci.json`, upload report
+  artifact; the committed `i3x-conformance-report.json` stays untouched). The runner now fails
+  unless the suite exits 0 **and** the verdict is `Full 1.0 Compliance`.
+- Deterministic test fixes (semantics preserved, no fixed sleeps left in the touched tests):
+  - `tests/test_subscription_service.py` polling-cadence test: bounded wait until 6 ticks with
+    an elapsed-time bound (< 0.42 s) that still discriminates drift scheduling.
+  - TTL expiry tests: drive `_expire_subscriptions()` with a shifted `last_activity_monotonic`
+    stamp instead of sleeping past the TTL; weakref release polled until collected.
+  - `tests/features/subscriptions/test_subscriptions.py`: fixed `time.sleep(1.2)` replaced by a
+    bounded sync-polling loop; the result must now be non-empty (assertion strengthened).
+  - `tests/test_opcua_client_helpers.py`: `< 0.5` bound relaxed to `< 0.9` — it still proves the
+    client's internal 0.1 s handshake deadline beats the outer 1 s `wait_for`, without flaking
+    on loaded runners.
+- Tests added/changed keep asserting the same semantics (cadence, drop/TTL behavior, ordering).
 
 ## PR-02 — Startup reliability & readiness (Phase 2)
 
@@ -231,7 +239,7 @@ new branches (visible via `coverage.xml` branch data after PR-01).
 
 | PR | Phase | Scope | Status | Tests | Coverage | Conformance | Commit |
 |---|---|---|---|---|---|---|---|
-| PR-00 | Baseline | review.md, fix_plan.md, headless gate | ☐ | baseline 1139 pass | 87 % line | Full 1.0 (56/0/2/2) | — |
+| PR-00 | Baseline | review.md, fix_plan.md, headless gate | ☒ | baseline 1139 pass | 87 % line | Full 1.0 (56/0/2/2) | 5094503 |
 | PR-01 | 1 | branch coverage, gate alignment, determinism, conformance-in-CI | ☐ | | | | |
 | PR-02 | 2 | startup degraded mode, supervisor-before-connect, readiness | ☐ | | | | |
 | PR-03 | 3 | admission caps, rate limit, cache fingerprint, zip strict | ☐ | | | | |

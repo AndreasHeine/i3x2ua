@@ -153,9 +153,12 @@ jobs:
         run: uv sync --extra otel --group dev --frozen
 
       - name: Run Pytest with Coverage
-        # The coverage gate is an explicit CI flag; local targeted runs stay usable without
-        # a forced threshold (pyproject.toml addopts no longer sets --cov-fail-under).
-        run: uv run pytest -q --cov-fail-under=80
+        # Gate thresholds live in scripts/check_coverage.py (shared with the local runner);
+        # pytest only produces the report.
+        run: uv run pytest -q
+
+      - name: Check coverage gates
+        run: uv run python scripts/check_coverage.py
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v7
@@ -169,3 +172,47 @@ jobs:
         with:
           name: coverage-xml-${{ matrix.python-version }}
           path: coverage.xml
+
+  conformance:
+    name: i3X Conformance (headless)
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        # The i3X submodule carries the conformance test tool (i3X/conformance-tests).
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Set up Node.js
+        # The test tool ships dependency-free (Node builtins only, engines >= 18.17);
+        # 24 matches the builder stage of the Dockerfile.
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.15"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10.3.3
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Run conformance suite
+        # Starts the OPC UA fixture and the gateway, waits for readiness, runs i3x-test run;
+        # fails unless the suite exits 0 and the verdict is "Full 1.0 Compliance".
+        run: uv run python scripts/run_conformance_headless.py --json i3x-conformance-report-ci.json
+
+      - name: Upload conformance report
+        # The committed i3x-conformance-report.json stays untouched; CI evidence is an artifact.
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: i3x-conformance-report
+          path: i3x-conformance-report-ci.json

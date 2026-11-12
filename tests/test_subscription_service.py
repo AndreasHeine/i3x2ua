@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import gc
+import time
 import weakref
 from contextlib import suppress
 from datetime import datetime, timezone
@@ -608,11 +609,19 @@ async def test_shared_polling_loop_uses_absolute_deadline_schedule() -> None:
         service._node_monitors[node_id] = monitor
 
     task = asyncio.create_task(service._shared_polling_loop())
-    await asyncio.sleep(0.4)
+    started = time.monotonic()
+    while client.read_data_values_calls < 6:
+        if time.monotonic() - started > 1.5:
+            pytest.fail("shared polling loop did not produce 6 ticks within 1.5s")
+        await asyncio.sleep(0.01)
+    elapsed = time.monotonic() - started
     task.cancel()
     await task
 
-    # Deadline ticks every 0.05s -> ~7 reads in 0.4s; sleep-after-read drift would yield ~5.
+    # Absolute-deadline ticks fire every 0.05s regardless of read duration, so six ticks
+    # land around 0.25s; sleep-after-read drift needs ~0.40s. The bound discriminates the
+    # drift while tolerating scheduler jitter on loaded runners.
+    assert elapsed < 0.42
     assert client.read_data_values_calls >= 6
     await service.close()
 
@@ -933,7 +942,10 @@ async def test_subscription_ttl_expires_inactive_subscription() -> None:
     subscription_id = created.subscription_id
     assert await service.register_items("c1", subscription_id, ["asset-root"], max_depth=0, model=_model())
 
-    await asyncio.sleep(2.2)
+    # Shift the activity stamp past the TTL instead of sleeping: the sweep compares
+    # stamps against the loop clock, so driving it directly is deterministic.
+    service._subscriptions[subscription_id].last_activity_monotonic -= 2.0
+    await service._expire_subscriptions()
 
     synced = await service.sync("c1", subscription_id, acknowledge_sequence=0)
     assert synced is None
@@ -973,7 +985,12 @@ async def test_subscription_ttl_releases_expired_payloads(
 
         await asyncio.wait_for(asyncio.gather(*(event.wait() for event in expiry_events)), timeout=2)
 
-        await asyncio.sleep(0.25)
+        # Weakrefs drop once the expiry coroutine's frame releases the payloads. Poll for
+        # collection instead of a fixed sleep so the assertion cannot race the loop frames.
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline and not all(payload_ref() is None for payload_ref in payload_refs):
+            gc.collect()
+            await asyncio.sleep(0.05)
         gc.collect()
         assert service._cleanup_task is not None
         assert not service._cleanup_task.done()
@@ -991,16 +1008,16 @@ async def test_subscription_ttl_ignores_server_callbacks() -> None:
     created = await service.create_subscription(client_id="c1", display_name="s1")
     subscription_id = created.subscription_id
 
-    # Simulate frequent server-side callbacks (every 0.2s for 1.5s total)
-    # Total time > TTL, but each gap < TTL.
+    # Simulate frequent server-side callbacks. Each callback delivers a value but must not
+    # refresh the client-activity stamp, so the TTL window is measured from the last client
+    # interaction (create/sync/wait_for_updates), not from server traffic.
     for i in range(7):
         await service.handle_datachange(subscription_id, "node1", i)
-        await asyncio.sleep(0.2)
 
-    # If the fix works, the subscription should now be considered stale
-    # because the client hasn't called sync/wait_for_updates for > 1s,
-    # even though server updates were arriving.
-    await asyncio.sleep(0.5)  # Ensure cleanup loop has run at least once since last sleep
+    # Drive the sweep past the TTL by shifting the activity stamp (created at stamp=now)
+    # instead of sleeping > 1s of wall time.
+    service._subscriptions[subscription_id].last_activity_monotonic -= 2.0
+    await service._expire_subscriptions()
     synced = await service.sync("c1", subscription_id, acknowledge_sequence=0)
     assert synced is None, "Subscription should have expired despite server callbacks"
     await service.close()

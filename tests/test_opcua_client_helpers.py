@@ -1577,14 +1577,7 @@ class _RefTypeClient:
         return _RefTypeNode(key, key)
 
 
-@pytest.mark.asyncio
-async def test_resolve_reference_type_supertypes_caches_every_ancestor(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    fake_client = _RefTypeClient()
-    client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
-    cast(Any, client)._client = fake_client
-
+def _ref_type_browse_stub(fake_client: _RefTypeClient) -> Any:
     async def _browse_references_descriptions(
         nodes: list[Any],
         max_nodes_per_browse: int,
@@ -1601,7 +1594,83 @@ async def test_resolve_reference_type_supertypes_caches_every_ancestor(
             return [(node, [])]
         return [(node, [SimpleNamespace(NodeId=SimpleNamespace(to_string=lambda s=supertype: s))])]
 
-    monkeypatch.setattr(client, "_browse_references_descriptions", _browse_references_descriptions)
+    return _browse_references_descriptions
+
+
+@pytest.mark.asyncio
+async def test_reference_type_supertypes_cache_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The node-id keyed chain cache must not accumulate every reference type ever browsed."""
+    fake_client = _RefTypeClient()
+    client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
+    cast(Any, client)._client = fake_client
+    monkeypatch.setattr("i3x_server.infrastructure.opcua.client._REFERENCE_TYPE_SUPERTYPES_CACHE_MAX_ENTRIES", 2)
+    monkeypatch.setattr(client, "_browse_references_descriptions", _ref_type_browse_stub(fake_client))
+
+    assert await client.resolve_reference_type_supertype_browse_names("HasComponent") == [
+        "HasComponent",
+        "Aggregates",
+        "HasChild",
+        "HierarchicalReferences",
+        "References",
+    ]
+    assert len(client._reference_type_supertypes_cache) == 2
+    assert set(client._reference_type_supertypes_cache) == {"Aggregates", "HasComponent"}
+
+    # Resident entries are hits; ancestors evicted past the cap are browsed again.
+    fake_client.browsed.clear()
+    assert await client.resolve_reference_type_supertype_browse_names("HasComponent") == [
+        "HasComponent",
+        "Aggregates",
+        "HasChild",
+        "HierarchicalReferences",
+        "References",
+    ]
+    assert fake_client.browsed == []
+
+    fake_client.browsed.clear()
+    assert await client.resolve_reference_type_supertype_browse_names("HasChild") == [
+        "HasChild",
+        "HierarchicalReferences",
+        "References",
+    ]
+    # The evicted ancestors are browsed again, and the cache stays bounded.
+    assert fake_client.browsed == ["HasChild", "HierarchicalReferences", "References"]
+    assert len(client._reference_type_supertypes_cache) == 2
+    assert set(client._reference_type_supertypes_cache) == {"HierarchicalReferences", "HasChild"}
+
+
+def test_metadata_dict_cache_read_promotes_and_evicts() -> None:
+    client = OpcUaClient(endpoint="opc.tcp://localhost:4840", metadata_cache_ttl_seconds=0)
+    cache: dict[str, tuple[float, list[str]]] = {}
+
+    for key in ("a", "b", "c"):
+        client._metadata_dict_cache_write(cache, key, [key], max_entries=2)
+    assert list(cache) == ["b", "c"]
+
+    assert client._metadata_dict_cache_read(cache, "b") == ["b"]
+    assert list(cache) == ["c", "b"]
+
+    client._metadata_dict_cache_write(cache, "d", ["d"], max_entries=2)
+    assert list(cache) == ["b", "d"]
+    assert client._metadata_dict_cache_read(cache, "c") is None
+
+
+def test_metadata_dict_cache_read_drops_stale_entries() -> None:
+    client = OpcUaClient(endpoint="opc.tcp://localhost:4840", metadata_cache_ttl_seconds=1)
+    cache: dict[str, tuple[float, list[str]]] = {"a": (float("-inf"), ["stale"])}
+
+    assert client._metadata_dict_cache_read(cache, "a") is None
+    assert cache == {}
+
+
+@pytest.mark.asyncio
+async def test_resolve_reference_type_supertypes_caches_every_ancestor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_client = _RefTypeClient()
+    client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
+    cast(Any, client)._client = fake_client
+    monkeypatch.setattr(client, "_browse_references_descriptions", _ref_type_browse_stub(fake_client))
 
     assert await client.resolve_reference_type_supertype_browse_names("HasComponent") == [
         "HasComponent",

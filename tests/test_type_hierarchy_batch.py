@@ -133,6 +133,62 @@ async def test_type_hierarchy_batch_cycle_is_bounded(monkeypatch: pytest.MonkeyP
 
 
 @pytest.mark.asyncio
+async def test_type_definition_hierarchy_cache_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Hierarchy chains must not accumulate every type id a long-lived client browses."""
+    client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
+    monkeypatch.setattr("i3x_server.infrastructure.opcua.client._TYPE_DEFINITION_HIERARCHY_CACHE_MAX_ENTRIES", 2)
+
+    names = {f"ns=2;i={index}": f"Type{index}" for index in range(1, 6)}
+    names["i=58"] = "BaseObjectType"
+    parents: dict[str, list[str]] = {node_id: [] for node_id in names}
+    parents.update({f"ns=2;i={index}": ["i=58"] for index in range(1, 6)})
+    read_batches: list[list[str]] = []
+
+    async def read(nodes: list[Any], attr: AttributeIds) -> list[ua.DataValue]:
+        ids = [node.nodeid.to_string() for node in nodes]
+        read_batches.append(ids)
+        return [ua.DataValue(ua.Variant(ua.QualifiedName(names[type_id], 0))) for type_id in ids]
+
+    async def browse(nodes: list[Any], **kwargs: Any) -> list[tuple[Any, list[ua.ReferenceDescription]]]:
+        del kwargs
+        output = []
+        for node in nodes:
+            refs = [
+                ua.ReferenceDescription(NodeId=ua.ExpandedNodeId.from_string(parent))
+                for parent in parents[node.nodeid.to_string()]
+            ]
+            output.append((node, refs))
+        return output
+
+    async def limits() -> OpcUaOperationalLimits:
+        return OpcUaOperationalLimits(None, None)
+
+    monkeypatch.setattr(
+        client, "_client", SimpleNamespace(get_node=lambda value: SimpleNamespace(nodeid=ua.NodeId.from_string(value)))
+    )
+    monkeypatch.setattr(client, "_read_attribute_batch", read)
+    monkeypatch.setattr(client, "_browse_references_descriptions", browse)
+    monkeypatch.setattr(client, "get_operational_limits", limits)
+
+    for index in range(1, 6):
+        chain = await client.resolve_type_definition_hierarchy(f"ns=2;i={index}")
+        assert [info.browse_name for info in chain] == [f"Type{index}", "BaseObjectType"]
+
+    assert len(client._type_definition_hierarchy_cache) == 2
+    assert set(client._type_definition_hierarchy_cache) == {"ns=2;i=5", "i=58"}
+
+    # Resident entries hit without round-trips; an evicted type is resolved again.
+    reads_before = len(read_batches)
+    hit = await client.resolve_type_definition_hierarchy("ns=2;i=5")
+    assert [info.browse_name for info in hit] == ["Type5", "BaseObjectType"]
+    assert len(read_batches) == reads_before
+
+    evicted = await client.resolve_type_definition_hierarchy("ns=2;i=1")
+    assert [info.browse_name for info in evicted] == ["Type1", "BaseObjectType"]
+    assert len(read_batches) == reads_before + 1
+
+
+@pytest.mark.asyncio
 async def test_type_hierarchy_batch_read_failure_is_not_cached(monkeypatch: pytest.MonkeyPatch) -> None:
     client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
 

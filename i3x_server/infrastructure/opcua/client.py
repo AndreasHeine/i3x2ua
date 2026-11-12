@@ -73,6 +73,13 @@ logger = logging.getLogger(__name__)
 _T = TypeVar("_T")
 _METADATA_INVALIDATED_AT = float("-inf")
 
+# Caps for the node-id keyed metadata caches below. Entries only expire on read, so without
+# a cap a long-lived client accumulates every type it ever browsed. The caps are generous so
+# hot base types stay resident in normal deployments and eviction only bounds pathological
+# growth.
+_TYPE_DEFINITION_HIERARCHY_CACHE_MAX_ENTRIES = 2048
+_REFERENCE_TYPE_SUPERTYPES_CACHE_MAX_ENTRIES = 1024
+
 # Budget override for background model refreshes. Tasks created inside the scope inherit
 # it through their copied context, so a rebuild's round-trips are throttled by the smaller
 # refresh budget instead of competing for the read budget that request handlers share.
@@ -236,6 +243,51 @@ class OpcUaClient:
         if cached is None:
             return None
         return (_METADATA_INVALIDATED_AT, cached[1])
+
+    def _metadata_dict_cache_read(self, cache: dict[str, tuple[float, _T]], key: str) -> _T | None:
+        """Return the fresh value for ``key`` and mark the entry most-recently-used.
+
+        Stale entries are dropped rather than kept: dict-keyed metadata is never served as
+        stale, so unreachable entries would only delay eviction.
+        """
+        entry = cache.get(key)
+        if entry is None:
+            return None
+        if not self._is_metadata_cache_entry_fresh(entry[0]):
+            del cache[key]
+            return None
+        cache[key] = cache.pop(key)
+        return entry[1]
+
+    def _metadata_dict_cache_write(
+        self, cache: dict[str, tuple[float, _T]], key: str, value: _T, max_entries: int
+    ) -> None:
+        """Store an entry as most-recently-used and evict least-recently-used ones past the cap."""
+        cache[key] = (perf_counter(), value)
+        while len(cache) > max_entries:
+            del cache[next(iter(cache))]
+
+    def _cached_type_definition_hierarchy(self, type_id: str) -> list[OpcUaTypeDefinitionInfo] | None:
+        return self._metadata_dict_cache_read(self._type_definition_hierarchy_cache, type_id)
+
+    def _store_type_definition_hierarchy(self, type_id: str, hierarchy: list[OpcUaTypeDefinitionInfo]) -> None:
+        self._metadata_dict_cache_write(
+            self._type_definition_hierarchy_cache,
+            type_id,
+            hierarchy,
+            _TYPE_DEFINITION_HIERARCHY_CACHE_MAX_ENTRIES,
+        )
+
+    def _cached_reference_type_supertypes(self, type_id: str) -> list[str] | None:
+        return self._metadata_dict_cache_read(self._reference_type_supertypes_cache, type_id)
+
+    def _store_reference_type_supertypes(self, type_id: str, names: list[str]) -> None:
+        self._metadata_dict_cache_write(
+            self._reference_type_supertypes_cache,
+            type_id,
+            names,
+            _REFERENCE_TYPE_SUPERTYPES_CACHE_MAX_ENTRIES,
+        )
 
     def _start_metadata_load(self, key: str, loader: Callable[[], Awaitable[_T]]) -> asyncio.Future[_T]:
         task = self._metadata_load_tasks.get(key)

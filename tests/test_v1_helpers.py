@@ -727,6 +727,56 @@ async def test_object_type_context_cold_cache_and_warm_up_wait_for_build(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_object_type_context_cache_is_a_bounded_lru(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Alternating token triples must not thrash a single context slot."""
+    builds = 0
+
+    async def _build(**_kwargs: Any) -> objecttype_helpers._ObjectTypeContext:
+        nonlocal builds
+        builds += 1
+        return objecttype_helpers._ObjectTypeContext([], [], {}, [], {})
+
+    monkeypatch.setattr(objecttype_helpers, "_build_object_type_context", _build)
+    monkeypatch.setattr(objecttype_helpers, "_OBJECT_TYPE_CONTEXT_CACHE_MAX_ENTRIES", 3)
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(object_type_lock=asyncio.Lock())))
+    client = cast(Any, _EmptyOpcUaClient())
+
+    models = [_context_model() for _ in range(5)]
+    for index, model in enumerate(models):
+        model.nodes_by_id[f"n{index}"] = ModelNode(
+            id=f"n{index}",
+            name=f"n{index}",
+            kind="asset",
+            source_node_id=f"n{index}",
+        )
+
+    contexts = [
+        await objecttype_helpers._get_object_type_context(request, model, client, allow_stale=False) for model in models
+    ]
+    assert builds == 5
+    assert len(request.app.state.object_type_context_cache["entries"]) == 3
+    assert request.app.state.object_type_context_cache["context"] is contexts[-1]
+
+    # The three most recently used contexts still hit, in any order.
+    builds = 0
+    for index in (2, 4, 3):
+        assert await objecttype_helpers._get_object_type_context(request, models[index], client) is contexts[index]
+    assert builds == 0
+
+    # The evicted token serves the most-recently-used context while it is rebuilt.
+    stale = await objecttype_helpers._get_object_type_context(request, models[0], client)
+    assert stale is contexts[3]
+    await request.app.state.object_type_refresh_task
+    assert builds == 1
+    assert len(request.app.state.object_type_context_cache["entries"]) == 3
+    assert request.app.state.object_type_context_cache["model_token"] == model_revision(models[0])
+
+    rebuilt = await objecttype_helpers._get_object_type_context(request, models[0], client)
+    assert rebuilt is not contexts[0]
+    assert builds == 1
+
+
+@pytest.mark.asyncio
 async def test_failed_background_object_type_refresh_keeps_stale_context(monkeypatch: pytest.MonkeyPatch) -> None:
     builds = 0
 

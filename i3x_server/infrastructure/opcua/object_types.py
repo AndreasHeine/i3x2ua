@@ -165,9 +165,9 @@ async def resolve_type_definition_hierarchies(
         for type_id in dict.fromkeys(pending):
             if type_id in parents_by_id or type_id in cached_chains:
                 continue
-            cached = client._type_definition_hierarchy_cache.get(type_id)
-            if cached is not None and client._is_metadata_cache_entry_fresh(cached[0]):
-                cached_chains[type_id] = list(cached[1])
+            cached_chain = client._cached_type_definition_hierarchy(type_id)
+            if cached_chain is not None:
+                cached_chains[type_id] = list(cached_chain)
                 cache_hits += 1
             else:
                 unresolved.append(type_id)
@@ -216,7 +216,7 @@ async def resolve_type_definition_hierarchies(
                 hierarchy.append(type_infos[type_id])
                 stack.extend(reversed(parents_by_id[type_id]))
         hierarchies[root_id] = hierarchy
-        client._type_definition_hierarchy_cache[root_id] = (perf_counter(), list(hierarchy))
+        client._store_type_definition_hierarchy(root_id, list(hierarchy))
     logger.info(
         "OPC UA type hierarchy resolution endpoint=%s requested=%d cache_hits=%d resolved_types=%d duration_s=%.3f",
         client._endpoint,
@@ -234,12 +234,9 @@ async def _resolve_reference_type_chain(client: OpcUaClient, type_id: str, in_pr
     Every node reached is cached in its own right, so sibling reference types that
     converge on shared ancestors resolve those ancestors only once.
     """
-    cached = client._reference_type_supertypes_cache.get(type_id)
-    if cached is not None:
-        cached_at, cached_names = cached
-        if client._is_metadata_cache_entry_fresh(cached_at):
-            return list(cached_names)
-        del client._reference_type_supertypes_cache[type_id]
+    cached_names = client._cached_reference_type_supertypes(type_id)
+    if cached_names is not None:
+        return list(cached_names)
 
     if type_id in in_progress:
         return []
@@ -291,7 +288,7 @@ async def _resolve_reference_type_chain(client: OpcUaClient, type_id: str, in_pr
                     discovered_names.append(name)
 
     in_progress.discard(type_id)
-    client._reference_type_supertypes_cache[type_id] = (perf_counter(), list(discovered_names))
+    client._store_reference_type_supertypes(type_id, list(discovered_names))
     return list(discovered_names)
 
 

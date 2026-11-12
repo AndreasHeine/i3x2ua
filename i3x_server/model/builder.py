@@ -75,19 +75,29 @@ class ModelBuilder:
                     if isinstance(reference_type_id, str) and reference_type_id:
                         unique_reference_type_ids.add(reference_type_id)
 
-            for reference_type_id in unique_reference_type_ids:
-                try:
-                    resolved_supertypes = await resolve_reference_type_supertypes(reference_type_id)
+            # Resolve distinct reference-type chains concurrently; chains that converge on
+            # shared ancestors are cached per node, so overlap costs at most one extra browse.
+            reference_type_ids = sorted(unique_reference_type_ids)
+            if reference_type_ids:
+                resolved_results = await asyncio.gather(
+                    *(resolve_reference_type_supertypes(reference_type_id) for reference_type_id in reference_type_ids),
+                    return_exceptions=True,
+                )
+                for index, reference_type_id in enumerate(reference_type_ids):
+                    resolved_supertypes = resolved_results[index]
+                    if isinstance(resolved_supertypes, BaseException):
+                        if not isinstance(resolved_supertypes, Exception):
+                            raise resolved_supertypes
+                        logger.warning(
+                            "Reference supertype resolution failed for reference_type_id=%s",
+                            reference_type_id,
+                            exc_info=resolved_supertypes,
+                        )
+                        continue
                     if isinstance(resolved_supertypes, list):
                         reference_supertypes_by_id[reference_type_id] = [
                             name for name in resolved_supertypes if isinstance(name, str)
                         ]
-                except Exception:
-                    logger.warning(
-                        "Reference supertype resolution failed for reference_type_id=%s",
-                        reference_type_id,
-                        exc_info=True,
-                    )
 
         type_definition_hierarchy_by_id: dict[str, tuple[OpcUaTypeDefinitionInfo, ...]] = {}
         type_resolution_started = perf_counter()

@@ -913,6 +913,47 @@ async def _build_object_type_context(
     browse_name_cache: dict[str, str | None] = {}
     lookup_budget = {"remaining": _live_type_name_lookup_max_per_request()}
 
+    # Pre-resolve generic live browse-name lookups concurrently. The classification below is
+    # deterministic and side-effect free, so the sequential pass afterwards keeps item order,
+    # collision skips, and the shared lookup budget identical (budget decrements happen before
+    # the first await in each coroutine, so gathered tasks cannot exceed the per-request cap).
+    generic_lookup_targets_by_key: dict[str, str] = {}
+    for unresolved_id in sorted(referenced_type_element_ids - known_ids):
+        unresolved_key = unresolved_id.lower()
+        if unresolved_key in by_source_type_id:
+            continue
+        resolved_datatype = resolved_custom_datatypes.get(unresolved_key)
+        if (
+            _datatype_object_type_from_source_type_id(
+                unresolved_id,
+                namespace_infos,
+                resolved_datatype.scalar_schema if resolved_datatype is not None else None,
+                resolved_datatype.browse_name if resolved_datatype is not None else None,
+            )
+            is not None
+        ):
+            continue
+        if unresolved_id in property_type_element_ids:
+            if _opaque_datatype_object_type_from_source_type_id(unresolved_id, namespace_infos) is not None:
+                continue
+        generic_lookup_targets_by_key[unresolved_key] = unresolved_id
+
+    generic_items_by_source_id: dict[str, ObjectTypeResponse | None] = {}
+    if generic_lookup_targets_by_key:
+        generic_results = await asyncio.gather(
+            *(
+                _generic_object_type_from_source_type_id(
+                    unresolved_id,
+                    namespace_infos,
+                    opcua_client,
+                    browse_name_cache,
+                    lookup_budget,
+                )
+                for unresolved_id in generic_lookup_targets_by_key.values()
+            ),
+        )
+        generic_items_by_source_id = dict(zip(generic_lookup_targets_by_key.keys(), generic_results, strict=True))
+
     for unresolved_id in sorted(referenced_type_element_ids - known_ids):
         unresolved_key = unresolved_id.lower()
         source_match = by_source_type_id.get(unresolved_key)
@@ -938,13 +979,7 @@ async def _build_object_type_context(
                 by_source_type_id[unresolved_key] = opaque_datatype_item
                 continue
 
-        generic_item = await _generic_object_type_from_source_type_id(
-            unresolved_id,
-            namespace_infos,
-            opcua_client,
-            browse_name_cache,
-            lookup_budget,
-        )
+        generic_item = generic_items_by_source_id.get(unresolved_key)
         if generic_item is not None:
             items.append(generic_item)
             by_source_type_id[unresolved_key] = generic_item

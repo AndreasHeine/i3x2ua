@@ -10,8 +10,10 @@ from unittest.mock import AsyncMock
 import pytest
 from fastapi import FastAPI
 from fastapi.routing import APIRoute
+from starlette.requests import Request
 
 from i3x_server.api.v1 import monolithic
+from i3x_server.application.services.model_cache import get_or_build_model
 from i3x_server.bootstrap import app_factory
 from i3x_server.bootstrap.app_factory import (
     _extract_inline_script_bodies,
@@ -363,6 +365,85 @@ async def test_failed_refresh_preserves_previous_model(monkeypatch: pytest.Monke
         await _run_periodic_model_refresh(app)
     build.assert_awaited_once()
     assert app.state.model_cache is model
+
+
+@pytest.mark.asyncio
+async def test_periodic_refresh_builds_outside_lock_and_readers_keep_old_revision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Readers must keep serving the previous revision while a refresh build is in flight."""
+    old = BuildResult(
+        nodes_by_id={},
+        root_ids=[],
+        children_by_id={},
+        instances_by_type_id={},
+        property_to_node={},
+        action_to_method={},
+    )
+    asset_node = ModelNode(
+        id="asset-1", name="Asset", kind="asset", type=None, children=[], source_node_id="ns=2;s=Asset"
+    )
+    new = BuildResult(
+        nodes_by_id={"asset-1": asset_node},
+        root_ids=["asset-1"],
+        children_by_id={"asset-1": []},
+        instances_by_type_id={},
+        property_to_node={},
+        action_to_method={},
+    )
+
+    build_started = asyncio.Event()
+    build_release = asyncio.Event()
+
+    class _ModelBuilder:
+        async def build(self) -> BuildResult:
+            build_started.set()
+            await build_release.wait()
+            return new
+
+    class _OpcUaClient:
+        def reset_runtime_metrics(self) -> None:
+            return None
+
+        async def get_namespace_infos(self) -> list[object]:
+            return []
+
+        async def get_object_types(self) -> list[object]:
+            return []
+
+    sleep_calls = 0
+
+    async def _fake_sleep(_: float) -> None:
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls >= 2:
+            raise asyncio.CancelledError()
+
+    app = FastAPI()
+    app.state.model_builder = _ModelBuilder()
+    app.state.opcua_client = _OpcUaClient()
+    app.state.model_lock = asyncio.Lock()
+    app.state.model_preload_task = None
+    app.state.model_cache = old
+    app.state.object_type_context_cache = None
+
+    monkeypatch.setattr("i3x_server.bootstrap.app_factory.settings.model_refresh_interval_seconds", 1)
+    monkeypatch.setattr("i3x_server.bootstrap.app_factory.asyncio.sleep", _fake_sleep)
+
+    refresh = asyncio.create_task(_run_periodic_model_refresh(app))
+    await build_started.wait()
+
+    request = Request({"type": "http", "app": app})
+    # The refresh build is in flight; a reader gets the old model immediately and does not
+    # wait behind the model lock.
+    assert await get_or_build_model(request) is old
+
+    build_release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await refresh
+
+    assert app.state.model_cache is new
+    assert await get_or_build_model(request) is new
 
 
 @pytest.mark.parametrize("enabled", [False, True])

@@ -258,10 +258,11 @@ async def _run_periodic_model_refresh(app: FastAPI) -> None:
                 logger.exception("Periodic model refresh observed preload failure; continuing")
 
         started = perf_counter()
-        lock: asyncio.Lock = app.state.model_lock
         try:
-            async with lock:
-                built = await app.state.model_builder.build()
+            # Build outside the lock so readers keep serving the previous model revision
+            # while the refresh round-trips run; only the swap is serialized.
+            built = await app.state.model_builder.build()
+            async with app.state.model_lock:
                 app.state.model_cache = built
                 # Keep the existing object-type context unless the refreshed model is
                 # materially different. This avoids a pointless rebuild on equivalent
@@ -386,6 +387,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 pass
 
     app.state.model_lock = asyncio.Lock()
+    app.state.model_build_task = None
     app.state.model_preload_task = None
     app.state.model_refresh_task = None
     app.state.object_type_warm_task = None

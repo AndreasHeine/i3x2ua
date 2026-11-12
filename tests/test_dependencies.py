@@ -101,6 +101,41 @@ async def test_get_or_build_model_builds_and_sets_cache() -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_or_build_model_coalesces_concurrent_lazy_builds() -> None:
+    built = _build_result()
+    release = asyncio.Event()
+
+    class FakeBuilder:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def build(self) -> BuildResult:
+            self.calls += 1
+            await release.wait()
+            return built
+
+    app = FastAPI()
+    app.state.model_preload_task = None
+    app.state.model_cache = None
+    app.state.model_lock = asyncio.Lock()
+    app.state.model_builder = FakeBuilder()
+
+    first = asyncio.create_task(get_or_build_model(Request({"type": "http", "app": app})))
+    await asyncio.sleep(0)
+    second = asyncio.create_task(get_or_build_model(Request({"type": "http", "app": app})))
+    await asyncio.sleep(0)
+
+    assert app.state.model_builder.calls == 1
+
+    release.set()
+    results = await asyncio.gather(first, second)
+    assert results[0] is built
+    assert results[1] is built
+    assert app.state.model_cache is built
+    assert app.state.model_builder.calls == 1
+
+
+@pytest.mark.asyncio
 async def test_get_or_build_model_waits_for_preload_task() -> None:
     cached = _build_result()
 

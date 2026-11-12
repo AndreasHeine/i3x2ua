@@ -1,5 +1,6 @@
 import base64
 import json
+import os
 import re
 from typing import Annotated, Any
 from uuid import UUID
@@ -104,7 +105,30 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
+_MAX_CACHED_SETTINGS = 16
+_settings_cache: dict[tuple[Any, ...], Settings] = {}
+
 
 def get_settings() -> Settings:
-    """Return a fresh settings snapshot parsed from current environment."""
-    return Settings()
+    """Return a settings snapshot, re-parsed only when its source environment changed.
+
+    Parsing reads ``.env`` and runs every validator, which is far too expensive for
+    per-item and per-SSE-event call sites. The cache key covers the ``I3X_*`` environment
+    values (any case, matching pydantic-settings' case-insensitive lookup), the ``.env``
+    file identity, and the working directory, so an env change still reparses immediately.
+    """
+    env_state = tuple(sorted((key, value) for key, value in os.environ.items() if key.upper().startswith("I3X_")))
+    try:
+        env_file_state = os.stat(".env")
+        file_state: tuple[int, int] | None = (env_file_state.st_mtime_ns, env_file_state.st_size)
+    except OSError:
+        file_state = None
+    key = (env_state, file_state, os.getcwd())
+    cached = _settings_cache.get(key)
+    if cached is not None:
+        return cached
+    parsed = Settings()
+    _settings_cache[key] = parsed
+    while len(_settings_cache) > _MAX_CACHED_SETTINGS:
+        _settings_cache.pop(next(iter(_settings_cache)))
+    return parsed

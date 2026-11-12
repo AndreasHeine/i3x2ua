@@ -14,9 +14,10 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+from collections import deque
 from collections.abc import Mapping
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, cast
 
 from asyncua.ua.status_codes import StatusCodes
 
@@ -457,12 +458,12 @@ def _collect_value_component_nodes(
     limited_by_server = level_limit is not None and (requested_levels is None or requested_levels > level_limit)
 
     components: list[ModelNode] = []
-    queue: list[tuple[str, int]] = [(root.id, 0)]
+    queue: deque[tuple[str, int]] = deque([(root.id, 0)])
     visited: set[str] = set()
     truncated = False
 
     while queue:
-        node_id, depth = queue.pop(0)
+        node_id, depth = queue.popleft()
         if node_id in visited:
             continue
         visited.add(node_id)
@@ -550,6 +551,10 @@ def _increment_counter(counter: dict[str, int], key: str) -> None:
 
 
 def _build_model_metrics(model: BuildResult) -> ModelMetricsResponse:
+    cached_metrics = model._model_metrics_cache
+    if cached_metrics is not None:
+        return cast(ModelMetricsResponse, cached_metrics)
+
     kind_counts: dict[str, int] = {}
     for node in model.nodes_by_id.values():
         _increment_counter(kind_counts, str(node.kind))
@@ -596,7 +601,7 @@ def _build_model_metrics(model: BuildResult) -> ModelMetricsResponse:
     graph_edges = sum(len(relations) for relations in model.graph_related_by_id.values())
     typed_instances = sum(len(instance_ids) for instance_ids in model.instances_by_type_id.values())
 
-    return ModelMetricsResponse(
+    metrics = ModelMetricsResponse(
         build=ModelBuildMetrics(
             browseDurationS=model.browse_duration_s,
             mapDurationS=model.map_duration_s,
@@ -634,3 +639,5 @@ def _build_model_metrics(model: BuildResult) -> ModelMetricsResponse:
             nodesWithoutProfiles=nodes_without_profiles,
         ),
     )
+    model._model_metrics_cache = metrics
+    return metrics

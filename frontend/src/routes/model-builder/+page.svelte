@@ -45,7 +45,11 @@
 
   onMount(() => {
     fetchMetrics();
-    const timer = setInterval(fetchMetrics, 5000);
+    const timer = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        fetchMetrics();
+      }
+    }, 5000);
     return () => clearInterval(timer);
   });
 </script>

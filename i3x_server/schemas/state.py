@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from typing import Any
 
 from i3x_server.schemas.i3x import ModelNode
 
@@ -58,6 +59,8 @@ class BuildResult:
     _reverse_parent_index_cache: tuple[tuple[int, int], dict[str, str]] | None = field(
         default=None, init=False, repr=False, compare=False
     )
+    # Response for /model/metrics, computed once per snapshot; dataclasses.replace() resets it.
+    _model_metrics_cache: Any = field(default=None, init=False, repr=False, compare=False)
 
     def composition_child_ids(self, node_id: str) -> list[str]:
         """Composition (``HasComponent``) children of a node.

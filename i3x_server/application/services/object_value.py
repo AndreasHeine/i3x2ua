@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from base64 import b64encode
+from collections import deque
 from dataclasses import fields, is_dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -273,11 +274,11 @@ class ObjectValueService:
             return []
 
         components: list[ModelNode] = []
-        queue: list[tuple[str, int]] = [(root.id, 0)]
+        queue: deque[tuple[str, int]] = deque([(root.id, 0)])
         visited: set[str] = set()
 
         while queue:
-            node_id, depth = queue.pop(0)
+            node_id, depth = queue.popleft()
             if node_id in visited:
                 continue
             visited.add(node_id)

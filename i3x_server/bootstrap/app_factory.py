@@ -6,6 +6,7 @@ import hashlib
 import http
 import logging
 import os
+import posixpath
 import re
 import signal
 import types
@@ -533,7 +534,7 @@ def create_app() -> FastAPI:
     )
     # Added first so it is the innermost middleware and sees uncompressed responses.
     app.add_middleware(ModelRevisionMiddleware)
-    app.add_middleware(GZipMiddleware, minimum_size=1)
+    app.add_middleware(GZipMiddleware, minimum_size=1024)
     cors_origins = settings.cors_allowed_origins
     app.state.mcp_allowed_origins = [origin for origin in cors_origins if origin != "*"]
     if cors_origins:
@@ -750,8 +751,17 @@ def create_app() -> FastAPI:
         # "/view?endpoint=..." renders HTML whose modules resolve to "/view/_app/..." and 404:
         # the page stays an inert "Loading..." skeleton. Answer GET/HEAD requests for paths
         # whose directory contains an index.html with a redirect to the trailing-slash URL
-        # (query preserved), where relative assets resolve correctly.
+        # (query preserved), where relative assets resolve correctly. The page set is walked
+        # once at startup so per-request handling is a path lookup, not filesystem stats.
         frontend_dist_root = frontend_dist.resolve()
+        frontend_page_paths: set[str] = set()
+        for dirpath, _dirnames, filenames in os.walk(frontend_dist_root):
+            if "index.html" not in filenames:
+                continue
+            relative = os.path.relpath(dirpath, frontend_dist_root)
+            if relative == ".":
+                continue
+            frontend_page_paths.add("/" + relative.replace("\\", "/"))
 
         @app.middleware("http")
         async def redirect_frontend_pages_to_canonical_url(
@@ -760,8 +770,8 @@ def create_app() -> FastAPI:
         ) -> Response:
             if request.method not in {"GET", "HEAD"} or request.url.path.endswith("/"):
                 return await call_next(request)
-            candidate = (frontend_dist_root / request.url.path.lstrip("/")).resolve()
-            if frontend_dist_root in candidate.parents and (candidate / "index.html").is_file():
+            normalized = "/" + posixpath.normpath(request.url.path.lstrip("/"))
+            if normalized in frontend_page_paths:
                 redirect_url = request.url.path + "/"
                 if request.url.query:
                     redirect_url += f"?{request.url.query}"

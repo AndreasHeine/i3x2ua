@@ -11,10 +11,32 @@ from referencing import Registry
 from i3x_server.api.v1.object_helpers import _resolved_type_element_id_for_node
 from i3x_server.api.v1.objecttype_helpers import _get_object_type_context, _ObjectTypeContext
 from i3x_server.application.ports.opcua import OpcUaClientProtocol
+from i3x_server.http_caching import content_revision
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
 
 logger = logging.getLogger(__name__)
+
+_MAX_CACHED_VALIDATORS = 64
+_FORMAT_CHECKER = FormatChecker()
+# Compiled validators keyed by (type element id, schema content hash). The context revision
+# is empty for most contexts, so the schema content itself is the invalidation signal; a
+# bulk write of the same type reuses one compiled validator instead of re-compiling per item.
+_compiled_validators: dict[tuple[str, str], Any] = {}
+
+
+def _compiled_validator(type_id: str, schema: Any) -> Any:
+    key = (type_id, content_revision([schema]))
+    validator = _compiled_validators.get(key)
+    if validator is None:
+        _check_local_references(schema)
+        validator_class = validator_for(schema)
+        validator_class.check_schema(schema)
+        validator = validator_class(schema, format_checker=_FORMAT_CHECKER, registry=Registry())
+        _compiled_validators[key] = validator
+        while len(_compiled_validators) > _MAX_CACHED_VALIDATORS:
+            _compiled_validators.pop(next(iter(_compiled_validators)))
+    return validator
 
 
 class WriteValidationError(Exception):
@@ -68,10 +90,7 @@ class WriteValueValidator:
             raise WriteValidationError(502, f"ObjectType schema unavailable: {type_id}")
         schema = object_type.schema_
         try:
-            _check_local_references(schema)
-            validator_class = validator_for(schema)
-            validator_class.check_schema(schema)
-            validator_class(schema, format_checker=FormatChecker(), registry=Registry()).validate(value)
+            _compiled_validator(type_id, schema).validate(value)
         except ValidationError as exc:
             path = "/".join(str(part) for part in exc.absolute_path) or "<value>"
             logger.info("Write schema rejected element_id=%s type_element_id=%s path=%s", node.id, type_id, path)

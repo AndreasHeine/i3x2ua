@@ -7,6 +7,8 @@ updates. No service state is involved.
 
 from __future__ import annotations
 
+from collections import deque
+
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
 
@@ -47,10 +49,10 @@ def _collect_property_source_mappings(
 
     result: dict[str, str] = {}
     depth_limit = max(0, max_depth)
-    queue: list[tuple[str, int]] = [(root.id, 0)]
+    queue: deque[tuple[str, int]] = deque([(root.id, 0)])
 
     while queue:
-        node_id, depth = queue.pop(0)
+        node_id, depth = queue.popleft()
         node = model.nodes_by_id.get(node_id)
         if node is None:
             continue

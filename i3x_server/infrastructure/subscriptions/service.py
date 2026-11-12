@@ -18,6 +18,7 @@ from math import ceil
 from typing import Any
 from uuid import uuid4
 
+from i3x_server.domain.errors import AdmissionLimitError
 from i3x_server.domain.ports.opcua import OpcUaClientProtocol, OpcUaSubscriptionCapabilities
 from i3x_server.infrastructure.subscriptions import mapping, monitoring, state
 from i3x_server.infrastructure.subscriptions.state import (
@@ -55,6 +56,10 @@ class SubscriptionService:
         native_timeout_refresh_max_seconds: float = 30.0,
         max_concurrent_native_admissions: int = 4,
         native_backoff_seconds: float = 30.0,
+        max_subscriptions: int = 1000,
+        subtree_max_nodes: int = 5000,
+        native_max_bins: int = 100,
+        native_max_monitored_items: int = 10000,
     ) -> None:
         self._opcua_client = opcua_client
         self._interval_seconds = max(0.1, float(interval_seconds))
@@ -81,6 +86,13 @@ class SubscriptionService:
         self._native_admission_semaphore = asyncio.Semaphore(max(1, int(max_concurrent_native_admissions)))
         self._native_backoff_seconds = max(0.1, float(native_backoff_seconds))
         self._native_backoff_until_monotonic: float = 0.0
+        # Gateway-side admission limits. The upstream is the resource being protected: an
+        # unbounded subscription count or subtree turns one request into thousands of monitored
+        # items, so the caps reject instead of accepting and degrading every other client.
+        self._max_subscriptions = max(1, int(max_subscriptions))
+        self._subtree_max_nodes = max(1, int(subtree_max_nodes))
+        self._native_max_bins = max(1, int(native_max_bins))
+        self._native_max_monitored_items = max(1, int(native_max_monitored_items))
         self._cleanup_task: asyncio.Task[None] | None = None
         self._node_datachange_task: asyncio.Task[None] | None = None
         self._shared_polling_task: asyncio.Task[None] | None = None
@@ -321,6 +333,16 @@ class SubscriptionService:
             last_activity_monotonic=self._now_monotonic(),
         )
         async with self._lock:
+            active_count = len(self._subscriptions)
+            if active_count >= self._max_subscriptions:
+                # Rejected before insertion: a partially created subscription would leak state
+                # and count towards the cap it just exceeded.
+                raise AdmissionLimitError(
+                    429,
+                    "SubscriptionLimit",
+                    "Subscription limit reached",
+                    {"maxSubscriptions": self._max_subscriptions, "activeSubscriptions": active_count},
+                )
             self._subscriptions[subscription_id] = subscription_state
             # Snapshot inside the lock: ``register_items`` mutates ``state.monitored_objects`` and a
             # detail built after release can race with it ("dictionary changed size during iteration").
@@ -415,24 +437,45 @@ class SubscriptionService:
             previous_monitored_nodes = len(previous_node_ids)
             token = model_revision(model)
             source_index = self._source_index(token, model)
+            budget = self._subtree_max_nodes
+            # Mappings are built into prospective containers and committed only after the budget
+            # check. A rejected registration must leave the previous monitored set intact -
+            # truncating silently would report monitoring that never happens upstream.
+            depths = dict(subscription_state.monitored_objects)
             if subscription_state.mapping_model_token != token:
                 # A refreshed model invalidates every mapping built against the previous revision.
-                subscription_state.monitored_objects.update({element_id: max_depth for element_id in element_ids})
-                subscription_state.mapping_model_token = token
-                subscription_state.object_mappings = {
-                    element_id: mapping._resolve_object_mappings(element_id, depth, model, source_index)
-                    for element_id, depth in subscription_state.monitored_objects.items()
+                depths.update({element_id: max_depth for element_id in element_ids})
+                object_mappings = {
+                    element_id: mapping._resolve_object_mappings(
+                        element_id, depth, model, source_index, max_nodes=budget
+                    )
+                    for element_id, depth in depths.items()
                 }
             else:
+                object_mappings = dict(subscription_state.object_mappings)
                 for element_id in element_ids:
-                    known_depth = subscription_state.monitored_objects.get(element_id)
+                    known_depth = depths.get(element_id)
                     if known_depth == max_depth and element_id in subscription_state.object_mappings:
                         continue
-                    subscription_state.monitored_objects[element_id] = max_depth
-                    subscription_state.object_mappings[element_id] = mapping._resolve_object_mappings(
-                        element_id, max_depth, model, source_index
+                    depths[element_id] = max_depth
+                    object_mappings[element_id] = mapping._resolve_object_mappings(
+                        element_id, max_depth, model, source_index, max_nodes=budget
                     )
-            monitored_node_ids, node_to_element_id = self._merge_object_mappings(subscription_state.object_mappings)
+            monitored_node_ids, node_to_element_id = self._merge_object_mappings(object_mappings)
+            if len(monitored_node_ids) > budget:
+                raise AdmissionLimitError(
+                    400,
+                    "MonitoredItemBudget",
+                    "Monitored item budget exceeded",
+                    {
+                        "subscriptionId": subscription_id,
+                        "monitoredNodes": len(monitored_node_ids),
+                        "maxNodes": budget,
+                    },
+                )
+            subscription_state.monitored_objects = depths
+            subscription_state.mapping_model_token = token
+            subscription_state.object_mappings = object_mappings
             subscription_state.monitored_node_ids = monitored_node_ids
             subscription_state.node_to_element_id = node_to_element_id
             monitored_nodes_count = len(monitored_node_ids)
@@ -1043,15 +1086,23 @@ class SubscriptionService:
         self,
         monitored_objects: dict[str, int],
         model: BuildResult,
+        max_nodes: int | None = None,
     ) -> tuple[set[str], dict[str, str]]:
         # Kept as the service-facing entry point; the mapping lives in ``mapping.py``.
-        return mapping._resolve_monitored_node_ids(monitored_objects, model)
+        # ``max_nodes`` defaults to the service's subtree budget.
+        return mapping._resolve_monitored_node_ids(
+            monitored_objects, model, max_nodes=self._subtree_max_nodes if max_nodes is None else max_nodes
+        )
 
     def _collect_property_source_mappings(
         self,
         model: BuildResult,
         root: ModelNode,
         max_depth: int,
+        max_nodes: int | None = None,
     ) -> dict[str, str]:
         # Kept as the service-facing entry point; the mapping lives in ``mapping.py``.
-        return mapping._collect_property_source_mappings(model, root, max_depth)
+        # ``max_nodes`` defaults to the service's subtree budget.
+        return mapping._collect_property_source_mappings(
+            model, root, max_depth, max_nodes=self._subtree_max_nodes if max_nodes is None else max_nodes
+        )

@@ -138,6 +138,18 @@ async def _handle_client_reconnect(service: SubscriptionService) -> None:
         await service._update_subscription_mode(subscription_id)
 
 
+def _capped_limit(server_limit: int | None, local_cap: int) -> int:
+    """Effective cap: the tighter of the server-advertised limit and the process-local floor.
+
+    Servers that advertise no capability for a dimension report ``None``; without a floor the
+    admission checks below would be skipped entirely and bins/monitored items could grow without
+    bound, so the process-local cap applies instead.
+    """
+    if server_limit is None or server_limit <= 0:
+        return local_cap
+    return min(server_limit, local_cap)
+
+
 def _can_open_new_bin(service: SubscriptionService, caps: OpcUaSubscriptionCapabilities) -> bool:
     """Whether a further native bin may be opened. Must be called while holding ``service._lock``.
 
@@ -147,11 +159,11 @@ def _can_open_new_bin(service: SubscriptionService, caps: OpcUaSubscriptionCapab
     bin_count = len(service._bins)
     total_monitored = sum(len(bin_.node_handles) + bin_.pending_adds for bin_ in service._bins.values())
 
-    if caps.max_subscriptions is not None and bin_count + 1 > caps.max_subscriptions:
+    if bin_count + 1 > _capped_limit(caps.max_subscriptions, service._native_max_bins):
         return False
-    if caps.max_subscriptions_per_session is not None and bin_count + 1 > caps.max_subscriptions_per_session:
+    if bin_count + 1 > _capped_limit(caps.max_subscriptions_per_session, service._native_max_bins):
         return False
-    if caps.max_monitored_items is not None and total_monitored + 1 > caps.max_monitored_items:
+    if total_monitored + 1 > _capped_limit(caps.max_monitored_items, service._native_max_monitored_items):
         return False
     return True
 
@@ -238,13 +250,17 @@ async def _acquire_native_bin_slot(
     """
     async with service._native_bin_admission_lock:
         capacity = _min_positive(caps.max_monitored_items_per_subscription)
-        effective_capacity = capacity or _DEFAULT_BIN_CAPACITY
+        # A server advertising no per-subscription capacity gets the default fallback, bounded by
+        # the process-local monitored-item budget; an advertised capacity stays verbatim (the
+        # total-budget check below is what limits how many items are actually admitted).
+        effective_capacity = (
+            capacity if capacity is not None else min(_DEFAULT_BIN_CAPACITY, service._native_max_monitored_items)
+        )
 
         async with service._lock:
-            if caps.max_monitored_items is not None:
-                total_monitored = sum(len(bin_.node_handles) + bin_.pending_adds for bin_ in service._bins.values())
-                if total_monitored + 1 > caps.max_monitored_items:
-                    return False
+            total_monitored = sum(len(bin_.node_handles) + bin_.pending_adds for bin_ in service._bins.values())
+            if total_monitored + 1 > _capped_limit(caps.max_monitored_items, service._native_max_monitored_items):
+                return False
             target_bin = next(
                 (bin_ for bin_ in service._bins.values() if len(bin_.node_handles) + bin_.pending_adds < bin_.capacity),
                 None,

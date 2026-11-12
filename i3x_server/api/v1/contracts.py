@@ -51,6 +51,12 @@ ClientId = Annotated[str, AfterValidator(validate_client_id)]
 # documented 400 via the ``RequestValidationError`` handler, not a slow partial read.
 MAX_BULK_ITEMS = 500
 
+# Gateway admission bound for ``maxDepth``. The spec sets no upper bound, but an unbounded depth
+# makes one request an unbounded upstream traversal: the gateway answers the deepest recursion it
+# can ever produce. Deployment limits stay below it (``I3X_COMPOSITION_MAX_DEPTH`` defaults to 32);
+# raising that beyond 64 is not expressible through the request contract.
+MAX_REQUEST_DEPTH = 64
+
 
 class SuccessResponse(BaseModel, Generic[T]):
     success: bool
@@ -351,12 +357,14 @@ class GetObjectValueRequest(BaseModel):
     maxDepth: int = Field(
         default=1,
         ge=0,
+        le=MAX_REQUEST_DEPTH,
         description="Composition depth in levels: 1 = no recursion, only this element's own value "
         "(default); N > 1 = recurse up to N levels through composition (`HasComponent`) children; "
         "0 = unlimited recursion, bounded by the server's composition limits "
         "(`I3X_COMPOSITION_MAX_DEPTH`, `I3X_COMPOSITION_MAX_NODES`); a tree truncated by those limits "
         "is answered as HTTP 206 with a top-level `responseDetail`. Hierarchy-only children "
-        "(`HasChildren`) are never traversed - query them as separate elements.",
+        "(`HasChildren`) are never traversed - query them as separate elements. Values above the "
+        "gateway admission bound are rejected as HTTP 400.",
     )
 
 
@@ -380,12 +388,14 @@ class GetObjectHistoryRequest(BaseModel):
     maxDepth: int = Field(
         default=1,
         ge=0,
+        le=MAX_REQUEST_DEPTH,
         description="Composition depth in levels: 1 = no recursion, only this element's own history "
         "(default); N > 1 = recurse up to N levels through composition (`HasComponent`) children; "
         "0 = unlimited recursion, bounded by the server's composition limits "
         "(`I3X_COMPOSITION_MAX_DEPTH`, `I3X_COMPOSITION_MAX_NODES`); a tree truncated by those limits "
         "is answered as HTTP 206 with a top-level `responseDetail`. Hierarchy-only children "
-        "(`HasChildren`) are never traversed - query them as separate elements.",
+        "(`HasChildren`) are never traversed - query them as separate elements. Values above the "
+        "gateway admission bound are rejected as HTTP 400.",
     )
 
     @field_validator("startTime", "endTime")
@@ -583,9 +593,13 @@ class RegisterMonitoredItemsRequest(BaseModel):
     maxDepth: int = Field(
         default=1,
         ge=0,
+        le=MAX_REQUEST_DEPTH,
         description=(
             "Maximum composition depth to monitor beneath each registered object. "
-            "Use 0 to monitor all descendant properties."
+            "Use 0 to monitor all descendant properties, bounded by the gateway's monitored-item "
+            "budget (`I3X_SUBSCRIPTION_SUBTREE_MAX_NODES`); an oversized subtree is rejected as "
+            "HTTP 400 instead of being truncated. Values above the gateway admission bound are "
+            "rejected as HTTP 400."
         ),
     )
 

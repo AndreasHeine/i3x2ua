@@ -14,6 +14,8 @@ from jsonschema import Draft202012Validator
 
 import i3x_server.api.v1.monolithic as v1
 from i3x_server.api.v1 import object_helpers, object_value_helpers, objecttype_helpers
+from i3x_server.api.v1.contracts import ValueUpdateItemRequest, WriteVQTRequest
+from i3x_server.api.v1.write_validation import WriteValueValidator
 from i3x_server.application.services.model_query import _relationship_type_items
 from i3x_server.infrastructure.opcua.client import (
     OpcUaClientProtocol,
@@ -918,3 +920,107 @@ def test_reverse_parent_cache_is_reused_per_model_and_invalidated_on_size_change
     updated_index = object_helpers._reverse_parent_index(model)
     assert updated_index is not original_index
     assert updated_index["new-child"] == "new-parent"
+
+
+def test_reverse_parent_cache_invalidates_on_revision_when_sizes_match() -> None:
+    """Equal parent/child counts but a moved child must not keep serving the stale index."""
+    model = _sample_model()
+    original_index = object_helpers._reverse_parent_index(model)
+    assert original_index["prop-b"] == "asset-child"
+
+    moved = _sample_model()
+    moved.children_by_id["asset-root"] = ["asset-child", "prop-a", "prop-b"]
+    moved.children_by_id["asset-child"] = []
+    # Identical plane sizes, different content: only the revision component catches this.
+    assert len(moved.children_by_id) == len(model.children_by_id)
+    assert len(moved.hierarchy_children_by_id) == len(model.hierarchy_children_by_id)
+    assert moved.revision != model.revision
+
+    moved_index = object_helpers._reverse_parent_index(moved)
+    assert moved_index is not original_index
+    assert moved_index["prop-b"] == "asset-root"
+    # Each model keeps its own cached index, so the untouched model still returns the original.
+    assert object_helpers._reverse_parent_index(model) is original_index
+
+
+class _AcceptingValidator:
+    """Schema validator stub: every value passes, so the pairing logic is what is exercised."""
+
+    async def validate(self, node: ModelNode, value: Any) -> None:
+        return None
+
+
+class _ShortBatchReadClient:
+    """Write stub whose batched value read answers fewer values than the ids it was given."""
+
+    def __init__(self, data_values: list[Any]) -> None:
+        self._data_values = data_values
+        self.writes: list[str] = []
+
+    async def read_write_access(self, node_id: str) -> tuple[bool, bool]:
+        return (False, False)
+
+    async def read_data_values(self, node_ids: list[str]) -> list[Any]:
+        return self._data_values
+
+    async def read_variant_type(self, node_id: str) -> str | None:
+        return "Double"
+
+    async def write_value(self, node_id: str, value: Any, **kwargs: Any) -> None:
+        self.writes.append(node_id)
+
+
+@pytest.mark.asyncio
+async def test_bulk_write_noop_read_length_mismatch_is_not_mispaired() -> None:
+    """A short batched read must not pair a value with the wrong id; both items degrade to 403."""
+    timestamp = datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc)
+    matching_for_prop_a = SimpleNamespace(
+        Value=SimpleNamespace(Value=10.0),
+        StatusCode=SimpleNamespace(name="Good"),
+        SourceTimestamp=timestamp,
+        ServerTimestamp=None,
+    )
+    updates = [
+        ValueUpdateItemRequest(
+            elementId="prop-a",
+            value=WriteVQTRequest(value=10.0, quality="Good", timestamp="2026-01-01T10:00:00Z"),
+        ),
+        ValueUpdateItemRequest(
+            elementId="prop-b",
+            value=WriteVQTRequest(value=20.0, quality="Good", timestamp="2026-01-01T10:00:00Z"),
+        ),
+    ]
+
+    outcomes = await object_value_helpers._write_object_values_bulk(
+        model=_sample_model(),
+        opcua_client=cast(OpcUaClientProtocol, _ShortBatchReadClient([matching_for_prop_a])),
+        updates=updates,
+        schema_validator=cast(WriteValueValidator, _AcceptingValidator()),
+    )
+    # With unaligned pairing ``prop-a`` would look like an exact no-op and answer 200.
+    assert outcomes == [
+        ("prop-a", False, 403, "target_not_writable"),
+        ("prop-b", False, 403, "target_not_writable"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_bulk_write_prefetch_mismatch_raises_instead_of_mispairing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A mispaired prefetch container is a programming error and must surface, not shift ids."""
+    real_gather = asyncio.gather
+
+    async def short_gather(*awaitables: Any, return_exceptions: bool = False) -> list[Any]:
+        results = await real_gather(*awaitables, return_exceptions=return_exceptions)
+        return results[:-1]
+
+    updates = [ValueUpdateItemRequest(elementId="prop-a", value=WriteVQTRequest(value=10.0))]
+    # Narrow scope: ``asyncio.gather`` is a shared module attribute, so only this call is patched.
+    with monkeypatch.context() as item_patch:
+        item_patch.setattr(object_value_helpers.asyncio, "gather", short_gather)
+        with pytest.raises(ValueError, match="zip"):
+            await object_value_helpers._write_object_values_bulk(
+                model=_sample_model(),
+                opcua_client=cast(OpcUaClientProtocol, _ShortBatchReadClient([])),
+                updates=updates,
+                schema_validator=cast(WriteValueValidator, _AcceptingValidator()),
+            )

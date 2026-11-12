@@ -9,7 +9,8 @@ Provides:
 
 from __future__ import annotations
 
-from collections.abc import Callable, Generator, Mapping
+import contextlib
+from collections.abc import Callable, Generator, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -21,6 +22,7 @@ from fastapi.testclient import TestClient
 from jsonschema import Draft202012Validator
 
 from i3x_server.bootstrap.app_factory import create_app
+from i3x_server.config.settings import get_settings
 from i3x_server.infrastructure.opcua.client import (
     OpcUaConnectionSnapshot,
     OpcUaNamespaceInfo,
@@ -106,7 +108,18 @@ def configure_test_app(app: FastAPI) -> None:
         action_to_method={action_id: ("ns=2;s=Machine", "ns=2;s=Reset")},
     )
     app.state.opcua_client = FakeOpcUaClient()
-    app.state.subscription_service = SubscriptionService(app.state.opcua_client, interval_seconds=1)
+    # Mirror the production wiring (bootstrap.app_factory): the admission caps come from the
+    # environment, so API-level tests toggle ``I3X_SUBSCRIPTION_MAX_COUNT`` /
+    # ``I3X_SUBSCRIPTION_SUBTREE_MAX_NODES`` exactly like a deployed gateway does.
+    runtime = get_settings()
+    app.state.subscription_service = SubscriptionService(
+        app.state.opcua_client,
+        interval_seconds=1,
+        max_subscriptions=runtime.subscription_max_count,
+        subtree_max_nodes=runtime.subscription_subtree_max_nodes,
+        native_max_bins=runtime.subscription_native_max_bins,
+        native_max_monitored_items=runtime.subscription_native_max_monitored_items,
+    )
 
 
 def _append_unique(items: list[str], *values: str) -> None:
@@ -516,6 +529,16 @@ def _test_client_with_env(
     with TestClient(app) as test_client:
         configure(app)
         yield test_client
+
+
+@contextlib.contextmanager
+def _client_with_env(monkeypatch: pytest.MonkeyPatch, extra_env: Mapping[str, str]) -> Iterator[TestClient]:
+    """Test client on the standard MCP env plus ``extra_env`` overrides.
+
+    Use this for behaviour that is toggled by an ``I3X_*`` variable; the shared MCP env keeps
+    the fixture's other defaults intact.
+    """
+    yield from _test_client_with_env(monkeypatch, {**_MCP_ENABLED_ENV, **extra_env}, configure_test_app)
 
 
 @pytest.fixture

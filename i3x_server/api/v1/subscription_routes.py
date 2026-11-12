@@ -47,11 +47,16 @@ router = APIRouter(prefix="/v1", tags=["Subscribe"])
 
 @router.post(
     "/subscriptions",
-    responses={502: {"model": HttpErrorResponse, "description": "Upstream subscription creation failed."}},
+    responses={
+        429: {"model": HttpErrorResponse, "description": "Subscription limit reached (I3X_SUBSCRIPTION_MAX_COUNT)."},
+        502: {"model": HttpErrorResponse, "description": "Upstream subscription creation failed."},
+    },
     summary="Create subscription",
     description=(
         "Create a subscription for a client and return its subscription ID. "
-        "The subscription can then be used for register, sync, and stream operations."
+        "The subscription can then be used for register, sync, and stream operations. "
+        "The gateway caps how many subscriptions one process tracks "
+        "(`I3X_SUBSCRIPTION_MAX_COUNT`); beyond it the request is answered with HTTP 429."
     ),
 )
 async def create_subscription_v1(
@@ -75,12 +80,19 @@ async def create_subscription_v1(
 @router.post(
     "/subscriptions/register",
     responses={
+        400: {
+            "model": HttpErrorResponse,
+            "description": "Monitored item budget exceeded (I3X_SUBSCRIPTION_SUBTREE_MAX_NODES).",
+        },
         404: {"model": HttpErrorResponse, "description": "Subscription not found in this client's scope."},
         502: {"model": HttpErrorResponse, "description": "Upstream monitored-item registration failed."},
     },
     summary="Register monitored objects",
     description=(
-        "Register element IDs to a subscription. Each requested ID receives a per-item success or error result."
+        "Register element IDs to a subscription. Each requested ID receives a per-item success or error result. "
+        "The gateway bounds how many source nodes one subscription may monitor "
+        "(`I3X_SUBSCRIPTION_SUBTREE_MAX_NODES`); an oversized subtree is rejected with HTTP 400 and the "
+        "previously monitored set stays intact."
     ),
 )
 async def register_monitored_items_v1(

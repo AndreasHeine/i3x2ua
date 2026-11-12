@@ -42,6 +42,20 @@ class Settings(BaseSettings):
     subscription_native_timeout_refresh_max_seconds: float = Field(default=30.0, gt=0)
     subscription_max_concurrent_native_admissions: int = Field(default=4, ge=1)
     subscription_native_backoff_seconds: float = Field(default=30.0, gt=0)
+    # Admission control: the gateway must bound what one process (and therefore the upstream
+    # OPC UA server) is asked to track. Limits are gateway-side, not spec-side; exceeding them
+    # is answered with the regular i3X error envelope instead of silently truncating.
+    subscription_max_count: int = Field(default=1000, ge=1)
+    subscription_subtree_max_nodes: int = Field(default=5000, ge=1)
+    # Process-local floors for native OPC UA admissions. Servers that expose no capability
+    # variables (i=24096/24097/...) report no limit at all; without a floor the bin count and
+    # the total monitored items would grow without bound.
+    subscription_native_max_bins: int = Field(default=100, ge=1)
+    subscription_native_max_monitored_items: int = Field(default=10000, ge=1)
+    # Opt-in request rate limit per client IP (requests/minute, 0 = disabled). The limiter is a
+    # gateway concern outside the i3X contract, so tripping it answers 429 with the spec-neutral
+    # error envelope.
+    request_rate_limit_per_minute: int = Field(default=0, ge=0)
     log_level: str = Field(default="INFO")
     cors_allowed_origins: list[str] = Field(default_factory=list)
     otel_enabled: bool = Field(default=False)

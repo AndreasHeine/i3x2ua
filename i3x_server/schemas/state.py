@@ -75,7 +75,7 @@ class BuildResult:
     # Derived MCP tool lookup tables (search fields + relationship adjacency), rebuilt only
     # when the model revision changes; dataclasses.replace() resets it.
     _mcp_tool_index_cache: _McpToolIndex | None = field(default=None, init=False, repr=False, compare=False)
-    _reverse_parent_index_cache: tuple[tuple[int, int], dict[str, str]] | None = field(
+    _reverse_parent_index_cache: tuple[tuple[str, int, int], dict[str, str]] | None = field(
         default=None, init=False, repr=False, compare=False
     )
     # Response for /model/metrics, computed once per snapshot; dataclasses.replace() resets it.

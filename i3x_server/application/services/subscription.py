@@ -35,6 +35,7 @@ from i3x_server.application.services.subscription_mapper import (
     map_register_monitored_items,
     map_subscription_detail_bulk_items,
 )
+from i3x_server.domain.errors import AdmissionLimitError
 from i3x_server.domain.ports.opcua import OpcUaClientProtocol
 from i3x_server.errors import i3x_http_error
 from i3x_server.schemas.state import BuildResult
@@ -83,6 +84,10 @@ def _sequence_gaps(
 def _raise_or_wrap_subscription_error(message: str, exc: Exception) -> NoReturn:
     if isinstance(exc, HTTPException):
         raise exc
+    if isinstance(exc, AdmissionLimitError):
+        # A violated gateway admission rule is not an upstream failure: the intended status and
+        # code must survive instead of being wrapped into the generic 502.
+        raise i3x_http_error(exc.status_code, exc.error_code, exc.message, exc.details) from exc
     raise i3x_http_error(
         502,
         "SubscriptionError",

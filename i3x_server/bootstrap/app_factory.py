@@ -39,6 +39,7 @@ from i3x_server.bootstrap.dependencies import get_or_build_model
 from i3x_server.config.settings import Settings, get_settings, settings
 from i3x_server.errors import format_error_details
 from i3x_server.http_caching import MODEL_REVISION_HEADER, ModelRevisionMiddleware, NotModifiedError
+from i3x_server.http_rate_limit import RateLimitMiddleware
 from i3x_server.infrastructure.opcua.client import OpcUaClient, model_refresh_budget
 from i3x_server.infrastructure.subscriptions.service import SubscriptionService
 from i3x_server.mcp.invocation import get_api_prefix, init_mcp_metrics
@@ -424,6 +425,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         native_timeout_refresh_max_seconds=settings.subscription_native_timeout_refresh_max_seconds,
         max_concurrent_native_admissions=settings.subscription_max_concurrent_native_admissions,
         native_backoff_seconds=settings.subscription_native_backoff_seconds,
+        max_subscriptions=settings.subscription_max_count,
+        subtree_max_nodes=settings.subscription_subtree_max_nodes,
+        native_max_bins=settings.subscription_native_max_bins,
+        native_max_monitored_items=settings.subscription_native_max_monitored_items,
     )
     # Install a chained signal handler so that active SSE streaming connections
     # are closed *before* Uvicorn's "Waiting for connections to close" phase.
@@ -627,6 +632,13 @@ def create_app() -> FastAPI:
     # with Accept-Encoding: gzip must carry Content-Encoding: gzip, so compression must apply
     # even to small bodies (minimum_size=1).
     app.add_middleware(GZipMiddleware, minimum_size=1)
+    # Opt-in admission control (see ``http_rate_limit``). Added before CORS so CORS stays the
+    # outermost middleware: a tripped limit must still carry the CORS headers a browser needs to
+    # read the 429 body. ``_runtime_settings()`` reads the current environment, so the toggle
+    # behaves like every other documented env knob.
+    rate_limit_per_minute = _runtime_settings().request_rate_limit_per_minute
+    if rate_limit_per_minute > 0:
+        app.add_middleware(RateLimitMiddleware, limit_per_minute=rate_limit_per_minute)
     cors_origins = settings.cors_allowed_origins
     app.state.mcp_allowed_origins = [origin for origin in cors_origins if origin != "*"]
     if cors_origins:

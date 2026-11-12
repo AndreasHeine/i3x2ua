@@ -32,6 +32,7 @@ from i3x_server.domain.utils import (
 from i3x_server.domain.utils import (
     normalize_namespace_uri as _normalize_namespace_uri,
 )
+from i3x_server.model.revision import model_revision
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.objecttype_schema import build_object_type_schema
 from i3x_server.schemas.state import BuildResult
@@ -230,7 +231,11 @@ def _reverse_parent_index(model: BuildResult) -> dict[str, str]:
     """
     raw_hierarchy_children_by_id = getattr(model, "hierarchy_children_by_id", None)
     hierarchy_children_by_id = raw_hierarchy_children_by_id if isinstance(raw_hierarchy_children_by_id, dict) else {}
-    fingerprint = (len(hierarchy_children_by_id), len(model.children_by_id))
+    # The content revision is part of the fingerprint: two rebuilds with the same number of parents
+    # and children can list *different* parents (a child moves between parents), and a length-only
+    # fingerprint would keep serving the stale index. The plane sizes additionally catch in-place
+    # mutations of an already-revisioned model, which is not a supported way to change content.
+    fingerprint = (model_revision(model), len(hierarchy_children_by_id), len(model.children_by_id))
     cached = model._reverse_parent_index_cache
     if cached is not None and cached[0] == fingerprint:
         return cached[1]

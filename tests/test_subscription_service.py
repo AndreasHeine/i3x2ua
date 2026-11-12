@@ -14,12 +14,13 @@ from asyncua import ua
 from asyncua.ua.status_codes import StatusCodes
 from asyncua.ua.uaerrors import UaStatusCodeError
 
+from i3x_server.domain.errors import AdmissionLimitError
 from i3x_server.infrastructure.opcua.client import (
     OpcUaClientProtocol,
     OpcUaSubscriptionCapabilities,
 )
 from i3x_server.infrastructure.subscriptions import mapping
-from i3x_server.infrastructure.subscriptions.monitoring import _min_positive
+from i3x_server.infrastructure.subscriptions.monitoring import _capped_limit, _min_positive
 from i3x_server.infrastructure.subscriptions.service import SubscriptionService, SubscriptionUpdate
 from i3x_server.infrastructure.subscriptions.state import (
     _ManagedBin,
@@ -252,6 +253,38 @@ def _model() -> BuildResult:
     )
 
 
+def _wide_model(width: int) -> BuildResult:
+    """Asset whose composition plane holds ``width`` properties (for budget tests)."""
+    props = [
+        ModelNode(
+            id=f"prop-{index}",
+            name=f"Property {index}",
+            kind="property",
+            type="Double",
+            children=[],
+            source_node_id=f"ns=2;s=Property{index}",
+        )
+        for index in range(width)
+    ]
+    root = ModelNode(
+        id="asset-root",
+        name="Root",
+        kind="asset",
+        type=None,
+        children=[prop.id for prop in props],
+        source_node_id="ns=2;s=Root",
+    )
+    return BuildResult(
+        nodes_by_id={root.id: root, **{prop.id: prop for prop in props}},
+        root_ids=[root.id],
+        children_by_id={root.id: [prop.id for prop in props], **{prop.id: [] for prop in props}},
+        composition_children_by_id={root.id: [prop.id for prop in props]},
+        instances_by_type_id={},
+        property_to_node={prop.id: prop.source_node_id for prop in props},
+        action_to_method={},
+    )
+
+
 @pytest.mark.asyncio
 async def test_subscription_lifecycle_sync_wait_and_delete() -> None:
     service = SubscriptionService(cast(OpcUaClientProtocol, FakeOpcUaClient()), interval_seconds=1)
@@ -330,9 +363,10 @@ async def test_register_and_unregister_update_mappings_incrementally(monkeypatch
         max_depth: int,
         model: BuildResult,
         source_index: dict[str, ModelNode],
+        max_nodes: int | None = None,
     ) -> dict[str, str]:
         resolves.append(element_id)
-        return real_resolve(element_id, max_depth, model, source_index)
+        return real_resolve(element_id, max_depth, model, source_index, max_nodes=max_nodes)
 
     monkeypatch.setattr(mapping, "_build_source_index", counted_build)
     monkeypatch.setattr(mapping, "_resolve_object_mappings", counted_resolve)
@@ -720,6 +754,150 @@ async def test_can_open_new_bin_limits_and_helpers() -> None:
 
     assert _min_positive(None, 0, -1) is None
     assert _min_positive(None, 5, 2) == 2
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_subscription_count_cap_rejects_and_frees_slots() -> None:
+    """``I3X_SUBSCRIPTION_MAX_COUNT`` caps *live* subscriptions; a rejection must create no state."""
+    service = SubscriptionService(cast(OpcUaClientProtocol, FakeOpcUaClient()), interval_seconds=1, max_subscriptions=2)
+    first = await service.create_subscription(client_id="c1")
+    second = await service.create_subscription(client_id="c2")
+
+    with pytest.raises(AdmissionLimitError) as exc_info:
+        await service.create_subscription(client_id="c3")
+    assert exc_info.value.status_code == 429
+    assert exc_info.value.error_code == "SubscriptionLimit"
+    assert exc_info.value.details == {"maxSubscriptions": 2, "activeSubscriptions": 2}
+    assert set(service._subscriptions) == {first.subscription_id, second.subscription_id}
+
+    # Deleting frees a slot, so the cap is not a lifetime quota.
+    await service.delete_subscriptions(None, [second.subscription_id])
+    third = await service.create_subscription(client_id="c3")
+    assert third.subscription_id not in {first.subscription_id, second.subscription_id}
+    assert len(service._subscriptions) == 2
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_register_items_rejects_subtree_budget_without_truncating() -> None:
+    """An oversized subtree is rejected with the error envelope; the monitored set stays intact."""
+    service = SubscriptionService(cast(OpcUaClientProtocol, FakeOpcUaClient()), interval_seconds=1, subtree_max_nodes=2)
+    created = await service.create_subscription(client_id="c1")
+    subscription_id = created.subscription_id
+    model = _wide_model(3)
+
+    assert await service.register_items("c1", subscription_id, ["prop-0"], max_depth=1, model=model) is True
+    state_obj = service._subscriptions[subscription_id]
+    assert state_obj.monitored_node_ids == {"ns=2;s=Property0"}
+
+    # The root collects all three properties: 3 monitored nodes exceed the budget of 2.
+    with pytest.raises(AdmissionLimitError) as exc_info:
+        await service.register_items("c1", subscription_id, ["asset-root"], max_depth=0, model=model)
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.error_code == "MonitoredItemBudget"
+    assert exc_info.value.details["maxNodes"] == 2
+    assert exc_info.value.details["monitoredNodes"] == 3
+    # Rejected registrations are atomic: the previous mapping is neither extended nor lost.
+    assert state_obj.monitored_node_ids == {"ns=2;s=Property0"}
+    assert list(state_obj.object_mappings) == ["prop-0"]
+    assert state_obj.monitored_objects == {"prop-0": 1}
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_register_union_of_subtrees_exceeds_budget_only_across_objects() -> None:
+    """Each subtree fits the cap on its own; the *union* across registrations is what the cap bounds."""
+    service = SubscriptionService(cast(OpcUaClientProtocol, FakeOpcUaClient()), interval_seconds=1, subtree_max_nodes=1)
+    created = await service.create_subscription(client_id="c1")
+    subscription_id = created.subscription_id
+    model = _model()
+
+    # ``asset-child`` contributes Pressure; ``asset-root`` contributes Temperature - one node each,
+    # so neither registration trips the per-object bound, but together they exceed it.
+    assert await service.register_items("c1", subscription_id, ["asset-child"], max_depth=0, model=model) is True
+    state_obj = service._subscriptions[subscription_id]
+    assert state_obj.monitored_node_ids == {"ns=2;s=Pressure"}
+
+    with pytest.raises(AdmissionLimitError) as exc_info:
+        await service.register_items("c1", subscription_id, ["asset-root"], max_depth=0, model=model)
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.details == {"subscriptionId": subscription_id, "monitoredNodes": 2, "maxNodes": 1}
+    assert state_obj.monitored_node_ids == {"ns=2;s=Pressure"}
+    assert state_obj.monitored_objects == {"asset-child": 0}
+    await service.close()
+
+
+def test_mapping_budget_names_the_offending_object_and_counts_unions() -> None:
+    model = _wide_model(3)
+
+    with pytest.raises(AdmissionLimitError) as exc_info:
+        mapping._collect_property_source_mappings(model, model.nodes_by_id["asset-root"], max_depth=0, max_nodes=2)
+    assert exc_info.value.details == {"elementId": "asset-root", "monitoredNodes": 3, "maxNodes": 2}
+    # Overlapping subtrees share source nodes, so the budget must count the union, not the sum.
+    node_ids, _lookup = mapping._resolve_monitored_node_ids({"prop-0": 1, "asset-root": 0}, model, max_nodes=3)
+    assert node_ids == {"ns=2;s=Property0", "ns=2;s=Property1", "ns=2;s=Property2"}
+
+    with pytest.raises(AdmissionLimitError):
+        mapping._resolve_monitored_node_ids({"prop-0": 1, "asset-root": 0}, model, max_nodes=2)
+
+
+@pytest.mark.asyncio
+async def test_native_admission_falls_back_to_process_local_caps() -> None:
+    """A server advertising no capability variables must not allow unbounded bins/items."""
+    service = SubscriptionService(
+        cast(OpcUaClientProtocol, FakeOpcUaClient()),
+        interval_seconds=1,
+        native_max_bins=1,
+        native_max_monitored_items=2,
+    )
+    no_caps = OpcUaSubscriptionCapabilities(
+        max_monitored_items_per_call=None,
+        max_subscriptions=None,
+        max_monitored_items=None,
+        max_subscriptions_per_session=None,
+        max_monitored_items_per_subscription=None,
+    )
+
+    async with service._lock:
+        assert service._can_open_new_bin(no_caps) is True
+        service._bins["bin-1"] = _ManagedBin(bin_id="bin-1", ua_subscription=object(), capacity=2)
+        # The bin floor (1) is reached even though the server reported no subscription limit.
+        assert service._can_open_new_bin(no_caps) is False
+        service._bins["bin-1"].node_handles = {"ns=2;s=A": 1, "ns=2;s=B": 2}
+        # The monitored-item floor (2) is reached too.
+        assert service._can_open_new_bin(no_caps) is False
+
+    # A generous server limit is capped by the local floor; a tighter one stays effective.
+    async with service._lock:
+        service._bins.clear()
+        generous = OpcUaSubscriptionCapabilities(
+            max_monitored_items_per_call=None,
+            max_subscriptions=1000,
+            max_monitored_items=1000,
+            max_subscriptions_per_session=1000,
+            max_monitored_items_per_subscription=None,
+        )
+        assert service._can_open_new_bin(generous) is True
+        service._bins["bin-2"] = _ManagedBin(bin_id="bin-2", ua_subscription=object(), capacity=2)
+        assert service._can_open_new_bin(generous) is False
+
+        tighter = OpcUaSubscriptionCapabilities(
+            max_monitored_items_per_call=None,
+            max_subscriptions=100,
+            max_monitored_items=1,
+            max_subscriptions_per_session=100,
+            max_monitored_items_per_subscription=None,
+        )
+        service._bins.clear()
+        assert service._can_open_new_bin(tighter) is True
+        service._bins["bin-3"] = _ManagedBin(bin_id="bin-3", ua_subscription=object(), capacity=2)
+        assert service._can_open_new_bin(tighter) is False
+
+    assert _capped_limit(None, 4) == 4
+    assert _capped_limit(0, 4) == 4
+    assert _capped_limit(2, 4) == 2
+    assert _capped_limit(100, 4) == 4
     await service.close()
 
 

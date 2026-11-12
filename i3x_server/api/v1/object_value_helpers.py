@@ -236,7 +236,9 @@ async def _write_object_values_bulk(
         *(opcua_client.read_write_access(target_id) for target_id in target_ids),
         return_exceptions=True,
     )
-    access_by_id: dict[str, Any] = dict(zip(target_ids, access_results, strict=False))
+    # ``strict=True``: ``asyncio.gather`` returns exactly one outcome per target id, so a length
+    # mismatch means a programming error (mispaired bulk mapping), not a partial upstream answer.
+    access_by_id: dict[str, Any] = dict(zip(target_ids, access_results, strict=True))
 
     noop_data: dict[str, Any] = {}
     noop_ids = [
@@ -247,8 +249,10 @@ async def _write_object_values_bulk(
     ]
     if noop_ids:
         try:
+            # ``strict=True`` keeps a short read result from silently pairing values with the wrong
+            # ids; the failure is caught below and degrades to a plain 403 instead of a false no-op.
             current_values = await opcua_client.read_data_values(noop_ids)
-            noop_data = dict(zip(noop_ids, current_values, strict=False))
+            noop_data = dict(zip(noop_ids, current_values, strict=True))
         except Exception:
             noop_data = {}
 
@@ -257,7 +261,8 @@ async def _write_object_values_bulk(
         *(opcua_client.read_variant_type(target_id) for target_id in writable_ids),
         return_exceptions=True,
     )
-    variant_by_id: dict[str, Any] = dict(zip(writable_ids, variant_results, strict=False))
+    # Same alignment guarantee as ``access_by_id`` above: one outcome per id.
+    variant_by_id: dict[str, Any] = dict(zip(writable_ids, variant_results, strict=True))
 
     for index, element_id, node, write_value, quality, timestamp in pending:
         target_node_id = node.source_node_id

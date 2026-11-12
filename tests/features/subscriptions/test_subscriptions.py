@@ -9,9 +9,15 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from i3x_server.api.v1.contracts import MAX_REQUEST_DEPTH
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.opcua_value import normalize_opcua_value
-from tests.conftest import assert_documented_response, fastapi_app
+from tests.conftest import (
+    _client_with_env,
+    add_composition_depth_chain,
+    assert_documented_response,
+    fastapi_app,
+)
 
 
 def test_v1_subscription_lifecycle(client: TestClient) -> None:
@@ -464,3 +470,144 @@ def test_v1_subscription_stream_rejects_acknowledgement_fields(client: TestClien
         json={"clientId": "my-app-instance-001", "subscriptionId": "missing", "lastSequenceNumber": 4},
     )
     assert response_legacy.status_code == 400
+
+
+def test_v1_subscription_count_cap_answers_429(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The process-wide subscription cap answers 429 with the error envelope; a delete frees the slot."""
+    with _client_with_env(monkeypatch, {"I3X_SUBSCRIPTION_MAX_COUNT": "1"}) as client:
+        created = client.post("/v1/subscriptions", json={"clientId": "capped-client", "displayName": "First"})
+        assert created.status_code == 200
+        subscription_id = created.json()["result"]["subscriptionId"]
+
+        overflow = client.post("/v1/subscriptions", json={"clientId": "other-client", "displayName": "Second"})
+        assert overflow.status_code == 429
+        payload = overflow.json()
+        assert payload["success"] is False
+        assert payload["error"] == {"code": 429, "message": "Subscription limit reached"}
+        assert payload["responseDetail"]["status"] == 429
+        assert payload["responseDetail"]["title"] == "Too Many Requests"
+        assert "maxSubscriptions=1" in payload["responseDetail"]["detail"]
+        assert "activeSubscriptions=1" in payload["responseDetail"]["detail"]
+        assert_documented_response(client, "post", "/v1/subscriptions", 429, payload)
+
+        # A rejected create must leave no state behind, or it would occupy the slot it just exceeded.
+        service = fastapi_app(client).state.subscription_service
+        assert list(service._subscriptions) == [subscription_id]
+
+        deleted = client.post(
+            "/v1/subscriptions/delete",
+            json={"clientId": "capped-client", "subscriptionIds": [subscription_id]},
+        )
+        assert deleted.status_code == 200
+        assert deleted.json()["results"][0]["success"] is True
+
+        refilled = client.post("/v1/subscriptions", json={"clientId": "other-client", "displayName": "Second"})
+        assert refilled.status_code == 200
+
+
+def test_v1_register_rejects_oversized_subtree_with_400(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An oversized subtree is rejected as 400 and never truncated; the monitored set stays intact."""
+    with _client_with_env(monkeypatch, {"I3X_SUBSCRIPTION_SUBTREE_MAX_NODES": "2"}) as client:
+        app = fastapi_app(client)
+        add_composition_depth_chain(app)
+        created = client.post("/v1/subscriptions", json={"clientId": "budget-client"})
+        assert created.status_code == 200
+        subscription_id = created.json()["result"]["subscriptionId"]
+
+        first = client.post(
+            "/v1/subscriptions/register",
+            json={
+                "clientId": "budget-client",
+                "subscriptionId": subscription_id,
+                "elementIds": ["property-abc"],
+                "maxDepth": 1,
+            },
+        )
+        assert first.status_code == 200
+        state = app.state.subscription_service._subscriptions[subscription_id]
+        assert state.monitored_objects == {"property-abc": 1}
+        assert state.monitored_node_ids == {"ns=2;s=Temperature"}
+
+        # ``asset-root`` at depth 0 collects three composition properties (comp, mid, deep): over budget.
+        rejected = client.post(
+            "/v1/subscriptions/register",
+            json={
+                "clientId": "budget-client",
+                "subscriptionId": subscription_id,
+                "elementIds": ["asset-root"],
+                "maxDepth": 0,
+            },
+        )
+        assert rejected.status_code == 400
+        payload = rejected.json()
+        assert payload["success"] is False
+        assert payload["error"] == {"code": 400, "message": "Monitored item budget exceeded"}
+        assert payload["responseDetail"]["title"] == "Bad Request"
+        assert "elementId=asset-root" in payload["responseDetail"]["detail"]
+        assert "monitoredNodes=3" in payload["responseDetail"]["detail"]
+        assert "maxNodes=2" in payload["responseDetail"]["detail"]
+        assert_documented_response(client, "post", "/v1/subscriptions/register", 400, payload)
+
+        # Rejection is atomic: no truncation to the cap, no loss of what was already monitored.
+        assert state.monitored_objects == {"property-abc": 1}
+        assert state.monitored_node_ids == {"ns=2;s=Temperature"}
+
+
+def test_v1_max_depth_at_gateway_bound_is_accepted(client: TestClient) -> None:
+    """The admission bound is inclusive: ``maxDepth == MAX_REQUEST_DEPTH`` is a normal request."""
+    client_id = "depth-bound-client"
+    created = client.post("/v1/subscriptions", json={"clientId": client_id})
+    assert created.status_code == 200
+    subscription_id = created.json()["result"]["subscriptionId"]
+
+    register = client.post(
+        "/v1/subscriptions/register",
+        json={
+            "clientId": client_id,
+            "subscriptionId": subscription_id,
+            "elementIds": ["asset-root"],
+            "maxDepth": MAX_REQUEST_DEPTH,
+        },
+    )
+    assert register.status_code == 200
+
+    value = client.post("/v1/objects/value", json={"elementIds": ["asset-root"], "maxDepth": MAX_REQUEST_DEPTH})
+    assert value.status_code == 200
+
+
+@pytest.mark.parametrize(
+    ("path", "body"),
+    [
+        (
+            "/v1/subscriptions/register",
+            {
+                "clientId": "depth-bound-client",
+                "subscriptionId": "does-not-exist",
+                "elementIds": ["asset-root"],
+                "maxDepth": MAX_REQUEST_DEPTH + 1,
+            },
+        ),
+        ("/v1/objects/value", {"elementIds": ["asset-root"], "maxDepth": MAX_REQUEST_DEPTH + 1}),
+        (
+            "/v1/objects/history",
+            {
+                "elementIds": ["asset-root"],
+                "startTime": "2026-01-01T00:00:00Z",
+                "endTime": "2026-01-02T00:00:00Z",
+                "maxDepth": MAX_REQUEST_DEPTH + 1,
+            },
+        ),
+    ],
+)
+def test_v1_max_depth_above_gateway_bound_is_rejected_with_400(
+    client: TestClient, path: str, body: dict[str, Any]
+) -> None:
+    """An over-bound ``maxDepth`` is rejected before any traversal or upstream lookup happens."""
+    response = client.post(path, json=body)
+    assert response.status_code == 400
+    payload = response.json()
+    assert payload["success"] is False
+    assert payload["error"]["code"] == 400
+    assert payload["responseDetail"]["status"] == 400
+    assert "maxDepth" in payload["responseDetail"]["detail"]
+    assert_documented_response(client, "post", path, 400, payload)

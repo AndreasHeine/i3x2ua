@@ -45,6 +45,7 @@ WORKDIR /app
 RUN apk add --no-cache \
         ca-certificates \
         tini \
+    && apk upgrade --no-cache \
     && rm -rf \
         /usr/local/lib/python3.15/site-packages/pip \
         /usr/local/lib/python3.15/site-packages/pip-*.dist-info \

@@ -87,10 +87,7 @@ def test_landing_page_csp_remains_strict(client: TestClient) -> None:
     assert response.status_code == 200
     csp_header = response.headers.get("Content-Security-Policy", "")
     hosts = _csp_source_hosts(csp_header)
-    assert not any(
-        host == "cdn.jsdelivr.net" or host == "fastapi.tiangolo.com"
-        for host in hosts
-    )
+    assert not any(host == "cdn.jsdelivr.net" or host == "fastapi.tiangolo.com" for host in hosts)
     assert "script-src 'self' 'unsafe-inline'" not in csp_header
     assert "'sha256-" in csp_header
 

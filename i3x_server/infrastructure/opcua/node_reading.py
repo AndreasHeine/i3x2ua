@@ -461,8 +461,10 @@ async def _read_attribute_pairs_batch(
                 len(node_attributes),
                 split_at,
             )
-            left = await client._read_attribute_pairs_batch(node_attributes[:split_at])
-            right = await client._read_attribute_pairs_batch(node_attributes[split_at:])
+            left, right = await asyncio.gather(
+                client._read_attribute_pairs_batch(node_attributes[:split_at]),
+                client._read_attribute_pairs_batch(node_attributes[split_at:]),
+            )
             return left + right
         else:
             client._record_failed_request()
@@ -490,31 +492,33 @@ async def _read_attribute_batch_limited(
         max_nodes = limits.max_nodes_per_read or len(nodes)
         effective_batch_size = max(1, min(max_nodes, len(nodes)))
 
-    output: list[ua.DataValue] = []
-    for node_batch in _chunked_nodes(nodes, max(1, effective_batch_size)):
-        try:
-            output.extend(await client._read_attribute_batch(node_batch, attr))
-        except Exception as exc:
-            if not client._is_too_many_operations_error(exc) or len(node_batch) <= 1:
-                raise
+    batches = _chunked_nodes(nodes, max(1, effective_batch_size))
+    semaphore = asyncio.Semaphore(client._browse_concurrency)
 
-            reduced_batch_size = max(1, len(node_batch) // 2)
-            logger.warning(
-                "OPC UA attribute read split retry endpoint=%s attr=%s batch_size=%d reduced_batch_size=%d",
-                client._endpoint,
-                int(attr),
-                len(node_batch),
-                reduced_batch_size,
-            )
-            output.extend(
-                await client._read_attribute_batch_limited(
+    async def read_batch(node_batch: list[Any]) -> list[ua.DataValue]:
+        async with semaphore:
+            try:
+                return await client._read_attribute_batch(node_batch, attr)
+            except Exception as exc:
+                if not client._is_too_many_operations_error(exc) or len(node_batch) <= 1:
+                    raise
+
+                reduced_batch_size = max(1, len(node_batch) // 2)
+                logger.warning(
+                    "OPC UA attribute read split retry endpoint=%s attr=%s batch_size=%d reduced_batch_size=%d",
+                    client._endpoint,
+                    int(attr),
+                    len(node_batch),
+                    reduced_batch_size,
+                )
+                return await client._read_attribute_batch_limited(
                     node_batch,
                     attr,
                     batch_size=reduced_batch_size,
                 )
-            )
 
-    return output
+    batch_values = await _gather_cancelled_on_failure([read_batch(node_batch) for node_batch in batches])
+    return [value for values_batch in batch_values for value in values_batch]
 
 
 async def _read_optional_node_ids(

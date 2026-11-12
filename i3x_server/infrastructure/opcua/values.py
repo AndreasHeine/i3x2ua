@@ -151,9 +151,15 @@ async def read_values(client: OpcUaClient, node_ids: list[str]) -> list[Any]:
     max_nodes = limits.max_nodes_per_read or len(node_ids)
     batch_size = max(1, min(max_nodes, len(node_ids)))
 
-    values: list[Any] = []
-    for batch in _chunked(node_ids, batch_size):
-        values.extend(await client._read_values_batch_with_fallback(batch))
+    batches = _chunked(node_ids, batch_size)
+    semaphore = asyncio.Semaphore(client._browse_concurrency)
+
+    async def read_batch(batch: list[str]) -> list[Any]:
+        async with semaphore:
+            return await client._read_values_batch_with_fallback(batch)
+
+    batch_values = await _gather_cancelled_on_failure([read_batch(batch) for batch in batches])
+    values = [value for values_batch in batch_values for value in values_batch]
 
     logger.debug(
         "OPC UA batch read ok endpoint=%s requested=%d batch_size=%d duration_s=%.3f",
@@ -328,8 +334,10 @@ async def _read_values_batch_with_fallback(client: OpcUaClient, node_ids: list[s
             split_at,
             candidate_error,
         )
-        left = await client._read_values_batch_with_fallback(node_ids[:split_at])
-        right = await client._read_values_batch_with_fallback(node_ids[split_at:])
+        left, right = await asyncio.gather(
+            client._read_values_batch_with_fallback(node_ids[:split_at]),
+            client._read_values_batch_with_fallback(node_ids[split_at:]),
+        )
         return left + right
 
 

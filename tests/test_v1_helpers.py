@@ -31,24 +31,22 @@ def test_relationship_type_helpers_use_model_namespaces() -> None:
     model.graph_relationship_names = {"ConnectedTo"}
     model.graph_relationship_namespace_by_id = {"ConnectedTo": "urn:example:custom"}
     expected = _relationship_type_items(model)
-    for helper in (v1._relationship_type_items, object_helpers._relationship_type_items):
-        assert [item.model_dump() for item in helper(model)] == expected
+    assert [item.model_dump() for item in object_helpers._relationship_type_items(model)] == expected
 
 
 def test_object_instance_metadata_uses_node_description_or_fallback() -> None:
     model = _sample_model()
     node = model.nodes_by_id["asset-root"]
 
-    for helper in (v1._build_object_instance_metadata, object_helpers._build_object_instance_metadata):
-        node.metadata["description"] = " OPC UA description "
-        metadata = helper(model, node, None, "nsu=urn:example;s=Root")
-        assert metadata is not None
-        assert metadata.description == " OPC UA description "
+    node.metadata["description"] = " OPC UA description "
+    metadata = object_helpers._build_object_instance_metadata(model, node, None, "nsu=urn:example;s=Root")
+    assert metadata is not None
+    assert metadata.description == " OPC UA description "
 
-        node.metadata["description"] = " "
-        metadata = helper(model, node, None, "nsu=urn:example;s=Root")
-        assert metadata is not None
-        assert metadata.description == "Derived from model node Root"
+    node.metadata["description"] = " "
+    metadata = object_helpers._build_object_instance_metadata(model, node, None, "nsu=urn:example;s=Root")
+    assert metadata is not None
+    assert metadata.description == "Derived from model node Root"
 
 
 def _sample_model() -> BuildResult:
@@ -119,9 +117,9 @@ def _sample_model() -> BuildResult:
 
 
 def test_display_name_for_uri_variants() -> None:
-    assert v1._display_name_for_uri("https://cesmii.org/i3x") == "I3X"
-    assert v1._display_name_for_uri("https://example.com/ns/device_model") == "Device Model"
-    assert v1._display_name_for_uri("https://example.com/ns/a12") == "A12"
+    assert object_helpers._display_name_for_uri("https://cesmii.org/i3x") == "I3X"
+    assert object_helpers._display_name_for_uri("https://example.com/ns/device_model") == "Device Model"
+    assert object_helpers._display_name_for_uri("https://example.com/ns/a12") == "A12"
 
 
 def test_namespace_and_expanded_node_helpers() -> None:
@@ -153,19 +151,19 @@ def test_unknown_type_placeholder_uses_declared_namespace_when_unresolved() -> N
         OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/", display_name="UA"),
         OpcUaNamespaceInfo(uri="http://example.com/custom", display_name="Custom"),
     ]
-    placeholder = v1._unknown_type_placeholder("unknown-type", infos)
+    placeholder = objecttype_helpers._unknown_type_placeholder("unknown-type", infos)
     assert placeholder.namespaceUri == "http://opcfoundation.org/UA/"
 
 
 def test_element_and_urn_token_helpers() -> None:
-    assert v1._to_element_id("MachineType") == "machine-type"
-    assert v1._to_element_id("__") == "unknown-type"
-    assert v1._to_urn_token("HTTP://Example.COM/Plant 01") == "http-example-com-plant-01"
+    assert object_helpers._to_element_id("MachineType") == "machine-type"
+    assert object_helpers._to_element_id("__") == "unknown-type"
+    assert object_helpers._to_urn_token("HTTP://Example.COM/Plant 01") == "http-example-com-plant-01"
 
 
 def test_builtin_ua_datatype_helper_detection() -> None:
-    assert v1._is_builtin_ua_datatype_node_id("nsu=http://opcfoundation.org/UA/;i=12") is True
-    assert v1._is_builtin_ua_datatype_node_id("nsu=http://opcfoundation.org/UA/;i=11492") is False
+    assert objecttype_helpers._is_builtin_ua_datatype_node_id("nsu=http://opcfoundation.org/UA/;i=12") is True
+    assert objecttype_helpers._is_builtin_ua_datatype_node_id("nsu=http://opcfoundation.org/UA/;i=11492") is False
 
 
 def test_unconstrained_datatype_wrapper_accepts_null_and_arrays_without_overlapping_branches() -> None:
@@ -419,8 +417,8 @@ def test_find_node_and_parent_helpers() -> None:
     assert object_helpers._find_model_node(model, "Temperature") is not None
     assert object_helpers._find_model_node(model, "ns=1;i=11") is not None
     assert object_helpers._find_model_node(model, "missing") is None
-    assert v1._parent_id_for_node(model, "prop-b") == "asset-child"
-    assert v1._parent_id_for_node(model, "asset-root") is None
+    assert object_helpers._parent_id_for_node(model, "prop-b") == "asset-child"
+    assert object_helpers._parent_id_for_node(model, "asset-root") is None
 
 
 def test_collect_value_component_nodes_respects_depth() -> None:
@@ -529,15 +527,10 @@ def test_quality_timestamp_and_history_conversion_helpers() -> None:
     assert vqt.timestamp.endswith("Z")
 
 
-def test_not_implemented_and_server_info() -> None:
+def test_not_implemented_helper() -> None:
     with pytest.raises(HTTPException) as exc_info:
         v1._not_implemented("x")
     assert exc_info.value.status_code == 501
-
-    caps = v1._supported_capabilities()
-    assert caps.query.history is True
-    info = v1._build_server_info()
-    assert info.specVersion == "1.0"
 
 
 def _context_model() -> BuildResult:
@@ -560,10 +553,10 @@ class _EmptyOpcUaClient:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("module", [objecttype_helpers, v1])
 async def test_type_context_shares_schemas_without_changing_responses(
-    monkeypatch: pytest.MonkeyPatch, module: Any
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Schema sharing of the single production context builder (``objecttype_helpers``)."""
     types = [
         OpcUaObjectTypeInfo(f"i={index}", None, f"Type{index}", f"Type{index}", {"Name": "i=12"})
         for index in (10001, 10002)
@@ -571,9 +564,9 @@ async def test_type_context_shares_schemas_without_changing_responses(
     model = _context_model()
     client = cast(OpcUaClientProtocol, _EmptyOpcUaClient())
     with monkeypatch.context() as patch:
-        patch.setattr(module, "deduplicate_schema_fragments", list)
-        original = await module._build_object_type_context(model, [], client, types)
-    compact = await module._build_object_type_context(model, [], client, types)
+        patch.setattr(objecttype_helpers, "deduplicate_schema_fragments", list)
+        original = await objecttype_helpers._build_object_type_context(model, [], client, types)
+    compact = await objecttype_helpers._build_object_type_context(model, [], client, types)
     assert [item.model_dump_json() for item in compact.items] == [item.model_dump_json() for item in original.items]
     seen: dict[str, object] = {}
     duplicates = 0

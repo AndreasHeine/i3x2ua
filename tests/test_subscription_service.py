@@ -547,6 +547,106 @@ async def test_shared_polling_loop_collects_updates() -> None:
 
 
 @pytest.mark.asyncio
+async def test_shared_queue_overflow_marks_dropped_sequence_range() -> None:
+    """Updates dropped on the shared datachange queue surface as a sequence gap, not silently."""
+    service = SubscriptionService(
+        cast(OpcUaClientProtocol, FakeOpcUaClient()),
+        interval_seconds=1,
+        max_updates_per_subscription=10,
+        seed_initial_values=False,
+    )
+    # Shrink the shared queue so enqueueing three values drops the oldest two.
+    service._node_datachange_queue = asyncio.Queue(maxsize=1)
+    created = await service.create_subscription(client_id="c1", display_name=None)
+    subscription_id = created.subscription_id
+
+    model = _model()
+    assert await service.register_items("c1", subscription_id, ["prop-a"], max_depth=1, model=model) is True
+
+    service.schedule_node_datachange("ns=2;s=Temperature", 1.0)
+    service.schedule_node_datachange("ns=2;s=Temperature", 2.0)
+    service.schedule_node_datachange("ns=2;s=Temperature", 3.0)
+
+    # Drain the surviving entry and fan it out directly so the test stays deterministic.
+    node_id, value, signal = await service._node_datachange_queue.get()
+    await service._fanout_node_value(node_id, value, signal)
+
+    synced = await service.sync("c1", subscription_id, acknowledge_sequence=0)
+    assert synced is not None
+    assert synced.queue_overflow is True
+    assert synced.dropped_from_sequence == 1
+    assert synced.dropped_to_sequence == 2
+    assert [item.sequence_number for item in synced.updates] == [3]
+    assert synced.updates[0].value == 3.0
+    await service.close()
+
+
+class _SlowReadOpcUaClient(FakeOpcUaClient):
+    """Reads that take time must not push the whole polling schedule backwards."""
+
+    async def read_data_values(self, node_ids: list[str]) -> list[ua.DataValue]:
+        self.read_data_values_calls += 1
+        await asyncio.sleep(0.03)
+        return await super().read_data_values(node_ids)
+
+
+@pytest.mark.asyncio
+async def test_shared_polling_loop_uses_absolute_deadline_schedule() -> None:
+    """Ticks are scheduled against a deadline: a slow read shortens the next sleep instead of drifting."""
+    client = _SlowReadOpcUaClient()
+    service = SubscriptionService(cast(OpcUaClientProtocol, client), interval_seconds=0.05)
+    created = await service.create_subscription(client_id="c1", display_name="poll")
+    subscription_id = created.subscription_id
+
+    model = _model()
+    await service.register_items("c1", subscription_id, ["asset-root"], max_depth=2, model=model)
+
+    node_id = "ns=2;s=Temperature"
+    async with service._lock:
+        monitor = _NodeMonitor(node_id=node_id, mode="polling")
+        monitor.subscriber_ids.add(subscription_id)
+        service._node_monitors[node_id] = monitor
+
+    task = asyncio.create_task(service._shared_polling_loop())
+    await asyncio.sleep(0.4)
+    task.cancel()
+    await task
+
+    # Deadline ticks every 0.05s -> ~7 reads in 0.4s; sleep-after-read drift would yield ~5.
+    assert client.read_data_values_calls >= 6
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_shared_polling_loop_fans_out_all_nodes_per_tick() -> None:
+    """One tick batches the read and fans out every monitored node concurrently."""
+    client = FakeOpcUaClient()
+    service = SubscriptionService(cast(OpcUaClientProtocol, client), interval_seconds=0.05)
+    created = await service.create_subscription(client_id="c1", display_name="poll")
+    subscription_id = created.subscription_id
+
+    model = _model()
+    await service.register_items("c1", subscription_id, ["prop-a", "prop-b"], max_depth=1, model=model)
+
+    async with service._lock:
+        for node_id in ("ns=2;s=Temperature", "ns=2;s=Pressure"):
+            monitor = _NodeMonitor(node_id=node_id, mode="polling")
+            monitor.subscriber_ids.add(subscription_id)
+            service._node_monitors[node_id] = monitor
+
+    task = asyncio.create_task(service._shared_polling_loop())
+    await asyncio.sleep(0.12)
+    task.cancel()
+    await task
+
+    assert client.read_data_values_calls >= 1
+    synced = await service.sync("c1", subscription_id, acknowledge_sequence=0)
+    assert synced is not None
+    assert {item.element_id for item in synced.updates} == {"prop-a", "prop-b"}
+    await service.close()
+
+
+@pytest.mark.asyncio
 async def test_wait_for_updates_refreshes_native_timeout_without_callbacks() -> None:
     client = FakeOpcUaClient()
     service = SubscriptionService(

@@ -11,7 +11,7 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator, Sequence
 from contextlib import suppress
-from typing import Literal, NoReturn, TypedDict
+from typing import Literal, NoReturn, NotRequired, TypedDict
 
 from fastapi import HTTPException, Request
 
@@ -50,8 +50,34 @@ class StreamSessionDto(TypedDict):
 
 
 class StreamEventDto(TypedDict):
-    kind: Literal["connected", "keepalive", "close", "updates"]
+    kind: Literal["connected", "keepalive", "close", "updates", "dropped"]
     updates: Sequence[SubscriptionUpdatePort]
+    # Sequence range lost to queue overflow; present only for ``dropped`` events.
+    dropped_from_sequence: NotRequired[int]
+    dropped_to_sequence: NotRequired[int]
+
+
+def _sequence_gaps(
+    updates: Sequence[SubscriptionUpdatePort],
+    previous_sequence: int | None,
+) -> list[tuple[int, int]]:
+    """Inclusive sequence ranges missing between the baseline and the delivered updates.
+
+    Queue overflow drops the oldest updates, so a jump (delivered batch starts at 5 while
+    the last seen sequence was 2) means sequences 3..4 were lost. Streams report the gap
+    as a ``dropped`` event so consumers can detect the loss instead of seeing a silent jump.
+    """
+    if previous_sequence is None:
+        return []
+    gaps: list[tuple[int, int]] = []
+    seen = previous_sequence
+    for item in updates:
+        sequence = int(item.sequence_number)
+        if sequence > seen + 1:
+            gaps.append((seen + 1, sequence - 1))
+        if sequence > seen:
+            seen = sequence
+    return gaps
 
 
 def _raise_or_wrap_subscription_error(message: str, exc: Exception) -> NoReturn:
@@ -321,10 +347,17 @@ class SubscriptionAppService:
         acknowledge_sequence: int | None = None,
         timeout_seconds: float = 2,
     ) -> AsyncIterator[StreamEventDto]:
-        last_sequence = acknowledge_sequence or 0
+        last_sequence: int | None = acknowledge_sequence if isinstance(acknowledge_sequence, int) else None
         try:
             yield {"kind": "connected", "updates": []}
             if acknowledged_updates:
+                for gap_from, gap_to in _sequence_gaps(acknowledged_updates, last_sequence):
+                    yield {
+                        "kind": "dropped",
+                        "updates": [],
+                        "dropped_from_sequence": gap_from,
+                        "dropped_to_sequence": gap_to,
+                    }
                 last_update = acknowledged_updates[-1]
                 if hasattr(last_update, "sequence_number"):
                     last_sequence = int(last_update.sequence_number)
@@ -339,7 +372,7 @@ class SubscriptionAppService:
                 updates = await self.subscription_service.wait_for_updates(
                     client_id=client_id,
                     subscription_id=subscription_id,
-                    after_sequence=last_sequence,
+                    after_sequence=last_sequence or 0,
                     timeout_seconds=timeout_seconds,
                 )
                 if updates is None:
@@ -349,6 +382,13 @@ class SubscriptionAppService:
                     yield {"kind": "keepalive", "updates": []}
                     continue
 
+                for gap_from, gap_to in _sequence_gaps(updates, last_sequence):
+                    yield {
+                        "kind": "dropped",
+                        "updates": [],
+                        "dropped_from_sequence": gap_from,
+                        "dropped_to_sequence": gap_to,
+                    }
                 last_sequence = int(updates[-1].sequence_number)
                 yield {"kind": "updates", "updates": updates}
         finally:

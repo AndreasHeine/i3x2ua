@@ -12,7 +12,6 @@ from fastapi import FastAPI
 from fastapi.routing import APIRoute
 from starlette.requests import Request
 
-from i3x_server.api.v1 import monolithic
 from i3x_server.application.services.model_cache import get_or_build_model
 from i3x_server.bootstrap import app_factory
 from i3x_server.bootstrap.app_factory import (
@@ -173,79 +172,6 @@ async def test_run_model_preload_failure_without_raise(monkeypatch: pytest.Monke
     monkeypatch.setattr("i3x_server.bootstrap.app_factory.settings.fail_startup_on_model_preload_error", False)
     monkeypatch.setattr("i3x_server.bootstrap.app_factory.settings.model_preload_blocking", False)
     await _run_model_preload(app)
-
-
-@pytest.mark.asyncio
-async def test_monolithic_object_type_context_cache_uses_content_tokens() -> None:
-    model_node = ModelNode(id="n1", name="n1", kind="asset", source_node_id="n1")
-    model_a = BuildResult(
-        nodes_by_id={"n1": model_node},
-        root_ids=["n1"],
-        children_by_id={},
-        instances_by_type_id={},
-        property_to_node={},
-        action_to_method={},
-        build_completed_at_utc="2026-01-01T00:00:00Z",
-    )
-    model_b = BuildResult(
-        nodes_by_id={"n1": model_node},
-        root_ids=["n1"],
-        children_by_id={},
-        instances_by_type_id={},
-        property_to_node={},
-        action_to_method={},
-        build_completed_at_utc="2026-02-01T00:00:00Z",
-    )
-    cached_context = monolithic._ObjectTypeContext(
-        namespace_infos=[],
-        object_types=[],
-        element_ids_by_node_id={},
-        items=[],
-        source_type_to_element_id={},
-    )
-    app = FastAPI()
-    app.state.object_type_context_cache = {
-        "model_token": (
-            len(model_a.nodes_by_id),
-            len(model_a.root_ids),
-            len(model_a.property_to_node),
-            len(model_a.action_to_method),
-            tuple(sorted(model_a.nodes_by_id)),
-            tuple(sorted(model_a.root_ids)),
-        ),
-        "namespace_token": tuple(),
-        "object_types_token": tuple(),
-        "context": cached_context,
-    }
-
-    class _OpcUaClient:
-        async def get_namespace_infos(self) -> list[object]:
-            return []
-
-        async def get_object_types(self) -> list[object]:
-            return []
-
-    called = False
-
-    async def _raise_if_called(*args: Any, **kwargs: Any) -> Any:
-        nonlocal called
-        called = True
-        raise AssertionError("should use cached model context and not rebuild")
-
-    monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(monolithic, "_build_object_type_context", _raise_if_called)
-    try:
-        result = await monolithic._get_object_type_context(
-            cast(Any, SimpleNamespace(app=app)),
-            model_b,
-            cast(Any, _OpcUaClient()),
-            namespace_infos=[],
-        )
-    finally:
-        monkeypatch.undo()
-
-    assert result is cached_context
-    assert called is False
 
 
 @pytest.mark.asyncio

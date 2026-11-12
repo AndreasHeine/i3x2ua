@@ -518,7 +518,7 @@ async def test_begin_stream_session_wraps_unexpected_errors() -> None:
 async def test_iter_stream_events_emits_connected_keepalive_updates_close() -> None:
     port = _FakeSubscriptionPort()
     port.active_sequence = [True, True, False]
-    port.wait_returns = [[], [SubscriptionUpdate(2, "asset-root", "ns=2;s=Root", 42, "Good", "2026-01-01T00:00:00Z")]]
+    port.wait_returns = [[], [SubscriptionUpdate(1, "asset-root", "ns=2;s=Root", 42, "Good", "2026-01-01T00:00:00Z")]]
     service = SubscriptionAppService(
         cast(OpcUaClientProtocol, SimpleNamespace()),
         _model(),
@@ -541,6 +541,41 @@ async def test_iter_stream_events_emits_connected_keepalive_updates_close() -> N
     assert kinds == ["connected", "keepalive", "updates", "close"]
     assert len(events[2]["updates"]) == 1
     assert port.deactivated == [("sub-1", 3)]
+
+
+@pytest.mark.asyncio
+async def test_iter_stream_events_reports_sequence_gaps_as_dropped() -> None:
+    """Overflow gaps become `dropped` events before the affected updates (additive marker)."""
+    port = _FakeSubscriptionPort()
+    port.active_sequence = [True, True, False]
+    port.wait_returns = [[], [SubscriptionUpdate(10, "asset-root", "ns=2;s=Root", 5, "Good", "2026-01-01T00:00:00Z")]]
+    service = SubscriptionAppService(
+        cast(OpcUaClientProtocol, SimpleNamespace()),
+        _model(),
+        cast(SubscriptionServicePort, port),
+    )
+
+    events = [
+        event
+        async for event in service.iter_stream_events(
+            subscription_id="sub-1",
+            client_id="client-1",
+            stream_generation=3,
+            acknowledged_updates=[
+                SubscriptionUpdate(3, "asset-root", "ns=2;s=Root", 1, "Good", "2026-01-01T00:00:00Z"),
+                SubscriptionUpdate(6, "asset-root", "ns=2;s=Root", 2, "Good", "2026-01-01T00:00:01Z"),
+            ],
+            acknowledge_sequence=2,
+            timeout_seconds=0.1,
+        )
+    ]
+
+    kinds = [event["kind"] for event in events]
+    assert kinds == ["connected", "dropped", "updates", "keepalive", "dropped", "updates", "close"]
+    assert events[1]["dropped_from_sequence"] == 4
+    assert events[1]["dropped_to_sequence"] == 5
+    assert events[4]["dropped_from_sequence"] == 7
+    assert events[4]["dropped_to_sequence"] == 9
 
 
 @pytest.mark.asyncio

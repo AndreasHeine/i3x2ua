@@ -157,6 +157,9 @@ async def remove_monitored_items_v1(
         "A `: connected` comment is sent immediately on connection. "
         "A `: keepalive` comment is sent periodically when there are no new updates. "
         "An `event: close` message is sent when the stream is terminated server-side. "
+        "If queue overflow lost updates, an `event: dropped` message with the lost "
+        "`droppedFromSequence`/`droppedToSequence` range precedes the affected `data:` payload; "
+        "default data handlers ignore it. "
         "While a stream is active, `POST /subscriptions/sync` will return HTTP 400 for the same subscription. "
         "Opening a new stream for the same subscription closes the prior stream generation."
     ),
@@ -222,6 +225,26 @@ async def stream_subscription_v1(
                         stream_generation,
                     )
                 yield "event: close\ndata: {}\n\n"
+                continue
+
+            if kind == "dropped":
+                # Named event, additive: default `message`/`data` handlers ignore it, so
+                # existing consumers are unaffected while gaps become observable.
+                if _stream_debug_enabled():
+                    logger.info(
+                        "Subscription stream dropped sequences subscription_id=%s generation=%s from=%s to=%s",
+                        body.subscriptionId,
+                        stream_generation,
+                        event["dropped_from_sequence"],
+                        event["dropped_to_sequence"],
+                    )
+                dropped_payload = json.dumps(
+                    {
+                        "droppedFromSequence": event["dropped_from_sequence"],
+                        "droppedToSequence": event["dropped_to_sequence"],
+                    }
+                )
+                yield f"event: dropped\ndata: {dropped_payload}\n\n"
                 continue
 
             updates = event["updates"]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import cast
 
 import pytest
@@ -252,6 +253,51 @@ async def test_stream_subscription_raises_not_found_when_ack_sync_missing() -> N
             subscription_app_service=_stream_app_service(service),
         )
     assert exc_info.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_stream_subscription_emits_dropped_event_for_sequence_gap() -> None:
+    """Queue overflow gaps are surfaced as an additive named `event: dropped` frame."""
+    service = _FakeSubscriptionService()
+    service.activate_returns = [3]
+    service.sync_result = SubscriptionSyncResult(updates=[])
+    service.active_sequence = [True, True, False]
+    service.wait_returns = [
+        [
+            SubscriptionUpdate(
+                sequence_number=1,
+                element_id="ns=1;i=100",
+                node_id="ns=1;i=100",
+                value=1,
+                quality="Good",
+                timestamp="2026-01-01T00:01:00Z",
+            )
+        ],
+        [
+            SubscriptionUpdate(
+                sequence_number=4,
+                element_id="ns=1;i=100",
+                node_id="ns=1;i=100",
+                value=2,
+                quality="Good",
+                timestamp="2026-01-01T00:02:00Z",
+            )
+        ],
+    ]
+    body = StreamRequest(clientId="client-1", subscriptionId="sub-4")
+
+    response = await stream_subscription_v1(
+        body,
+        opcua_client=cast(OpcUaClientProtocol, _FakeOpcUaClient()),
+        subscription_app_service=_stream_app_service(service),
+    )
+    chunks = [str(chunk) async for chunk in response.body_iterator]
+
+    dropped_chunks = [chunk for chunk in chunks if chunk.startswith("event: dropped")]
+    assert len(dropped_chunks) == 1
+    payload = json.loads(dropped_chunks[0].split("data: ", 1)[1])
+    assert payload == {"droppedFromSequence": 2, "droppedToSequence": 3}
+    assert any("event: close" in chunk for chunk in chunks)
 
 
 def test_stream_request_does_not_accept_acknowledgement_fields() -> None:

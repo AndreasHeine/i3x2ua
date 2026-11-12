@@ -453,7 +453,16 @@ async def _stop_node_monitor_runtime(service: SubscriptionService, monitor: _Nod
 
 
 async def _shared_polling_loop(service: SubscriptionService) -> None:
-    """Single batched read loop covering every node currently in polling mode."""
+    """Single batched read loop covering every node currently in polling mode.
+
+    Ticks are scheduled against an absolute deadline: the read itself contributes
+    no drift, so a slow tick shortens the following sleep instead of pushing the
+    whole schedule backwards. Fan-out for one tick runs concurrently rather than
+    sequentially, so N nodes do not serialize N lock round-trips per tick.
+    """
+    loop = asyncio.get_running_loop()
+    interval = service._interval_seconds
+    next_deadline = loop.time() + interval
     try:
         while True:
             # Only acquire the lock when there are monitored nodes; an idle service
@@ -475,11 +484,19 @@ async def _shared_polling_loop(service: SubscriptionService) -> None:
                 except Exception:
                     logger.exception("Shared polling read failed node_count=%d", len(node_ids))
                 else:
+                    fanouts = []
                     for node_id, data_value in zip(node_ids, data_values, strict=True):
                         payload, quality, timestamp = decode_data_value(data_value)
-                        await service._fanout_node_value(node_id, payload, _ValueSignal(quality, timestamp))
+                        fanouts.append(service._fanout_node_value(node_id, payload, _ValueSignal(quality, timestamp)))
+                    await asyncio.gather(*fanouts)
 
-            await asyncio.sleep(service._interval_seconds)
+            delay = next_deadline - loop.time()
+            if delay > 0:
+                await asyncio.sleep(delay)
+                next_deadline += interval
+            else:
+                # The tick overshot its deadline; realign instead of catching up in a burst.
+                next_deadline = loop.time() + interval
     except asyncio.CancelledError:
         return
 

@@ -87,6 +87,9 @@ class SubscriptionService:
         self._node_datachange_queue: asyncio.Queue[tuple[str, Any, state._ValueSignal]] = asyncio.Queue(
             maxsize=max(1000, self._max_updates_per_subscription)
         )
+        # Per-node counts of updates dropped from the shared queue before fan-out; consumed
+        # by ``_fanout_node_value`` as a sequence-gap marker on each affected subscription.
+        self._dropped_node_datachanges: dict[str, int] = {}
         self._event_loop: asyncio.AbstractEventLoop | None = None
         self._shutdown_event: asyncio.Event = asyncio.Event()
         # Set by ``close()``: background tasks must never be resurrected afterwards, otherwise a
@@ -106,14 +109,20 @@ class SubscriptionService:
 
     def _enqueue_node_datachange(self, node_id: str, value: Any, signal: state._ValueSignal = state._NO_SIGNAL) -> None:
         if self._node_datachange_queue.full():
+            # Drop the oldest entry and remember it: silently discarding updates hides
+            # gaps from consumers, so the loss is marked as a sequence gap on fan-out.
             try:
-                self._node_datachange_queue.get_nowait()
+                dropped_node_id, _dropped_value, _dropped_signal = self._node_datachange_queue.get_nowait()
             except asyncio.QueueEmpty:
-                pass
+                dropped_node_id = None
+            if dropped_node_id is not None:
+                self._dropped_node_datachanges[dropped_node_id] = (
+                    self._dropped_node_datachanges.get(dropped_node_id, 0) + 1
+                )
         try:
             self._node_datachange_queue.put_nowait((node_id, value, signal))
         except asyncio.QueueFull:
-            pass
+            self._dropped_node_datachanges[node_id] = self._dropped_node_datachanges.get(node_id, 0) + 1
 
     async def _node_datachange_loop(self) -> None:
         try:
@@ -134,6 +143,19 @@ class SubscriptionService:
         async with self._lock:
             monitor = self._node_monitors.get(node_id)
             subscriber_ids = list(monitor.subscriber_ids) if monitor is not None else []
+            dropped_count = self._dropped_node_datachanges.pop(node_id, 0)
+            if dropped_count and subscriber_ids:
+                # Advance the sequence by the number of updates lost on the shared queue so
+                # the delivered update creates a visible gap; sync reports the range, and
+                # streams see the jump.
+                for subscription_id in subscriber_ids:
+                    subscription_state = self._subscriptions.get(subscription_id)
+                    if subscription_state is None:
+                        continue
+                    if subscription_state.dropped_from_sequence is None:
+                        subscription_state.dropped_from_sequence = subscription_state.sequence_number + 1
+                    subscription_state.sequence_number += dropped_count
+                    subscription_state.dropped_to_sequence = subscription_state.sequence_number
         for subscription_id in subscriber_ids:
             await self.handle_datachange(subscription_id, node_id, value, signal=signal)
 

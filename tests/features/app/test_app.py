@@ -2,18 +2,29 @@
 
 from __future__ import annotations
 
+from urllib.parse import urlsplit
+
 from fastapi.testclient import TestClient
 
 from tests.conftest import fastapi_app
 
 
-def _csp_source_tokens(csp: str) -> set[str]:
-    tokens: set[str] = set()
+def _csp_source_hosts(csp: str) -> set[str]:
+    """Exact HTTPS hosts from CSP source tokens.
+
+    Parses each token and keeps only its hostname, so checks compare the host
+    component exactly instead of matching a URL substring at an arbitrary
+    position (CodeQL py/incomplete-url-substring-sanitization).
+    """
+    hosts: set[str] = set()
     for directive in csp.split(";"):
         parts = directive.strip().split()
         if len(parts) > 1:
-            tokens.update(parts[1:])
-    return tokens
+            for token in parts[1:]:
+                url = urlsplit(token)
+                if url.scheme == "https" and url.hostname:
+                    hosts.add(url.hostname)
+    return hosts
 
 
 def test_get_model(client: TestClient) -> None:
@@ -64,18 +75,18 @@ def test_landing_page_with_mcp_disabled(client_without_mcp: TestClient) -> None:
 def test_docs_csp_allows_swagger_cdn_assets(client: TestClient) -> None:
     response = client.get("/docs")
     assert response.status_code == 200
-    csp_sources = _csp_source_tokens(response.headers.get("Content-Security-Policy", ""))
-    assert "https://cdn.jsdelivr.net" in csp_sources
-    assert "https://fastapi.tiangolo.com" in csp_sources
+    hosts = _csp_source_hosts(response.headers.get("Content-Security-Policy", ""))
+    assert "cdn.jsdelivr.net" in hosts
+    assert "fastapi.tiangolo.com" in hosts
 
 
 def test_landing_page_csp_remains_strict(client: TestClient) -> None:
     response = client.get("/")
     assert response.status_code == 200
     csp_header = response.headers.get("Content-Security-Policy", "")
-    csp_sources = _csp_source_tokens(csp_header)
-    assert "https://cdn.jsdelivr.net" not in csp_sources
-    assert "https://fastapi.tiangolo.com" not in csp_sources
+    hosts = _csp_source_hosts(csp_header)
+    assert "cdn.jsdelivr.net" not in hosts
+    assert "fastapi.tiangolo.com" not in hosts
     assert "script-src 'self' 'unsafe-inline'" not in csp_header
     assert "'sha256-" in csp_header
 

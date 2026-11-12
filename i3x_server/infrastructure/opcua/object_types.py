@@ -448,21 +448,26 @@ async def _read_object_type_members_limited(
 
     variable_nodes = [node for _, _, _, _, node_class, node, _, _, _ in entries if node_class == NodeClass.Variable]
     variable_node_ids = [node.nodeid.to_string() for node in variable_nodes]
+    object_nodes = [node for _, _, _, _, node_class, node, _, _, _ in entries if node_class != NodeClass.Variable]
 
     data_type_by_node_id: dict[str, str | None] = {}
     data_type_batch_ok = True
 
     value_rank_by_node_id: dict[str, int | None] = {}
     value_rank_batch_ok = True
+    value_data_by_node_id: dict[str, Any] = {}
+    value_batch_ok = True
     member_attributes = [(node, AttributeIds.Description) for node in all_nodes]
     member_attributes.extend((node, AttributeIds.DataType) for node in variable_nodes)
     member_attributes.extend((node, AttributeIds.ValueRank) for node in variable_nodes)
+    member_attributes.extend((node, AttributeIds.Value) for node in variable_nodes)
     try:
         member_values = await client._read_attribute_pairs(member_attributes)
     except Exception:
         descriptions_batch_ok = False
         data_type_batch_ok = False
         value_rank_batch_ok = False
+        value_batch_ok = False
         logger.debug(
             "OPC UA member metadata batch read failed endpoint=%s",
             client._endpoint,
@@ -499,6 +504,58 @@ async def _read_object_type_members_limited(
                 except (TypeError, ValueError):
                     value_rank_by_node_id[node_id] = None
 
+        offset += len(variable_nodes)
+        value_values = member_values[offset : offset + len(variable_nodes)]
+        for node_id, data_value in zip(variable_node_ids, value_values, strict=True):
+            value_data_by_node_id[node_id] = data_value
+
+    # Batched reference browses: HasModellingRule for every member and HasTypeDefinition
+    # for object members, one multi-node Browse per chunk instead of one browse per node.
+    limits = await client.get_operational_limits()
+    max_nodes_per_browse = limits.max_nodes_per_browse or 128
+
+    modelling_rule_by_node_id: dict[str, str | None] = {}
+    modelling_rules_batch_ok = True
+    try:
+        browsed_rules = await client._browse_references_descriptions(
+            all_nodes,
+            max_nodes_per_browse=max_nodes_per_browse,
+            reference_type_id=ObjectIds.HasModellingRule,
+        )
+        for node, refs in browsed_rules:
+            rule_name = refs[0].BrowseName.Name if refs else None
+            if isinstance(rule_name, str) and rule_name:
+                modelling_rule_by_node_id[node.nodeid.to_string()] = rule_name
+    except Exception:
+        modelling_rules_batch_ok = False
+        logger.debug(
+            "OPC UA member modelling rule batch browse failed endpoint=%s",
+            client._endpoint,
+            exc_info=True,
+        )
+
+    type_definition_by_node_id: dict[str, str | None] = {}
+    type_definitions_batch_ok = True
+    if object_nodes:
+        try:
+            browsed_definitions = await client._browse_references_descriptions(
+                object_nodes,
+                max_nodes_per_browse=max_nodes_per_browse,
+                reference_type_id=ObjectIds.HasTypeDefinition,
+            )
+            for node, refs in browsed_definitions:
+                if refs:
+                    type_definition_by_node_id[node.nodeid.to_string()] = _normalize_type_definition_id(
+                        refs[0].NodeId.to_string()
+                    )
+        except Exception:
+            type_definitions_batch_ok = False
+            logger.debug(
+                "OPC UA member type definition batch browse failed endpoint=%s",
+                client._endpoint,
+                exc_info=True,
+            )
+
     semaphore = asyncio.Semaphore(client._browse_concurrency)
 
     async def worker(
@@ -521,9 +578,18 @@ async def _read_object_type_members_limited(
                     data_type = await client._read_data_type_or_none(node)
                 type_definition_id = None
             else:
-                type_definition_id = await client._read_type_definition_id_or_none(node)
+                if type_definitions_batch_ok:
+                    type_definition_id = type_definition_by_node_id.get(node_id)
+                else:
+                    type_definition_id = await client._read_type_definition_id_or_none(node)
 
-            data_value = await client._read_data_value_or_none(node) if node_class == NodeClass.Variable else None
+            if node_class == NodeClass.Variable:
+                if value_batch_ok:
+                    data_value = value_data_by_node_id.get(node_id)
+                else:
+                    data_value = await client._read_data_value_or_none(node)
+            else:
+                data_value = None
             value = _variant_value_or_self(data_value)
             variant_type, is_array, array_dimensions = _variant_metadata(data_value)
             if node_class == NodeClass.Variable:
@@ -535,7 +601,10 @@ async def _read_object_type_members_limited(
                 value_rank = None
             if value_rank is not None and value_rank >= 1:
                 is_array = True
-            modelling_rule = await client._read_modelling_rule_or_none(node)
+            if modelling_rules_batch_ok:
+                modelling_rule = modelling_rule_by_node_id.get(node_id)
+            else:
+                modelling_rule = await client._read_modelling_rule_or_none(node)
             if descriptions_batch_ok:
                 description = description_by_node_id.get(node_id)
             else:

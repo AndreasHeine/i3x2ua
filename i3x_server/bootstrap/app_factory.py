@@ -292,6 +292,58 @@ async def _run_periodic_model_refresh(app: FastAPI) -> None:
             logger.exception("Periodic model refresh failed")
 
 
+def _empty_model_result() -> BuildResult:
+    """Empty model placeholder for ``skip_opcua_connect`` and degraded startup."""
+    return BuildResult(
+        nodes_by_id={},
+        root_ids=[],
+        children_by_id={},
+        instances_by_type_id={},
+        property_to_node={},
+        action_to_method={},
+    )
+
+
+async def _retry_opcua_connect(app: FastAPI, opcua_client: OpcUaClient) -> None:
+    """Startup supervisor for a failed first connect (degraded mode).
+
+    asyncua's reconnect supervisor only exists *after* a successful connect, so a startup
+    failure would otherwise leave the process serving forever without an upstream. This loop
+    retries with exponential backoff bounded by ``opcua_reconnect_max_delay_seconds``, then
+    builds the model and hands periodic refresh back to ``_run_periodic_model_refresh``.
+    """
+    runtime = _runtime_settings()
+    attempt = 0
+    while True:
+        delay = min(
+            runtime.opcua_startup_retry_interval_seconds * 2**attempt,
+            runtime.opcua_reconnect_max_delay_seconds,
+        )
+        await asyncio.sleep(delay)
+        attempt += 1
+        try:
+            await opcua_client.connect()
+        except Exception as exc:
+            logger.warning(
+                "OPC UA startup retry failed endpoint=%s attempt=%d next_delay_s=%.1f error=%s",
+                runtime.opcua_endpoint,
+                attempt,
+                delay,
+                exc,
+            )
+            continue
+        app.state.ua_startup_mode = "connected"
+        logger.info("OPC UA startup retry connected endpoint=%s attempt=%d", runtime.opcua_endpoint, attempt)
+        if runtime.model_preload_on_startup:
+            try:
+                await _run_model_preload(app)
+            except Exception:
+                logger.exception("Model preload after startup retry failed; model builds lazily on demand")
+        if runtime.model_refresh_interval_seconds > 0 and getattr(app.state, "model_refresh_task", None) is None:
+            app.state.model_refresh_task = asyncio.create_task(_run_periodic_model_refresh(app))
+        return
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _configure_logging()
@@ -339,8 +391,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         settings.opcua_security_mode,
         mcp_enabled,
     )
+    startup_mode = "skipped"
     if not skip_connect:
-        await opcua_client.connect()
+        startup_mode = "connected"
+        try:
+            await opcua_client.connect()
+        except Exception as exc:
+            if not runtime_toggle_settings.allow_degraded_startup:
+                raise
+            startup_mode = "degraded"
+            logger.warning(
+                "OPC UA connect failed at startup endpoint=%s error=%s; serving in degraded mode "
+                "(empty model) with a background retry supervisor (I3X_ALLOW_DEGRADED_STARTUP=1)",
+                settings.opcua_endpoint,
+                exc,
+            )
+    app.state.ua_startup_mode = startup_mode
     app.state.opcua_client = opcua_client
     app.state.model_builder = ModelBuilder(opcua_client)
     app.state.mcp_model_provider = get_or_build_model
@@ -429,15 +495,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             "MCP prompt registry loaded from overrides count=%d",
             len(app.state.mcp_prompts.list_metadata()),
         )
-    if skip_connect:
-        app.state.model_cache = BuildResult(
-            nodes_by_id={},
-            root_ids=[],
-            children_by_id={},
-            instances_by_type_id={},
-            property_to_node={},
-            action_to_method={},
-        )
+    if skip_connect or startup_mode == "degraded":
+        app.state.model_cache = _empty_model_result()
+        if startup_mode == "degraded":
+            app.state.opcua_retry_task = asyncio.create_task(_retry_opcua_connect(app, opcua_client))
     else:
         app.state.model_cache = None
         if settings.model_preload_on_startup:
@@ -474,6 +535,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             preload_task.cancel()
             with suppress(asyncio.CancelledError):
                 await preload_task
+        retry_task = getattr(app.state, "opcua_retry_task", None)
+        if retry_task is not None and not retry_task.done():
+            retry_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await retry_task
         for task_name in ("object_type_warm_task", "object_type_refresh_task"):
             warm_task = getattr(app.state, task_name, None)
             if warm_task is not None and not warm_task.done():
@@ -485,7 +551,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # only covers terminated processes; a plain shutdown (uvicorn exit, TestClient context)
         # must not leave sessions - and their queues - alive.
         shutdown_mcp_transport(app)
-        if not skip_connect:
+        # Degraded startup may never have established a session; disconnecting an unconnected
+        # client would raise during shutdown and mask the real startup failure.
+        if app.state.ua_startup_mode == "degraded":
+            logger.info("OPC UA disconnect skipped endpoint=%s (never connected)", settings.opcua_endpoint)
+        elif app.state.ua_startup_mode != "skipped":
             await opcua_client.disconnect()
         logger.info("App shutdown finished")
 

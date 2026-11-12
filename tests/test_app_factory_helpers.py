@@ -5,6 +5,7 @@ import os
 import signal
 import subprocess
 import sys
+import time
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock
@@ -446,3 +447,109 @@ def test_bootstrap_create_app_is_reexported_lazily() -> None:
     from i3x_server.bootstrap import create_app
 
     assert callable(create_app)
+
+
+@pytest.mark.asyncio
+async def test_lifespan_hard_fails_on_opcua_connect_error_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default behavior is unchanged: an unreachable upstream must still abort startup."""
+    monkeypatch.setenv("I3X_SKIP_OPCUA_CONNECT", "0")
+    monkeypatch.setenv("I3X_ENABLE_MCP", "0")
+
+    async def failing_connect(self: Any) -> None:
+        raise ConnectionError("upstream unreachable")
+
+    monkeypatch.setattr("i3x_server.infrastructure.opcua.client.OpcUaClient.connect", failing_connect)
+    app = FastAPI()
+    with pytest.raises(ConnectionError, match="upstream unreachable"):
+        async with app_factory.lifespan(app):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_degraded_startup_serves_empty_model_and_supervisor_rebuilds_after_reconnect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """I3X_ALLOW_DEGRADED_STARTUP=1: connect failure serves an empty model, the startup
+    supervisor keeps retrying and builds the model once the upstream answers."""
+    monkeypatch.setenv("I3X_SKIP_OPCUA_CONNECT", "0")
+    monkeypatch.setenv("I3X_ENABLE_MCP", "0")
+    monkeypatch.setenv("I3X_ALLOW_DEGRADED_STARTUP", "1")
+    monkeypatch.setenv("I3X_OPCUA_STARTUP_RETRY_INTERVAL_SECONDS", "0.05")
+    monkeypatch.setenv("I3X_MODEL_REFRESH_INTERVAL_SECONDS", "0")
+
+    attempts = 0
+
+    async def flaky_connect(self: Any) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise ConnectionError("upstream unreachable")
+
+    disconnects = AsyncMock()
+    monkeypatch.setattr("i3x_server.infrastructure.opcua.client.OpcUaClient.connect", flaky_connect)
+    monkeypatch.setattr("i3x_server.infrastructure.opcua.client.OpcUaClient.disconnect", disconnects)
+
+    asset_node = ModelNode(
+        id="asset-1", name="Asset", kind="asset", type=None, children=[], source_node_id="ns=2;s=Asset"
+    )
+    built = BuildResult(
+        nodes_by_id={"asset-1": asset_node},
+        root_ids=["asset-1"],
+        children_by_id={"asset-1": []},
+        instances_by_type_id={},
+        property_to_node={},
+        action_to_method={},
+    )
+    monkeypatch.setattr("i3x_server.model.builder.ModelBuilder.build", AsyncMock(return_value=built))
+    monkeypatch.setattr(
+        "i3x_server.bootstrap.app_factory.warm_object_type_context",
+        AsyncMock(return_value=SimpleNamespace(items=[])),
+    )
+
+    app = FastAPI()
+    async with app_factory.lifespan(app):
+        assert app.state.ua_startup_mode == "degraded"
+        assert app.state.model_cache.nodes_by_id == {}
+
+        deadline = time.monotonic() + 2.0
+        while app.state.ua_startup_mode != "connected":
+            if time.monotonic() > deadline:
+                pytest.fail("startup supervisor did not reconnect within 2s")
+            await asyncio.sleep(0.01)
+        assert attempts == 3
+
+        deadline = time.monotonic() + 2.0
+        while not app.state.model_cache.nodes_by_id:
+            if time.monotonic() > deadline:
+                pytest.fail("startup supervisor did not build the model after reconnect")
+            await asyncio.sleep(0.01)
+        assert app.state.model_cache is built
+
+    # A connected client must be disconnected on shutdown.
+    disconnects.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_degraded_startup_shutdown_skips_disconnect_while_never_connected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Shutdown must not disconnect a client that never established a session (L: degraded mode)."""
+    monkeypatch.setenv("I3X_SKIP_OPCUA_CONNECT", "0")
+    monkeypatch.setenv("I3X_ENABLE_MCP", "0")
+    monkeypatch.setenv("I3X_ALLOW_DEGRADED_STARTUP", "1")
+    monkeypatch.setenv("I3X_OPCUA_STARTUP_RETRY_INTERVAL_SECONDS", "0.05")
+    monkeypatch.setenv("I3X_MODEL_REFRESH_INTERVAL_SECONDS", "0")
+
+    async def always_failing_connect(self: Any) -> None:
+        raise ConnectionError("upstream unreachable")
+
+    disconnects = AsyncMock()
+    monkeypatch.setattr("i3x_server.infrastructure.opcua.client.OpcUaClient.connect", always_failing_connect)
+    monkeypatch.setattr("i3x_server.infrastructure.opcua.client.OpcUaClient.disconnect", disconnects)
+
+    app = FastAPI()
+    async with app_factory.lifespan(app):
+        assert app.state.ua_startup_mode == "degraded"
+        assert app.state.model_cache.nodes_by_id == {}
+        assert app.state.opcua_retry_task is not None
+    assert disconnects.await_count == 0

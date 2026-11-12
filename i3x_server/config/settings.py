@@ -50,6 +50,10 @@ class Settings(BaseSettings):
     enable_writes: bool = Field(default=False)
     enable_mcp: bool = Field(default=False)
     skip_opcua_connect: bool = Field(default=False)
+    # Opt-in degraded startup: if the first OPC UA connect fails, serve anyway (empty model)
+    # and let the startup supervisor retry the upstream instead of crash-looping the process.
+    allow_degraded_startup: bool = Field(default=False)
+    opcua_startup_retry_interval_seconds: float = Field(default=5.0, gt=0)
     enable_type_browsename_lookup: bool = Field(default=False)
     type_browsename_lookup_timeout_s: float = Field(default=0.05, ge=0)
     type_browsename_lookup_max: int = Field(default=20, ge=0)

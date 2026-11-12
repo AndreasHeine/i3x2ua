@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 from fastapi.testclient import TestClient
@@ -32,6 +33,23 @@ def test_ua_connection(client: TestClient) -> None:
     assert result["state"] == "Connected"
     assert result["endpoint"] == "opc.tcp://opcua.umati.app:4843"
     assert result["since"].endswith("Z")
+    assert result["ready"] is True
+    assert result["startupMode"] == "skipped"
+
+
+def test_ua_connection_reports_not_ready_for_degraded_startup(client: TestClient) -> None:
+    """/ua/connection is the readiness signal: an upstream that never connected must report ready=false."""
+    app = fastapi_app(client)
+    app.state.ua_startup_mode = "degraded"
+    snapshot = SimpleNamespace(state="Disconnected", endpoint="opc.tcp://offline:4840", since=None)
+    app.state.opcua_client.get_connection_snapshot = lambda: snapshot
+    response = client.get("/ua/connection")
+    assert response.status_code == 200
+    result = response.json()["result"]
+    assert result["ready"] is False
+    assert result["state"] == "Disconnected"
+    assert result["endpoint"] == "opc.tcp://offline:4840"
+    assert result["startupMode"] == "degraded"
 
 
 def test_ua_limits(client: TestClient) -> None:

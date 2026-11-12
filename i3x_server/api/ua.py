@@ -31,6 +31,10 @@ class UaConnectionResult(BaseModel):
     state: str
     endpoint: str
     since: str
+    # Readiness signal for orchestrators: `/health` is deliberately static (container liveness
+    # must not depend on OPC UA), so upstream readiness is reported here instead.
+    ready: bool
+    startupMode: str
 
 
 class UaOperationalLimitsResult(BaseModel):
@@ -149,7 +153,10 @@ async def get_ua_status(
 
 
 @router.get("/connection", response_model=UaSuccessResponse)
-async def get_ua_connection(opcua_client: OpcUaClientProtocol = Depends(get_opcua_client)) -> UaSuccessResponse:
+async def get_ua_connection(
+    request: Request,
+    opcua_client: OpcUaClientProtocol = Depends(get_opcua_client),
+) -> UaSuccessResponse:
     try:
         snapshot = opcua_client.get_connection_snapshot()
     except Exception as exc:
@@ -160,10 +167,13 @@ async def get_ua_connection(opcua_client: OpcUaClientProtocol = Depends(get_opcu
             {"cause": str(exc)},
         ) from exc
 
+    startup_mode = str(getattr(request.app.state, "ua_startup_mode", "unknown"))
     result = UaConnectionResult(
         state=snapshot.state,
         endpoint=snapshot.endpoint,
         since=_iso_timestamp(snapshot.since),
+        ready=snapshot.state == "Connected",
+        startupMode=startup_mode,
     )
     return UaSuccessResponse(result=result)
 

@@ -152,7 +152,7 @@ async def read_values(client: OpcUaClient, node_ids: list[str]) -> list[Any]:
     batch_size = max(1, min(max_nodes, len(node_ids)))
 
     batches = _chunked(node_ids, batch_size)
-    semaphore = asyncio.Semaphore(client._browse_concurrency)
+    semaphore = client._read_slot()
 
     async def read_batch(batch: list[str]) -> list[Any]:
         async with semaphore:
@@ -218,7 +218,7 @@ async def _read_data_values_per_node(client: OpcUaClient, node_ids: list[str]) -
     limits = await client.get_operational_limits()
     max_nodes = limits.max_nodes_per_read or len(node_ids)
     batch_size = max(1, min(max_nodes, len(node_ids)))
-    semaphore = asyncio.Semaphore(min(batch_size, client._browse_concurrency))
+    semaphore = client._read_slot()
 
     async def _read_one(node_id: str) -> ua.DataValue:
         async with semaphore:
@@ -523,7 +523,7 @@ async def read_history_values(
     )
     values_by_node_id: dict[str, list[ua.DataValue]] = {}
     history_batches = _chunked(node_ids, max(1, batch_size))
-    semaphore = asyncio.Semaphore(client._browse_concurrency)
+    semaphore = client._read_slot()
 
     async def read_history_batch(node_batch: list[str]) -> dict[str, list[ua.DataValue]]:
         async with semaphore:

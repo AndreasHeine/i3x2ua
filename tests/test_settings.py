@@ -27,6 +27,32 @@ def test_settings_can_disable_opcua_schema_fields(monkeypatch: MonkeyPatch) -> N
     assert settings.mcp_include_opcua_metadata is False
 
 
+def test_settings_opcua_request_budgets(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setenv("I3X_OPCUA_BROWSE_CONCURRENCY", "128")
+    monkeypatch.setenv("I3X_OPCUA_READ_CONCURRENCY", "48")
+    monkeypatch.setenv("I3X_OPCUA_REFRESH_CONCURRENCY", "16")
+
+    settings = Settings()
+
+    assert settings.opcua_browse_concurrency == 128
+    assert settings.opcua_read_concurrency == 48
+    assert settings.opcua_refresh_concurrency == 16
+
+
+def test_settings_opcua_request_budget_defaults() -> None:
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+    assert settings.opcua_read_concurrency == 64
+    assert settings.opcua_refresh_concurrency == 32
+
+
+@pytest.mark.parametrize("name", ["I3X_OPCUA_READ_CONCURRENCY", "I3X_OPCUA_REFRESH_CONCURRENCY"])
+def test_settings_reject_zero_request_budgets(monkeypatch: MonkeyPatch, name: str) -> None:
+    monkeypatch.setenv(name, "0")
+    with pytest.raises(ValidationError):
+        Settings()
+
+
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [

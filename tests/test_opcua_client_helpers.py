@@ -25,6 +25,7 @@ from i3x_server.infrastructure.opcua.client import (
     OpcUaNamespaceInfo,
     OpcUaOperationalLimits,
     _assert_file_exists,
+    model_refresh_budget,
 )
 from i3x_server.infrastructure.opcua.object_types import _to_json_compatible
 from i3x_server.infrastructure.opcua.values import _to_explicit_ua_variant
@@ -1993,3 +1994,62 @@ async def test_stalled_subscription_restore_does_not_block_reconnect_completion(
     assert "subscription restore timed out" in caplog.text
     if recreation_fails:
         assert "subscription recovery failed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_model_refresh_budget_overrides_read_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Background refresh round-trips use the smaller refresh budget, not the read budget."""
+    client = OpcUaClient(endpoint="opc.tcp://localhost:4840", read_concurrency=8, refresh_concurrency=2)
+
+    async def limits() -> OpcUaOperationalLimits:
+        return OpcUaOperationalLimits(max_nodes_per_browse=None, max_nodes_per_read=1)
+
+    monkeypatch.setattr(client, "get_operational_limits", limits)
+
+    counters = {"active": 0, "peak": 0}
+    release = asyncio.Event()
+    at_capacity = asyncio.Event()
+    node_ids = [f"i={index}" for index in range(12)]
+
+    async def read_batch(batch: list[str]) -> list[Any]:
+        counters["active"] += 1
+        counters["peak"] = max(counters["peak"], counters["active"])
+        if counters["active"] >= 2:
+            at_capacity.set()
+        try:
+            await release.wait()
+            return [f"value-{node_id}" for node_id in batch]
+        finally:
+            counters["active"] -= 1
+
+    monkeypatch.setattr(client, "_read_values_batch_with_fallback", read_batch)
+
+    async def read_under_refresh_budget() -> list[Any]:
+        async with model_refresh_budget(client):
+            return await client.read_values(node_ids)
+
+    assert client._read_slot() is client._read_semaphore
+
+    refresh_read = asyncio.create_task(read_under_refresh_budget())
+    await asyncio.wait_for(at_capacity.wait(), timeout=1)
+    # Tasks created inside the scope inherit the budget through their copied context.
+    assert client._read_slot() is client._read_semaphore
+    release.set()
+    assert await refresh_read == [f"value-{node_id}" for node_id in node_ids]
+    assert counters["peak"] == 2
+
+    counters["peak"] = 0
+    release.clear()
+    outside = asyncio.create_task(client.read_values(node_ids))
+    await asyncio.sleep(0.05)
+    release.set()
+    assert await outside == [f"value-{node_id}" for node_id in node_ids]
+    assert counters["peak"] == 8
+    assert client._read_slot() is client._read_semaphore
+
+
+@pytest.mark.asyncio
+async def test_model_refresh_budget_is_a_noop_without_a_refresh_semaphore() -> None:
+    client = OpcUaClient(endpoint="opc.tcp://localhost:4840", refresh_concurrency=2)
+    async with model_refresh_budget(SimpleNamespace()):
+        assert client._read_slot() is client._read_semaphore

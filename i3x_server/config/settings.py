@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     opcua_client_key_password: str | None = Field(default=None)
     opcua_server_cert_path: str | None = Field(default=None)
     opcua_browse_concurrency: int = Field(default=128, ge=1)
+    opcua_read_concurrency: int = Field(default=64, ge=1)
+    opcua_refresh_concurrency: int = Field(default=32, ge=1)
     opcua_browse_roots: Annotated[list[str] | None, NoDecode] = None
     opcua_metadata_cache_ttl_seconds: int = Field(default=300, ge=0)
     opcua_connection_monitor_interval_seconds: int = Field(default=5, ge=0)

@@ -362,7 +362,7 @@ def _extract_class_node_info_attribute(
 
 
 async def _read_node_infos_fallback(client: OpcUaClient, entries: list[tuple[Any, str | None]]) -> list[OpcUaNodeInfo]:
-    semaphore = asyncio.Semaphore(client._browse_concurrency)
+    semaphore = client._read_slot()
 
     async def worker(node: Any, parent_node_id: str | None) -> OpcUaNodeInfo | None:
         async with semaphore:
@@ -421,7 +421,7 @@ async def _read_attribute_pairs(
         batch_size = limits.max_nodes_per_read or len(node_attributes)
 
     batches = _chunked_nodes(node_attributes, max(1, batch_size))
-    semaphore = asyncio.Semaphore(client._browse_concurrency)
+    semaphore = client._read_slot()
 
     async def read_batch(batch: list[tuple[Any, AttributeIds]]) -> list[ua.DataValue]:
         async with semaphore:
@@ -493,7 +493,7 @@ async def _read_attribute_batch_limited(
         effective_batch_size = max(1, min(max_nodes, len(nodes)))
 
     batches = _chunked_nodes(nodes, max(1, effective_batch_size))
-    semaphore = asyncio.Semaphore(client._browse_concurrency)
+    semaphore = client._read_slot()
 
     async def read_batch(node_batch: list[Any]) -> list[ua.DataValue]:
         async with semaphore:

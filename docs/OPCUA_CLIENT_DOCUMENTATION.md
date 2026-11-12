@@ -92,9 +92,10 @@ Concurrency is intentionally controlled, not unlimited.
 
 Key controls:
 
-- `I3X_OPCUA_BROWSE_CONCURRENCY` (default 128 in settings) controls parallel worker count for fallback browse/member reads.
+- `I3X_OPCUA_BROWSE_CONCURRENCY` (default 128 in settings) is the transport-level application request gate: every Browse/Read/Write service call waits for one of these client-wide in-flight slots, and request deadlines include waiting for that budget. Native Publish requests keep their long-poll semantics and do not consume application slots.
+- `I3X_OPCUA_READ_CONCURRENCY` (default 64) bounds concurrent attribute/value read round-trips for request handlers, so a large bulk read cannot occupy the whole application gate.
+- `I3X_OPCUA_REFRESH_CONCURRENCY` (default 32) is a separate, smaller budget for background model refreshes and object-type warm-up, so a rebuild cannot starve readers.
 - For many operations, the client prefers batched reads first, then falls back to per-node reads behind a semaphore when required.
-- All application service requests share a client-wide budget of `min(16, I3X_OPCUA_BROWSE_CONCURRENCY)` in-flight requests. Request deadlines include waiting for this budget. Native Publish requests keep their long-poll semantics and do not consume application slots.
 - Value-read timeouts and transport/session failures do not trigger per-node fallback. They propagate to the caller's existing error handling instead of multiplying traffic or synthesizing a successful response with unavailable values. A transport failure during per-node fallback cancels the remaining workers and stops further chunks; node-specific failures still return Bad-quality values.
 
 Why this matters:
@@ -266,6 +267,8 @@ sequenceDiagram
 - `I3X_OPCUA_CLIENT_KEY_PASSWORD`
 - `I3X_OPCUA_SERVER_CERT_PATH`
 - `I3X_OPCUA_BROWSE_CONCURRENCY`
+- `I3X_OPCUA_READ_CONCURRENCY`
+- `I3X_OPCUA_REFRESH_CONCURRENCY`
 - `I3X_OPCUA_METADATA_CACHE_TTL_SECONDS`
 - `I3X_OPCUA_CONNECTION_MONITOR_INTERVAL_SECONDS`
 - `I3X_OPCUA_RECONNECT_REQUEST_TIMEOUT_SECONDS`

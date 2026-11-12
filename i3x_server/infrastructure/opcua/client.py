@@ -15,8 +15,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
-from contextlib import suppress
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager, suppress
+from contextvars import ContextVar
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -51,6 +52,7 @@ from i3x_server.infrastructure.opcua.recovery import _SupervisedAsyncuaClient
 __all__ = [
     "OpcUaClient",
     "OpcUaClientProtocol",
+    "model_refresh_budget",
     "OpcUaConnectionSnapshot",
     "OpcUaNamespaceInfo",
     "OpcUaNodeInfo",
@@ -71,6 +73,28 @@ logger = logging.getLogger(__name__)
 _T = TypeVar("_T")
 _METADATA_INVALIDATED_AT = float("-inf")
 
+# Budget override for background model refreshes. Tasks created inside the scope inherit
+# it through their copied context, so a rebuild's round-trips are throttled by the smaller
+# refresh budget instead of competing for the read budget that request handlers share.
+_MODEL_REFRESH_BUDGET: ContextVar[asyncio.Semaphore | None] = ContextVar("i3x2ua_opcua_refresh_budget", default=None)
+
+
+@asynccontextmanager
+async def model_refresh_budget(opcua_client: Any) -> AsyncIterator[None]:
+    """Throttle OPC UA round-trips made inside the scope by the client's refresh budget.
+
+    Clients without a dedicated refresh budget (test doubles) run unthrottled.
+    """
+    semaphore = getattr(opcua_client, "_refresh_semaphore", None)
+    if semaphore is None:
+        yield
+        return
+    token = _MODEL_REFRESH_BUDGET.set(semaphore)
+    try:
+        yield
+    finally:
+        _MODEL_REFRESH_BUDGET.reset(token)
+
 
 class OpcUaClient:
     def __init__(
@@ -85,6 +109,8 @@ class OpcUaClient:
         client_key_password: str | None = None,
         server_cert_path: str | None = None,
         browse_concurrency: int = 16,
+        read_concurrency: int = 64,
+        refresh_concurrency: int = 32,
         metadata_cache_ttl_seconds: int = 300,
         connection_monitor_interval_seconds: int = 5,
         reconnect_request_timeout_seconds: float = 10.0,
@@ -109,6 +135,13 @@ class OpcUaClient:
             server_cert_path.strip() if isinstance(server_cert_path, str) and server_cert_path.strip() else None
         )
         self._browse_concurrency = max(1, browse_concurrency)
+        # Separate budgets: request handlers fan attribute reads out under the read budget,
+        # background refreshes use the smaller refresh budget, and writes keep the
+        # transport-level application gate (``application_request_limit`` below).
+        self._read_concurrency = max(1, read_concurrency)
+        self._refresh_concurrency = max(1, refresh_concurrency)
+        self._read_semaphore = asyncio.Semaphore(self._read_concurrency)
+        self._refresh_semaphore = asyncio.Semaphore(self._refresh_concurrency)
         self._browse_roots = tuple(browse_roots) if browse_roots is not None else None
         self._metadata_cache_ttl_seconds = max(0, metadata_cache_ttl_seconds)
         self._connection_monitor_interval_seconds = max(1, connection_monitor_interval_seconds)
@@ -177,6 +210,17 @@ class OpcUaClient:
             endpoint=self._endpoint,
             since=self._connection_state_since,
         )
+
+    def _read_slot(self) -> asyncio.Semaphore:
+        """Budget for concurrent read round-trips on the current task.
+
+        Request handlers share ``opcua_read_concurrency``; background model refreshes run
+        inside :func:`model_refresh_budget` and use the smaller
+        ``opcua_refresh_concurrency`` budget, so a rebuild cannot starve readers. Writes
+        stay on the transport-level application gate and are unaffected.
+        """
+        budget = _MODEL_REFRESH_BUDGET.get()
+        return self._read_semaphore if budget is None else budget
 
     def _is_metadata_cache_entry_fresh(self, cached_at: float) -> bool:
         """TTL of 0 means entries never expire, unless explicitly invalidated."""

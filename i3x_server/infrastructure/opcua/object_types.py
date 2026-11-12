@@ -10,7 +10,6 @@ monkeypatching the client keeps working. Tests and monkeypatching target this mo
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import logging
 import re
@@ -556,7 +555,7 @@ async def _read_object_type_members_limited(
                 exc_info=True,
             )
 
-    semaphore = asyncio.Semaphore(client._browse_concurrency)
+    semaphore = client._read_slot()
 
     async def worker(
         parent_id: str,

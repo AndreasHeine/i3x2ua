@@ -37,7 +37,7 @@ from i3x_server.bootstrap.dependencies import get_or_build_model
 from i3x_server.config.settings import Settings, get_settings, settings
 from i3x_server.errors import format_error_details
 from i3x_server.http_caching import MODEL_REVISION_HEADER, ModelRevisionMiddleware, NotModifiedError
-from i3x_server.infrastructure.opcua.client import OpcUaClient
+from i3x_server.infrastructure.opcua.client import OpcUaClient, model_refresh_budget
 from i3x_server.infrastructure.subscriptions.service import SubscriptionService
 from i3x_server.mcp.invocation import get_api_prefix, init_mcp_metrics
 from i3x_server.mcp.tool_definitions import build_mcp_tools, load_overrides, load_prompt_overrides
@@ -183,7 +183,10 @@ async def _run_model_preload(app: FastAPI) -> None:
         started = asyncio.get_running_loop().time()
         app.state.opcua_client.reset_runtime_metrics()
         build_started = asyncio.get_running_loop().time()
-        preload = await app.state.model_builder.build()
+        # Background refresh work runs under the dedicated refresh budget so a rebuild
+        # cannot consume the read budget that request handlers share.
+        async with model_refresh_budget(app.state.opcua_client):
+            preload = await app.state.model_builder.build()
         build_duration_s = asyncio.get_running_loop().time() - build_started
         app.state.model_cache = preload
         metrics = app.state.opcua_client.snapshot_runtime_metrics()
@@ -228,11 +231,13 @@ async def _run_model_preload(app: FastAPI) -> None:
             metrics.object_type_reads,
             metrics.object_type_count_last,
         )
-        if settings.model_preload_blocking:
-            await _warm_object_type_context(app, preload)
-        else:
-            # Keep background preload from holding model-only requests behind type warm-up.
-            app.state.object_type_warm_task = asyncio.create_task(_warm_object_type_context(app, preload))
+        async with model_refresh_budget(app.state.opcua_client):
+            if settings.model_preload_blocking:
+                await _warm_object_type_context(app, preload)
+            else:
+                # Keep background preload from holding model-only requests behind type warm-up.
+                # The task copies the refresh-budget context, so warm-up stays throttled.
+                app.state.object_type_warm_task = asyncio.create_task(_warm_object_type_context(app, preload))
     except Exception:
         logger.exception("Model preload failed")
         if settings.fail_startup_on_model_preload_error and settings.model_preload_blocking:
@@ -260,8 +265,11 @@ async def _run_periodic_model_refresh(app: FastAPI) -> None:
         started = perf_counter()
         try:
             # Build outside the lock so readers keep serving the previous model revision
-            # while the refresh round-trips run; only the swap is serialized.
-            built = await app.state.model_builder.build()
+            # while the refresh round-trips run; only the swap is serialized. The refresh
+            # budget keeps the rebuild's round-trips from consuming the read budget that
+            # request handlers share.
+            async with model_refresh_budget(getattr(app.state, "opcua_client", None)):
+                built = await app.state.model_builder.build()
             async with app.state.model_lock:
                 app.state.model_cache = built
                 # Keep the existing object-type context unless the refreshed model is
@@ -276,7 +284,8 @@ async def _run_periodic_model_refresh(app: FastAPI) -> None:
                 len(built.action_to_method),
                 perf_counter() - started,
             )
-            await _warm_object_type_context(app, built)
+            async with model_refresh_budget(getattr(app.state, "opcua_client", None)):
+                await _warm_object_type_context(app, built)
         except Exception:
             logger.exception("Periodic model refresh failed")
 
@@ -299,6 +308,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         client_key_password=settings.opcua_client_key_password,
         server_cert_path=settings.opcua_server_cert_path,
         browse_concurrency=settings.opcua_browse_concurrency,
+        read_concurrency=settings.opcua_read_concurrency,
+        refresh_concurrency=settings.opcua_refresh_concurrency,
         browse_roots=settings.opcua_browse_roots,
         metadata_cache_ttl_seconds=settings.opcua_metadata_cache_ttl_seconds,
         connection_monitor_interval_seconds=settings.opcua_connection_monitor_interval_seconds,
@@ -308,13 +319,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     skip_connect = runtime_toggle_settings.skip_opcua_connect
     logger.info(
         "App startup opcua_endpoint=%s skip_connect=%s log_level=%s "
-        "browse_concurrency=%d metadata_cache_ttl_seconds=%d connection_monitor_interval_seconds=%d "
+        "browse_concurrency=%d read_concurrency=%d refresh_concurrency=%d "
+        "metadata_cache_ttl_seconds=%d connection_monitor_interval_seconds=%d "
         "reconnect_request_timeout_seconds=%.1f reconnect_max_delay_seconds=%.1f "
         "auth_configured=%s security_mode=%s mcp_enabled=%s",
         settings.opcua_endpoint,
         skip_connect,
         settings.log_level,
         settings.opcua_browse_concurrency,
+        settings.opcua_read_concurrency,
+        settings.opcua_refresh_concurrency,
         settings.opcua_metadata_cache_ttl_seconds,
         settings.opcua_connection_monitor_interval_seconds,
         settings.opcua_reconnect_request_timeout_seconds,

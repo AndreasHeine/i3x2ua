@@ -26,6 +26,7 @@ from i3x_server.infrastructure.subscriptions.state import (
     SubscriptionSyncResult,
     SubscriptionUpdate,
 )
+from i3x_server.model.revision import model_revision
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.opcua_value import decode_data_value, format_utc_timestamp, normalize_opcua_value
 from i3x_server.schemas.state import BuildResult
@@ -72,6 +73,8 @@ class SubscriptionService:
         self._native_timeout_refresh_max_seconds = max(0.1, float(native_timeout_refresh_max_seconds))
         self._lock = asyncio.Lock()
         self._subscriptions: dict[str, state._SubscriptionState] = {}
+        # Source-node lookup shared across subscriptions, rebuilt only when the model revision changes.
+        self._source_index_cache: tuple[str, dict[str, ModelNode]] | None = None
         self._node_monitors: dict[str, state._NodeMonitor] = {}
         self._bins: dict[str, state._ManagedBin] = {}
         self._native_bin_admission_lock = asyncio.Lock()
@@ -388,12 +391,26 @@ class SubscriptionService:
                 return False
             previous_node_ids = set(subscription_state.monitored_node_ids)
             previous_monitored_nodes = len(previous_node_ids)
-            for element_id in element_ids:
-                subscription_state.monitored_objects[element_id] = max_depth
-            monitored_node_ids, node_to_element_id = self._resolve_monitored_node_ids(
-                subscription_state.monitored_objects,
-                model,
-            )
+            token = model_revision(model)
+            source_index = self._source_index(token, model)
+            if subscription_state.mapping_model_token != token:
+                # A refreshed model invalidates every mapping built against the previous revision.
+                subscription_state.monitored_objects.update({element_id: max_depth for element_id in element_ids})
+                subscription_state.mapping_model_token = token
+                subscription_state.object_mappings = {
+                    element_id: mapping._resolve_object_mappings(element_id, depth, model, source_index)
+                    for element_id, depth in subscription_state.monitored_objects.items()
+                }
+            else:
+                for element_id in element_ids:
+                    known_depth = subscription_state.monitored_objects.get(element_id)
+                    if known_depth == max_depth and element_id in subscription_state.object_mappings:
+                        continue
+                    subscription_state.monitored_objects[element_id] = max_depth
+                    subscription_state.object_mappings[element_id] = mapping._resolve_object_mappings(
+                        element_id, max_depth, model, source_index
+                    )
+            monitored_node_ids, node_to_element_id = self._merge_object_mappings(subscription_state.object_mappings)
             subscription_state.monitored_node_ids = monitored_node_ids
             subscription_state.node_to_element_id = node_to_element_id
             monitored_nodes_count = len(monitored_node_ids)
@@ -443,10 +460,19 @@ class SubscriptionService:
             previous_monitored_nodes = len(previous_node_ids)
             for element_id in element_ids:
                 subscription_state.monitored_objects.pop(element_id, None)
-            monitored_node_ids, node_to_element_id = self._resolve_monitored_node_ids(
-                subscription_state.monitored_objects,
-                model,
-            )
+            token = model_revision(model)
+            if subscription_state.mapping_model_token != token:
+                # A refreshed model invalidates every mapping built against the previous revision.
+                subscription_state.mapping_model_token = token
+                source_index = self._source_index(token, model)
+                subscription_state.object_mappings = {
+                    element_id: mapping._resolve_object_mappings(element_id, depth, model, source_index)
+                    for element_id, depth in subscription_state.monitored_objects.items()
+                }
+            else:
+                for element_id in element_ids:
+                    subscription_state.object_mappings.pop(element_id, None)
+            monitored_node_ids, node_to_element_id = self._merge_object_mappings(subscription_state.object_mappings)
             subscription_state.monitored_node_ids = monitored_node_ids
             subscription_state.node_to_element_id = node_to_element_id
             monitored_nodes_count = len(monitored_node_ids)
@@ -971,6 +997,25 @@ class SubscriptionService:
             monitored_objects=monitored,
             mode=subscription_state.mode,
         )
+
+    def _source_index(self, token: str, model: BuildResult) -> dict[str, ModelNode]:
+        """Model source-node lookup cached per model revision token."""
+        cached = self._source_index_cache
+        if cached is None or cached[0] != token:
+            cached = (token, mapping._build_source_index(model))
+            self._source_index_cache = cached
+        return cached[1]
+
+    @staticmethod
+    def _merge_object_mappings(object_mappings: dict[str, dict[str, str]]) -> tuple[set[str], dict[str, str]]:
+        """Fold per-object mappings into the monitored node set and the case-folded lookup."""
+        node_ids: set[str] = set()
+        node_to_element_id: dict[str, str] = {}
+        for mappings in object_mappings.values():
+            node_ids.update(mappings)
+            node_to_element_id.update(mappings)
+            node_to_element_id.update({key.lower(): value for key, value in mappings.items()})
+        return node_ids, node_to_element_id
 
     def _resolve_monitored_node_ids(
         self,

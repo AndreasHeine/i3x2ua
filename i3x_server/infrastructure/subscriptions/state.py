@@ -81,6 +81,11 @@ class _SubscriptionState:
     client_id: str | None
     display_name: str | None
     monitored_objects: dict[str, int]
+    # Per-object node_id-to-elementId mappings (canonical keys only), added and removed
+    # incrementally on register/unregister instead of re-resolving every object.
+    object_mappings: dict[str, dict[str, str]] = field(default_factory=dict)
+    # Model revision the mappings were resolved against; a refresh forces a full rebuild.
+    mapping_model_token: str | None = None
     monitored_node_ids: set[str] = field(default_factory=set)
     applied_node_ids: set[str] = field(default_factory=set)
     node_to_element_id: dict[str, str] = field(default_factory=dict)

@@ -13,25 +13,44 @@ from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
 
 
+def _build_source_index(model: BuildResult) -> dict[str, ModelNode]:
+    """Source-node-id lookup over the whole model.
+
+    Building it is O(all model nodes), so the service caches it per model revision and
+    passes it to ``_resolve_object_mappings`` instead of rebuilding it per register call.
+    """
+    return {item.source_node_id: item for item in model.nodes_by_id.values()}
+
+
+def _resolve_object_mappings(
+    element_id: str,
+    max_depth: int,
+    model: BuildResult,
+    source_index: dict[str, ModelNode],
+) -> dict[str, str]:
+    """Monitored node_id-to-elementId mappings for one registered object.
+
+    Keys are canonical node ids only; the service adds the case-folded aliases when it
+    merges the mappings, mirroring the full-resolution behavior.
+    """
+    node = model.nodes_by_id.get(element_id)
+    if node is None:
+        node = source_index.get(element_id)
+    if node is None:
+        return {element_id: element_id}
+    return _collect_property_source_mappings(model, node, max_depth=max_depth)
+
+
 def _resolve_monitored_node_ids(
     monitored_objects: dict[str, int],
     model: BuildResult,
 ) -> tuple[set[str], dict[str, str]]:
-    source_index = {item.source_node_id: item for item in model.nodes_by_id.values()}
+    source_index = _build_source_index(model)
     node_ids: set[str] = set()
     node_to_element_id: dict[str, str] = {}
 
     for element_id, max_depth in monitored_objects.items():
-        node = model.nodes_by_id.get(element_id)
-        if node is None:
-            node = source_index.get(element_id)
-        if node is None:
-            node_ids.add(element_id)
-            node_to_element_id[element_id] = element_id
-            node_to_element_id[element_id.lower()] = element_id
-            continue
-
-        mappings = _collect_property_source_mappings(model, node, max_depth=max_depth)
+        mappings = _resolve_object_mappings(element_id, max_depth, model, source_index)
         node_ids.update(mappings.keys())
         node_to_element_id.update(mappings)
         node_to_element_id.update({key.lower(): value for key, value in mappings.items()})

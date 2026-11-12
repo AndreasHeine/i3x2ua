@@ -17,6 +17,7 @@ from i3x_server.infrastructure.opcua.client import (
     OpcUaClientProtocol,
     OpcUaSubscriptionCapabilities,
 )
+from i3x_server.infrastructure.subscriptions import mapping
 from i3x_server.infrastructure.subscriptions.monitoring import _min_positive
 from i3x_server.infrastructure.subscriptions.service import SubscriptionService, SubscriptionUpdate
 from i3x_server.infrastructure.subscriptions.state import (
@@ -307,6 +308,65 @@ async def test_sync_acknowledge_sequence_removes_returned_updates() -> None:
     second = await service.sync("c1", subscription_id, acknowledge_sequence=2)
     assert second is not None
     assert second.updates == []
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_register_and_unregister_update_mappings_incrementally(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Small registrations must not rebuild the source index or re-resolve mapped objects."""
+    builds = 0
+    resolves: list[str] = []
+    real_build = mapping._build_source_index
+    real_resolve = mapping._resolve_object_mappings
+
+    def counted_build(model: BuildResult) -> dict[str, ModelNode]:
+        nonlocal builds
+        builds += 1
+        return real_build(model)
+
+    def counted_resolve(
+        element_id: str,
+        max_depth: int,
+        model: BuildResult,
+        source_index: dict[str, ModelNode],
+    ) -> dict[str, str]:
+        resolves.append(element_id)
+        return real_resolve(element_id, max_depth, model, source_index)
+
+    monkeypatch.setattr(mapping, "_build_source_index", counted_build)
+    monkeypatch.setattr(mapping, "_resolve_object_mappings", counted_resolve)
+
+    service = SubscriptionService(cast(OpcUaClientProtocol, FakeOpcUaClient()), interval_seconds=1)
+    created = await service.create_subscription(client_id="c1", display_name=None)
+    subscription_id = created.subscription_id
+    model = _model()
+
+    assert await service.register_items("c1", subscription_id, ["asset-root"], max_depth=2, model=model) is True
+    assert await service.register_items("c1", subscription_id, ["asset-child"], max_depth=2, model=model) is True
+    # Re-registering the same object at the same depth must reuse the stored mapping.
+    assert await service.register_items("c1", subscription_id, ["asset-root"], max_depth=2, model=model) is True
+    assert builds == 1
+    assert resolves == ["asset-root", "asset-child"]
+
+    sub_state = service._subscriptions[subscription_id]
+    assert sub_state.monitored_node_ids == {"ns=2;s=Temperature", "ns=2;s=Pressure"}
+    assert sub_state.node_to_element_id["ns=2;s=temperature"] == "prop-a"
+
+    assert await service.unregister_items("c1", subscription_id, ["asset-child"], model=model) is True
+    assert builds == 1
+    assert resolves == ["asset-root", "asset-child"]
+    assert sub_state.monitored_node_ids == {"ns=2;s=Temperature"}
+    assert "ns=2;s=Pressure" not in sub_state.node_to_element_id
+    assert "ns=2;s=pressure" not in sub_state.node_to_element_id
+
+    # A changed model revision rebuilds every mapping against the new model.
+    refreshed = _model()
+    refreshed.nodes_by_id["prop-b"].source_node_id = "ns=3;s=Pressure"
+    assert await service.register_items("c1", subscription_id, ["asset-child"], max_depth=2, model=refreshed) is True
+    assert builds == 2
+    assert resolves == ["asset-root", "asset-child", "asset-root", "asset-child"]
+    assert sub_state.monitored_node_ids == {"ns=2;s=Temperature", "ns=3;s=Pressure"}
+    assert sub_state.node_to_element_id["ns=3;s=pressure"] == "prop-b"
     await service.close()
 
 

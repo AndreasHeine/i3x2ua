@@ -766,16 +766,33 @@ class SubscriptionService:
 
         for node_id in removed:
             await self._release_node_monitor(node_id, subscription_id)
-        for node_id in added:
-            await self._acquire_node_monitor(node_id, subscription_id)
+        if added:
+            # Concurrent admissions: bin selection stays serialized (packing), the OPC UA
+            # round-trips run under the native admission semaphore, same as cross-subscription
+            # registrations already do.
+            await asyncio.gather(*(self._acquire_node_monitor(node_id, subscription_id) for node_id in sorted(added)))
 
         async with self._lock:
-            vanished = self._subscriptions.get(subscription_id) is None
+            subscription_state = self._subscriptions.get(subscription_id)
+            if subscription_state is None:
+                vanished = True
+                orphaned: set[str] = set()
+            else:
+                vanished = False
+                # A concurrent diff may have removed nodes while these acquisitions were in
+                # flight and released nothing (monitors did not exist yet). Reconcile now so
+                # the applied-vs-desired invariant holds regardless of scheduling order.
+                orphaned = added - subscription_state.applied_node_ids
         if vanished:
             # Subscription was deleted while the diff was in flight: undo the acquisitions.
             for node_id in added:
                 await self._release_node_monitor(node_id, subscription_id)
             return
+
+        if orphaned:
+            await asyncio.gather(
+                *(self._release_node_monitor(node_id, subscription_id) for node_id in sorted(orphaned))
+            )
 
         await self._update_subscription_mode(subscription_id)
         await self._seed_initial_updates(subscription_id)

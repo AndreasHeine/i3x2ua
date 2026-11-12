@@ -120,12 +120,17 @@ async def _handle_client_reconnect(service: SubscriptionService) -> None:
         with suppress(Exception):
             await service._opcua_client.delete_subscription(bin_.ua_subscription)
 
-    for node_id in sorted(lost_node_ids):
-        async with service._lock:
-            monitor = service._node_monitors.get(node_id)
-        if monitor is None or monitor.mode != "idle":
-            continue
-        await _start_node_monitor_runtime(service, monitor)
+    # Re-admit lost monitors concurrently: selection stays serialized for bin packing and the
+    # round-trips run under the native admission semaphore, like normal registration.
+    if lost_node_ids:
+        resync_monitors: list[_NodeMonitor] = []
+        for node_id in sorted(lost_node_ids):
+            async with service._lock:
+                monitor = service._node_monitors.get(node_id)
+            if monitor is not None and monitor.mode == "idle":
+                resync_monitors.append(monitor)
+        if resync_monitors:
+            await asyncio.gather(*(_start_node_monitor_runtime(service, monitor) for monitor in resync_monitors))
 
     async with service._lock:
         subscription_ids = list(service._subscriptions.keys())

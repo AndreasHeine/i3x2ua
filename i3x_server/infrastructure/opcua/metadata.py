@@ -247,7 +247,7 @@ async def _load_namespace_infos(client: OpcUaClient) -> list[OpcUaNamespaceInfo]
             max_nodes_per_browse,
         )
 
-        metadata_failures = 0
+        child_entries: list[tuple[Any, str, str, str]] = []
 
         for component, refs in component_children_browse:
             component_display = component_display_by_id.get(component.nodeid.to_string(), "")
@@ -257,20 +257,61 @@ async def _load_namespace_infos(client: OpcUaClient) -> list[OpcUaNamespaceInfo]
                 component.nodeid.to_string(),
                 len(refs),
             )
-
             for ref in refs:
-                if ref.BrowseName.Name not in {"NamespaceUri", "NamespaceVersion"}:
-                    continue
-                child = client._client.get_node(ref.NodeId)
+                if ref.BrowseName.Name in {"NamespaceUri", "NamespaceVersion"}:
+                    child_entries.append(
+                        (
+                            client._client.get_node(ref.NodeId),
+                            component.nodeid.to_string(),
+                            ref.BrowseName.Name,
+                            component_display,
+                        )
+                    )
+
+        metadata_failures = 0
+
+        def record_child_value(
+            child_node: Any, component_id: str, browse_name: str, component_display: str, value: Any
+        ) -> None:
+            nonlocal metadata_failures
+            if value is None:
+                metadata_failures += 1
+                logger.debug(
+                    "OPC UA namespace metadata NamespaceUri read failed endpoint=%s node_id=%s",
+                    client._endpoint,
+                    child_node.nodeid.to_string(),
+                )
+                return
+            if browse_name == "NamespaceUri":
+                uri = str(value)
+                if uri:
+                    display_by_uri[uri] = component_display or uri
+                    uri_by_component_id[component_id] = uri
+            elif isinstance(value, str) and value.strip():
+                version_by_component_id[component_id] = value.strip()
+
+        batch_values: list[Any] | None = None
+        if child_entries:
+            try:
+                batch_values = await client._read_attribute_pairs(
+                    [(child, AttributeIds.Value) for child, _component_id, _name, _display in child_entries]
+                )
+            except Exception:
+                logger.debug(
+                    "OPC UA namespace metadata value batch read failed endpoint=%s; falling back to per-node reads",
+                    client._endpoint,
+                    exc_info=True,
+                )
+                batch_values = None
+
+        if batch_values is not None:
+            for index, (child, component_id, browse_name, component_display) in enumerate(child_entries):
+                extracted = client._extract_attribute_value(batch_values[index])
+                record_child_value(child, component_id, browse_name, component_display, extracted)
+        else:
+            for child, component_id, browse_name, component_display in child_entries:
                 try:
                     value = await child.read_value()
-                    if ref.BrowseName.Name == "NamespaceUri":
-                        uri = str(value)
-                        if uri:
-                            display_by_uri[uri] = component_display or uri
-                            uri_by_component_id[component.nodeid.to_string()] = uri
-                    elif isinstance(value, str) and value.strip():
-                        version_by_component_id[component.nodeid.to_string()] = value.strip()
                 except Exception as exc:
                     metadata_failures += 1
                     logger.debug(
@@ -279,6 +320,8 @@ async def _load_namespace_infos(client: OpcUaClient) -> list[OpcUaNamespaceInfo]
                         child.nodeid.to_string(),
                         exc_info=exc,
                     )
+                    continue
+                record_child_value(child, component_id, browse_name, component_display, value)
         if metadata_failures:
             logger.warning(
                 "OPC UA namespace metadata partially read endpoint=%s failures=%d; "

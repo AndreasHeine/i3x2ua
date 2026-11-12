@@ -229,7 +229,9 @@ async def _write_object_values_bulk(
     if not pending:
         return [outcome for outcome in outcomes if outcome is not None]
 
-    target_ids = list(dict.fromkeys(node.source_node_id for _index, _element_id, node, _value, _quality, _timestamp in pending))
+    target_ids = list(
+        dict.fromkeys(node.source_node_id for _index, _element_id, node, _value, _quality, _timestamp in pending)
+    )
     access_results = await asyncio.gather(
         *(opcua_client.read_write_access(target_id) for target_id in target_ids),
         return_exceptions=True,

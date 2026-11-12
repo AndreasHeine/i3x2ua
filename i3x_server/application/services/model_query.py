@@ -29,6 +29,35 @@ logger = logging.getLogger(__name__)
 _I3X_NAMESPACE = "https://cesmii.org/i3x"
 
 
+class NamespaceSnapshotCache:
+    """Application-level holder for the namespace snapshot shared by all services.
+
+    ``ModelQueryService`` instances are built per request, so a service-local cache never
+    persists. The OPC UA client owns TTL invalidation and returns a new list object after a
+    refresh or reconnect; the holder detects that identity change and rebuilds the converted
+    view, so request-scoped services share one conversion instead of redoing it per request.
+    """
+
+    def __init__(self) -> None:
+        self._infos: list[OpcUaNamespaceInfo] | None = None
+        self._namespaces: list[Namespace] | None = None
+
+    async def infos(self, opcua_client: OpcUaClientProtocol) -> list[OpcUaNamespaceInfo]:
+        """Return the current namespace infos, refreshed when the client hands us a new list."""
+        infos = await opcua_client.get_namespace_infos()
+        if infos is not self._infos:
+            self._infos = infos
+            self._namespaces = None
+        return infos
+
+    async def namespaces(self, opcua_client: OpcUaClientProtocol) -> list[Namespace]:
+        """Return the response view of the current namespace infos as a shallow copy."""
+        infos = await self.infos(opcua_client)
+        if self._namespaces is None:
+            self._namespaces = [_to_namespace(item) for item in infos]
+        return list(self._namespaces)
+
+
 class Namespace:
     """Namespace response model."""
 
@@ -245,16 +274,20 @@ class ModelQueryService:
         self,
         opcua_client: OpcUaClientProtocol,
         model: BuildResult,
+        namespace_cache: NamespaceSnapshotCache | None = None,
     ):
         """Initialize service with dependencies.
 
         Args:
             opcua_client: OPC UA protocol client
             model: Pre-built model structure
+            namespace_cache: Optional shared namespace snapshot; when omitted the service
+                caches namespace infos locally for its own lifetime.
         """
         self.opcua_client = opcua_client
         self.model = model
-        self._namespace_cache: list[OpcUaNamespaceInfo] | None = None
+        self._namespace_cache = namespace_cache
+        self._local_namespace_infos: list[OpcUaNamespaceInfo] | None = None
 
     async def get_server_info(self) -> ServerInfo:
         """Retrieve server information.
@@ -277,9 +310,11 @@ class ModelQueryService:
             HTTPException: If namespace retrieval fails
         """
         try:
-            if self._namespace_cache is None:
-                self._namespace_cache = await self.opcua_client.get_namespace_infos()
-            return [_to_namespace(item) for item in self._namespace_cache]
+            if self._namespace_cache is not None:
+                return await self._namespace_cache.namespaces(self.opcua_client)
+            if self._local_namespace_infos is None:
+                self._local_namespace_infos = await self.opcua_client.get_namespace_infos()
+            return [_to_namespace(item) for item in self._local_namespace_infos]
         except Exception as exc:
             raise ApplicationServiceError(
                 502,
@@ -294,9 +329,11 @@ class ModelQueryService:
         Returns:
             List of namespace info objects
         """
-        if self._namespace_cache is None:
-            self._namespace_cache = await self.opcua_client.get_namespace_infos()
-        return self._namespace_cache or []
+        if self._namespace_cache is not None:
+            return await self._namespace_cache.infos(self.opcua_client) or []
+        if self._local_namespace_infos is None:
+            self._local_namespace_infos = await self.opcua_client.get_namespace_infos()
+        return self._local_namespace_infos or []
 
     async def get_object_types(
         self,

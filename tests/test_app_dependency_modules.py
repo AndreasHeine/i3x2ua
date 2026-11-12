@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 from fastapi import FastAPI
@@ -9,9 +10,14 @@ from starlette.requests import Request
 
 from i3x_server.api.dependencies import get_model_query_service
 from i3x_server.application.dependencies import (
+    get_model_query_service as get_app_model_query_service,
+)
+from i3x_server.application.dependencies import (
+    get_namespace_snapshot,
     get_object_value_service,
     get_subscription_app_service,
 )
+from i3x_server.domain.ports.opcua import OpcUaClientProtocol, OpcUaNamespaceInfo
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
 
@@ -47,8 +53,12 @@ async def test_api_and_application_dependency_factories() -> None:
     opcua_client = SimpleNamespace()
     subscription_service = SimpleNamespace()
 
-    model_query = await get_model_query_service(model=model, opcua_client=opcua_client)
+    model_query = await get_model_query_service(request=request, model=model, opcua_client=opcua_client)
     assert model_query.model is model
+
+    app_model_query = await get_app_model_query_service(request=request, model=model, opcua_client=opcua_client)
+    assert app_model_query.model is model
+    assert app_model_query._namespace_cache is request.app.state.namespace_query_cache
 
     value_service = await get_object_value_service(request=request, model=model, opcua_client=opcua_client)
     assert value_service.model is model
@@ -62,6 +72,42 @@ async def test_api_and_application_dependency_factories() -> None:
     )
     assert sub_service.model is model
     assert sub_service.request is request
+
+
+@pytest.mark.asyncio
+async def test_model_query_services_share_namespace_snapshot_cache() -> None:
+    """Services built per request must reuse the holder's converted namespace view."""
+    request = _request()
+    model = _model()
+    fetches = 0
+
+    class _NamespaceClient:
+        def __init__(self) -> None:
+            self.infos = [OpcUaNamespaceInfo(uri="urn:one", display_name="One")]
+
+        async def get_namespace_infos(self) -> list[OpcUaNamespaceInfo]:
+            nonlocal fetches
+            fetches += 1
+            return self.infos
+
+    client = _NamespaceClient()
+    typed_client = cast(OpcUaClientProtocol, client)
+    first = await get_app_model_query_service(request=request, model=model, opcua_client=typed_client)
+    second = await get_app_model_query_service(request=request, model=model, opcua_client=typed_client)
+    assert first._namespace_cache is second._namespace_cache is get_namespace_snapshot(request)
+
+    namespaces = await first.get_namespaces()
+    assert [namespace.uri for namespace in namespaces] == ["urn:one"]
+    assert await second.get_namespaces() == namespaces
+
+    # A new list object from the client (refresh/reconnect) re-resolves the snapshot.
+    client.infos = [OpcUaNamespaceInfo(uri="urn:two", display_name="Two")]
+    refreshed = await second.get_namespaces()
+    assert [namespace.uri for namespace in refreshed] == ["urn:two"]
+    assert fetches == 3
+
+    infos = await first.get_namespace_infos()
+    assert infos is client.infos
 
 
 def test_main_module_uses_create_app(monkeypatch: pytest.MonkeyPatch) -> None:

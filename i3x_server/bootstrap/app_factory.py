@@ -33,6 +33,7 @@ from i3x_server.api.v1 import router as v1_router
 from i3x_server.api.v1.contracts import HttpErrorResponse
 from i3x_server.api.v1.objecttype_helpers import warm_object_type_context
 from i3x_server.application.errors import ApplicationServiceError
+from i3x_server.application.services.model_query import NamespaceSnapshotCache
 from i3x_server.bootstrap.dependencies import get_or_build_model
 from i3x_server.config.settings import Settings, get_settings, settings
 from i3x_server.errors import format_error_details
@@ -344,6 +345,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.mcp_model_provider = get_or_build_model
     app.state.object_type_context_cache = None
     app.state.object_type_lock = asyncio.Lock()
+    app.state.namespace_query_cache = NamespaceSnapshotCache()
     app.state.subscription_service = SubscriptionService(
         opcua_client=opcua_client,
         interval_seconds=settings.subscription_interval_seconds,

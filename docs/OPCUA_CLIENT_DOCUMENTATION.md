@@ -136,6 +136,7 @@ To reduce repeated expensive metadata calls:
 - caches are invalidated on reconnect (namespace info and object types are served stale until the background refresh completes, even with a TTL of 0).
 - node-id keyed chains (type hierarchy, reference-type supertypes) are TTL-checked on read and bounded by least-recently-used eviction, so a long-lived client does not accumulate every type it ever browsed.
 - the API object type context cache keeps the 8 most-recently-used contexts; hits promote their slot and stale serving uses the most recently used one.
+- the namespace snapshot holder on `app.state` shares the converted namespace view across request-scoped model query services; it re-resolves when the client hands out a new namespace list (refresh or reconnect).
 
 Relevant setting:
 

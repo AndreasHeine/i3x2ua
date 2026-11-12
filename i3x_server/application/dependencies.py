@@ -14,7 +14,7 @@ from fastapi import Depends, Request
 
 from i3x_server.application.ports.subscription import SubscriptionServicePort
 from i3x_server.application.services.model_cache import get_model_builder, get_or_build_model
-from i3x_server.application.services.model_query import ModelQueryService
+from i3x_server.application.services.model_query import ModelQueryService, NamespaceSnapshotCache
 from i3x_server.application.services.object_value import ObjectValueService
 from i3x_server.application.services.subscription import SubscriptionAppService
 from i3x_server.domain.ports.opcua import OpcUaClientProtocol
@@ -23,8 +23,9 @@ from i3x_server.schemas.state import BuildResult
 
 __all__ = [
     "get_model_builder",
-    "get_object_value_service",
     "get_model_query_service",
+    "get_namespace_snapshot",
+    "get_object_value_service",
     "get_opcua_client",
     "get_or_build_model",
     "get_subscription_app_service",
@@ -64,12 +65,26 @@ async def get_object_value_service(
     return ObjectValueService(opcua_client=opcua_client, model=model, request=request)
 
 
+def get_namespace_snapshot(request: Request) -> NamespaceSnapshotCache:
+    """Return the application-wide namespace snapshot holder, creating it on first use."""
+    cache = getattr(request.app.state, "namespace_query_cache", None)
+    if not isinstance(cache, NamespaceSnapshotCache):
+        cache = NamespaceSnapshotCache()
+        request.app.state.namespace_query_cache = cache
+    return cache
+
+
 async def get_model_query_service(
+    request: Request,
     model: BuildResult = Depends(get_or_build_model),
     opcua_client: OpcUaClientProtocol = Depends(get_opcua_client),
 ) -> ModelQueryService:
     """Dependency function for ModelQueryService."""
-    return ModelQueryService(opcua_client=opcua_client, model=model)
+    return ModelQueryService(
+        opcua_client=opcua_client,
+        model=model,
+        namespace_cache=get_namespace_snapshot(request),
+    )
 
 
 async def get_subscription_app_service(

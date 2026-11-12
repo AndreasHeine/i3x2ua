@@ -534,7 +534,10 @@ def create_app() -> FastAPI:
     )
     # Added first so it is the innermost middleware and sees uncompressed responses.
     app.add_middleware(ModelRevisionMiddleware)
-    app.add_middleware(GZipMiddleware, minimum_size=1024)
+    # Spec CORE-04 / Implementation Guide § Transport & Encoding: any response to a request
+    # with Accept-Encoding: gzip must carry Content-Encoding: gzip, so compression must apply
+    # even to small bodies (minimum_size=1).
+    app.add_middleware(GZipMiddleware, minimum_size=1)
     cors_origins = settings.cors_allowed_origins
     app.state.mcp_allowed_origins = [origin for origin in cors_origins if origin != "*"]
     if cors_origins:

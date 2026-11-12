@@ -11,11 +11,12 @@ in ``docs/adr/0004-v1-api-ownership-model.md``).
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import json
 from collections import deque
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from typing import Any, cast
 
@@ -37,6 +38,7 @@ from i3x_server.api.v1.contracts import (
     ModelQualityMetrics,
     ModelRelationshipMetrics,
     ModelVolumeMetrics,
+    ValueUpdateItemRequest,
     validate_write_element_id,
 )
 from i3x_server.api.v1.object_helpers import _composition_children_for_node, _find_model_node
@@ -165,130 +167,155 @@ def _normalize_write_payload(payload: Any) -> Any:
     return payload
 
 
-def _value_preview_for_log(value: Any, limit: int = 160) -> str:
-    try:
-        text = json.dumps(_to_json_safe_value(value), ensure_ascii=True, default=str)
-    except Exception:
-        text = str(value)
-    return text if len(text) <= limit else f"{text[:limit]}..."
-
-
 def _json_equivalent(left: Any, right: Any) -> bool:
     safe_left = _to_json_safe_value(left)
     safe_right = _to_json_safe_value(right)
     return json.dumps(safe_left, sort_keys=True) == json.dumps(safe_right, sort_keys=True)
 
 
-async def _is_noop_write(
-    *,
-    opcua_client: OpcUaClientProtocol,
-    target_node_id: str,
-    requested_value: Any,
-    requested_quality: str,
-    requested_timestamp: datetime,
+def _noop_write_matches(
+    data_value: Any, requested_value: Any, requested_quality: str, requested_timestamp: datetime
 ) -> bool:
-    try:
-        current_data_values = await opcua_client.read_data_values([target_node_id])
-    except Exception:
+    """Compare a request against a read data value; a failed/empty read is never a no-op."""
+    if data_value is None:
         return False
-    if not current_data_values:
-        return False
-    current_data_value = current_data_values[0]
-    current_vqt = _vqt_from_data_value(current_data_value)
+    current_vqt = _vqt_from_data_value(data_value)
     return (
         _json_equivalent(current_vqt.value, requested_value)
         and current_vqt.quality == requested_quality
-        and getattr(current_data_value, "SourceTimestamp", None) == requested_timestamp.astimezone(timezone.utc)
+        and getattr(data_value, "SourceTimestamp", None) == requested_timestamp.astimezone(timezone.utc)
     )
 
 
-async def _write_object_value_by_element_id(
+async def _write_object_values_bulk(
     *,
     model: BuildResult,
     opcua_client: OpcUaClientProtocol,
-    element_id: str,
-    payload_value: Any,
-    quality: str,
-    timestamp: datetime,
+    updates: Sequence[ValueUpdateItemRequest],
     schema_validator: WriteValueValidator,
-) -> tuple[bool, int, str, dict[str, Any]]:
-    node = _find_model_node(model, element_id)
-    write_value = _normalize_write_payload(payload_value)
-    diagnostics: dict[str, Any] = {
-        "requestedValueType": type(write_value).__name__,
-        "requestedValuePreview": _value_preview_for_log(write_value),
-        "resolvedVariantType": None,
-    }
-    try:
-        validate_write_element_id(element_id)
-    except ValueError as exc:
-        return False, 400, str(exc), diagnostics
-    if node is None:
-        return False, 404, f"Element not found: {element_id}", diagnostics
-    if node.kind != "property":
-        return False, 400, "bad_type_or_range", diagnostics
+) -> list[tuple[str, bool, int, str]]:
+    """Bulk current-value writes with prefetched access/variant reads.
 
-    target_node_id = node.source_node_id
+    Per-item semantics are preserved (order, error classification, no-op fallback), but the
+    per-node attribute round-trips are hoisted out of the loop: write access for every unique
+    target node is gathered concurrently, current values for non-writable targets are read in
+    one batch, and variant types are gathered for writable targets. Writes themselves stay
+    sequential to keep request order and per-item attribution.
+    """
+    outcomes: list[tuple[str, bool, int, str] | None] = [None] * len(updates)
+    pending: list[tuple[int, str, ModelNode, Any, str, datetime]] = []
+    for index, update in enumerate(updates):
+        element_id = update.elementId
+        write_value = _normalize_write_payload(update.value.value)
+        try:
+            validate_write_element_id(element_id)
+        except ValueError as exc:
+            outcomes[index] = (element_id, False, 400, str(exc))
+            continue
+        node = _find_model_node(model, element_id)
+        if node is None:
+            outcomes[index] = (element_id, False, 404, f"Element not found: {element_id}")
+            continue
+        if node.kind != "property":
+            outcomes[index] = (element_id, False, 400, "bad_type_or_range")
+            continue
+        try:
+            await schema_validator.validate(node, write_value)
+        except WriteValidationError as exc:
+            outcomes[index] = (element_id, False, exc.status_code, str(exc))
+            continue
+        pending.append((index, element_id, node, write_value, update.value.quality, update.value.timestamp))
 
-    try:
-        await schema_validator.validate(node, write_value)
-    except WriteValidationError as exc:
-        return False, exc.status_code, str(exc), diagnostics
+    if not pending:
+        return [outcome for outcome in outcomes if outcome is not None]
 
-    try:
-        writable, user_writable = await opcua_client.read_write_access(target_node_id)
-    except Exception as exc:
-        status_code, error_class = _classify_write_error(exc, service_unsupported_is_write_unavailable=True)
-        diagnostics["exception"] = str(exc)
-        return False, status_code, error_class, diagnostics
+    target_ids = list(dict.fromkeys(node.source_node_id for _index, _element_id, node, _value, _quality, _timestamp in pending))
+    access_results = await asyncio.gather(
+        *(opcua_client.read_write_access(target_id) for target_id in target_ids),
+        return_exceptions=True,
+    )
+    access_by_id: dict[str, Any] = dict(zip(target_ids, access_results, strict=False))
 
-    if not writable or not user_writable:
-        if await _is_noop_write(
-            opcua_client=opcua_client,
-            target_node_id=target_node_id,
-            requested_value=write_value,
-            requested_quality=quality,
-            requested_timestamp=timestamp,
-        ):
-            return True, 200, "ok", diagnostics
-        return False, 403, "target_not_writable", diagnostics
+    noop_data: dict[str, Any] = {}
+    noop_ids = [
+        target_id
+        for target_id in target_ids
+        if isinstance(access_by_id[target_id], tuple)
+        and not (access_by_id[target_id][0] and access_by_id[target_id][1])
+    ]
+    if noop_ids:
+        try:
+            current_values = await opcua_client.read_data_values(noop_ids)
+            noop_data = dict(zip(noop_ids, current_values, strict=False))
+        except Exception:
+            noop_data = {}
 
-    try:
-        variant_type = await opcua_client.read_variant_type(target_node_id)
-        diagnostics["resolvedVariantType"] = variant_type
-    except Exception as exc:
-        status_code, error_class = _classify_write_error(exc, service_unsupported_is_write_unavailable=True)
-        diagnostics["exception"] = str(exc)
-        return False, status_code, error_class, diagnostics
+    writable_ids = [target_id for target_id in target_ids if isinstance(access_by_id[target_id], tuple)]
+    variant_results = await asyncio.gather(
+        *(opcua_client.read_variant_type(target_id) for target_id in writable_ids),
+        return_exceptions=True,
+    )
+    variant_by_id: dict[str, Any] = dict(zip(writable_ids, variant_results, strict=False))
 
-    try:
-        write_value = _decode_bytestring_write_value(write_value, variant_type)
-    except ValueError:
-        return False, 400, "bad_type_or_range", diagnostics
+    for index, element_id, node, write_value, quality, timestamp in pending:
+        target_node_id = node.source_node_id
+        access = access_by_id[target_node_id]
+        if isinstance(access, BaseException):
+            if not isinstance(access, Exception):
+                raise access
+            status_code, error_class = _classify_write_error(access, service_unsupported_is_write_unavailable=True)
+            outcomes[index] = (element_id, False, status_code, error_class)
+            continue
+        writable, user_writable = access
+        if not writable or not user_writable:
+            if _noop_write_matches(noop_data.get(target_node_id), write_value, quality, timestamp):
+                outcomes[index] = (element_id, True, 200, "ok")
+                continue
+            outcomes[index] = (element_id, False, 403, "target_not_writable")
+            continue
 
-    if write_value is not None and not _is_valid_write_type(write_value, variant_type):
-        return False, 400, "bad_type_or_range", diagnostics
+        variant_type = variant_by_id.get(target_node_id)
+        if isinstance(variant_type, BaseException):
+            if not isinstance(variant_type, Exception):
+                raise variant_type
+            status_code, error_class = _classify_write_error(
+                variant_type, service_unsupported_is_write_unavailable=True
+            )
+            outcomes[index] = (element_id, False, status_code, error_class)
+            continue
 
-    try:
-        await opcua_client.write_value(
-            target_node_id,
-            write_value,
-            variant_type=variant_type,
-            quality=quality,
-            timestamp=timestamp,
-        )
-    except OpcUaWriteMetadataUnsupportedError as exc:
-        diagnostics["exception"] = str(exc)
-        return False, 501, str(exc), diagnostics
-    except OpcUaWriteMetadataVerificationError as exc:
-        diagnostics["exception"] = str(exc)
-        return False, 502, str(exc), diagnostics
-    except Exception as exc:
-        status_code, error_class = _classify_write_error(exc, service_unsupported_is_write_unavailable=True)
-        diagnostics["exception"] = str(exc)
-        return False, status_code, error_class, diagnostics
+        try:
+            write_value = _decode_bytestring_write_value(write_value, variant_type)
+        except ValueError:
+            outcomes[index] = (element_id, False, 400, "bad_type_or_range")
+            continue
+        if write_value is not None and not _is_valid_write_type(write_value, variant_type):
+            outcomes[index] = (element_id, False, 400, "bad_type_or_range")
+            continue
 
-    return True, 200, "ok", diagnostics
+        try:
+            await opcua_client.write_value(
+                target_node_id,
+                write_value,
+                variant_type=variant_type,
+                quality=quality,
+                timestamp=timestamp,
+            )
+        except OpcUaWriteMetadataUnsupportedError as exc:
+            outcomes[index] = (element_id, False, 501, str(exc))
+            continue
+        except OpcUaWriteMetadataVerificationError as exc:
+            outcomes[index] = (element_id, False, 502, str(exc))
+            continue
+        except Exception as exc:
+            status_code, error_class = _classify_write_error(exc, service_unsupported_is_write_unavailable=True)
+            outcomes[index] = (element_id, False, status_code, error_class)
+            continue
+
+        outcomes[index] = (element_id, True, 200, "ok")
+
+    resolved: list[tuple[str, bool, int, str]] = [outcome for outcome in outcomes if outcome is not None]
+    return resolved
 
 
 def _parse_iso_datetime(value: str, field_name: str) -> datetime:

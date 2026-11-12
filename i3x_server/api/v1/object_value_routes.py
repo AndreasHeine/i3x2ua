@@ -48,7 +48,7 @@ from i3x_server.api.v1.object_value_helpers import (
     _composition_traversal_limits,
     _parse_history_time_range,
     _vqt_from_data_value,
-    _write_object_value_by_element_id,
+    _write_object_values_bulk,
 )
 from i3x_server.api.v1.objecttype_helpers import _get_object_endpoint_context
 from i3x_server.api.v1.write_validation import WriteValidationError, WriteValueValidator
@@ -410,20 +410,16 @@ async def update_object_values_v1(
 
     results: list[BulkResultItem[None]] = []
     schema_validator = WriteValueValidator(request, model, opcua_client)
-    for update in body.updates:
-        ok, status_code, message, _diagnostics = await _write_object_value_by_element_id(
-            model=model,
-            opcua_client=opcua_client,
-            element_id=update.elementId,
-            payload_value=update.value.value,
-            quality=update.value.quality,
-            timestamp=update.value.timestamp,
-            schema_validator=schema_validator,
-        )
+    for element_id, ok, status_code, message in await _write_object_values_bulk(
+        model=model,
+        opcua_client=opcua_client,
+        updates=body.updates,
+        schema_validator=schema_validator,
+    ):
         if ok:
-            results.append(_bulk_result_success(update.elementId, None))
+            results.append(_bulk_result_success(element_id, None))
         else:
-            results.append(_bulk_result_error(update.elementId, message, code=status_code))
+            results.append(_bulk_result_error(element_id, message, code=status_code))
 
     return _bulk_response(results)
 

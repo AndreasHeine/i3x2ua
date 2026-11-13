@@ -20,7 +20,12 @@ from i3x_server.infrastructure.opcua.client import (
     OpcUaSubscriptionCapabilities,
 )
 from i3x_server.infrastructure.subscriptions import mapping
-from i3x_server.infrastructure.subscriptions.monitoring import _capped_limit, _min_positive
+from i3x_server.infrastructure.subscriptions.monitoring import (
+    _add_node_to_bin,
+    _capped_limit,
+    _min_positive,
+    _open_new_bin,
+)
 from i3x_server.infrastructure.subscriptions.service import SubscriptionService, SubscriptionUpdate
 from i3x_server.infrastructure.subscriptions.state import (
     _ManagedBin,
@@ -158,7 +163,7 @@ async def test_negative_ack_beyond_minus_one_discards_all_updates() -> None:
     synced = await service.sync("c1", subscription_id, acknowledge_sequence=-5)
     assert synced is not None
     assert synced.updates == []
-    assert state.updates == []
+    assert not state.updates
     await service.close()
 
 
@@ -749,7 +754,7 @@ async def test_can_open_new_bin_limits_and_helpers() -> None:
         is False
     )
     # An admission whose round-trip is still in flight already consumes the monitored-item budget.
-    service._bins["bin-existing"].pending_adds = 2
+    service._bins["bin-existing"].pending_nodes = ["ns=2;s=pending-a", "ns=2;s=pending-b"]
     assert service._can_open_new_bin(caps) is False
 
     assert _min_positive(None, 0, -1) is None
@@ -905,21 +910,25 @@ async def test_native_admission_falls_back_to_process_local_caps() -> None:
 async def test_native_admissions_run_network_calls_concurrently() -> None:
     """Admission selection must not hold its lock across the OPC UA round-trip (M9).
 
-    ``FakeOpcUaClient`` only lets a monitored-item add return once a second add has arrived, so an
-    admission that serialized its network work would deadlock: the first registration would never
-    finish and never reach the second. Bin packing must still hold - one create for both nodes.
+    ``FakeOpcUaClient`` only lets monitored-item adds return once both nodes have arrived in
+    total, so an admission that serialized its network work would deadlock: the first call
+    would never finish and never let the second registration reach selection. Bin packing must
+    still hold - one create for both nodes, and each node ends up with exactly one item.
     """
 
     class ConcurrentAddClient(FakeOpcUaClient):
         def __init__(self) -> None:
             super().__init__()
             self.add_arrivals = 0
+            self.arrived_batches: list[list[str]] = []
             self.all_arrived = asyncio.Event()
 
         async def subscribe_data_changes(self, subscription: Any, node_ids: list[str]) -> list[int]:
             del subscription
             self.add_arrivals += 1
-            if self.add_arrivals >= 2:
+            self.arrived_batches.append(list(node_ids))
+            # Releases on either shape: one batch covering both nodes, or two single-node adds.
+            if sum(len(batch) for batch in self.arrived_batches) >= 2:
                 self.all_arrived.set()
             await self.all_arrived.wait()
             handles: list[int] = []
@@ -948,16 +957,247 @@ async def test_native_admissions_run_network_calls_concurrently() -> None:
     )
     # ``gather`` returns a list at runtime; the typeshed stub declares a tuple.
     assert list(registered) == [True, True]
-    assert client.add_arrivals == 2
+    # One create for both nodes; every reserved node is subscribed at least once and ends up
+    # with exactly one committed handle (a late reservation may add itself separately, and the
+    # duplicate round-trip is released). The deterministic batch case is a separate test.
     assert client.create_subscription_calls == 1
+    arrived_nodes = {node for batch in client.arrived_batches for node in batch}
+    assert arrived_nodes == {"ns=2;s=Temperature", "ns=2;s=Pressure"}
 
     async with service._lock:
-        # Both nodes share one bin, and the in-flight reservations were released after the round-trips.
+        # Both nodes share one bin, and the in-flight reservations were committed after the batch.
         assert len(service._bins) == 1
         bin_ = next(iter(service._bins.values()))
         assert set(bin_.node_handles.keys()) == {"ns=2;s=Temperature", "ns=2;s=Pressure"}
-        assert bin_.pending_adds == 0
+        assert bin_.pending_nodes == []
 
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_open_new_bin_batches_all_reserved_nodes_into_one_add() -> None:
+    """N reservations against a fresh bin cost one CreateMonitoredItems round-trip, not N."""
+
+    class BatchRecordingClient(FakeOpcUaClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.batches: list[list[str]] = []
+
+        async def subscribe_data_changes(self, subscription: Any, node_ids: list[str]) -> list[int]:
+            self.batches.append(list(node_ids))
+            return await super().subscribe_data_changes(subscription, node_ids)
+
+    client = BatchRecordingClient()
+    service = SubscriptionService(cast(OpcUaClientProtocol, client), interval_seconds=1, seed_initial_values=False)
+
+    node_ids = ["ns=2;s=A", "ns=2;s=B", "ns=2;s=C"]
+    monitors = [_NodeMonitor(node_id=node_id) for node_id in node_ids]
+    placeholder = _ManagedBin(bin_id="bin-batch", ua_subscription=None, capacity=10)
+    async with service._lock:
+        for monitor in monitors:
+            service._node_monitors[monitor.node_id] = monitor
+        service._bins[placeholder.bin_id] = placeholder
+        # The state ``_acquire_native_bin_slot`` leaves behind: three reservations, no subscription.
+        placeholder.pending_nodes = list(node_ids)
+
+    assert await _open_new_bin(service, monitors[0], placeholder) is True
+
+    assert client.batches == [node_ids]
+    assert client.create_subscription_calls == 1
+    async with service._lock:
+        assert len(placeholder.node_handles) == 3
+        assert placeholder.pending_nodes == []
+        assert placeholder.ready.is_set()
+        assert all(monitor.mode == "native" and monitor.bin_id == placeholder.bin_id for monitor in monitors)
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_open_new_bin_excludes_reservation_of_released_monitor() -> None:
+    """A monitor released while its reservation was pending must not be subscribed or leak budget."""
+
+    class BatchRecordingClient(FakeOpcUaClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.batches: list[list[str]] = []
+
+        async def subscribe_data_changes(self, subscription: Any, node_ids: list[str]) -> list[int]:
+            self.batches.append(list(node_ids))
+            return await super().subscribe_data_changes(subscription, node_ids)
+
+    client = BatchRecordingClient()
+    service = SubscriptionService(cast(OpcUaClientProtocol, client), interval_seconds=1, seed_initial_values=False)
+
+    keep = _NodeMonitor(node_id="ns=2;s=A")
+    gone = _NodeMonitor(node_id="ns=2;s=B")
+    placeholder = _ManagedBin(bin_id="bin-release", ua_subscription=None, capacity=10)
+    async with service._lock:
+        service._node_monitors["ns=2;s=A"] = keep
+        service._node_monitors["ns=2;s=B"] = gone
+        service._bins[placeholder.bin_id] = placeholder
+        placeholder.pending_nodes = ["ns=2;s=A", "ns=2;s=B"]
+        # The monitor for B disappears before the batch snapshot runs.
+        del service._node_monitors["ns=2;s=B"]
+        del gone
+
+    assert await _open_new_bin(service, keep, placeholder) is True
+    assert client.batches == [["ns=2;s=A"]]
+    async with service._lock:
+        assert set(placeholder.node_handles) == {"ns=2;s=A"}
+        # The vanished reservation must stop counting towards the monitored-item budget.
+        assert placeholder.pending_nodes == []
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_open_new_bin_after_concurrent_reclaim_deletes_subscription() -> None:
+    """A bin reclaimed while its subscription was created must not keep publishing."""
+    client = FakeOpcUaClient()
+    service = SubscriptionService(cast(OpcUaClientProtocol, client), interval_seconds=1, seed_initial_values=False)
+    monitor = _NodeMonitor(node_id="ns=2;s=A")
+    placeholder = _ManagedBin(bin_id="bin-reclaim", ua_subscription=None, capacity=10)
+    async with service._lock:
+        service._node_monitors[monitor.node_id] = monitor
+        service._bins[placeholder.bin_id] = placeholder
+        placeholder.pending_nodes = ["ns=2;s=A"]
+        # The last subscriber vanished while the round-trip was in flight.
+        del service._bins[placeholder.bin_id]
+
+    assert await _open_new_bin(service, monitor, placeholder) is False
+    assert len(client.deleted_subscriptions) == 1
+    assert monitor.mode == "idle"
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_open_new_bin_releases_handles_of_monitors_released_mid_batch() -> None:
+    """Handles for monitors released during the batch must be unsubscribed and the bin reclaimed."""
+
+    class ReleaseDuringSubscribeClient(FakeOpcUaClient):
+        def __init__(self, service: SubscriptionService) -> None:
+            super().__init__()
+            self._service = service
+
+        async def subscribe_data_changes(self, subscription: Any, node_ids: list[str]) -> list[int]:
+            # The only subscriber vanishes while the batch round-trip is in flight.
+            async with self._service._lock:
+                del self._service._node_monitors[node_ids[0]]
+            return await super().subscribe_data_changes(subscription, node_ids)
+
+    service = SubscriptionService(
+        cast(OpcUaClientProtocol, FakeOpcUaClient()), interval_seconds=1, seed_initial_values=False
+    )
+    # The fake needs the registry lock target, so it is wired in after the service exists.
+    client = ReleaseDuringSubscribeClient(service)
+    service._opcua_client = cast(OpcUaClientProtocol, client)
+
+    monitor = _NodeMonitor(node_id="ns=2;s=A")
+    placeholder = _ManagedBin(bin_id="bin-mid-release", ua_subscription=None, capacity=10)
+    async with service._lock:
+        service._node_monitors[monitor.node_id] = monitor
+        service._bins[placeholder.bin_id] = placeholder
+        placeholder.pending_nodes = ["ns=2;s=A"]
+
+    assert await _open_new_bin(service, monitor, placeholder) is False
+    assert client.unsubscribed_calls, "orphaned batch handle must be unsubscribed"
+    assert client.deleted_subscriptions, "empty bin must delete its subscription"
+    async with service._lock:
+        assert placeholder.bin_id not in service._bins
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_add_node_to_bin_adopts_committed_batch_handle_without_round_trip() -> None:
+    """A node already subscribed by the creating batch needs no second CreateMonitoredItems."""
+    client = FakeOpcUaClient()
+    service = SubscriptionService(cast(OpcUaClientProtocol, client), interval_seconds=1, seed_initial_values=False)
+    bin_ = _ManagedBin(
+        bin_id="bin-adopt",
+        ua_subscription=SimpleNamespace(id="ua-adopt"),
+        capacity=10,
+        node_handles={"ns=2;s=A": 5},
+    )
+    bin_.ready.set()
+    monitor = _NodeMonitor(node_id="ns=2;s=A", mode="native", bin_id=bin_.bin_id)
+    async with service._lock:
+        service._node_monitors[monitor.node_id] = monitor
+        service._bins[bin_.bin_id] = bin_
+
+    assert await _add_node_to_bin(service, monitor, bin_) is True
+    assert client.subscribe_calls == 0
+
+    # A batched handle whose monitor vanished concurrently is released instead of adopted.
+    async with service._lock:
+        del service._node_monitors[monitor.node_id]
+        bin_.node_handles["ns=2;s=B"] = 6
+    orphan_monitor = _NodeMonitor(node_id="ns=2;s=B")  # not in the registry: released
+    assert await _add_node_to_bin(service, orphan_monitor, bin_) is False
+    assert client.unsubscribed_calls == [(bin_.ua_subscription, [6])]
+    async with service._lock:
+        assert "ns=2;s=B" not in bin_.node_handles
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_add_node_to_bin_releases_duplicate_of_batch_committed_handle() -> None:
+    """If the batch commits while a single-node add races it, the duplicate handle is released."""
+
+    class BatchRaceClient(FakeOpcUaClient):
+        def __init__(self, service: SubscriptionService, bin_: _ManagedBin, monitor: _NodeMonitor) -> None:
+            super().__init__()
+            self._service = service
+            self._bin = bin_
+            self._monitor = monitor
+
+        async def subscribe_data_changes(self, subscription: Any, node_ids: list[str]) -> list[int]:
+            # The creating admission commits this node's batched handle mid-round-trip, exactly
+            # as ``_open_new_bin`` does: handle committed and reservation released.
+            async with self._service._lock:
+                self._bin.node_handles[node_ids[0]] = 42
+                if node_ids[0] in self._bin.pending_nodes:
+                    self._bin.pending_nodes.remove(node_ids[0])
+                self._monitor.mode = "native"
+                self._monitor.bin_id = self._bin.bin_id
+            return await super().subscribe_data_changes(subscription, node_ids)
+
+    service = SubscriptionService(
+        cast(OpcUaClientProtocol, FakeOpcUaClient()), interval_seconds=1, seed_initial_values=False
+    )
+    bin_ = _ManagedBin(bin_id="bin-race", ua_subscription=SimpleNamespace(id="ua-race"), capacity=10)
+    bin_.ready.set()
+    monitor = _NodeMonitor(node_id="ns=2;s=A")
+    # The fake needs the bin and monitor under test, so it is wired in after they exist.
+    client = BatchRaceClient(service, bin_, monitor)
+    service._opcua_client = cast(OpcUaClientProtocol, client)
+    async with service._lock:
+        service._node_monitors[monitor.node_id] = monitor
+        service._bins[bin_.bin_id] = bin_
+        bin_.pending_nodes = ["ns=2;s=A"]
+
+    assert await _add_node_to_bin(service, monitor, bin_) is True
+    # The batched handle stays; the racing round-trip's handle is released.
+    assert bin_.node_handles == {"ns=2;s=A": 42}
+    assert client.unsubscribed_calls == [(bin_.ua_subscription, [1])]
+    assert bin_.pending_nodes == []
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_add_node_to_bin_reclaims_placeholder_with_failed_create() -> None:
+    """A placeholder whose create failed has no subscription: its last reservation must free it."""
+    client = FakeOpcUaClient()
+    service = SubscriptionService(cast(OpcUaClientProtocol, client), interval_seconds=1, seed_initial_values=False)
+    placeholder = _ManagedBin(bin_id="bin-failed", ua_subscription=None, capacity=10)
+    placeholder.ready.set()
+    monitor = _NodeMonitor(node_id="ns=2;s=A")
+    async with service._lock:
+        service._node_monitors[monitor.node_id] = monitor
+        service._bins[placeholder.bin_id] = placeholder
+        placeholder.pending_nodes = ["ns=2;s=A"]
+
+    assert await _add_node_to_bin(service, monitor, placeholder) is False
+    async with service._lock:
+        assert "bin-failed" not in service._bins
     await service.close()
 
 
@@ -1870,3 +2110,144 @@ def test_null_value_with_good_or_uncertain_quality_is_normalized_to_good_nodata(
     service._append_update(state, "ns=2;s=Temperature", None, _ValueSignal("Bad", None))
 
     assert [item.quality for item in state.updates] == ["GoodNoData", "Bad"]
+
+
+@pytest.mark.asyncio
+async def test_cursor_delivery_survives_buffer_eviction() -> None:
+    """The tail-walk returns exactly the entries newer than the cursor, even after drops."""
+    service = SubscriptionService(
+        cast(OpcUaClientProtocol, FakeOpcUaClient()), interval_seconds=1, max_updates_per_subscription=3
+    )
+    created = await service.create_subscription(client_id="c1")
+    subscription_id = created.subscription_id
+    state_obj = service._subscriptions[subscription_id]
+    for value in (1.0, 2.0, 3.0, 4.0, 5.0):
+        service._append_update(state_obj, "ns=2;s=Temperature", value)
+
+    # Sequences 1 and 2 were evicted; the buffer keeps 3..5 with the overflow markers.
+    assert [item.sequence_number for item in state_obj.updates] == [3, 4, 5]
+    assert state_obj.dropped_from_sequence == 1
+    assert state_obj.dropped_to_sequence == 2
+
+    assert [item.sequence_number for item in service._updates_after(state_obj, 2)] == [3, 4, 5]
+    assert [item.sequence_number for item in service._updates_after(state_obj, 4)] == [5]
+    assert service._updates_after(state_obj, 5) == []
+    # A cursor ahead of the buffer (consumed then evicted) delivers nothing, not the buffer.
+    assert service._updates_after(state_obj, 99) == []
+
+    delivered = await service.wait_for_updates("c1", subscription_id, after_sequence=2, timeout_seconds=0.05)
+    assert delivered is not None
+    assert [item.sequence_number for item in delivered] == [3, 4, 5]
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_sync_ack_trims_head_and_keeps_order() -> None:
+    """Acknowledging removes the consumed prefix; entries past the ack stay untouched."""
+    service = SubscriptionService(cast(OpcUaClientProtocol, FakeOpcUaClient()), interval_seconds=1)
+    created = await service.create_subscription(client_id="c1")
+    subscription_id = created.subscription_id
+    state_obj = service._subscriptions[subscription_id]
+    for value in range(1, 5):
+        service._append_update(state_obj, "ns=2;s=Temperature", float(value))
+
+    synced = await service.sync("c1", subscription_id, acknowledge_sequence=2)
+    assert synced is not None
+    assert [item.sequence_number for item in synced.updates] == [3, 4]
+    assert [item.sequence_number for item in state_obj.updates] == [3, 4]
+
+    # Acking the last buffered sequence empties the buffer; acks beyond the sequence counter
+    # stay a no-op (the counter only moves with new appends).
+    synced_all = await service.sync("c1", subscription_id, acknowledge_sequence=4)
+    assert synced_all is not None
+    assert synced_all.updates == []
+    assert not state_obj.updates
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_fanout_delivers_to_every_subscriber() -> None:
+    """One node-level change reaches all subscriptions with per-stream sequences."""
+    service = SubscriptionService(
+        cast(OpcUaClientProtocol, FakeOpcUaClient()), interval_seconds=1, seed_initial_values=False
+    )
+    sub_a = await service.create_subscription(client_id="client-a")
+    sub_b = await service.create_subscription(client_id="client-b")
+    # A subscriber that monitors nothing (and a vanished one) must be skipped, not delivered to.
+    sub_c = await service.create_subscription(client_id="client-c")
+    node_id = "ns=2;s=Temperature"
+    monitor = _NodeMonitor(
+        node_id=node_id,
+        subscriber_ids={sub_a.subscription_id, sub_b.subscription_id, sub_c.subscription_id, "sub-dead"},
+    )
+    async with service._lock:
+        service._node_monitors[node_id] = monitor
+        for subscription_id in (sub_a.subscription_id, sub_b.subscription_id):
+            subscription_state = service._subscriptions[subscription_id]
+            subscription_state.monitored_objects = {"prop-a": 0}
+            subscription_state.monitored_node_ids = {node_id}
+            subscription_state.node_to_element_id = {node_id: "prop-a"}
+
+    await service._fanout_node_value(node_id, 42.0)
+    await service._fanout_node_value(node_id, 43.0)
+
+    synced_a = await service.sync("client-a", sub_a.subscription_id)
+    synced_b = await service.sync("client-b", sub_b.subscription_id)
+    assert synced_a is not None and synced_b is not None
+    expected = [("prop-a", 42.0, 1), ("prop-a", 43.0, 2)]
+    assert [(item.element_id, item.value, item.sequence_number) for item in synced_a.updates] == expected
+    assert [(item.element_id, item.value, item.sequence_number) for item in synced_b.updates] == expected
+
+    synced_c = await service.sync("client-c", sub_c.subscription_id)
+    assert synced_c is not None and synced_c.updates == []
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_fanout_and_delivery_keep_sequences_ordered() -> None:
+    """Interleaved deliveries and polling across several subscriptions keep per-stream order."""
+    service = SubscriptionService(
+        cast(OpcUaClientProtocol, FakeOpcUaClient()), interval_seconds=1, seed_initial_values=False
+    )
+    subs = [await service.create_subscription(client_id=f"c{i}") for i in range(3)]
+    node_id = "ns=2;s=Temperature"
+    monitor = _NodeMonitor(node_id=node_id, subscriber_ids={sub.subscription_id for sub in subs})
+    async with service._lock:
+        service._node_monitors[node_id] = monitor
+        for detail in subs:
+            subscription_state = service._subscriptions[detail.subscription_id]
+            subscription_state.monitored_objects = {"prop-a": 0}
+            subscription_state.monitored_node_ids = {node_id}
+            subscription_state.node_to_element_id = {node_id: "prop-a"}
+
+    async def tick(value: float) -> None:
+        await service._fanout_node_value(node_id, value)
+
+    await asyncio.wait_for(asyncio.gather(*(tick(float(i)) for i in range(1, 21))), timeout=5)
+
+    for detail in subs:
+        synced = await service.sync(detail.client_id, detail.subscription_id)
+        assert synced is not None
+        sequences = [item.sequence_number for item in synced.updates]
+        assert sequences == list(range(1, 21))
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_release_node_monitor_discards_queued_drop_counts() -> None:
+    """Drop counts for a node nobody monitors must not fabricate gaps or leak entries."""
+    service = SubscriptionService(cast(OpcUaClientProtocol, FakeOpcUaClient()), interval_seconds=1)
+    node_id = "ns=2;s=Temperature"
+    queue = service._node_datachange_queue
+    # Fill the shared queue and push further entries: the overflow is remembered per node.
+    for _ in range(queue.maxsize + 2):
+        service._enqueue_node_datachange(node_id, 1.0)
+    assert service._dropped_node_datachanges.get(node_id, 0) >= 1
+
+    created = await service.create_subscription(client_id="c1")
+    async with service._lock:
+        monitor = _NodeMonitor(node_id=node_id, subscriber_ids={created.subscription_id})
+        service._node_monitors[node_id] = monitor
+    await service._release_node_monitor(node_id, created.subscription_id)
+    assert node_id not in service._dropped_node_datachanges
+    await service.close()

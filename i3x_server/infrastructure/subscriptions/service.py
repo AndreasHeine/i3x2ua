@@ -152,24 +152,45 @@ class SubscriptionService:
 
     async def _fanout_node_value(self, node_id: str, value: Any, signal: state._ValueSignal = state._NO_SIGNAL) -> None:
         """Deliver one node-level value change to every subscription monitoring it."""
+        # Normalise once for all subscribers: re-coercing the same value per subscription
+        # (variant decode, container unpack) dominated the tick for wide fan-outs.
+        normalized_value = normalize_opcua_value(value)
+        # Registry lock: membership, mapping resolution, and the drop-count snapshot. The
+        # per-subscription buffer then changes under each subscription's own lock, so ticks
+        # for different subscriptions no longer serialize behind one global lock.
         async with self._lock:
             monitor = self._node_monitors.get(node_id)
             subscriber_ids = list(monitor.subscriber_ids) if monitor is not None else []
             dropped_count = self._dropped_node_datachanges.pop(node_id, 0)
-            if dropped_count and subscriber_ids:
-                # Advance the sequence by the number of updates lost on the shared queue so
-                # the delivered update creates a visible gap; sync reports the range, and
-                # streams see the jump.
-                for subscription_id in subscriber_ids:
-                    subscription_state = self._subscriptions.get(subscription_id)
-                    if subscription_state is None:
-                        continue
+            states: list[state._SubscriptionState] = []
+            targets: list[tuple[state._SubscriptionState, str, str]] = []
+            for subscription_id in subscriber_ids:
+                subscription_state = self._subscriptions.get(subscription_id)
+                if subscription_state is None:
+                    continue
+                states.append(subscription_state)
+                resolved_node_id = self._resolve_target_node(subscription_state, node_id)
+                if resolved_node_id is None:
+                    continue
+                element_id = self._resolve_element_id(subscription_state, resolved_node_id)
+                targets.append((subscription_state, resolved_node_id, element_id))
+
+        if dropped_count:
+            # Advance the sequence by the number of updates lost on the shared queue so the
+            # delivered update creates a visible gap; sync reports the range, and streams see
+            # the jump.
+            for subscription_state in states:
+                async with subscription_state.lock:
                     if subscription_state.dropped_from_sequence is None:
                         subscription_state.dropped_from_sequence = subscription_state.sequence_number + 1
                     subscription_state.sequence_number += dropped_count
                     subscription_state.dropped_to_sequence = subscription_state.sequence_number
-        for subscription_id in subscriber_ids:
-            await self.handle_datachange(subscription_id, node_id, value, signal=signal)
+
+        for subscription_state, resolved_node_id, element_id in targets:
+            async with subscription_state.lock:
+                self._append_update(
+                    subscription_state, resolved_node_id, normalized_value, signal, element_id=element_id
+                )
 
     def schedule_node_datachange(self, node_id: str, value: Any, signal: state._ValueSignal = state._NO_SIGNAL) -> None:
         target_loop = self._event_loop
@@ -480,16 +501,19 @@ class SubscriptionService:
             subscription_state.node_to_element_id = node_to_element_id
             monitored_nodes_count = len(monitored_node_ids)
             monitored_objects_count = len(subscription_state.monitored_objects)
-            subscription_state.last_values_by_node_id = {
-                node_id: value
-                for node_id, value in subscription_state.last_values_by_node_id.items()
-                if node_id in monitored_node_ids
-            }
-            subscription_state.last_quality_by_node_id = {
-                node_id: quality
-                for node_id, quality in subscription_state.last_quality_by_node_id.items()
-                if node_id in subscription_state.last_values_by_node_id
-            }
+            # Pruning the last-value maps must not race with concurrent appends, which mutate
+            # those maps under the subscription's lock (registry -> state acquisition order).
+            async with subscription_state.lock:
+                subscription_state.last_values_by_node_id = {
+                    node_id: value
+                    for node_id, value in subscription_state.last_values_by_node_id.items()
+                    if node_id in monitored_node_ids
+                }
+                subscription_state.last_quality_by_node_id = {
+                    node_id: quality
+                    for node_id, quality in subscription_state.last_quality_by_node_id.items()
+                    if node_id in subscription_state.last_values_by_node_id
+                }
             self._touch(subscription_state)
 
         await self._apply_monitored_node_diff(subscription_id)
@@ -542,16 +566,19 @@ class SubscriptionService:
             subscription_state.node_to_element_id = node_to_element_id
             monitored_nodes_count = len(monitored_node_ids)
             monitored_objects_count = len(subscription_state.monitored_objects)
-            subscription_state.last_values_by_node_id = {
-                node_id: value
-                for node_id, value in subscription_state.last_values_by_node_id.items()
-                if node_id in monitored_node_ids
-            }
-            subscription_state.last_quality_by_node_id = {
-                node_id: quality
-                for node_id, quality in subscription_state.last_quality_by_node_id.items()
-                if node_id in subscription_state.last_values_by_node_id
-            }
+            # Pruning the last-value maps must not race with concurrent appends, which mutate
+            # those maps under the subscription's lock (registry -> state acquisition order).
+            async with subscription_state.lock:
+                subscription_state.last_values_by_node_id = {
+                    node_id: value
+                    for node_id, value in subscription_state.last_values_by_node_id.items()
+                    if node_id in monitored_node_ids
+                }
+                subscription_state.last_quality_by_node_id = {
+                    node_id: quality
+                    for node_id, quality in subscription_state.last_quality_by_node_id.items()
+                    if node_id in subscription_state.last_values_by_node_id
+                }
             self._touch(subscription_state)
 
         await self._apply_monitored_node_diff(subscription_id)
@@ -586,29 +613,36 @@ class SubscriptionService:
                 # Report the overflow markers without consuming them: polling can see dropped
                 # updates while the stream delivers a silent sequence jump.
                 self._touch(subscription_state)
-                return SubscriptionSyncResult(
-                    updates=[],
-                    stream_active=True,
-                    queue_overflow=subscription_state.dropped_from_sequence is not None,
-                    dropped_from_sequence=subscription_state.dropped_from_sequence,
-                    dropped_to_sequence=subscription_state.dropped_to_sequence,
+                async with subscription_state.lock:
+                    return SubscriptionSyncResult(
+                        updates=[],
+                        stream_active=True,
+                        queue_overflow=subscription_state.dropped_from_sequence is not None,
+                        dropped_from_sequence=subscription_state.dropped_from_sequence,
+                        dropped_to_sequence=subscription_state.dropped_to_sequence,
+                    )
+
+            # Buffer, sequence counters, and drop markers change under the subscription's own
+            # lock (nesting registry -> state, the fixed acquisition order).
+            async with subscription_state.lock:
+                if acknowledge_sequence is not None and acknowledge_sequence < 0:
+                    # Any negative ack is a "drop everything" sentinel; `-1` is documented, but
+                    # other negatives used to fall through and discard nothing.
+                    subscription_state.updates.clear()
+                elif isinstance(acknowledge_sequence, int):
+                    if 0 <= acknowledge_sequence <= subscription_state.sequence_number:
+                        # Sequences strictly increase along the buffer, so trimming the head is
+                        # equivalent to filtering - and costs O(acked) popleft instead of
+                        # copying the whole buffer.
+                        updates = subscription_state.updates
+                        while updates and updates[0].sequence_number <= acknowledge_sequence:
+                            updates.popleft()
+
+                should_refresh = (
+                    acknowledge_sequence is None
+                    and not subscription_state.updates
+                    and bool(subscription_state.monitored_node_ids)
                 )
-
-            if acknowledge_sequence is not None and acknowledge_sequence < 0:
-                # Any negative ack is a "drop everything" sentinel; `-1` is documented, but
-                # other negatives used to fall through and discard nothing.
-                subscription_state.updates.clear()
-            elif isinstance(acknowledge_sequence, int):
-                if 0 <= acknowledge_sequence <= subscription_state.sequence_number:
-                    subscription_state.updates = [
-                        item for item in subscription_state.updates if item.sequence_number > acknowledge_sequence
-                    ]
-
-            should_refresh = (
-                acknowledge_sequence is None
-                and not subscription_state.updates
-                and bool(subscription_state.monitored_node_ids)
-            )
 
             self._touch(subscription_state)
 
@@ -619,16 +653,16 @@ class SubscriptionService:
             subscription_state = self._subscriptions.get(subscription_id)
             if subscription_state is None or (client_id is not None and subscription_state.client_id != client_id):
                 return None
-
-            result = SubscriptionSyncResult(
-                updates=list(subscription_state.updates),
-                queue_overflow=subscription_state.dropped_from_sequence is not None,
-                dropped_from_sequence=subscription_state.dropped_from_sequence,
-                dropped_to_sequence=subscription_state.dropped_to_sequence,
-            )
-            subscription_state.dropped_from_sequence = None
-            subscription_state.dropped_to_sequence = None
             self._touch(subscription_state)
+            async with subscription_state.lock:
+                result = SubscriptionSyncResult(
+                    updates=list(subscription_state.updates),
+                    queue_overflow=subscription_state.dropped_from_sequence is not None,
+                    dropped_from_sequence=subscription_state.dropped_from_sequence,
+                    dropped_to_sequence=subscription_state.dropped_to_sequence,
+                )
+                subscription_state.dropped_from_sequence = None
+                subscription_state.dropped_to_sequence = None
             return result
 
     async def activate_stream(self, client_id: str | None, subscription_id: str) -> int | None:
@@ -691,13 +725,15 @@ class SubscriptionService:
 
             self._touch(subscription_state)
 
-            current = [item for item in subscription_state.updates if item.sequence_number > after_sequence]
-            if current:
-                subscription_state.native_timeout_count = 0
-                return current
+            async with subscription_state.lock:
+                current = self._updates_after(subscription_state, after_sequence)
+                if current:
+                    subscription_state.native_timeout_count = 0
+                    return current
 
-            subscription_state.update_event.clear()
-            wait_event = subscription_state.update_event
+                subscription_state.update_event.clear()
+                wait_event = subscription_state.update_event
+
             should_refresh_after_timeout = (
                 subscription_state.mode == "native"
                 and bool(subscription_state.monitored_node_ids)
@@ -741,8 +777,9 @@ class SubscriptionService:
                 if subscription_state is None or (client_id is not None and subscription_state.client_id != client_id):
                     return None
                 if should_refresh_after_timeout:
-                    subscription_state.native_timeout_count += 1
-                    timeout_count = subscription_state.native_timeout_count
+                    async with subscription_state.lock:
+                        subscription_state.native_timeout_count += 1
+                        timeout_count = subscription_state.native_timeout_count
                     if self._native_timeout_refresh_mode == "adaptive":
                         should_execute_refresh = timeout_count >= refresh_timeout_threshold
                     else:
@@ -766,7 +803,8 @@ class SubscriptionService:
                             client_id is not None and subscription_state.client_id != client_id
                         ):
                             return None
-                        subscription_state.native_timeout_count = 0
+                        async with subscription_state.lock:
+                            subscription_state.native_timeout_count = 0
                 if state._stream_debug_enabled() and should_execute_refresh:
                     logger.info(
                         "Subscription service wait timeout refresh subscription_id=%s after_sequence=%s",
@@ -780,7 +818,8 @@ class SubscriptionService:
                 if subscription_state is None or (client_id is not None and subscription_state.client_id != client_id):
                     return None
                 self._touch(subscription_state)
-                updates = [item for item in subscription_state.updates if item.sequence_number > after_sequence]
+                async with subscription_state.lock:
+                    updates = self._updates_after(subscription_state, after_sequence)
                 if state._stream_debug_enabled():
                     logger.info(
                         "Subscription service wait timeout result subscription_id=%s updates=%s after_sequence=%s",
@@ -794,9 +833,10 @@ class SubscriptionService:
             subscription_state = self._subscriptions.get(subscription_id)
             if subscription_state is None or (client_id is not None and subscription_state.client_id != client_id):
                 return None
-            subscription_state.native_timeout_count = 0
             self._touch(subscription_state)
-            return [item for item in subscription_state.updates if item.sequence_number > after_sequence]
+            async with subscription_state.lock:
+                subscription_state.native_timeout_count = 0
+                return self._updates_after(subscription_state, after_sequence)
 
     async def handle_datachange(
         self,
@@ -814,30 +854,25 @@ class SubscriptionService:
             if subscription_state is None:
                 return
 
-            resolved_node_id = node_id
-            if resolved_node_id not in subscription_state.monitored_node_ids:
-                mapped_element = subscription_state.node_to_element_id.get(resolved_node_id)
-                if mapped_element is None:
-                    mapped_element = subscription_state.node_to_element_id.get(resolved_node_id.lower())
-                if mapped_element is None and not subscription_state.monitored_node_ids:
-                    return
-                # A single monitored node accepts any notification the server reports for
-                # it (node-id formats can differ); with several nodes an unmapped id is dropped.
-                if len(subscription_state.monitored_node_ids) == 1:
-                    resolved_node_id = next(iter(subscription_state.monitored_node_ids))
-                elif mapped_element is None:
-                    return
-
-            self._append_update(subscription_state, resolved_node_id, normalized_value, signal)
+            resolved_node_id = self._resolve_target_node(subscription_state, node_id)
+            if resolved_node_id is None:
+                return
+            # Mapping lookup stays under the registry lock; the buffer append then runs under
+            # this subscription's own lock, so deliveries for other subscriptions are not
+            # blocked behind it.
+            element_id = self._resolve_element_id(subscription_state, resolved_node_id)
             logger.debug(
                 "Subscription datachange callback subscription_id=%s mode=%s node_id=%s",
                 subscription_id,
                 subscription_state.mode,
                 resolved_node_id,
             )
-            subscription_state.native_timeout_count = 0
             # Removed self._touch(state) to ensure server notifications don't keep stale subscriptions alive.
             # Only client activity (sync, wait_for_updates) should refresh the TTL.
+
+        async with subscription_state.lock:
+            self._append_update(subscription_state, resolved_node_id, normalized_value, signal, element_id=element_id)
+            subscription_state.native_timeout_count = 0
 
     async def _apply_monitored_node_diff(self, subscription_id: str) -> None:
         """Reconcile the shared node registry against the subscription's *current* desired set.
@@ -947,6 +982,9 @@ class SubscriptionService:
             should_stop = not monitor.subscriber_ids
             if should_stop:
                 del self._node_monitors[node_id]
+                # Nothing will deliver this node anymore: queued drop counts would fabricate a
+                # sequence gap no consumer can observe and leak the entry forever.
+                self._dropped_node_datachanges.pop(node_id, None)
 
         if should_stop:
             await monitoring._stop_node_monitor_runtime(self, monitor)
@@ -998,11 +1036,67 @@ class SubscriptionService:
             subscription_state = self._subscriptions.get(subscription_id)
             if subscription_state is None:
                 return
-            for node_id, payload, signal in decoded:
-                if node_id not in subscription_state.monitored_node_ids:
-                    continue
-                self._append_update(subscription_state, node_id, payload, signal)
+            delivered = [
+                (node_id, payload, signal, self._resolve_element_id(subscription_state, node_id))
+                for node_id, payload, signal in decoded
+                if node_id in subscription_state.monitored_node_ids
+            ]
             self._touch(subscription_state)
+
+        async with subscription_state.lock:
+            for node_id, payload, signal, element_id in delivered:
+                self._append_update(subscription_state, node_id, payload, signal, element_id=element_id)
+
+    def _resolve_target_node(self, subscription_state: state._SubscriptionState, node_id: str) -> str | None:
+        """Resolve the monitored node an incoming notification refers to.
+
+        Must be called under ``self._lock``: ``monitored_node_ids`` and ``node_to_element_id``
+        are registry-guarded, so the lookup cannot happen while the subscription lock is held.
+        """
+        if node_id in subscription_state.monitored_node_ids:
+            return node_id
+        mapped_element = subscription_state.node_to_element_id.get(node_id)
+        if mapped_element is None:
+            mapped_element = subscription_state.node_to_element_id.get(node_id.lower())
+        if mapped_element is None and not subscription_state.monitored_node_ids:
+            return None
+        # A single monitored node accepts any notification the server reports for
+        # it (node-id formats can differ); with several nodes an unmapped id is dropped.
+        if len(subscription_state.monitored_node_ids) == 1:
+            return next(iter(subscription_state.monitored_node_ids))
+        if mapped_element is None:
+            return None
+        return node_id
+
+    def _resolve_element_id(self, subscription_state: state._SubscriptionState, node_id: str) -> str:
+        """Map a node id to the element id reported in updates. Registry lock."""
+        element_id = subscription_state.node_to_element_id.get(node_id)
+        if element_id is None:
+            element_id = subscription_state.node_to_element_id.get(node_id.lower(), node_id)
+        if element_id == node_id and len(subscription_state.monitored_objects) == 1:
+            # Compatibility fallback: if native callback mapping misses for a
+            # single registered object, emit that object id so consumers can
+            # still match updates to the active subscription row.
+            element_id = next(iter(subscription_state.monitored_objects.keys()))
+        return element_id
+
+    @staticmethod
+    def _updates_after(subscription_state: state._SubscriptionState, after_sequence: int) -> list[SubscriptionUpdate]:
+        """Buffered updates with a sequence number greater than ``after_sequence``.
+
+        Sequences strictly increase along the buffer, so collecting backwards from the tail
+        stops at the first entry the consumer already acknowledged: O(delivered) instead of
+        O(buffer). A deque cannot be sliced, so the walk appends and reverses.
+        """
+        updates = subscription_state.updates
+        delivered: list[SubscriptionUpdate] = []
+        for index in range(len(updates) - 1, -1, -1):
+            item = updates[index]
+            if int(item.sequence_number) <= after_sequence:
+                break
+            delivered.append(item)
+        delivered.reverse()
+        return delivered
 
     def _append_update(
         self,
@@ -1010,7 +1104,14 @@ class SubscriptionService:
         node_id: str,
         value: Any,
         signal: state._ValueSignal = state._NO_SIGNAL,
+        element_id: str | None = None,
     ) -> None:
+        """Append one update to a subscription's buffer.
+
+        Callers hold ``subscription_state.lock`` (buffer, sequence counter, and drop markers are
+        guarded there); ``element_id`` is resolved by the caller under the registry lock. It
+        stays optional for legacy callers, which resolve the mapping inline.
+        """
         # `value` is expected to be normalised already by the caller (outside the lock).
         quality = signal.quality or ("GoodNoData" if value is None else "Good")
         if value is None and quality in ("Good", "Uncertain"):
@@ -1025,16 +1126,12 @@ class SubscriptionService:
         subscription_state.last_values_by_node_id[node_id] = value
         subscription_state.last_quality_by_node_id[node_id] = quality
         subscription_state.sequence_number += 1
-        element_id = subscription_state.node_to_element_id.get(node_id)
         if element_id is None:
-            element_id = subscription_state.node_to_element_id.get(node_id.lower(), node_id)
-        if element_id == node_id and len(subscription_state.monitored_objects) == 1:
-            # Compatibility fallback: if native callback mapping misses for a
-            # single registered object, emit that object id so consumers can
-            # still match updates to the active subscription row.
-            element_id = next(iter(subscription_state.monitored_objects.keys()))
+            element_id = self._resolve_element_id(subscription_state, node_id)
         if len(subscription_state.updates) >= self._max_updates_per_subscription:
-            dropped = subscription_state.updates.pop(0)
+            # O(1) eviction; ``list.pop(0)`` re-shifted every remaining entry per update,
+            # so a saturated subscription rewrote its whole buffer on each tick.
+            dropped = subscription_state.updates.popleft()
             if subscription_state.dropped_from_sequence is None:
                 subscription_state.dropped_from_sequence = dropped.sequence_number
             subscription_state.dropped_to_sequence = dropped.sequence_number

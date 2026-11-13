@@ -242,7 +242,7 @@ new branches (visible via `coverage.xml` branch data after PR-01).
 | PR-00 | Baseline | review.md, fix_plan.md, headless gate | ☒ | baseline 1139 pass | 87 % line | Full 1.0 (56/0/2/2) | 5094503 |
 | PR-01 | 1 | branch coverage, gate alignment, determinism, conformance-in-CI | ☒ | 1139 pass / 1 skip (73 s) | line 87,19 % / branch 76,72 % | Full 1.0 (56/0/2/2) | a035190 |
 | PR-02 | 2 | startup degraded mode, supervisor-before-connect, readiness | ☒ | 1143 pass / 1 skip (74 s) | line 87,24 % / branch 76,81 % | Full 1.0 (56/0/2/2) | f5fcc61 |
-| PR-03 | 3 | admission caps, rate limit, cache fingerprint, zip strict | ☐ | | | | |
+| PR-03 | 3 | admission caps, rate limit, cache fingerprint, zip strict | ☒ | 1165 pass / 1 skip (75 s) | line 87,46 % / branch 77,02 % | Full 1.0 (56/0/2/2) | 67ff6e3 |
 | PR-04 | 4 | fan-out: deque, cursor, per-sub locks, batched adds | ☐ | | | | |
 | PR-05 | 5 | bulk writes parallel + batched read-back | ☐ | | | | |
 | PR-06 | 6 | eval removal, origin guards, audit principal | ☐ | | | | |

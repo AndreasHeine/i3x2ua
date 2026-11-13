@@ -9,6 +9,7 @@ target this module for them.
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -91,10 +92,17 @@ class _SubscriptionState:
     node_to_element_id: dict[str, str] = field(default_factory=dict)
     last_values_by_node_id: dict[str, Any] = field(default_factory=dict)
     last_quality_by_node_id: dict[str, str] = field(default_factory=dict)
-    updates: list[SubscriptionUpdate] = field(default_factory=list)
+    # Bounded update buffer. A deque drops the oldest entry in O(1); ``list.pop(0)`` shifted every
+    # remaining entry on each eviction, so a saturated subscription re-wrote its whole buffer per
+    # update. Delivery walks it from the tail, which makes cursor reads O(delivered) not O(buffered).
+    updates: deque[SubscriptionUpdate] = field(default_factory=deque)
     sequence_number: int = 0
     mode: str = "idle"
     update_event: asyncio.Event = field(default_factory=asyncio.Event)
+    # Per-subscription delivery lock. The registry lock guards membership, mappings, and monitor
+    # bookkeeping; the update buffer, sequence counters, and drop markers change under this lock, so
+    # fan-out ticks of different subscriptions no longer serialize behind one global lock.
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     active_stream_generation: int = 0
     stream_connected: bool = False
     dropped_from_sequence: int | None = None
@@ -130,9 +138,10 @@ class _ManagedBin:
     capacity: int
     node_handles: dict[str, int] = field(default_factory=dict)
     native_refresh_interval_seconds: float | None = None
-    # Slots reserved by an admission whose network round-trip is still in flight, so parallel
-    # admissions cannot all reserve the last capacity slot of the same bin.
-    pending_adds: int = 0
+    # Node ids reserved by admissions whose network round-trip is still in flight, in reservation
+    # order. They count towards the bin capacity like real handles, and the admission that creates
+    # the subscription batches them into one CreateMonitoredItems call instead of one RPC per node.
+    pending_nodes: list[str] = field(default_factory=list)
     # Set once ``ua_subscription`` exists. A bin registered before its create returned is a
     # placeholder: concurrent admissions reserve slots in it and wait here instead of opening more bins.
     ready: asyncio.Event = field(default_factory=asyncio.Event)

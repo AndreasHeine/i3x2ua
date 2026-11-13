@@ -157,7 +157,7 @@ def _can_open_new_bin(service: SubscriptionService, caps: OpcUaSubscriptionCapab
     stays exact while network round-trips run concurrently.
     """
     bin_count = len(service._bins)
-    total_monitored = sum(len(bin_.node_handles) + bin_.pending_adds for bin_ in service._bins.values())
+    total_monitored = sum(len(bin_.node_handles) + len(bin_.pending_nodes) for bin_ in service._bins.values())
 
     if bin_count + 1 > _capped_limit(caps.max_subscriptions, service._native_max_bins):
         return False
@@ -243,8 +243,8 @@ async def _acquire_native_bin_slot(
     """Reserve a bin under the admission lock, then run the OPC UA round-trip outside it.
 
     Selection stays serialized so concurrent admissions *pack* into one bin instead of opening
-    several: when no bin has spare capacity a placeholder bin is registered here and reserved with
-    ``pending_adds``; the round-trips themselves run under ``_native_admission_semaphore``. That
+    several: when no bin has spare capacity a placeholder bin is registered here and reserved in
+    ``pending_nodes``; the round-trips themselves run under ``_native_admission_semaphore``. That
     makes ``max_concurrent_native_admissions`` effective - it used to be nested inside the selection
     lock, so at most one admission could ever be in flight.
     """
@@ -258,11 +258,15 @@ async def _acquire_native_bin_slot(
         )
 
         async with service._lock:
-            total_monitored = sum(len(bin_.node_handles) + bin_.pending_adds for bin_ in service._bins.values())
+            total_monitored = sum(len(bin_.node_handles) + len(bin_.pending_nodes) for bin_ in service._bins.values())
             if total_monitored + 1 > _capped_limit(caps.max_monitored_items, service._native_max_monitored_items):
                 return False
             target_bin = next(
-                (bin_ for bin_ in service._bins.values() if len(bin_.node_handles) + bin_.pending_adds < bin_.capacity),
+                (
+                    bin_
+                    for bin_ in service._bins.values()
+                    if len(bin_.node_handles) + len(bin_.pending_nodes) < bin_.capacity
+                ),
                 None,
             )
             opening = target_bin is None
@@ -275,7 +279,9 @@ async def _acquire_native_bin_slot(
                     capacity=effective_capacity,
                 )
                 service._bins[target_bin.bin_id] = target_bin
-            target_bin.pending_adds += 1
+            # Reserve this node by id, not by a counter: the admission that creates the bin batches
+            # every id reserved in the placeholder into one CreateMonitoredItems call.
+            target_bin.pending_nodes.append(monitor.node_id)
 
     if opening:
         return await _open_new_bin(service, monitor, target_bin)
@@ -292,10 +298,16 @@ async def _subscribe_single_node(service: SubscriptionService, ua_subscription: 
 
 
 async def _open_new_bin(service: SubscriptionService, monitor: _NodeMonitor, placeholder: _ManagedBin) -> bool:
-    """Fill the placeholder bin that ``_acquire_native_bin_slot`` reserved with an OPC UA subscription."""
+    """Fill the placeholder bin that ``_acquire_native_bin_slot`` reserved with an OPC UA subscription.
+
+    Every node reserved in the placeholder while its subscription was being created is subscribed
+    in **one** ``CreateMonitoredItems`` call, so registering N nodes against a fresh bin costs one
+    round-trip instead of N. A reservation that arrived after the snapshot still adds itself
+    separately; whichever commit lands first keeps the batched handle and releases the duplicate.
+    """
     ua_subscription: Any = None
-    handle: int | None = None
-    failed = False
+    batch: list[str] = []
+    assigned: dict[str, int] = {}
     try:
         async with service._native_admission_semaphore:
             handler = _NodeDataChangeHandler(service, placeholder.bin_id)
@@ -307,82 +319,174 @@ async def _open_new_bin(service: SubscriptionService, monitor: _NodeMonitor, pla
                 service, ua_subscription
             )
             placeholder.ua_subscription = ua_subscription
+            # Admissions that reserved a slot - or fell back while the create ran - must not wait
+            # for a batch that may take longer than they need.
             placeholder.ready.set()
-            handle = await _subscribe_single_node(service, ua_subscription, monitor.node_id)
+            async with service._lock:
+                # Only reservations whose monitor still exists are batched; a monitor released
+                # meanwhile is dropped rather than subscribed.
+                batch = [node_id for node_id in placeholder.pending_nodes if node_id in service._node_monitors]
+            if batch:
+                raw_handles = await service._opcua_client.subscribe_data_changes(ua_subscription, batch)
+                handle_values = raw_handles if isinstance(raw_handles, list) else [raw_handles]
+                # One handle per requested node, in request order: a length mismatch is a
+                # programming error, not a partial upstream answer.
+                for node_id, raw_handle in zip(batch, handle_values, strict=True):
+                    handle = _to_client_handle(raw_handle)
+                    if handle is not None:
+                        assigned[node_id] = handle
     except Exception:
-        failed = True
-        raise
-    finally:
-        # Admissions that reserved a slot in this bin must not wait for a create that never succeeds.
         placeholder.ready.set()
-        if failed and ua_subscription is not None:
+        if ua_subscription is not None:
             # The create succeeded but the item add raised: asyncua has no registry of the
             # subscription, so it would keep publishing (and hold a session slot) forever.
             with suppress(Exception):
                 await service._opcua_client.delete_subscription(ua_subscription)
         async with service._lock:
-            reserved_bin = service._bins.get(placeholder.bin_id)
-            if reserved_bin is not None:
-                reserved_bin.pending_adds = max(0, reserved_bin.pending_adds - 1)
-                if failed and not reserved_bin.node_handles:
+            failed_bin = service._bins.get(placeholder.bin_id)
+            if failed_bin is not None and failed_bin is placeholder:
+                # This admission's reservation must go; a placeholder with nothing left in it is
+                # worthless and must not linger in the budget accounting.
+                if monitor.node_id in failed_bin.pending_nodes:
+                    failed_bin.pending_nodes.remove(monitor.node_id)
+                if not failed_bin.node_handles and not failed_bin.pending_nodes:
                     del service._bins[placeholder.bin_id]
+        raise
 
-    if handle is None:
-        with suppress(Exception):
-            await service._opcua_client.delete_subscription(ua_subscription)
-        async with service._lock:
-            reserved_bin = service._bins.get(placeholder.bin_id)
-            if reserved_bin is not None and not reserved_bin.node_handles:
-                del service._bins[placeholder.bin_id]
-        return False
-
+    orphan_handles: list[int] = []
+    bin_reclaimed = False
     stale_subscription: Any = None
+    monitor_committed = False
     async with service._lock:
-        live = service._node_monitors.get(monitor.node_id)
-        if live is None or live is not monitor or service._bins.get(placeholder.bin_id) is None:
-            # Monitor released concurrently (no subscribers left), or the placeholder was reclaimed.
+        live_bin = service._bins.get(placeholder.bin_id)
+        if live_bin is None:
+            # Reclaimed concurrently (no subscribers left): nothing to commit, and the fresh
+            # subscription has no owner, so it must not keep publishing.
             stale_subscription = ua_subscription
         else:
-            placeholder.node_handles[monitor.node_id] = handle
-            live.bin_id = placeholder.bin_id
-            live.mode = "native"
-            live.native_refresh_interval_seconds = placeholder.native_refresh_interval_seconds
+            for node_id, handle in assigned.items():
+                if node_id in live_bin.pending_nodes:
+                    live_bin.pending_nodes.remove(node_id)
+                live = service._node_monitors.get(node_id)
+                if live is None:
+                    # Released while the batch was in flight: the handle is orphaned.
+                    live_bin.node_handles.pop(node_id, None)
+                    orphan_handles.append(handle)
+                    continue
+                duplicate = live_bin.node_handles.get(node_id)
+                if duplicate is not None:
+                    # A concurrent single-node add committed this node first: keep the batched
+                    # handle and release the duplicate round-trip's handle.
+                    orphan_handles.append(duplicate)
+                live_bin.node_handles[node_id] = handle
+                if live.mode == "idle":
+                    live.bin_id = placeholder.bin_id
+                    live.mode = "native"
+                    live.native_refresh_interval_seconds = placeholder.native_refresh_interval_seconds
+            # A reservation whose monitor was released never gets a handle; it must stop
+            # consuming the monitored-item budget, or it would linger until the bin is reclaimed.
+            for node_id in [node_id for node_id in live_bin.pending_nodes if node_id not in service._node_monitors]:
+                live_bin.pending_nodes.remove(node_id)
+            monitor_committed = monitor.node_id in live_bin.node_handles
+            if not monitor_committed:
+                # This admission's own node failed: release its reservation, and reclaim a bin
+                # that ended up holding nothing at all.
+                if monitor.node_id in live_bin.pending_nodes:
+                    live_bin.pending_nodes.remove(monitor.node_id)
+                if not live_bin.node_handles and not live_bin.pending_nodes:
+                    del service._bins[placeholder.bin_id]
+                    bin_reclaimed = True
 
+    # Cleanup must not run while the lock is held: it would block every other path.
+    if orphan_handles:
+        with suppress(Exception):
+            await service._opcua_client.unsubscribe_data_changes(ua_subscription, orphan_handles)
     if stale_subscription is not None:
-        # Delete outside the lock so a slow round-trip never blocks fan-out, sync, or SSE delivery.
-        await service._opcua_client.delete_subscription(stale_subscription)
+        with suppress(Exception):
+            await service._opcua_client.delete_subscription(stale_subscription)
+        return False
+
+    if not monitor_committed:
+        if bin_reclaimed:
+            with suppress(Exception):
+                await service._opcua_client.delete_subscription(ua_subscription)
+        logger.info(
+            "Node monitor bin create did not commit node bin_id=%s node_id=%s",
+            placeholder.bin_id,
+            monitor.node_id,
+        )
         return False
 
     logger.info(
-        "Node monitor bin opened bin_id=%s node_id=%s capacity=%d",
+        "Node monitor bin opened bin_id=%s node_id=%s capacity=%d batched_nodes=%d",
         placeholder.bin_id,
         monitor.node_id,
         placeholder.capacity,
+        len(assigned),
     )
     return True
 
 
 async def _add_node_to_bin(service: SubscriptionService, monitor: _NodeMonitor, target_bin: _ManagedBin) -> bool:
     handle: int | None = None
+    stale: tuple[Any, int] | None = None
+    batched_stale = False
     try:
         if not target_bin.ready.is_set():
             # The bin is still being created: wait outside the semaphore and outside any lock.
             await target_bin.ready.wait()
-        async with service._native_admission_semaphore:
-            ua_subscription = target_bin.ua_subscription
-            if ua_subscription is None:
-                # The creating admission failed; this node falls back to polling.
-                return False
-            handle = await _subscribe_single_node(service, ua_subscription, monitor.node_id)
+        async with service._lock:
+            live_bin = service._bins.get(target_bin.bin_id)
+            batched_handle = live_bin.node_handles.get(monitor.node_id) if live_bin is not None else None
+            if live_bin is not None and batched_handle is not None:
+                # The admission that created this bin already subscribed this node as part of
+                # its batch, so no second CreateMonitoredItems round-trip is needed for it.
+                live = service._node_monitors.get(monitor.node_id)
+                if live is monitor and live.bin_id == live_bin.bin_id:
+                    logger.info(
+                        "Node monitor added to bin bin_id=%s node_id=%s size=%d/%d source=batched",
+                        live_bin.bin_id,
+                        monitor.node_id,
+                        len(live_bin.node_handles),
+                        live_bin.capacity,
+                    )
+                    return True
+                # Released concurrently: the batched handle belongs to nothing. It is released
+                # below - outside the lock and outside the round-trip - so no second add runs.
+                live_bin.node_handles.pop(monitor.node_id, None)
+                stale = (live_bin.ua_subscription, batched_handle)
+                batched_stale = True
+        if not batched_stale:
+            async with service._native_admission_semaphore:
+                ua_subscription = target_bin.ua_subscription
+                if ua_subscription is None:
+                    # The creating admission failed; this node falls back to polling.
+                    return False
+                handle = await _subscribe_single_node(service, ua_subscription, monitor.node_id)
     finally:
         async with service._lock:
             reserved_bin = service._bins.get(target_bin.bin_id)
             if reserved_bin is not None:
-                reserved_bin.pending_adds = max(0, reserved_bin.pending_adds - 1)
+                if monitor.node_id in reserved_bin.pending_nodes and monitor.node_id not in reserved_bin.node_handles:
+                    reserved_bin.pending_nodes.remove(monitor.node_id)
+                # A placeholder whose create failed has no subscription behind it; once the
+                # last reservation leaves, the bin must not linger in the budget accounting.
+                if (
+                    reserved_bin.ua_subscription is None
+                    and not reserved_bin.node_handles
+                    and not reserved_bin.pending_nodes
+                ):
+                    del service._bins[target_bin.bin_id]
+
+    if stale is not None:
+        with suppress(Exception):
+            await service._opcua_client.unsubscribe_data_changes(stale[0], [stale[1]])
+        return False
+
     if handle is None:
         return False
 
-    stale: tuple[Any, int] | None = None
+    duplicate_orphan: int | None = None
     async with service._lock:
         live = service._node_monitors.get(monitor.node_id)
         live_bin = service._bins.get(target_bin.bin_id)
@@ -390,10 +494,29 @@ async def _add_node_to_bin(service: SubscriptionService, monitor: _NodeMonitor, 
             # Monitor released concurrently, or the bin was reclaimed/closed under us.
             stale = (target_bin.ua_subscription, handle)
         else:
-            live_bin.node_handles[monitor.node_id] = handle
-            live.bin_id = live_bin.bin_id
-            live.mode = "native"
-            live.native_refresh_interval_seconds = live_bin.native_refresh_interval_seconds
+            duplicate = live_bin.node_handles.get(monitor.node_id)
+            if duplicate is not None:
+                # A batch commit subscribed this node while the round-trip was in flight: the
+                # batched handle stays, this one is released below (outside the lock).
+                duplicate_orphan = handle
+            else:
+                live_bin.node_handles[monitor.node_id] = handle
+                live.bin_id = live_bin.bin_id
+                live.mode = "native"
+                live.native_refresh_interval_seconds = live_bin.native_refresh_interval_seconds
+
+    if duplicate_orphan is not None:
+        # Cleanup must not run while the lock is held: it would block every other path.
+        with suppress(Exception):
+            await service._opcua_client.unsubscribe_data_changes(target_bin.ua_subscription, [duplicate_orphan])
+        logger.info(
+            "Node monitor added to bin bin_id=%s node_id=%s size=%d/%d source=batched",
+            target_bin.bin_id,
+            monitor.node_id,
+            len(target_bin.node_handles),
+            target_bin.capacity,
+        )
+        return True
 
     if stale is not None:
         # Cleanup must not run while the lock is held: it would block every other path

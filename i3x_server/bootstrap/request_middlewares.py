@@ -7,19 +7,41 @@ stack stays in one place and ``create_app`` adds the layers in the documented or
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from time import perf_counter
+from uuid import uuid4
 
 from fastapi import FastAPI, Request, Response
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipMiddleware
 
+from i3x_server import logging_format
 from i3x_server.application.state import gateway_state
 from i3x_server.config.settings import get_settings, settings
 from i3x_server.http_caching import MODEL_REVISION_HEADER, ModelRevisionMiddleware
+from i3x_server.http_metrics import observe_request, route_label
 from i3x_server.http_rate_limit import RateLimitMiddleware
 
 logger = logging.getLogger(__name__)
+
+# Correlation header the gateway echoes on every response. Names are gateway-side, not part of
+# the i3X contract.
+REQUEST_ID_HEADER = "X-Request-ID"
+# The header is attacker-controlled, so only a bounded, printable token is reused: newlines
+# would let a caller forge log lines, and an unbounded value would land in every log record.
+_REQUEST_ID_PATTERN = re.compile(r"[A-Za-z0-9._-]{1,128}")
+
+
+def resolve_request_id(incoming: str | None) -> str:
+    """Reuse a safe client-supplied request id, or generate one.
+
+    Anything outside the safe token pattern (wrong characters, longer than 128, empty) is
+    replaced by a generated id rather than echoed back or logged verbatim.
+    """
+    if incoming is not None and _REQUEST_ID_PATTERN.fullmatch(incoming):
+        return incoming
+    return uuid4().hex
 
 
 def add_transport_middlewares(app: FastAPI) -> None:
@@ -54,7 +76,9 @@ def add_transport_middlewares(app: FastAPI) -> None:
             allow_origins=cors_origins,
             allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
             allow_headers=["Content-Type", "Accept", "Authorization", "If-None-Match", "MCP-Protocol-Version"],
-            expose_headers=["ETag", MODEL_REVISION_HEADER],
+            # The correlation id is echoed on every response, so a browser client behind a CORS
+            # boundary must be able to read it.
+            expose_headers=["ETag", MODEL_REVISION_HEADER, REQUEST_ID_HEADER],
             allow_credentials=False,
         )
 
@@ -93,37 +117,55 @@ def add_security_headers(app: FastAPI, frontend_script_hashes: tuple[str, ...]) 
         return response
 
 
-def add_request_logging(app: FastAPI) -> None:
-    """Log one line per request, and record client-aborted requests instead of a 500.
+def add_request_observability(app: FastAPI) -> None:
+    """Own one correlation id, one log line, and one metric observation per request.
+
+    The id is resolved before the request runs and bound to the task (see
+    :mod:`i3x_server.logging_format`), so log lines emitted inside a handler - including SSE
+    stream events - carry it, and the response echoes it in ``X-Request-ID``.
 
     An aborted request (client disconnect mid-stream) surfaces as a ``RuntimeError`` with no
     response; it is a client-side cancellation, not a gateway failure, so it is logged as an
-    informational abort rather than reported as an unhandled exception.
+    informational abort and counted as ``499`` rather than reported as an unhandled exception.
+
+    Request duration is measured until the response *starts*: a streamed body keeps flowing
+    after this middleware returns, so the value is time to first byte, which is what
+    :mod:`i3x_server.http_metrics` documents. Recording metrics here avoids a second middleware
+    layer, since the duration is measured for the log line anyway.
     """
 
     @app.middleware("http")
-    async def log_http_requests(
+    async def observe_http_request(
         request: Request,
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
+        request_id = resolve_request_id(request.headers.get(REQUEST_ID_HEADER))
         started = perf_counter()
-        try:
-            response = await call_next(request)
-        except RuntimeError as exc:
-            if str(exc) == "No response returned." and await request.is_disconnected():
-                logger.info(
-                    "HTTP request aborted by client method=%s path=%s duration_s=%.3f",
-                    request.method,
-                    request.url.path,
-                    perf_counter() - started,
-                )
-                return Response(status_code=499)
-            raise
-        logger.info(
-            "HTTP request method=%s path=%s status=%s duration_s=%.3f",
-            request.method,
-            request.url.path,
-            response.status_code,
-            perf_counter() - started,
-        )
-        return response
+        with logging_format.request_id_context(request_id):
+            try:
+                response = await call_next(request)
+            except RuntimeError as exc:
+                if str(exc) == "No response returned." and await request.is_disconnected():
+                    duration_s = perf_counter() - started
+                    logger.info(
+                        "HTTP request aborted by client method=%s path=%s duration_s=%.3f",
+                        request.method,
+                        request.url.path,
+                        duration_s,
+                    )
+                    # The route is resolved once the request has been routed, which is what keeps
+                    # the label a template instead of one label per resource.
+                    observe_request(request.method, route_label(request.scope), 499, duration_s)
+                    return Response(status_code=499, headers={REQUEST_ID_HEADER: request_id})
+                raise
+            duration_s = perf_counter() - started
+            logger.info(
+                "HTTP request method=%s path=%s status=%s duration_s=%.3f",
+                request.method,
+                request.url.path,
+                response.status_code,
+                duration_s,
+            )
+            observe_request(request.method, route_label(request.scope), response.status_code, duration_s)
+            response.headers[REQUEST_ID_HEADER] = request_id
+            return response

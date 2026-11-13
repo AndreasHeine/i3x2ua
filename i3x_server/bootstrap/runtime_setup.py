@@ -23,6 +23,7 @@ from typing import Any
 
 from fastapi import FastAPI
 
+from i3x_server import logging_format
 from i3x_server.api.mcp.jsonrpc import shutdown_mcp_transport
 from i3x_server.api.v1.objecttype_helpers import warm_object_type_context
 from i3x_server.application.state import GatewayState, gateway_state
@@ -40,15 +41,13 @@ logger = logging.getLogger(__name__)
 
 
 def _configure_logging() -> None:
-    level_name = settings.log_level.upper()
-    level = getattr(logging, level_name, logging.INFO)
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
-    logging.getLogger("asyncua").setLevel(logging.WARNING)
-    # Keep the connection supervisor's reconnect lifecycle messages visible.
-    logging.getLogger("asyncua.client.client").setLevel(max(level, logging.INFO))
+    """Install the log level and rendering format (plain text unless ``I3X_LOG_FORMAT=json``).
+
+    The formatter, the asyncua noise reduction, and the uvicorn handler styling live in
+    :mod:`i3x_server.logging_format`; this stays the lifespan seam the startup tests patch.
+    """
+    runtime = get_settings()
+    logging_format.configure_logging(runtime.log_level, runtime.log_format)
 
 
 def _prepare_otel_environment() -> None:

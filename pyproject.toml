@@ -11,6 +11,7 @@ dependencies = [
     "asyncua==2.1.0",
     "fastapi==0.162.5",
     "jsonschema[format]>=4.23.0",
+    "prometheus-client>=0.26.0",
     "pydantic==2.14.3",
     "pydantic-settings>=2.7.0",
     "uvicorn>=0.54,<0.55",

@@ -393,6 +393,21 @@ Optional OPC UA diagnostic endpoints are exposed under `/ua`:
 page's polling does not turn into an OPC UA round-trip per poll; reported values are at most
 that old, and a reconnect invalidates the snapshot immediately.
 
+Gateway observability sits outside `/v1` and is not part of the i3X contract:
+
+- **Request correlation** - every request carries an `X-Request-ID`. A client-supplied id is
+  reused when it is a safe token (`[A-Za-z0-9._-]{1,128}`), anything else is replaced by a
+  generated one. The id is echoed on the response and included in the request's log line.
+- **Structured logs** - `I3X_LOG_FORMAT=json` renders one JSON object per line
+  (`timestamp`, `level`, `logger`, `message`, plus `request_id` and `exception` when the record
+  carries them). Plain text remains the default, and appends `request_id=<id>` to request lines.
+- **Prometheus scrape** - `/metrics` serves the Prometheus text format: request counters and
+  latency histograms keyed on the matched route template, plus gauges mirroring the JSON
+  diagnostics above. It is excluded from the OpenAPI document, so it never becomes an MCP tool,
+  and it is unauthenticated like every other endpoint - restrict it at the reverse proxy when
+  only scrapers should reach it. A diagnostics read that fails reports `0` instead of failing
+  the scrape, so a reconnecting upstream never turns into a scrape error.
+
 Optional MCP endpoints are exposed only when `I3X_ENABLE_MCP=1`:
 
 - **MCP endpoint**: accepts JSON-RPC requests at `POST /mcp`. Legacy clients may use session-scoped SSE with `GET /mcp`; initialization returns `Mcp-Session-Id`, which can be closed with `DELETE /mcp`. Modern `2026-07-28` requests are stateless. Legacy transport sessions are bounded (200): sessions without an SSE stream that have not been used for 15 minutes are dropped, and a new `initialize` is rejected with a JSON-RPC error once the limit is reached. Sessions are closed when the application shuts down.
@@ -566,6 +581,7 @@ Optional environment variables:
 - `I3X_ENABLE_WRITES=1` to enable current-value writes (`PUT /v1/objects/value`) and historical writes (`PUT /v1/objects/history`)
 - `I3X_OPCUA_CERTS_DIR=./certs` to mount OPC UA client/server certificate files into the app container (`/app/certs`)
 - `I3X_UVICORN_LIMIT_CONCURRENCY` to change the uvicorn concurrency limit used by `run.py` (`200` by default, `0` disables it)
+- `I3X_LOG_FORMAT=json` to render log lines as JSON objects; plain text is the default
 - `NGINX_HTTPS_ENABLED=1` to enable TLS termination
 - `NGINX_SSL_CERTS_DIR=./certs` with `fullchain.pem` and `privkey.pem`
 - `NGINX_BASIC_AUTH_ENABLED=1` with `NGINX_BASIC_AUTH_USER` and `NGINX_BASIC_AUTH_PASSWORD`
@@ -633,6 +649,17 @@ This application implements the i3X API specification and is designed to run **b
 | Client authentication (API key / OAuth / mTLS) | nginx `auth_request` or `satisfy any` directives |
 | Rate limiting | nginx `limit_req_zone` |
 | Access logging | nginx `access_log` |
+
+The gateway extensions carry no auth layer either, so restrict them at the proxy when they should
+not be public - `/ua/*` diagnostics, MCP (`/mcp`), and the Prometheus scrape (`/metrics`), which a
+scrape is the only client that needs:
+
+```nginx
+location = /metrics {
+    allow 10.0.0.0/8;    # the scraper's network
+    deny all;
+}
+```
 
 See the [NGINX configuration reference](docs/NGINX_CONFIGURATION_REFERENCE.md) and [HTTPS guide](docs/PRODUCTION_HTTPS_GUIDE.md) for details.
 

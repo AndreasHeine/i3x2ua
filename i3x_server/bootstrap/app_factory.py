@@ -5,7 +5,7 @@ assembly order:
 
 - :mod:`i3x_server.bootstrap.openapi_config` - OpenAPI document metadata and operation ids,
 - :mod:`i3x_server.bootstrap.error_handlers` - the i3X error envelope for every failure type,
-- :mod:`i3x_server.bootstrap.request_middlewares` - transport, security headers, request logging,
+- :mod:`i3x_server.bootstrap.request_middlewares` - transport, security headers, request observability,
 - :mod:`i3x_server.bootstrap.frontend` - static assets, CSP script hashes, canonical page URLs,
 - :mod:`i3x_server.bootstrap.runtime_setup` - OPC UA client, subscriptions, MCP state, model
   tasks, signal handlers, and shutdown.
@@ -23,6 +23,7 @@ from fastapi import FastAPI
 
 from i3x_server.api.health import router as health_router
 from i3x_server.api.mcp import router as mcp_router
+from i3x_server.api.metrics import router as metrics_router
 from i3x_server.api.openapi import DocumentedFastAPI
 from i3x_server.api.ua import router as ua_router
 from i3x_server.api.v1 import router as v1_router
@@ -92,13 +93,16 @@ def create_app() -> FastAPI:
     # hashes are derived from `dist/` before the security-header middleware is added.
     frontend_dist = frontend.frontend_dist_directory()
     request_middlewares.add_security_headers(app, frontend.inline_script_hashes(frontend_dist))
-    request_middlewares.add_request_logging(app)
+    request_middlewares.add_request_observability(app)
 
     error_handlers.register_exception_handlers(app)
     frontend.mount_static_assets(app)
 
     app.include_router(v1_router, responses=openapi_config.ERROR_RESPONSES)
     app.include_router(ua_router, responses=openapi_config.ERROR_RESPONSES)
+    # Prometheus scrape endpoint; outside /v1 and excluded from the OpenAPI schema, so it is
+    # never offered as an MCP tool (docs/PRODUCTION_HTTPS_GUIDE.md).
+    app.include_router(metrics_router)
     # Container readiness probe; excluded from the OpenAPI schema (docs/PRODUCTION_HTTPS_GUIDE.md).
     app.include_router(health_router)
     if mcp_enabled:

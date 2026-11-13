@@ -145,6 +145,7 @@ I3X_ENABLE_MCP=0
 
 # Logging
 I3X_LOG_LEVEL=INFO
+I3X_LOG_FORMAT=text    # json emits one JSON object per log line (timestamp/level/logger/message)
 ```
 
 ---

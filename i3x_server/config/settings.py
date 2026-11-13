@@ -70,6 +70,9 @@ class Settings(BaseSettings):
     # nodes - enough to pipeline writes without flooding the server session.
     write_concurrency: int = Field(default=8, ge=1)
     log_level: str = Field(default="INFO")
+    # Log rendering: ``text`` keeps the historical ``asctime level name message`` layout,
+    # ``json`` emits one JSON object per line. Default text so existing log consumers are unaffected.
+    log_format: str = Field(default="text")
     cors_allowed_origins: list[str] = Field(default_factory=list)
     # Origins a browser is allowed to call the MCP endpoints from. Empty falls back to the CORS
     # origins (minus "*"). A present ``Origin`` header must match one of these exactly; it is
@@ -110,6 +113,14 @@ class Settings(BaseSettings):
         normalized = value.strip().lower()
         if normalized not in {"hybrid", "strict", "adaptive"}:
             raise ValueError("subscription_native_timeout_refresh_mode must be one of: hybrid, strict, adaptive")
+        return normalized
+
+    @field_validator("log_format")
+    @classmethod
+    def _validate_log_format(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in {"text", "json"}:
+            raise ValueError("log_format must be one of: text, json")
         return normalized
 
     @field_validator("opcua_browse_roots", mode="before")

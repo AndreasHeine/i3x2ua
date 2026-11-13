@@ -838,6 +838,26 @@ volumes:
   grafana_data:
 ```
 
+The gateway exposes a Prometheus scrape endpoint at `GET /metrics` (outside `/v1`, excluded from
+the OpenAPI document). Point a scrape at it:
+
+```yaml
+# prometheus.yml
+scrape_configs:
+  - job_name: i3x-gateway
+    static_configs:
+      - targets: ["i3x:8000"]
+```
+
+It reports `i3x_http_requests_total` and `i3x_http_request_duration_seconds` (labelled by the
+matched route template) plus gauges mirroring the JSON diagnostics: `i3x_model_nodes`,
+`i3x_model_built`, `i3x_subscriptions_active`, `i3x_upstream_connected`, and
+`i3x_opcua_requests{operation}`. The endpoint is unauthenticated like every other endpoint, so
+scrape it on the internal network or restrict it at the proxy.
+
+Set `I3X_LOG_FORMAT=json` to emit one JSON object per log line (`timestamp`, `level`, `logger`,
+`message`, and the request's `request_id`); plain text is the default.
+
 ### 5. Certificate Expiration Monitoring
 
 ```bash

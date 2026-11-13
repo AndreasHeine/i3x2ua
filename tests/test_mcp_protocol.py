@@ -17,14 +17,13 @@ from i3x_server.api.mcp.jsonrpc import (
     MCP_PROTOCOL_VERSION,
     MCP_SESSION_HEADER,
     MCP_SUPPORTED_PROTOCOL_VERSIONS,
-    McpTransportSession,
     publish_mcp_notification,
     shutdown_mcp_transport,
 )
 from i3x_server.api.mcp.resources import MCP_IDENTITY_GUIDE_URI
 from i3x_server.api.mcp.router import router
 from i3x_server.api.mcp.tools import _compact_tool_body
-from i3x_server.application.state import GatewayState, install_gateway_state
+from i3x_server.application.state import GatewayState, McpTransportSession, install_gateway_state
 from i3x_server.bootstrap.app_factory import create_app
 from i3x_server.mcp import build_mcp_tools
 from i3x_server.prompts.registry import PromptDefinition, PromptRegistry

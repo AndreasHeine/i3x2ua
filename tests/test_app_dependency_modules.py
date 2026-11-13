@@ -14,7 +14,7 @@ from i3x_server.application.dependencies import (
     get_object_value_service,
     get_subscription_app_service,
 )
-from i3x_server.application.state import GatewayState
+from i3x_server.application.state import GatewayState, install_gateway_state
 from i3x_server.domain.ports.opcua import OpcUaClientProtocol, OpcUaNamespaceInfo
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
@@ -22,7 +22,7 @@ from i3x_server.schemas.state import BuildResult
 
 def _request() -> Request:
     app = FastAPI()
-    app.state = GatewayState()
+    install_gateway_state(app, GatewayState())
     return Request({"type": "http", "app": app})
 
 

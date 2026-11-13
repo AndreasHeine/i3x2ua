@@ -7,7 +7,7 @@ import pytest
 from asyncua import ua
 from asyncua.ua.status_codes import StatusCodes
 
-from i3x_server.domain.ports.opcua import DataValueDTO, OpcUaValue
+from i3x_server.domain.ports.opcua import DataValueDTO, OpcUaValue, Quality
 from i3x_server.schemas.opcua_value import (
     decode_data_value,
     format_utc_timestamp,
@@ -89,7 +89,7 @@ def test_decode_data_value_falls_back_to_server_timestamp_only() -> None:
     dto = DataValueDTO(
         value=OpcUaValue(1.0, variant_type="Double"),
         status_code=0x00000000,
-        quality="Good",
+        quality=Quality.GOOD,
         server_timestamp=datetime(2026, 5, 6, 7, 8, tzinfo=timezone.utc),
     )
     _value, quality, timestamp = decode_data_value(dto)
@@ -106,7 +106,7 @@ def test_decode_data_value_reports_no_signal_for_missing_metadata() -> None:
 
 
 def test_decode_data_value_drops_a_non_datetime_timestamp() -> None:
-    dto = DataValueDTO(value=OpcUaValue(7), quality="Good", source_timestamp=None, server_timestamp=None)
+    dto = DataValueDTO(value=OpcUaValue(7), quality=Quality.GOOD, source_timestamp=None, server_timestamp=None)
     _value, _quality, timestamp = decode_data_value(dto)
     assert timestamp is None
 

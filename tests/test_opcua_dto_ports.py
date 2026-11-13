@@ -21,6 +21,7 @@ from i3x_server.domain.ports.opcua import (
     OpcUaDataChangeHandler,
     OpcUaSubscriptionHandle,
     OpcUaValue,
+    Quality,
 )
 from i3x_server.infrastructure.opcua import values
 from i3x_server.infrastructure.opcua.client import OpcUaClient, _NotificationBridge
@@ -152,7 +153,7 @@ def test_notification_bridge_maps_node_id_and_dto() -> None:
             DataValueDTO(
                 value=OpcUaValue(9.0, variant_type="Double", is_array=False),
                 status_code=int(StatusCodes.Uncertain),
-                quality="Uncertain",
+                quality=Quality.UNCERTAIN,
                 source_timestamp=moment,
                 server_timestamp=None,
             ),
@@ -160,7 +161,7 @@ def test_notification_bridge_maps_node_id_and_dto() -> None:
     ]
 
 
-def test_notification_bridge_drops_notifications_with_unresolvable_node_id(caplog: pytest.CaptureFixture[str]) -> None:
+def test_notification_bridge_drops_notifications_with_unresolvable_node_id(caplog: pytest.LogCaptureFixture) -> None:
     handler = _RecordingHandler()
     bridge = _NotificationBridge(handler)
 
@@ -222,4 +223,8 @@ async def test_create_datachange_subscription_wraps_handler_in_bridge() -> None:
         SimpleNamespace(monitored_item=SimpleNamespace(Value=ua.DataValue(ua.Variant(1.5, ua.VariantType.Double)))),
     )
     assert handler.updates[0][0] == "ns=2;s=Temperature"
-    assert handler.updates[0][2].quality == "Good"
+    # The bridge hands over a DTO for a notification that carries a value, and None otherwise;
+    # narrowing here is what makes the quality assertion meaningful rather than incidental.
+    data_value = handler.updates[0][2]
+    assert data_value is not None
+    assert data_value.quality == "Good"

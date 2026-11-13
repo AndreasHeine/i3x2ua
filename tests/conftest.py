@@ -46,6 +46,11 @@ _QUALITY_STATUS_CODES = {
     "Bad": 0x80000000,
 }
 
+# ``DataValueDTO.source_timestamp`` is optional, so a sort key over it is not total. Every
+# history record the fake writes carries a timezone-aware timestamp; this fallback only keeps
+# the comparison total (and aware, never naive) if a record without one ever slips in.
+_HISTORY_SORT_FALLBACK = datetime.max.replace(tzinfo=timezone.utc)
+
 
 def data_value_dto(value: Any, quality: str = "Good", timestamp: datetime | None = None) -> DataValueDTO:
     """Build a data-value DTO like the adapter would hand over for ``value``/``quality``."""
@@ -382,13 +387,13 @@ class FakeOpcUaClient:
                 value = bytes(base) if isinstance(base, (bytes, bytearray, memoryview)) else base
                 results.append(data_value_dto(value, quality, source_timestamp))
                 continue
-            value: Any
+            read_value: Any
             if isinstance(base, (bytes, bytearray, memoryview)):
-                value = bytes(base)
+                read_value = bytes(base)
             else:
-                value = float(base) + self._reads
-                self.values[node_id] = value
-            results.append(data_value_dto(value, "Good", datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)))
+                read_value = float(base) + self._reads
+                self.values[node_id] = read_value
+            results.append(data_value_dto(read_value, "Good", datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)))
         return results
 
     async def read_history_values(
@@ -427,7 +432,7 @@ class FakeOpcUaClient:
         records = self.history_values.setdefault(node_id, [])
         records[:] = [record for record in records if record.source_timestamp != timestamp]
         records.append(data_value_dto(value, quality, timestamp))
-        records.sort(key=lambda record: record.source_timestamp)
+        records.sort(key=lambda record: record.source_timestamp or _HISTORY_SORT_FALLBACK)
         self._request_metrics.history_write_count += 1
 
     async def write_value(

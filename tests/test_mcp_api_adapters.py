@@ -4,7 +4,7 @@ import json
 import logging
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from fastapi import FastAPI, HTTPException
@@ -31,6 +31,7 @@ from i3x_server.api.mcp.tools import _tool_catalog
 from i3x_server.application.state import GatewayState, install_gateway_state
 from i3x_server.mcp import McpToolDefinition
 from i3x_server.prompts.registry import PromptDefinition, PromptRegistry
+from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
 
 
@@ -103,7 +104,10 @@ def test_tool_and_resource_and_roots_catalogs(monkeypatch: pytest.MonkeyPatch) -
     assert _roots_catalog(request_no_model) == []
 
     model_cache = BuildResult(
-        nodes_by_id={"root-1": SimpleNamespace(name="Root 1")},
+        # The double deliberately carries no ``kind``: that is what the overview's defensive
+        # ``getattr`` guard reads, so the non-string branch stays exercised. The missing root is
+        # exercised by its absence, so the catalog falls back to the id as the display name.
+        nodes_by_id={"root-1": cast(ModelNode, SimpleNamespace(name="Root 1"))},
         root_ids=["root-1", "root-missing"],
         children_by_id={},
         instances_by_type_id={},

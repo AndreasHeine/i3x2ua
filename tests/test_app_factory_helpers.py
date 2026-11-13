@@ -28,6 +28,8 @@ from i3x_server.bootstrap.runtime_setup import (
     _run_periodic_model_refresh,
 )
 from i3x_server.config.settings import settings
+from i3x_server.domain.ports.opcua import OpcUaClientProtocol
+from i3x_server.model.builder import ModelBuilder
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
 
@@ -119,7 +121,11 @@ async def test_run_model_preload_success_sets_cache(monkeypatch: pytest.MonkeyPa
     app = FastAPI()
     install_gateway_state(
         app,
-        GatewayState(opcua_client=_OpcUaClient(), model_builder=_ModelBuilder(), model_cache=None),
+        GatewayState(
+            opcua_client=cast(OpcUaClientProtocol, _OpcUaClient()),
+            model_builder=cast(ModelBuilder, _ModelBuilder()),
+            model_cache=None,
+        ),
     )
     warm_started = asyncio.Event()
     allow_warm_finish = asyncio.Event()
@@ -171,7 +177,11 @@ async def test_run_model_preload_failure_without_raise(monkeypatch: pytest.Monke
     app = FastAPI()
     install_gateway_state(
         app,
-        GatewayState(opcua_client=_OpcUaClient(), model_builder=_ModelBuilder(), model_cache=None),
+        GatewayState(
+            opcua_client=cast(OpcUaClientProtocol, _OpcUaClient()),
+            model_builder=cast(ModelBuilder, _ModelBuilder()),
+            model_cache=None,
+        ),
     )
     monkeypatch.setattr(settings, "fail_startup_on_model_preload_error", False)
     monkeypatch.setattr(settings, "model_preload_blocking", False)
@@ -217,7 +227,11 @@ async def test_run_periodic_model_refresh_rebuilds_cache(monkeypatch: pytest.Mon
     app = FastAPI()
     install_gateway_state(
         app,
-        GatewayState(model_builder=_ModelBuilder(), opcua_client=_OpcUaClient(), model_cache=None),
+        GatewayState(
+            model_builder=cast(ModelBuilder, _ModelBuilder()),
+            opcua_client=cast(OpcUaClientProtocol, _OpcUaClient()),
+            model_cache=None,
+        ),
     )
 
     monkeypatch.setattr(settings, "model_refresh_interval_seconds", 1)
@@ -246,7 +260,11 @@ async def test_run_periodic_model_refresh_disabled_when_interval_zero(monkeypatc
     app = FastAPI()
     install_gateway_state(
         app,
-        GatewayState(model_builder=_ModelBuilder(), opcua_client=_OpcUaClient(), model_cache=None),
+        GatewayState(
+            model_builder=cast(ModelBuilder, _ModelBuilder()),
+            opcua_client=cast(OpcUaClientProtocol, _OpcUaClient()),
+            model_cache=None,
+        ),
     )
 
     monkeypatch.setattr(settings, "model_refresh_interval_seconds", 0)
@@ -283,8 +301,8 @@ async def test_failed_refresh_preserves_previous_model(monkeypatch: pytest.Monke
         app,
         GatewayState(
             model_cache=model,
-            model_builder=SimpleNamespace(build=build),
-            opcua_client=object(),
+            model_builder=cast(ModelBuilder, SimpleNamespace(build=build)),
+            opcua_client=cast(OpcUaClientProtocol, object()),
         ),
     )
     sleeps = 0
@@ -359,8 +377,8 @@ async def test_periodic_refresh_builds_outside_lock_and_readers_keep_old_revisio
     install_gateway_state(
         app,
         GatewayState(
-            model_builder=_ModelBuilder(),
-            opcua_client=_OpcUaClient(),
+            model_builder=cast(ModelBuilder, _ModelBuilder()),
+            opcua_client=cast(OpcUaClientProtocol, _OpcUaClient()),
             model_cache=old,
         ),
     )

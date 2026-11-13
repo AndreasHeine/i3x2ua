@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import AsyncGenerator
 from typing import cast
 
 import pytest
@@ -13,7 +14,7 @@ from i3x_server.api.v1.contracts import StreamRequest
 from i3x_server.api.v1.subscription_routes import stream_subscription_v1
 from i3x_server.application.ports.subscription import SubscriptionServicePort
 from i3x_server.application.services.subscription import SubscriptionAppService
-from i3x_server.domain.ports.opcua import OpcUaClientProtocol, OpcUaNamespaceInfo
+from i3x_server.domain.ports.opcua import OpcUaClientProtocol, OpcUaNamespaceInfo, Quality
 from i3x_server.infrastructure.subscriptions.state import SubscriptionSyncResult, SubscriptionUpdate
 from i3x_server.schemas.state import BuildResult
 
@@ -141,7 +142,7 @@ async def test_stream_subscription_sends_initial_payload_then_close() -> None:
                 element_id="ns=1;i=42",
                 node_id="ns=1;i=42",
                 value={"k": "v"},
-                quality="Good",
+                quality=Quality.GOOD,
                 timestamp="2026-01-01T00:00:00Z",
             )
         ]
@@ -185,7 +186,7 @@ async def test_stream_subscription_keepalive_and_update_flow() -> None:
                 element_id="ns=1;i=100",
                 node_id="ns=1;i=100",
                 value=123,
-                quality="Good",
+                quality=Quality.GOOD,
                 timestamp="2026-01-01T00:01:00Z",
             )
         ],
@@ -222,7 +223,12 @@ async def test_stream_subscription_second_stream_closes_existing_stream() -> Non
         opcua_client=cast(OpcUaClientProtocol, _FakeOpcUaClient()),
         subscription_app_service=_stream_app_service(service),
     )
-    first_iterator = first_response.body_iterator.__aiter__()
+    # The SSE body is an async generator, so its iterator really is closeable. Starlette types
+    # ``body_iterator`` as a plain ``AsyncIterator``, hence the narrow cast that makes
+    # ``aclose`` callable for both streams.
+    first_iterator: AsyncGenerator[str | bytes, None] = cast(
+        AsyncGenerator[str | bytes, None], first_response.body_iterator
+    )
     assert await first_iterator.__anext__() == ": connected\n\n"
 
     second_body = StreamRequest(clientId="client-1", subscriptionId="sub-1")
@@ -231,7 +237,9 @@ async def test_stream_subscription_second_stream_closes_existing_stream() -> Non
         opcua_client=cast(OpcUaClientProtocol, _FakeOpcUaClient()),
         subscription_app_service=_stream_app_service(service),
     )
-    second_iterator = second_response.body_iterator.__aiter__()
+    second_iterator: AsyncGenerator[str | bytes, None] = cast(
+        AsyncGenerator[str | bytes, None], second_response.body_iterator
+    )
     assert await second_iterator.__anext__() == ": connected\n\n"
 
     assert await first_iterator.__anext__() == "event: close\ndata: {}\n\n"
@@ -270,7 +278,7 @@ async def test_stream_subscription_emits_dropped_event_for_sequence_gap() -> Non
                 element_id="ns=1;i=100",
                 node_id="ns=1;i=100",
                 value=1,
-                quality="Good",
+                quality=Quality.GOOD,
                 timestamp="2026-01-01T00:01:00Z",
             )
         ],
@@ -280,7 +288,7 @@ async def test_stream_subscription_emits_dropped_event_for_sequence_gap() -> Non
                 element_id="ns=1;i=100",
                 node_id="ns=1;i=100",
                 value=2,
-                quality="Good",
+                quality=Quality.GOOD,
                 timestamp="2026-01-01T00:02:00Z",
             )
         ],

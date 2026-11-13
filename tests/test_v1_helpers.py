@@ -11,6 +11,7 @@ from typing import Any, cast
 import pytest
 from fastapi import HTTPException
 from jsonschema import Draft202012Validator
+from pydantic import AwareDatetime
 
 from i3x_server.api.v1 import (
     object_helpers,
@@ -38,6 +39,16 @@ from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.opcua_value import normalize_timestamp, severity_quality
 from i3x_server.schemas.state import BuildResult
 from tests.conftest import data_value_dto
+
+
+def _rfc3339(timestamp: str) -> AwareDatetime:
+    """A timestamp for ``WriteVQTRequest``.
+
+    The field is declared as an aware datetime, but its ``before`` validator only accepts an
+    RFC 3339 string, which pydantic converts afterwards. The cast states that the string is
+    handed over as the declared field type.
+    """
+    return cast(AwareDatetime, timestamp)
 
 
 def test_relationship_type_helpers_use_model_namespaces() -> None:
@@ -649,7 +660,11 @@ async def test_object_type_context_cache_hits_for_equivalent_rebuilt_model(monke
     changed.nodes_by_id["n2"] = ModelNode(id="n2", name="n2", kind="asset", source_node_id="n2")
     stale = await objecttype_helpers._get_object_type_context(request, changed, client)
     assert stale is first
-    await request.app.state.object_type_refresh_task
+    # ``app.state`` is Starlette's dynamic bag, so the refresh task the helper started is read
+    # from it rather than relying on the ``is None`` assertion further up.
+    refresh_task = cast(Any, request.app.state).object_type_refresh_task
+    assert refresh_task is not None
+    await refresh_task
     third = await objecttype_helpers._get_object_type_context(request, changed, client)
 
     assert third is not first
@@ -694,6 +709,7 @@ async def test_object_type_context_serves_stale_while_rebuild_holds_lock(
     assert all(r.levelname == "WARNING" for r in stale_logs)
     assert all(result is first for result in results)
     refresh_task = state.object_type_refresh_task
+    assert refresh_task is not None
     await asyncio.sleep(0)
     assert state.object_type_lock.locked()
     release.set()
@@ -1005,11 +1021,11 @@ async def test_bulk_write_noop_read_length_mismatch_is_not_mispaired() -> None:
     updates = [
         ValueUpdateItemRequest(
             elementId="prop-a",
-            value=WriteVQTRequest(value=10.0, quality="Good", timestamp="2026-01-01T10:00:00Z"),
+            value=WriteVQTRequest(value=10.0, quality="Good", timestamp=_rfc3339("2026-01-01T10:00:00Z")),
         ),
         ValueUpdateItemRequest(
             elementId="prop-b",
-            value=WriteVQTRequest(value=20.0, quality="Good", timestamp="2026-01-01T10:00:00Z"),
+            value=WriteVQTRequest(value=20.0, quality="Good", timestamp=_rfc3339("2026-01-01T10:00:00Z")),
         ),
     ]
 
@@ -1036,9 +1052,10 @@ async def test_bulk_write_prefetch_mismatch_raises_instead_of_mispairing(monkeyp
         return results[:-1]
 
     updates = [ValueUpdateItemRequest(elementId="prop-a", value=WriteVQTRequest(value=10.0))]
-    # Narrow scope: ``asyncio.gather`` is a shared module attribute, so only this call is patched.
+    # Narrow scope: ``asyncio.gather`` is a shared module attribute (the module the helper
+    # resolves ``asyncio`` to is this one), so only this call is patched and it is restored here.
     with monkeypatch.context() as item_patch:
-        item_patch.setattr(object_value_helpers.asyncio, "gather", short_gather)
+        item_patch.setattr(asyncio, "gather", short_gather)
         with pytest.raises(ValueError, match="zip"):
             await object_value_helpers._write_object_values_bulk(
                 model=_sample_model(),
@@ -1129,10 +1146,12 @@ async def test_bulk_write_read_back_is_one_batch_and_outcomes_keep_request_order
     client = _BulkWriteFake()
     updates = [
         ValueUpdateItemRequest(
-            elementId="prop-a", value=WriteVQTRequest(value=1.0, quality="Good", timestamp="2026-01-01T10:00:00Z")
+            elementId="prop-a",
+            value=WriteVQTRequest(value=1.0, quality="Good", timestamp=_rfc3339("2026-01-01T10:00:00Z")),
         ),
         ValueUpdateItemRequest(
-            elementId="prop-b", value=WriteVQTRequest(value=2.0, quality="Uncertain", timestamp="2026-01-01T10:00:01Z")
+            elementId="prop-b",
+            value=WriteVQTRequest(value=2.0, quality="Uncertain", timestamp=_rfc3339("2026-01-01T10:00:01Z")),
         ),
     ]
 
@@ -1150,10 +1169,12 @@ async def test_bulk_write_same_node_items_stay_sequential_in_request_order() -> 
     client = _BulkWriteFake()
     updates = [
         ValueUpdateItemRequest(
-            elementId="prop-a", value=WriteVQTRequest(value=1.0, quality="Good", timestamp="2026-01-01T10:00:00Z")
+            elementId="prop-a",
+            value=WriteVQTRequest(value=1.0, quality="Good", timestamp=_rfc3339("2026-01-01T10:00:00Z")),
         ),
         ValueUpdateItemRequest(
-            elementId="prop-a", value=WriteVQTRequest(value=2.0, quality="Uncertain", timestamp="2026-01-01T10:00:01Z")
+            elementId="prop-a",
+            value=WriteVQTRequest(value=2.0, quality="Uncertain", timestamp=_rfc3339("2026-01-01T10:00:01Z")),
         ),
     ]
 
@@ -1219,10 +1240,12 @@ async def test_bulk_write_metadata_mismatch_fails_the_whole_node_group() -> None
     client = _BulkWriteFake(answer_quality="Bad")
     updates = [
         ValueUpdateItemRequest(
-            elementId="prop-a", value=WriteVQTRequest(value=1.0, quality="Good", timestamp="2026-01-01T10:00:00Z")
+            elementId="prop-a",
+            value=WriteVQTRequest(value=1.0, quality="Good", timestamp=_rfc3339("2026-01-01T10:00:00Z")),
         ),
         ValueUpdateItemRequest(
-            elementId="prop-a", value=WriteVQTRequest(value=2.0, quality="Good", timestamp="2026-01-01T10:00:01Z")
+            elementId="prop-a",
+            value=WriteVQTRequest(value=2.0, quality="Good", timestamp=_rfc3339("2026-01-01T10:00:01Z")),
         ),
     ]
 

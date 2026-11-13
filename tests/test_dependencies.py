@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import cast
 
 import pytest
 from fastapi import FastAPI, HTTPException
@@ -12,15 +13,33 @@ from i3x_server.application.dependencies import (
     get_or_build_model,
     get_subscription_service,
 )
-from i3x_server.application.state import GatewayState
+from i3x_server.application.ports.subscription import SubscriptionServicePort
+from i3x_server.application.state import GatewayState, install_gateway_state
+from i3x_server.domain.ports.opcua import OpcUaClientProtocol
+from i3x_server.model.builder import ModelBuilder
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
 
 
 def _request_with_state(state: GatewayState) -> Request:
     app = FastAPI()
-    app.state = state
+    install_gateway_state(app, state)
     return Request({"type": "http", "app": app})
+
+
+def _builder_stub() -> ModelBuilder:
+    """A ``GatewayState`` field expects the concrete builder; the dependency only reads it back."""
+    return cast(ModelBuilder, object())
+
+
+def _client_stub() -> OpcUaClientProtocol:
+    """Same stand-in logic for the OPC UA port."""
+    return cast(OpcUaClientProtocol, object())
+
+
+def _service_stub() -> SubscriptionServicePort:
+    """Same stand-in logic for the subscription port."""
+    return cast(SubscriptionServicePort, object())
 
 
 def _build_result() -> BuildResult:
@@ -43,7 +62,11 @@ def _build_result() -> BuildResult:
 
 
 def test_dependency_getters_return_initialized_instances() -> None:
-    state = GatewayState(model_builder=object(), opcua_client=object(), subscription_service=object())
+    state = GatewayState(
+        model_builder=_builder_stub(),
+        opcua_client=_client_stub(),
+        subscription_service=_service_stub(),
+    )
     request = _request_with_state(state)
     assert get_model_builder(request) is state.model_builder
     assert get_opcua_client(request) is state.opcua_client
@@ -68,7 +91,7 @@ async def test_get_or_build_model_returns_cached_value() -> None:
     state = GatewayState(
         model_preload_task=None,
         model_cache=cached,
-        model_builder=object(),
+        model_builder=_builder_stub(),
     )
     request = _request_with_state(state)
     assert await get_or_build_model(request) is cached
@@ -90,7 +113,8 @@ async def test_get_or_build_model_builds_and_sets_cache() -> None:
     state = GatewayState(
         model_preload_task=None,
         model_cache=None,
-        model_builder=builder,
+        # Only ``build`` is implemented by the fake, which is what the lazy path calls.
+        model_builder=cast(ModelBuilder, builder),
     )
     request = _request_with_state(state)
     result = await get_or_build_model(request)
@@ -114,7 +138,7 @@ async def test_get_or_build_model_coalesces_concurrent_lazy_builds() -> None:
             return built
 
     builder = FakeBuilder()
-    state = GatewayState(model_cache=None, model_builder=builder)
+    state = GatewayState(model_cache=None, model_builder=cast(ModelBuilder, builder))
 
     first = asyncio.create_task(get_or_build_model(_request_with_state(state)))
     await asyncio.sleep(0)
@@ -136,7 +160,7 @@ async def test_get_or_build_model_coalesces_concurrent_lazy_builds() -> None:
 async def test_get_or_build_model_waits_for_preload_task() -> None:
     cached = _build_result()
 
-    request = _request_with_state(GatewayState(model_cache=None, model_builder=object()))
+    request = _request_with_state(GatewayState(model_cache=None, model_builder=_builder_stub()))
 
     async def preload() -> None:
         await asyncio.sleep(0)

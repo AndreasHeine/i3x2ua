@@ -18,7 +18,7 @@ from asyncua.ua.status_codes import StatusCodes
 from asyncua.ua.uaerrors import UaStatusCodeError
 
 from i3x_server.application.services.model_query import ModelQueryService
-from i3x_server.domain.ports.opcua import DataValueDTO, OpcUaNodeInfo
+from i3x_server.domain.ports.opcua import DataValueDTO, OpcUaDataChangeHandler, OpcUaNodeInfo
 from i3x_server.infrastructure.opcua.batching import chunked, halved_size, split_batch
 from i3x_server.infrastructure.opcua.browse import _gather_cancelled_on_failure
 from i3x_server.infrastructure.opcua.client import (
@@ -975,8 +975,10 @@ async def test_subscription_wrapper_methods() -> None:
     fake = _FakeClient()
     cast(Any, client).raw_client = fake
 
-    created = await client.create_datachange_subscription(500.0, handler=object())
-    assert created.interval == 500.0
+    # The handler is never called by these wrapper methods, and the subscription handle is
+    # opaque by contract, so its publishing interval is read back dynamically.
+    created = await client.create_datachange_subscription(500.0, handler=cast(OpcUaDataChangeHandler, object()))
+    assert cast(Any, created).interval == 500.0
 
     subscription = _FakeSubscription()
     handles = await client.subscribe_data_changes(subscription, ["ns=1;i=1", "ns=1;i=2"])

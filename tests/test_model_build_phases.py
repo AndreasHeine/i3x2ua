@@ -9,11 +9,12 @@ stay testable without a full browse.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
 from i3x_server.domain.ports.opcua import (
+    OpcUaClientProtocol,
     OpcUaNamespaceInfo,
     OpcUaNodeInfo,
     OpcUaReferenceInfo,
@@ -23,6 +24,15 @@ from i3x_server.model import build_phases, node_mapping, reference_graph
 
 _LOGGER = "i3x_server.model.build_phases"
 _GRAPH_LOGGER = "i3x_server.model.reference_graph"
+
+
+def _client(double: Any) -> OpcUaClientProtocol:
+    """Hand a phase double to a phase that declares the full port as its collaborator.
+
+    The phases probe their optional seams with ``getattr``, so a double implements only what the
+    phase under test reads; the cast states that this seam subset is what the port sees.
+    """
+    return cast(OpcUaClientProtocol, double)
 
 
 class _FatalFailure(BaseException):
@@ -49,7 +59,9 @@ class _NoSeamClient:
 
 
 class _SupertypeClient:
-    def __init__(self, outcomes: dict[str, list[str] | BaseException]) -> None:
+    # Entries may carry non-string names on purpose: the phase must drop them rather than
+    # crash the classifier, so the double is allowed to hand over malformed values.
+    def __init__(self, outcomes: dict[str, list[Any] | BaseException]) -> None:
         self._outcomes = outcomes
         self.requested: list[str] = []
 
@@ -77,7 +89,9 @@ class _HierarchyClient:
         self.batch_requested: list[str] | None = None
         self.individual_requested: list[str] = []
         if batch is None:
-            self.resolve_type_definition_hierarchies = None
+            # The batch seam must be *absent*, not merely falsy: ``object.__setattr__`` installs
+            # the None that ``getattr`` in the phase reads, which a typed attribute could not.
+            object.__setattr__(self, "resolve_type_definition_hierarchies", None)
 
     async def resolve_type_definition_hierarchies(self, type_definition_ids: list[str]) -> dict[str, list[Any]]:
         self.batch_requested = type_definition_ids
@@ -138,7 +152,7 @@ async def test_collect_namespace_infos_degrades_to_empty_on_failure(
 ) -> None:
     caplog.set_level(logging.WARNING, logger=_LOGGER)
     infos, namespace_uri_by_index = await build_phases.collect_namespace_infos(
-        _NamespaceClient(RuntimeError("server rejected the namespace browse"))
+        _client(_NamespaceClient(RuntimeError("server rejected the namespace browse")))
     )
 
     assert infos == []
@@ -146,16 +160,18 @@ async def test_collect_namespace_infos_degrades_to_empty_on_failure(
     assert "Namespace info resolution failed" in caplog.text
 
     # Clients without the seam resolve nothing rather than raising.
-    assert await build_phases.collect_namespace_infos(_NoSeamClient()) == ([], {})
+    assert await build_phases.collect_namespace_infos(_client(_NoSeamClient())) == ([], {})
 
 
 async def test_collect_namespace_infos_skips_blank_uris() -> None:
     infos, namespace_uri_by_index = await build_phases.collect_namespace_infos(
-        _NamespaceClient(
-            [
-                OpcUaNamespaceInfo(uri="urn:cesmii", display_name="cesmii"),
-                OpcUaNamespaceInfo(uri="", display_name="blank"),
-            ]
+        _client(
+            _NamespaceClient(
+                [
+                    OpcUaNamespaceInfo(uri="urn:cesmii", display_name="cesmii"),
+                    OpcUaNamespaceInfo(uri="", display_name="blank"),
+                ]
+            )
         )
     )
 
@@ -180,13 +196,13 @@ async def test_resolve_reference_supertypes_resolves_each_id_once() -> None:
     ]
     client = _SupertypeClient({"ns=1;i=200": ["NonHierarchicalReferences", 7]})
 
-    supertypes = await build_phases.resolve_reference_supertypes(client, nodes)
+    supertypes = await build_phases.resolve_reference_supertypes(_client(client), nodes)
 
     # Distinct ids only; non-string names are dropped rather than crashing the classifier.
     assert client.requested == ["ns=1;i=200"]
     assert supertypes == {"ns=1;i=200": ["NonHierarchicalReferences"]}
-    assert await build_phases.resolve_reference_supertypes(client, []) == {}
-    assert await build_phases.resolve_reference_supertypes(_NoSeamClient(), nodes) == {}
+    assert await build_phases.resolve_reference_supertypes(_client(client), []) == {}
+    assert await build_phases.resolve_reference_supertypes(_client(_NoSeamClient()), nodes) == {}
 
 
 async def test_resolve_reference_supertypes_keeps_surviving_chains(caplog: pytest.LogCaptureFixture) -> None:
@@ -207,7 +223,7 @@ async def test_resolve_reference_supertypes_keeps_surviving_chains(caplog: pytes
     caplog.set_level(logging.WARNING, logger=_LOGGER)
     client = _SupertypeClient({"ns=1;i=200": RuntimeError("browse failed"), "ns=1;i=201": ["ReferenceType"]})
 
-    supertypes = await build_phases.resolve_reference_supertypes(client, nodes)
+    supertypes = await build_phases.resolve_reference_supertypes(_client(client), nodes)
 
     assert supertypes == {"ns=1;i=201": ["ReferenceType"]}
     assert "Reference supertype resolution failed for reference_type_id=ns=1;i=200" in caplog.text
@@ -230,7 +246,7 @@ async def test_resolve_reference_supertypes_propagates_base_exceptions() -> None
     # Only ordinary ``Exception`` failures degrade the model; a BaseException from the
     # concurrent resolution must not be swallowed into a partially built model.
     with pytest.raises(_FatalFailure):
-        await build_phases.resolve_reference_supertypes(client, nodes)
+        await build_phases.resolve_reference_supertypes(_client(client), nodes)
 
 
 async def test_resolve_type_hierarchies_falls_back_after_batch_failure(caplog: pytest.LogCaptureFixture) -> None:
@@ -241,7 +257,7 @@ async def test_resolve_type_hierarchies_falls_back_after_batch_failure(caplog: p
     )
 
     hierarchies = await build_phases.resolve_type_hierarchies(
-        client,
+        _client(client),
         [_instance("ns=1;i=500")],
         {1: "urn:example"},
     )
@@ -264,7 +280,7 @@ async def test_resolve_type_hierarchies_isolates_a_broken_chain(caplog: pytest.L
     )
 
     hierarchies = await build_phases.resolve_type_hierarchies(
-        client,
+        _client(client),
         [_instance("ns=1;i=500"), _instance("ns=1;i=501")],
         {},
     )
@@ -277,7 +293,7 @@ async def test_resolve_type_hierarchies_batch_skips_missing_and_malformed_entrie
     client = _HierarchyClient({"ns=1;i=500": ["not a type info", OpcUaTypeDefinitionInfo("ns=1;i=500", "T")]})
 
     hierarchies = await build_phases.resolve_type_hierarchies(
-        client,
+        _client(client),
         [_instance("ns=1;i=500"), _instance("ns=1;i=501")],
         {},
     )
@@ -290,7 +306,7 @@ async def test_resolve_type_hierarchies_batch_skips_missing_and_malformed_entrie
 
 
 async def test_resolve_type_hierarchies_without_seams_returns_empty() -> None:
-    assert await build_phases.resolve_type_hierarchies(_NoSeamClient(), [_instance("ns=1;i=500")], {}) == {}
+    assert await build_phases.resolve_type_hierarchies(_client(_NoSeamClient()), [_instance("ns=1;i=500")], {}) == {}
 
 
 async def test_build_active_profiles_keys_every_source_node() -> None:
@@ -299,7 +315,7 @@ async def test_build_active_profiles_keys_every_source_node() -> None:
         "ns=2;s=Temp": OpcUaNodeInfo("ns=2;s=Temp", "ns=2;s=Machine", "Temp", "Temp", "Variable", "Double"),
     }
     hierarchies = await build_phases.resolve_type_hierarchies(
-        _HierarchyClient({"ns=1;i=500": [OpcUaTypeDefinitionInfo("ns=1;i=500", "MachineType")]}),
+        _client(_HierarchyClient({"ns=1;i=500": [OpcUaTypeDefinitionInfo("ns=1;i=500", "MachineType")]})),
         list(nodes.values()),
         {2: "urn:example"},
     )

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, NoReturn
+from typing import Any, NoReturn, cast
 from unittest.mock import AsyncMock
 
 import pytest
@@ -27,6 +27,7 @@ from i3x_server.mcp.model_tools import (
     _trace_relationship_path,
     _validate_model_tool_arguments,
 )
+from i3x_server.model.builder import ModelBuilder
 from i3x_server.model.revision import model_revision
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
@@ -67,6 +68,16 @@ def _context_cache(model_token: str, context: _ObjectTypeContext | None) -> Obje
 class _ForbiddenLiveAccess:
     def __getattr__(self, name: str) -> NoReturn:
         raise AssertionError(f"Cached model tools must not access live dependency: {name}")
+
+
+def _forbidden_builder() -> ModelBuilder:
+    """The builder as a forbidden live dependency.
+
+    ``model_builder`` is declared as the concrete class rather than a port, so the guard has to
+    be handed over as one; every attribute it exposes raises before a cached-model tool could
+    reach the live server.
+    """
+    return cast(ModelBuilder, _ForbiddenLiveAccess())
 
 
 @pytest.fixture
@@ -510,7 +521,7 @@ async def test_all_access_tools_are_registered_read_only_and_never_build_or_cont
             model_cache=model,
             object_type_context_cache=_context_cache(model_revision(model), context),
             mcp_model_provider=forbidden,
-            model_builder=_ForbiddenLiveAccess(),
+            model_builder=_forbidden_builder(),
             opcua_client=_ForbiddenLiveAccess(),
         ),
     )
@@ -634,7 +645,7 @@ def test_model_access_json_rpc_preserves_compact_payloads(model: BuildResult, co
             model_cache=model,
             object_type_context_cache=_context_cache(model_revision(model), context),
             opcua_client=_ForbiddenLiveAccess(),
-            model_builder=_ForbiddenLiveAccess(),
+            model_builder=_forbidden_builder(),
         ),
     )
     with TestClient(app) as client:

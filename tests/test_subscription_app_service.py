@@ -12,7 +12,7 @@ from starlette.requests import Request
 from i3x_server.application.ports.subscription import SubscriptionServicePort
 from i3x_server.application.services.subscription import SubscriptionAppService
 from i3x_server.application.state import GatewayState, install_gateway_state
-from i3x_server.domain.ports.opcua import OpcUaClientProtocol
+from i3x_server.domain.ports.opcua import OpcUaClientProtocol, Quality
 from i3x_server.infrastructure.subscriptions.state import (
     SubscriptionDeleteResult,
     SubscriptionDetail,
@@ -266,7 +266,7 @@ async def test_get_pending_updates_success() -> None:
                 element_id="asset-root",
                 node_id="ns=2;s=Root",
                 value=42,
-                quality="Good",
+                quality=Quality.GOOD,
                 timestamp="2026-01-01T00:00:00Z",
             )
         ],
@@ -520,7 +520,10 @@ async def test_begin_stream_session_wraps_unexpected_errors() -> None:
 async def test_iter_stream_events_emits_connected_keepalive_updates_close() -> None:
     port = _FakeSubscriptionPort()
     port.active_sequence = [True, True, False]
-    port.wait_returns = [[], [SubscriptionUpdate(1, "asset-root", "ns=2;s=Root", 42, "Good", "2026-01-01T00:00:00Z")]]
+    port.wait_returns = [
+        [],
+        [SubscriptionUpdate(1, "asset-root", "ns=2;s=Root", 42, Quality.GOOD, "2026-01-01T00:00:00Z")],
+    ]
     service = SubscriptionAppService(
         cast(OpcUaClientProtocol, SimpleNamespace()),
         _model(),
@@ -550,7 +553,10 @@ async def test_iter_stream_events_reports_sequence_gaps_as_dropped() -> None:
     """Overflow gaps become `dropped` events before the affected updates (additive marker)."""
     port = _FakeSubscriptionPort()
     port.active_sequence = [True, True, False]
-    port.wait_returns = [[], [SubscriptionUpdate(10, "asset-root", "ns=2;s=Root", 5, "Good", "2026-01-01T00:00:00Z")]]
+    port.wait_returns = [
+        [],
+        [SubscriptionUpdate(10, "asset-root", "ns=2;s=Root", 5, Quality.GOOD, "2026-01-01T00:00:00Z")],
+    ]
     service = SubscriptionAppService(
         cast(OpcUaClientProtocol, SimpleNamespace()),
         _model(),
@@ -564,8 +570,8 @@ async def test_iter_stream_events_reports_sequence_gaps_as_dropped() -> None:
             client_id="client-1",
             stream_generation=3,
             acknowledged_updates=[
-                SubscriptionUpdate(3, "asset-root", "ns=2;s=Root", 1, "Good", "2026-01-01T00:00:00Z"),
-                SubscriptionUpdate(6, "asset-root", "ns=2;s=Root", 2, "Good", "2026-01-01T00:00:01Z"),
+                SubscriptionUpdate(3, "asset-root", "ns=2;s=Root", 1, Quality.GOOD, "2026-01-01T00:00:00Z"),
+                SubscriptionUpdate(6, "asset-root", "ns=2;s=Root", 2, Quality.GOOD, "2026-01-01T00:00:01Z"),
             ],
             acknowledge_sequence=2,
             timeout_seconds=0.1,

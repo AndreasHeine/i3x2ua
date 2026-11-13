@@ -333,13 +333,13 @@ class FakeOpcUaClient:
                 value = bytes(base) if isinstance(base, (bytes, bytearray, memoryview)) else base
                 results.append(data_value_dto(value, quality, source_timestamp))
                 continue
-            value: Any
+            read_value: Any
             if isinstance(base, (bytes, bytearray, memoryview)):
-                value = bytes(base)
+                read_value = bytes(base)
             else:
-                value = float(base) + self._reads
-                self.values[node_id] = value
-            results.append(data_value_dto(value, "Good", datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)))
+                read_value = float(base) + self._reads
+                self.values[node_id] = read_value
+            results.append(data_value_dto(read_value, "Good", datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)))
         return results
 
     async def read_history_values(

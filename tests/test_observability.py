@@ -11,9 +11,9 @@ import io
 import json
 import logging
 import re
-from collections.abc import Iterator
+from collections.abc import Iterator, MutableMapping
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from fastapi import FastAPI
@@ -136,7 +136,9 @@ async def test_client_abort_is_logged_and_counted_as_499(caplog: pytest.LogCaptu
     async def stream() -> None:
         raise RuntimeError("No response returned.")
 
-    scope: dict[str, Any] = {
+    # Driven as a raw ASGI call so the disconnect can be delivered mid-response. The annotations
+    # follow the ASGI typing Starlette's ``__call__`` expects (mutable message mappings).
+    scope: MutableMapping[str, Any] = {
         "type": "http",
         "asgi": {"version": "3.0", "spec_version": "0.0"},
         "http_version": "1.1",
@@ -151,12 +153,12 @@ async def test_client_abort_is_logged_and_counted_as_499(caplog: pytest.LogCaptu
         "state": {},
     }
 
-    async def receive() -> dict[str, Any]:
+    async def receive() -> MutableMapping[str, Any]:
         return {"type": "http.disconnect"}
 
-    sent: list[dict[str, Any]] = []
+    sent: list[MutableMapping[str, Any]] = []
 
-    async def send(message: dict[str, Any]) -> None:
+    async def send(message: MutableMapping[str, Any]) -> None:
         sent.append(message)
 
     with caplog.at_level(logging.INFO, logger="i3x_server.bootstrap.request_middlewares"):
@@ -304,7 +306,8 @@ def test_metrics_counts_requests_by_route_template(client: TestClient) -> None:
 
 def test_metrics_endpoint_is_not_part_of_the_openapi_document(client: TestClient) -> None:
     """Spec-neutral: the scrape route is not an i3X endpoint and never becomes an MCP tool."""
-    assert "/metrics" not in client.app.openapi()["paths"]
+    # ``TestClient.app`` is typed as the ASGI callable; the app under test is a FastAPI instance.
+    assert "/metrics" not in cast(FastAPI, client.app).openapi()["paths"]
 
 
 def test_metrics_gauges_mirror_the_json_diagnostics(client: TestClient) -> None:
@@ -312,7 +315,8 @@ def test_metrics_gauges_mirror_the_json_diagnostics(client: TestClient) -> None:
     body = client.get("/metrics").text
 
     assert _metric_value(body, "i3x_model_built") == 1.0
-    assert _metric_value(body, "i3x_model_nodes") > 0
+    node_count = _metric_value(body, "i3x_model_nodes")
+    assert node_count is not None and node_count > 0
     assert _metric_value(body, "i3x_upstream_connected") == 1.0
     assert _metric_value(body, 'i3x_opcua_requests{operation="read"}') == 2451.0
     assert _metric_value(body, 'i3x_opcua_requests{operation="failed"}') == 14.0

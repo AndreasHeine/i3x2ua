@@ -38,9 +38,11 @@ def test_uninstalled_app_state_reads_fail_loudly() -> None:
 
 def test_gateway_state_typo_raises_attribute_error() -> None:
     state = GatewayState()
-    # Reading a misspelled field must surface the miss instead of returning None.
+    # Reading a misspelled field must surface the miss instead of returning None. The name is
+    # looked up dynamically, so the misspelling stays a runtime probe rather than a static one.
+    misspelled_field = "model_cach"
     with pytest.raises(AttributeError) as excinfo:
-        _ = state.model_cach
+        _ = getattr(state, misspelled_field)
     assert "model_cach" in str(excinfo.value)
 
 

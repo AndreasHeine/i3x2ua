@@ -105,6 +105,10 @@ async def test_reconnect_restores_reads_and_native_subscription(
             if value == 43.0:
                 changed_value.set()
 
+        def event_notification(self, event: Any) -> None:
+            # The port requires both callbacks; this test only monitors data changes.
+            del event
+
     async def on_reconnect() -> None:
         reconnected.set()
 

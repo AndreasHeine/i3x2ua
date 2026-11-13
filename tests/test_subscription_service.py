@@ -4,6 +4,7 @@ import asyncio
 import gc
 import time
 import weakref
+from collections import deque
 from contextlib import suppress
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -15,7 +16,7 @@ from asyncua.ua.status_codes import StatusCodes
 from asyncua.ua.uaerrors import UaStatusCodeError
 
 from i3x_server.domain.errors import AdmissionLimitError
-from i3x_server.domain.ports.opcua import DataValueDTO, OpcUaValue
+from i3x_server.domain.ports.opcua import DataValueDTO, OpcUaValue, Quality
 from i3x_server.infrastructure.opcua.client import (
     OpcUaClientProtocol,
     OpcUaSubscriptionCapabilities,
@@ -930,7 +931,7 @@ async def test_native_admissions_run_network_calls_concurrently() -> None:
             self.arrived_batches: list[list[str]] = []
             self.all_arrived = asyncio.Event()
 
-        async def subscribe_data_changes(self, subscription: Any, node_ids: list[str]) -> list[int]:
+        async def subscribe_data_changes(self, subscription: Any, node_ids: list[str]) -> int | list[int]:
             del subscription
             self.add_arrivals += 1
             self.arrived_batches.append(list(node_ids))
@@ -990,7 +991,7 @@ async def test_open_new_bin_batches_all_reserved_nodes_into_one_add() -> None:
             super().__init__()
             self.batches: list[list[str]] = []
 
-        async def subscribe_data_changes(self, subscription: Any, node_ids: list[str]) -> list[int]:
+        async def subscribe_data_changes(self, subscription: Any, node_ids: list[str]) -> int | list[int]:
             self.batches.append(list(node_ids))
             return await super().subscribe_data_changes(subscription, node_ids)
 
@@ -1028,7 +1029,7 @@ async def test_open_new_bin_excludes_reservation_of_released_monitor() -> None:
             super().__init__()
             self.batches: list[list[str]] = []
 
-        async def subscribe_data_changes(self, subscription: Any, node_ids: list[str]) -> list[int]:
+        async def subscribe_data_changes(self, subscription: Any, node_ids: list[str]) -> int | list[int]:
             self.batches.append(list(node_ids))
             return await super().subscribe_data_changes(subscription, node_ids)
 
@@ -1085,7 +1086,7 @@ async def test_open_new_bin_releases_handles_of_monitors_released_mid_batch() ->
             super().__init__()
             self._service = service
 
-        async def subscribe_data_changes(self, subscription: Any, node_ids: list[str]) -> list[int]:
+        async def subscribe_data_changes(self, subscription: Any, node_ids: list[str]) -> int | list[int]:
             # The only subscriber vanishes while the batch round-trip is in flight.
             async with self._service._lock:
                 del self._service._node_monitors[node_ids[0]]
@@ -1156,7 +1157,7 @@ async def test_add_node_to_bin_releases_duplicate_of_batch_committed_handle() ->
             self._bin = bin_
             self._monitor = monitor
 
-        async def subscribe_data_changes(self, subscription: Any, node_ids: list[str]) -> list[int]:
+        async def subscribe_data_changes(self, subscription: Any, node_ids: list[str]) -> int | list[int]:
             # The creating admission commits this node's batched handle mid-round-trip, exactly
             # as ``_open_new_bin`` does: handle committed and reservation released.
             async with self._service._lock:
@@ -1401,7 +1402,7 @@ async def test_subscription_ttl_releases_expired_payloads(
             payload = Payload()
             payload_refs.append(weakref.ref(payload))
             state.last_values_by_node_id["node1"] = payload
-            state.updates.append(SubscriptionUpdate(1, "prop1", "node1", payload, "Good", ""))
+            state.updates.append(SubscriptionUpdate(1, "prop1", "node1", payload, Quality.GOOD, ""))
             state.last_activity_monotonic -= 2
             del payload, state
 
@@ -1505,7 +1506,7 @@ def test_append_update_deduplicates_same_value() -> None:
         client_id="c1",
         display_name=None,
         monitored_objects={},
-        updates=[],
+        updates=deque(),
         sequence_number=0,
         node_to_element_id={"ns=2;s=Temperature": "prop-a"},
         update_event=asyncio.Event(),
@@ -2081,9 +2082,9 @@ def test_quality_change_emits_an_update_even_with_an_unchanged_value() -> None:
         monitored_objects={"prop-a": 0},
         node_to_element_id={"ns=2;s=Temperature": "prop-a"},
     )
-    service._append_update(state, "ns=2;s=Temperature", 1.0, _ValueSignal("Good", "2026-01-01T00:00:00Z"))
-    service._append_update(state, "ns=2;s=Temperature", 1.0, _ValueSignal("Uncertain", "2026-01-01T00:00:01Z"))
-    service._append_update(state, "ns=2;s=Temperature", 1.0, _ValueSignal("Uncertain", "2026-01-01T00:00:02Z"))
+    service._append_update(state, "ns=2;s=Temperature", 1.0, _ValueSignal(Quality.GOOD, "2026-01-01T00:00:00Z"))
+    service._append_update(state, "ns=2;s=Temperature", 1.0, _ValueSignal(Quality.UNCERTAIN, "2026-01-01T00:00:01Z"))
+    service._append_update(state, "ns=2;s=Temperature", 1.0, _ValueSignal(Quality.UNCERTAIN, "2026-01-01T00:00:02Z"))
 
     assert [(item.quality, item.timestamp) for item in state.updates] == [
         ("Good", "2026-01-01T00:00:00Z"),
@@ -2100,8 +2101,8 @@ def test_null_value_with_good_or_uncertain_quality_is_normalized_to_good_nodata(
         monitored_objects={"prop-a": 0},
         node_to_element_id={"ns=2;s=Temperature": "prop-a"},
     )
-    service._append_update(state, "ns=2;s=Temperature", None, _ValueSignal("Good", None))
-    service._append_update(state, "ns=2;s=Temperature", None, _ValueSignal("Bad", None))
+    service._append_update(state, "ns=2;s=Temperature", None, _ValueSignal(Quality.GOOD, None))
+    service._append_update(state, "ns=2;s=Temperature", None, _ValueSignal(Quality.BAD, None))
 
     assert [item.quality for item in state.updates] == ["GoodNoData", "Bad"]
 

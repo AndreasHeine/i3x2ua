@@ -20,6 +20,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from io import TextIOWrapper
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +43,18 @@ def _load_orchestrator() -> Any:
     import run_conformancetest
 
     return run_conformancetest
+
+
+def _reconfigure_output_streams() -> None:
+    """Force UTF-8 with replacement on the console streams.
+
+    Child output is streamed into this process's stdout, and on Windows the console default is
+    cp1252, which cannot encode every byte a Node stack trace may emit. Only ``TextIOWrapper``
+    instances support ``reconfigure``; a replaced or piped stream is left as it is.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        if isinstance(stream, TextIOWrapper):
+            stream.reconfigure(encoding="utf-8", errors="replace")
 
 
 def _port_is_open(host: str, port: int, timeout: float) -> bool:
@@ -85,11 +98,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
-    # Child output streams through _stream_output into this process's stdout. On Windows the
-    # console default is cp1252, which cannot encode every byte a Node stack trace may emit;
-    # reconfiguring to UTF-8 with replacement keeps the stream threads alive on all platforms.
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    # Child output streams through _stream_output into this process's stdout; the UTF-8
+    # reconfiguration keeps that stream from failing to encode a Node stack trace.
+    _reconfigure_output_streams()
 
     orchestrator = _load_orchestrator()
     args = _build_parser().parse_args()
@@ -160,7 +171,7 @@ def main() -> int:
         suite = orchestrator._start_process(
             "i3x-test-suite", suite_command, cwd=orchestrator.CONFORMANCE_TESTS_DIR, env=os.environ.copy()
         )
-        exit_code = suite.wait(timeout=SUITE_TIMEOUT_SECONDS)
+        exit_code = int(suite.wait(timeout=SUITE_TIMEOUT_SECONDS))
     finally:
         orchestrator._stop_process("i3x2ua", gateway_process)
         orchestrator._stop_process("opcua-fixture", fixture_process)

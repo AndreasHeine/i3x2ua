@@ -7,6 +7,8 @@ import time
 from typing import Any
 
 import pytest
+from fastapi.testclient import TestClient
+from starlette.middleware.cors import CORSMiddleware
 from starlette.types import Receive, Scope, Send
 
 from i3x_server.bootstrap import create_app
@@ -55,11 +57,26 @@ def test_rate_limit_middleware_is_installed_from_env(monkeypatch: pytest.MonkeyP
     monkeypatch.setenv("I3X_CORS_ALLOWED_ORIGINS", '["https://example.test"]')
     app = create_app()
     limiter = next(middleware for middleware in app.user_middleware if middleware.cls is RateLimitMiddleware)
+    cors = next(middleware for middleware in app.user_middleware if middleware.cls is CORSMiddleware)
     assert limiter.kwargs == {"limit_per_minute": 30}
+    assert cors.kwargs["allow_origins"] == ["https://example.test"]
     # CORS stays outermost so a tripped limit still carries the CORS headers.
-    assert app.user_middleware.index(limiter) > next(
-        index for index, middleware in enumerate(app.user_middleware) if middleware.cls.__name__ == "CORSMiddleware"
-    )
+    assert app.user_middleware.index(limiter) > app.user_middleware.index(cors)
+
+
+def test_cors_configuration_is_read_for_each_app(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("I3X_REQUEST_RATE_LIMIT_PER_MINUTE", "1")
+    monkeypatch.setenv("I3X_CORS_ALLOWED_ORIGINS", "[]")
+    app_without_cors = create_app()
+    assert not any(middleware.cls is CORSMiddleware for middleware in app_without_cors.user_middleware)
+
+    monkeypatch.setenv("I3X_CORS_ALLOWED_ORIGINS", '["https://example.test"]')
+    client = TestClient(create_app())
+    headers = {"Origin": "https://example.test"}
+    assert client.get("/health", headers=headers).status_code == 200
+    limited = client.get("/health", headers=headers)
+    assert limited.status_code == 429
+    assert limited.headers["access-control-allow-origin"] == "https://example.test"
 
 
 @pytest.mark.asyncio

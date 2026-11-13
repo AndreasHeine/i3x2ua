@@ -18,7 +18,7 @@ from starlette.middleware.gzip import GZipMiddleware
 
 from i3x_server import logging_format
 from i3x_server.application.state import gateway_state
-from i3x_server.config.settings import get_settings, settings
+from i3x_server.config.settings import get_settings
 from i3x_server.http_caching import MODEL_REVISION_HEADER, ModelRevisionMiddleware
 from i3x_server.http_metrics import observe_request, route_label
 from i3x_server.http_rate_limit import RateLimitMiddleware
@@ -59,16 +59,16 @@ def add_transport_middlewares(app: FastAPI) -> None:
     app.add_middleware(GZipMiddleware, minimum_size=1)
     # Opt-in admission control (see ``http_rate_limit``). ``get_settings()`` reads the current
     # environment, so the toggle behaves like every other documented env knob.
-    rate_limit_per_minute = get_settings().request_rate_limit_per_minute
+    runtime = get_settings()
+    rate_limit_per_minute = runtime.request_rate_limit_per_minute
     if rate_limit_per_minute > 0:
         app.add_middleware(RateLimitMiddleware, limit_per_minute=rate_limit_per_minute)
-    cors_origins = settings.cors_allowed_origins
+    cors_origins = runtime.cors_allowed_origins
     # MCP origin allowlist: dedicated origins win, otherwise the CORS allowlist (without the
     # wildcard) is the source of truth. Wildcards are never a usable comparison target. The
     # values are read from the current environment (like the rate-limit toggle), not from the
     # import-time snapshot, so the setting behaves like every other documented env knob.
-    origin_settings = get_settings()
-    mcp_origin_sources = origin_settings.mcp_allowed_origins or origin_settings.cors_allowed_origins
+    mcp_origin_sources = runtime.mcp_allowed_origins or cors_origins
     state.mcp_allowed_origins = [origin for origin in mcp_origin_sources if origin != "*"]
     if cors_origins:
         app.add_middleware(

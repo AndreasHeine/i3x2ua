@@ -9,7 +9,7 @@ classifiers = [
 ]
 dependencies = [
     "asyncua==2.1.0",
-    "fastapi==0.162.5",
+    "fastapi==0.162.7",
     "jsonschema[format]>=4.23.0",
     "prometheus-client>=0.26.0",
     "pydantic==2.14.3",
@@ -23,7 +23,7 @@ Commercial-Licensing = "https://github.com/sponsors/AndreasHeine"
 
 [project.optional-dependencies]
 otel = [
-    "fastapi[opentelemetry]==0.162.5",
+    "fastapi[opentelemetry]==0.162.7",
 ]
 
 [build-system]

@@ -217,7 +217,7 @@ jobs:
         # 24 matches the builder stage of the Dockerfile.
         uses: actions/setup-node@v7
         with:
-          node-version: "24"
+          node-version: "26"
 
       - name: Set up Python
         uses: actions/setup-python@v7

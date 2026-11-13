@@ -328,48 +328,46 @@ In this configuration, i3x2ua processes subscription updates approximately once 
 
 ## How i3x2ua Creates Monitored Items
 
-i3x2ua creates OPC UA monitored items through asyncua and explicitly requests a sampling interval when subscribing. In the benchmarked implementation, the call specifies:
+i3x2ua creates OPC UA monitored items through asyncua **without requesting a sampling
+interval**. The gateway opens a native subscription per monitoring bin with a publishing
+interval derived from `I3X_SUBSCRIPTION_INTERVAL_SECONDS`, then subscribes the node list:
 
 ```python
-subscribe_data_change(
-    ...
-    sampling_interval=50.0
-)
+await raw_client.create_subscription(publishing_interval_ms, handler)  # interval_seconds * 1000
+await subscription.subscribe_data_change(nodes)  # no sampling_interval argument
 ```
 
-asyncua passes this value into the OPC UA `CreateMonitoredItems` request as `mparams.SamplingInterval`. Unless another value is supplied, i3x2ua therefore requests:
-
-```text
-SamplingInterval = 50 ms
-```
+So the `CreateMonitoredItems` request carries no `mparams.SamplingInterval`, and the server
+supplies the effective sampling interval for the monitored item.
 
 ## Requested and Effective Sampling Intervals
 
-The requested `SamplingInterval` originates in i3x2ua. The OPC UA server may revise it and return a different effective interval. The value used at runtime is therefore:
+Because no sampling interval is requested, the value in use is entirely server-derived:
 
 ```text
-Requested SamplingInterval
+No requested SamplingInterval
           ↓
-Server Revision
+Server Default / Revision
           ↓
 Effective SamplingInterval
 ```
 
-The effective interval, rather than the requested value alone, determines how frequently the server samples the monitored value. OPC UA servers may revise requested sampling or publishing intervals to account for server-side limits and available resources.
+The effective interval, not a value chosen by i3x2ua, determines how frequently the server
+samples the monitored value. Servers choose it from their own defaults and the subscription's
+publishing interval, and may bound it by server-side limits and available resources.
 
 ## Publishing Interval
 
 The `PublishingInterval` belongs to the OPC UA subscription. It controls how often the server publishes accumulated notifications to the client; it is separate from the monitored item's `SamplingInterval`.
 
-For example:
+The gateway requests `PublishingInterval = I3X_SUBSCRIPTION_INTERVAL_SECONDS * 1000`, so the benchmark configuration requested:
 
 ```text
-SamplingInterval = 50 ms
-
 PublishingInterval = 1000 ms
+SamplingInterval = server default
 ```
 
-During one 1000 ms publish cycle, the server may sample a variable approximately twenty times. Notifications are sent when the next publishing cycle occurs, subject to the monitored item's filters, queue behavior, and server handling.
+During one 1000 ms publish cycle the server samples the variable at its own effective sampling interval. Notifications are sent when the next publishing cycle occurs, subject to the monitored item's filters, queue behavior, and server handling.
 
 OPC UA servers may also revise the requested `PublishingInterval`. For example:
 
@@ -381,11 +379,11 @@ Server-revised PublishingInterval:
 1000 ms
 ```
 
-The revised value is the effective publishing interval.
+The revised value is the effective publishing interval. The gateway reads it back from the created subscription and uses it to size the native refresh cadence, so an interval the server revised does not leave the gateway polling on the requested value.
 
 ## asyncua Behavior
 
-asyncua supports explicitly specifying a monitored item's `SamplingInterval`, as i3x2ua does in the benchmarked implementation. If no sampling interval is specified, server defaults may be used. The benchmarked implementation explicitly requests 50 ms; it does not rely on asyncua automatically deriving the sampling interval from the publishing interval.
+asyncua can specify a monitored item's `SamplingInterval` explicitly, but i3x2ua does not: it passes only the node list. asyncua therefore leaves the sampling parameter unset, and the server's default applies. Servers commonly derive that default from the subscription's publishing interval, so a benchmark's effective sampling rate is a property of the server, not of i3x2ua.
 
 ## Subscription Update Flow
 
@@ -394,11 +392,11 @@ The benchmark's notification rate is affected by multiple stages:
 ```text
 PLC Variable
       ↓
-SamplingInterval (requested 50 ms)
+SamplingInterval (server default)
       ↓
 OPC UA Monitored Item
       ↓
-PublishingInterval
+PublishingInterval (requested from I3X_SUBSCRIPTION_INTERVAL_SECONDS, server-revised)
       ↓
 OPC UA Notification
       ↓
@@ -413,7 +411,7 @@ REST Subscription Sync
 Benchmark Client
 ```
 
-The `SamplingInterval` controls how often the PLC is checked for a monitored value change. The `PublishingInterval` controls how often the OPC UA server publishes notifications. The i3x2ua update interval controls how often subscription updates are synchronized to REST clients. These are distinct stages, even when configured to similar values.
+The server's effective `SamplingInterval` controls how often the PLC is checked for a monitored value change. The `PublishingInterval` controls how often the OPC UA server publishes notifications. The i3x2ua update interval controls how often subscription updates are synchronized to REST clients. These are distinct stages, even when configured to similar values.
 
 ## Interpreting the Subscription Results
 
@@ -427,7 +425,7 @@ The measured rates were:
 ≈ 125 notifications/s
 ```
 
-These are delivered update rates observed by the benchmark clients, not measurements of how often the PLC was sampled. They must not be interpreted as `125 samples/s` or as evidence that the `SamplingInterval` was one second. The reported rate reflects the behavior of the full subscription flow, including the explicitly requested sampling interval, the effective server intervals, and the i3x2ua update synchronization cadence:
+These are delivered update rates observed by the benchmark clients, not measurements of how often the PLC was sampled. They must not be interpreted as `125 samples/s` or as evidence that the `SamplingInterval` was one second. The reported rate reflects the behavior of the full subscription flow, including the server's effective sampling interval, the server-revised publishing interval, and the i3x2ua update synchronization cadence:
 
 ```yaml
 I3X_SUBSCRIPTION_INTERVAL_SECONDS: 1

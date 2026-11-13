@@ -12,6 +12,20 @@ is_truthy() {
   esac
 }
 
+is_positive_integer() {
+  case "${1:-}" in
+    ''|*[!0-9]*)
+      return 1
+      ;;
+    0)
+      return 1
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+}
+
 upstream_host="${NGINX_UPSTREAM_HOST:-i3x2ua}"
 upstream_port="${NGINX_UPSTREAM_PORT:-8000}"
 server_name="${NGINX_SERVER_NAME:-_}"
@@ -27,6 +41,12 @@ realm="${NGINX_BASIC_AUTH_REALM:-i3x2ua}"
 redirect_https_port="${NGINX_HTTPS_REDIRECT_PORT:-443}"
 # Prebuilt SPA assets baked into this image (same checkout as the backend image).
 frontend_dist="${NGINX_FRONTEND_DIST:-/srv/frontend/dist}"
+# Edge admission control. The zones themselves live in nginx.conf (they must be in the http
+# context); these knobs decide whether the server blocks apply them and how much slack a client
+# gets before further requests answer 429.
+rate_limit_enabled="${NGINX_RATE_LIMIT_ENABLED:-1}"
+rate_limit_burst="${NGINX_RATE_LIMIT_BURST:-40}"
+rate_limit_conn="${NGINX_RATE_LIMIT_CONN_PER_CLIENT:-64}"
 
 if [ "$redirect_https_port" = "443" ]; then
   https_redirect_target="https://\$host\$request_uri"
@@ -113,6 +133,38 @@ mcp_proxy_block=$(cat <<EOF
 EOF
 )
 
+# Framing is refused at the edge too, matching the CSP's frame-ancestors 'none' that the app sets
+# on its HTML responses. "always" covers nginx-generated error pages (429/413), which the app
+# never sees.
+security_headers_block=$(cat <<EOF
+      add_header X-Frame-Options "DENY" always;
+EOF
+)
+
+# HSTS only makes sense where TLS is the only entry point, so it is added in the HTTPS server.
+hsts_block=""
+if is_truthy "$https_enabled"; then
+  hsts_block=$(cat <<EOF
+      add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+EOF
+)
+fi
+
+# Applied per server block, so every location inherits it. A location that sets its own
+# add_header (the asset cache headers) does not inherit these, so it repeats them.
+limit_block=""
+if is_truthy "$rate_limit_enabled"; then
+  if ! is_positive_integer "$rate_limit_burst" || ! is_positive_integer "$rate_limit_conn"; then
+    echo "NGINX_RATE_LIMIT_BURST and NGINX_RATE_LIMIT_CONN_PER_CLIENT must be positive integers" >&2
+    exit 1
+  fi
+  limit_block=$(cat <<EOF
+      limit_req zone=i3x_client burst=$rate_limit_burst nodelay;
+      limit_conn i3x_conn $rate_limit_conn;
+EOF
+)
+fi
+
 mkdir -p /etc/nginx/conf.d
 
 # Content-hashed SPA assets ("_app/immutable/...") are served straight from the dist
@@ -128,6 +180,7 @@ if [ -d "$frontend_dist/_app" ]; then
   location = /_app/version.json {
     root $frontend_dist;
     add_header Cache-Control "public, no-store";
+$(printf '%s\n' "$security_headers_block")
     try_files \$uri @frontend_asset_fallback;
   }
 
@@ -135,6 +188,7 @@ if [ -d "$frontend_dist/_app" ]; then
     root $frontend_dist;
     expires max;
     add_header Cache-Control "public, immutable";
+$(printf '%s\n' "$security_headers_block")
     try_files \$uri @frontend_asset_fallback;
   }
 
@@ -159,6 +213,8 @@ $(printf '%s\n' "$upstream_block")
 server {
   listen $http_port;
   server_name $server_name;
+$(printf '%s\n' "$security_headers_block")
+$(printf '%s\n' "$limit_block")
   return 301 $https_redirect_target;
 }
 
@@ -170,6 +226,9 @@ server {
   ssl_certificate_key $key_file;
   ssl_protocols TLSv1.2 TLSv1.3;
   ssl_prefer_server_ciphers on;
+$(printf '%s\n' "$security_headers_block")
+$(printf '%s\n' "$hsts_block")
+$(printf '%s\n' "$limit_block")
 
   location = /v1/info {
 $(printf '%s\n' "$proxy_block")
@@ -199,6 +258,8 @@ $(printf '%s\n' "$upstream_block")
 server {
   listen $http_port;
   server_name $server_name;
+$(printf '%s\n' "$security_headers_block")
+$(printf '%s\n' "$limit_block")
 
   location = /v1/info {
 $(printf '%s\n' "$proxy_block")

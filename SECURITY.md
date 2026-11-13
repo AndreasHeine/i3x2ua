@@ -90,7 +90,7 @@ Production environments should:
 - Enable TLS termination
 - Enforce authentication and authorization
 - Restrict administrative access
-- Enable audit logging
+- Enable audit logging (the shipped nginx proxy logs every request, successful ones included)
 - Keep operating systems and containers updated
 
 ## Committed Sample Certificates and Keys

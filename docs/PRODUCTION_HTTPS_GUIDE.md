@@ -146,14 +146,25 @@ NGINX_HTTP_PORT=80
 NGINX_HTTPS_PORT=443
 ```
 
-### 3. Enable HSTS (HTTP Strict Transport Security)
+### 3. Hardening shipped in the proxy
 
-For enhanced security, modify `nginx/entrypoint.sh` to add HSTS header:
+`nginx/entrypoint.sh` adds the following to the server blocks it generates, so no manual edit is
+needed:
 
-```bash
-# In the HTTPS server block, add:
+```nginx
+# HTTPS server only, since TLS is the entry point there
 add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+# Refuses framing, matching the gateway CSP's frame-ancestors 'none'
+add_header X-Frame-Options "DENY" always;
+# Edge admission control; zones declared in nginx/nginx.conf
+limit_req zone=i3x_client burst=40 nodelay;
+limit_conn i3x_conn 64;
 ```
+
+`limit_req_status` / `limit_conn_status` are set to `429`, matching the gateway's own opt-in
+limiter. To change or drop the limits, set `NGINX_RATE_LIMIT_BURST`,
+`NGINX_RATE_LIMIT_CONN_PER_CLIENT`, or `NGINX_RATE_LIMIT_ENABLED=0`. See
+[NGINX configuration reference](NGINX_CONFIGURATION_REFERENCE.md) for the full picture.
 
 ### 4. SSL Certificate Renewal (Let's Encrypt)
 
@@ -669,16 +680,26 @@ services:
 
 ### 2. NGINX Security Headers
 
-Add to `nginx/entrypoint.sh`:
+The proxy ships what it needs and does not repeat what the gateway already sets. The generated
+server blocks (`nginx/entrypoint.sh`) carry:
 
-```bash
-# Security headers
-add_header X-Frame-Options "SAMEORIGIN" always;
-add_header X-Content-Type-Options "nosniff" always;
-add_header X-XSS-Protection "1; mode=block" always;
-add_header Referrer-Policy "strict-origin-when-cross-origin" always;
-add_header Permissions-Policy "geolocation=(), microphone=(), camera=()" always;
+```nginx
+# Every server block, so nginx's own 429/413 pages carry it too
+add_header X-Frame-Options "DENY" always;
+# HTTPS server only, since TLS is the entry point there
 add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+```
+
+The rest come from the application (`bootstrap/request_middlewares.py`): `X-Content-Type-Options:
+nosniff`, `Referrer-Policy: no-referrer`, and a Content-Security-Policy whose script source is the
+hashed prerendered bundle - its `frame-ancestors 'none'` is why the proxy refuses framing with
+`DENY`. `X-XSS-Protection` is intentionally absent: it is deprecated and ignored by current
+browsers, and the CSP is the mechanism that prevents injection.
+
+To add a permissions policy at the edge, extend the server blocks:
+
+```nginx
+add_header Permissions-Policy "geolocation=(), microphone=(), camera=()" always;
 ```
 
 ### 3. SSL/TLS Configuration

@@ -41,11 +41,10 @@
     "serverName": "The i3X API Gateway for OPC UA",
     "notes": [],
     "docsUrl": "https://www.i3x.dev/sdk/category/server-developers",
-    "finishedAt": "2026-10-21T06:17:19.989Z"
+    "finishedAt": "2026-11-13T14:42:30.574Z"
   },
   "results": [
     {
-      "type": "test:end",
       "id": "CORE-01",
       "name": "GET /info responds with HTTP 200 and a JSON body",
       "level": "MUST",
@@ -54,13 +53,11 @@
       "refTitle": "Implementation Guide § Server Capabilities Endpoints (GET /info)",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#server-capabilities-endpoints",
       "status": "pass",
-      "message": "HTTP 200 in 7ms",
-      "ms": 8,
-      "index": 1,
-      "total": 60
+      "message": "HTTP 200 in 3ms",
+      "ms": 4,
+      "index": 1
     },
     {
-      "type": "test:end",
       "id": "CORE-02",
       "name": "GET /info does not require authentication",
       "level": "MUST",
@@ -70,12 +67,10 @@
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#server-capabilities-endpoints",
       "status": "pass",
       "message": "Accessible without credentials",
-      "ms": 0,
-      "index": 2,
-      "total": 60
+      "ms": 1,
+      "index": 2
     },
     {
-      "type": "test:end",
       "id": "CORE-03",
       "name": "ServerInfo declares specVersion and a complete capabilities matrix",
       "level": "MUST",
@@ -86,11 +81,9 @@
       "status": "pass",
       "message": "specVersion=\"1.0\"",
       "ms": 0,
-      "index": 3,
-      "total": 60
+      "index": 3
     },
     {
-      "type": "test:end",
       "id": "CORE-04",
       "name": "Server compresses responses with gzip when the client sends Accept-Encoding: gzip",
       "level": "MUST",
@@ -100,12 +93,10 @@
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#transport--encoding",
       "status": "pass",
       "message": "gzip honored (169 compressed bytes)",
-      "ms": 4,
-      "index": 4,
-      "total": 60
+      "ms": 9,
+      "index": 4
     },
     {
-      "type": "test:end",
       "id": "CORE-05",
       "name": "Endpoint is served over HTTPS",
       "level": "SHOULD",
@@ -116,11 +107,9 @@
       "status": "warn",
       "message": "Endpoint is plain HTTP. Implementations MUST support encrypted transport (HTTPS) in production; HTTP is acceptable only for development/internal testing.",
       "ms": 0,
-      "index": 5,
-      "total": 60
+      "index": 5
     },
     {
-      "type": "test:end",
       "id": "CORE-06",
       "name": "Server requires authentication on data endpoints",
       "level": "SHOULD",
@@ -130,12 +119,10 @@
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#security--authentication",
       "status": "warn",
       "message": "The server accepted an unauthenticated request to GET /namespaces. This is acceptable for development and testing, but in production implementations MUST require authentication.",
-      "ms": 2,
-      "index": 6,
-      "total": 60
+      "ms": 4,
+      "index": 6
     },
     {
-      "type": "test:end",
       "id": "EXP-01",
       "name": "GET /namespaces returns a success envelope with valid Namespace records",
       "level": "MUST",
@@ -145,12 +132,10 @@
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#namespace-endpoints",
       "status": "pass",
       "message": "3 namespace(s)",
-      "ms": 2,
-      "index": 7,
-      "total": 60
+      "ms": 3,
+      "index": 7
     },
     {
-      "type": "test:end",
       "id": "EXP-02",
       "name": "Server exposes at least one Namespace",
       "level": "MUST",
@@ -160,11 +145,9 @@
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#namespaces",
       "status": "pass",
       "ms": 0,
-      "index": 8,
-      "total": 60
+      "index": 8
     },
     {
-      "type": "test:end",
       "id": "EXP-03",
       "name": "Namespace URIs are unique",
       "level": "MUST",
@@ -174,11 +157,9 @@
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#namespaces",
       "status": "pass",
       "ms": 0,
-      "index": 9,
-      "total": 60
+      "index": 9
     },
     {
-      "type": "test:end",
       "id": "EXP-04",
       "name": "GET /objecttypes returns valid ObjectTypeResponse records with JSON Schema definitions",
       "level": "MUST",
@@ -187,13 +168,11 @@
       "refTitle": "Implementation Guide § Object Type Endpoints",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#object-type-endpoints",
       "status": "pass",
-      "message": "333 type(s)",
-      "ms": 31,
-      "index": 10,
-      "total": 60
+      "message": "409 type(s)",
+      "ms": 32,
+      "index": 10
     },
     {
-      "type": "test:end",
       "id": "EXP-05",
       "name": "Every Object Type belongs to a declared Namespace",
       "level": "MUST",
@@ -203,11 +182,9 @@
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#object-types",
       "status": "pass",
       "ms": 0,
-      "index": 11,
-      "total": 60
+      "index": 11
     },
     {
-      "type": "test:end",
       "id": "EXP-06",
       "name": "GET /objecttypes?namespaceUri= filters by namespace",
       "level": "MUST",
@@ -216,12 +193,10 @@
       "refTitle": "Implementation Guide § Object Type Endpoints",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#object-type-endpoints",
       "status": "pass",
-      "ms": 17,
-      "index": 12,
-      "total": 60
+      "ms": 23,
+      "index": 12
     },
     {
-      "type": "test:end",
       "id": "EXP-07",
       "name": "POST /objecttypes/query returns a bulk response in request order",
       "level": "MUST",
@@ -230,12 +205,10 @@
       "refTitle": "Implementation Guide § Response Format — Bulk Response",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#bulk-response",
       "status": "pass",
-      "ms": 5,
-      "index": 13,
-      "total": 60
+      "ms": 6,
+      "index": 13
     },
     {
-      "type": "test:end",
       "id": "EXP-08",
       "name": "POST /objecttypes/query reports unknown elementIds as per-item 404 failures",
       "level": "MUST",
@@ -244,12 +217,10 @@
       "refTitle": "Implementation Guide § Response Format — Bulk Response",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#bulk-response",
       "status": "pass",
-      "ms": 2,
-      "index": 14,
-      "total": 60
+      "ms": 5,
+      "index": 14
     },
     {
-      "type": "test:end",
       "id": "EXP-09",
       "name": "GET /relationshiptypes returns valid RelationshipType records",
       "level": "MUST",
@@ -258,13 +229,11 @@
       "refTitle": "Implementation Guide § Relationship Type Endpoints",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#relationship-type-endpoints",
       "status": "pass",
-      "message": "4 relationship type(s)",
-      "ms": 3,
-      "index": 15,
-      "total": 60
+      "message": "26 relationship type(s)",
+      "ms": 4,
+      "index": 15
     },
     {
-      "type": "test:end",
       "id": "EXP-10",
       "name": "Every Relationship Type has a registered, symmetric reverseOf",
       "level": "MUST",
@@ -274,11 +243,9 @@
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#relationship-types",
       "status": "pass",
       "ms": 0,
-      "index": 16,
-      "total": 60
+      "index": 16
     },
     {
-      "type": "test:end",
       "id": "EXP-11",
       "name": "POST /relationshiptypes/query returns a bulk response and per-item 404s for unknown ids",
       "level": "MUST",
@@ -287,12 +254,10 @@
       "refTitle": "Implementation Guide § Relationship Type Endpoints",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#relationship-type-endpoints",
       "status": "pass",
-      "ms": 2,
-      "index": 17,
-      "total": 60
+      "ms": 5,
+      "index": 17
     },
     {
-      "type": "test:end",
       "id": "EXP-12",
       "name": "GET /objects returns valid ObjectInstanceResponse records",
       "level": "MUST",
@@ -301,13 +266,11 @@
       "refTitle": "Implementation Guide § Object Endpoints",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#object-endpoints",
       "status": "pass",
-      "message": "828 object(s)",
-      "ms": 19,
-      "index": 18,
-      "total": 60
+      "message": "5163 object(s)",
+      "ms": 97,
+      "index": 18
     },
     {
-      "type": "test:end",
       "id": "EXP-13",
       "name": "Every Object's typeElementId resolves to a registered Object Type",
       "level": "MUST",
@@ -316,12 +279,10 @@
       "refTitle": "Implementation Guide § Objects",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#objects",
       "status": "pass",
-      "ms": 0,
-      "index": 19,
-      "total": 60
+      "ms": 2,
+      "index": 19
     },
     {
-      "type": "test:end",
       "id": "EXP-14",
       "name": "ElementIds are well-formed and unique across the address space",
       "level": "MUST",
@@ -330,13 +291,11 @@
       "refTitle": "Implementation Guide § ElementId and DisplayName",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#elementid-and-displayname",
       "status": "pass",
-      "message": "1165 elementIds checked",
-      "ms": 1,
-      "index": 20,
-      "total": 60
+      "message": "5598 elementIds checked",
+      "ms": 2,
+      "index": 20
     },
     {
-      "type": "test:end",
       "id": "EXP-15",
       "name": "GET /objects?root=true returns at least one root Object",
       "level": "MUST",
@@ -346,12 +305,10 @@
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#objects",
       "status": "pass",
       "message": "1 root object(s)",
-      "ms": 2,
-      "index": 21,
-      "total": 60
+      "ms": 6,
+      "index": 21
     },
     {
-      "type": "test:end",
       "id": "EXP-16",
       "name": "GET /objects?typeElementId= filters by type",
       "level": "MUST",
@@ -360,12 +317,10 @@
       "refTitle": "Implementation Guide § Object Endpoints",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#object-endpoints",
       "status": "pass",
-      "ms": 5,
-      "index": 22,
-      "total": 60
+      "ms": 24,
+      "index": 22
     },
     {
-      "type": "test:end",
       "id": "EXP-17",
       "name": "GET /objects?includeMetadata=true returns metadata with type provenance",
       "level": "MUST",
@@ -374,12 +329,10 @@
       "refTitle": "Implementation Guide § Object Endpoints",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#object-endpoints",
       "status": "pass",
-      "ms": 20,
-      "index": 23,
-      "total": 60
+      "ms": 181,
+      "index": 23
     },
     {
-      "type": "test:end",
       "id": "EXP-18",
       "name": "POST /objects/list returns a bulk response in request order with per-item 404s",
       "level": "MUST",
@@ -388,12 +341,10 @@
       "refTitle": "Implementation Guide § Object Endpoints",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#object-endpoints",
       "status": "pass",
-      "ms": 3,
-      "index": 24,
-      "total": 60
+      "ms": 5,
+      "index": 24
     },
     {
-      "type": "test:end",
       "id": "EXP-19",
       "name": "POST /objects/related returns RelatedObjectResult entries with registered relationship types",
       "level": "MUST",
@@ -402,13 +353,11 @@
       "refTitle": "Implementation Guide § Object Endpoints",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#object-endpoints",
       "status": "pass",
-      "message": "47 edge(s) discovered",
-      "ms": 8,
-      "index": 25,
-      "total": 60
+      "message": "62 edge(s) discovered",
+      "ms": 6,
+      "index": 25
     },
     {
-      "type": "test:end",
       "id": "EXP-20",
       "name": "Relationships are traversable in both directions (bidirectional storage)",
       "level": "MUST",
@@ -418,12 +367,10 @@
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#relationship-semantics",
       "status": "pass",
       "message": "5 edge(s) verified in both directions",
-      "ms": 8,
-      "index": 26,
-      "total": 60
+      "ms": 17,
+      "index": 26
     },
     {
-      "type": "test:end",
       "id": "EXP-21",
       "name": "Hierarchy is reachable through /objects/related (parentId matches a HasParent-style edge)",
       "level": "MUST",
@@ -433,11 +380,9 @@
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#relationship-semantics",
       "status": "pass",
       "ms": 2,
-      "index": 27,
-      "total": 60
+      "index": 27
     },
     {
-      "type": "test:end",
       "id": "EXP-22",
       "name": "POST /objects/related honors the relationshipType filter",
       "level": "MUST",
@@ -447,11 +392,9 @@
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#object-endpoints",
       "status": "pass",
       "ms": 2,
-      "index": 28,
-      "total": 60
+      "index": 28
     },
     {
-      "type": "test:end",
       "id": "QRY-01",
       "name": "POST /objects/value returns CurrentValueResult records (value, quality, timestamp)",
       "level": "MUST",
@@ -461,12 +404,10 @@
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#query-methods",
       "status": "pass",
       "message": "10 value(s) read",
-      "ms": 4,
-      "index": 29,
-      "total": 60
+      "ms": 5,
+      "index": 29
     },
     {
-      "type": "test:end",
       "id": "QRY-02",
       "name": "Null values follow the quality pairing rules",
       "level": "MUST",
@@ -476,11 +417,9 @@
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#null-value-handling",
       "status": "pass",
       "ms": 0,
-      "index": 30,
-      "total": 60
+      "index": 30
     },
     {
-      "type": "test:end",
       "id": "QRY-03",
       "name": "Object values conform to their Object Type's JSON Schema",
       "level": "MUST",
@@ -490,12 +429,10 @@
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#objects",
       "status": "pass",
       "message": "5 value(s) validated against their type schemas",
-      "ms": 0,
-      "index": 31,
-      "total": 60
+      "ms": 1,
+      "index": 31
     },
     {
-      "type": "test:end",
       "id": "QRY-04",
       "name": "POST /objects/value preserves request order and reports unknown ids per-item",
       "level": "MUST",
@@ -504,12 +441,10 @@
       "refTitle": "Implementation Guide § Response Format — Bulk Response",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#bulk-response",
       "status": "pass",
-      "ms": 2,
-      "index": 32,
-      "total": 60
+      "ms": 4,
+      "index": 32
     },
     {
-      "type": "test:end",
       "id": "QRY-05",
       "name": "Composition values: maxDepth > 1 returns child values under \"components\"",
       "level": "MUST",
@@ -519,12 +454,10 @@
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#maxdepth-parameter-semantics",
       "status": "pass",
       "message": "2 component value(s)",
-      "ms": 2,
-      "index": 33,
-      "total": 60
+      "ms": 3,
+      "index": 33
     },
     {
-      "type": "test:end",
       "id": "QRY-06",
       "name": "maxDepth = 1 (default) returns no components",
       "level": "MUST",
@@ -534,11 +467,9 @@
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#maxdepth-parameter-semantics",
       "status": "pass",
       "ms": 2,
-      "index": 34,
-      "total": 60
+      "index": 34
     },
     {
-      "type": "test:end",
       "id": "QRY-07",
       "name": "POST /objects/history returns HistoricalValueResult records",
       "level": "MUST",
@@ -547,12 +478,10 @@
       "refTitle": "Implementation Guide § Query Methods",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#query-methods",
       "status": "pass",
-      "ms": 9,
-      "index": 35,
-      "total": 60
+      "ms": 14,
+      "index": 35
     },
     {
-      "type": "test:end",
       "id": "QRY-08",
       "name": "Historical values are well-formed VQTs within the requested time range",
       "level": "MUST",
@@ -561,13 +490,11 @@
       "refTitle": "Implementation Guide § Query Methods",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#query-methods",
       "status": "pass",
-      "message": "289 historical point(s) validated",
-      "ms": 0,
-      "index": 36,
-      "total": 60
+      "message": "270 historical point(s) validated",
+      "ms": 1,
+      "index": 36
     },
     {
-      "type": "test:end",
       "id": "QRY-09",
       "name": "POST /objects/history reports unknown elementIds as per-item 404 failures",
       "level": "MUST",
@@ -576,12 +503,10 @@
       "refTitle": "Implementation Guide § Response Format — Bulk Response",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#bulk-response",
       "status": "pass",
-      "ms": 2,
-      "index": 37,
-      "total": 60
+      "ms": 7,
+      "index": 37
     },
     {
-      "type": "test:end",
       "id": "QRY-10",
       "name": "POST /objects/history requires startTime and endTime in RFC 3339 format",
       "level": "MUST",
@@ -590,12 +515,10 @@
       "refTitle": "Implementation Guide § Query Methods",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#query-methods",
       "status": "pass",
-      "ms": 5,
-      "index": 38,
-      "total": 60
+      "ms": 7,
+      "index": 38
     },
     {
-      "type": "test:end",
       "id": "QRY-11",
       "name": "POST /objects/history with maxDepth > 1 returns child history under \"components\"",
       "level": "MUST",
@@ -605,12 +528,10 @@
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#maxdepth-parameter-semantics",
       "status": "pass",
       "message": "2 component(s) with history",
-      "ms": 6,
-      "index": 39,
-      "total": 60
+      "ms": 8,
+      "index": 39
     },
     {
-      "type": "test:end",
       "id": "UPD-01",
       "name": "PUT /objects/value accepts a write and returns a bulk result per elementId",
       "level": "MAY",
@@ -620,12 +541,10 @@
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#update-methods",
       "status": "pass",
       "message": "wrote current value back to \"property-96539f2467e1b945\"",
-      "ms": 13,
-      "index": 40,
-      "total": 60
+      "ms": 12,
+      "index": 40
     },
     {
-      "type": "test:end",
       "id": "UPD-02",
       "name": "A written value is readable via POST /objects/value",
       "level": "MAY",
@@ -636,11 +555,9 @@
       "status": "pass",
       "message": "Read-after-write returned the written value",
       "ms": 3,
-      "index": 41,
-      "total": 60
+      "index": 41
     },
     {
-      "type": "test:end",
       "id": "UPD-03",
       "name": "PUT /objects/value supports partial failure for unknown elementIds",
       "level": "MAY",
@@ -649,12 +566,10 @@
       "refTitle": "Implementation Guide § Response Format — Bulk Response",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#bulk-response",
       "status": "pass",
-      "ms": 13,
-      "index": 42,
-      "total": 60
+      "ms": 10,
+      "index": 42
     },
     {
-      "type": "test:end",
       "id": "UPD-04",
       "name": "PUT /objects/history accepts a historical write",
       "level": "MAY",
@@ -663,12 +578,10 @@
       "refTitle": "Implementation Guide § Update Methods",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#update-methods",
       "status": "pass",
-      "ms": 16,
-      "index": 43,
-      "total": 60
+      "ms": 5,
+      "index": 43
     },
     {
-      "type": "test:end",
       "id": "UPD-05",
       "name": "Update endpoints honestly advertise unsupported features (501 when capability is false)",
       "level": "SHOULD",
@@ -679,12 +592,10 @@
       "status": "skip",
       "message": "Both update capabilities are declared — nothing to verify here",
       "reason": "untestable",
-      "ms": 0,
-      "index": 44,
-      "total": 60
+      "ms": 1,
+      "index": 44
     },
     {
-      "type": "test:end",
       "id": "SUB-01",
       "name": "POST /subscriptions creates a subscription and returns a subscriptionId",
       "level": "MUST",
@@ -693,12 +604,10 @@
       "refTitle": "Implementation Guide § Subscriptions",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#subscriptions",
       "status": "pass",
-      "ms": 9,
-      "index": 45,
-      "total": 60
+      "ms": 2,
+      "index": 45
     },
     {
-      "type": "test:end",
       "id": "SUB-02",
       "name": "POST /subscriptions/list returns the subscription keyed by subscriptionId",
       "level": "MUST",
@@ -707,12 +616,10 @@
       "refTitle": "Implementation Guide § Subscriptions",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#subscriptions",
       "status": "pass",
-      "ms": 3,
-      "index": 46,
-      "total": 60
+      "ms": 2,
+      "index": 46
     },
     {
-      "type": "test:end",
       "id": "SUB-15",
       "name": "Subscription requests without a clientId are rejected with 400",
       "level": "MUST",
@@ -722,12 +629,10 @@
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#subscriptions",
       "status": "pass",
       "message": "create and sync without a clientId were rejected with 400",
-      "ms": 4,
-      "index": 47,
-      "total": 60
+      "ms": 5,
+      "index": 47
     },
     {
-      "type": "test:end",
       "id": "SUB-16",
       "name": "A subscription accessed with another clientId behaves as nonexistent (404)",
       "level": "MUST",
@@ -736,12 +641,10 @@
       "refTitle": "Implementation Guide § Subscriptions",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#subscriptions",
       "status": "pass",
-      "ms": 4,
-      "index": 48,
-      "total": 60
+      "ms": 7,
+      "index": 48
     },
     {
-      "type": "test:end",
       "id": "SUB-03",
       "name": "POST /subscriptions/register registers objects and returns per-item results",
       "level": "MUST",
@@ -751,12 +654,10 @@
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#registering-and-unregistering-objects",
       "status": "pass",
       "message": "registered 2 object(s)",
-      "ms": 9,
-      "index": 49,
-      "total": 60
+      "ms": 15,
+      "index": 49
     },
     {
-      "type": "test:end",
       "id": "SUB-04",
       "name": "Re-registering an already-registered object succeeds (idempotent)",
       "level": "MUST",
@@ -765,12 +666,10 @@
       "refTitle": "Implementation Guide § Registering and Unregistering Objects",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#registering-and-unregistering-objects",
       "status": "pass",
-      "ms": 2,
-      "index": 50,
-      "total": 60
+      "ms": 3,
+      "index": 50
     },
     {
-      "type": "test:end",
       "id": "SUB-05",
       "name": "Registration supports partial failure for unknown elementIds",
       "level": "MUST",
@@ -779,12 +678,10 @@
       "refTitle": "Implementation Guide § Registering and Unregistering Objects",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#registering-and-unregistering-objects",
       "status": "pass",
-      "ms": 3,
-      "index": 51,
-      "total": 60
+      "ms": 5,
+      "index": 51
     },
     {
-      "type": "test:end",
       "id": "SUB-06",
       "name": "POST /subscriptions/sync returns batches of well-formed updates",
       "level": "MUST",
@@ -795,11 +692,9 @@
       "status": "pass",
       "message": "1 pending batch(es)",
       "ms": 2,
-      "index": 52,
-      "total": 60
+      "index": 52
     },
     {
-      "type": "test:end",
       "id": "SUB-07",
       "name": "Sync acknowledgement: lastSequenceNumber removes acknowledged batches",
       "level": "MUST",
@@ -808,13 +703,11 @@
       "refTitle": "Implementation Guide § Sync",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#sync",
       "status": "pass",
-      "message": "acknowledged through sequence 4",
-      "ms": 4,
-      "index": 53,
-      "total": 60
+      "message": "acknowledged through sequence 5",
+      "ms": 3,
+      "index": 53
     },
     {
-      "type": "test:end",
       "id": "SUB-13",
       "name": "Sync acknowledgement: lastSequenceNumber = -1 clears all pending updates",
       "level": "MUST",
@@ -823,13 +716,11 @@
       "refTitle": "Implementation Guide § Sync",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#sync",
       "status": "pass",
-      "message": "queue cleared through sequence 5 in a single round trip",
+      "message": "queue cleared through sequence 6 in a single round trip",
       "ms": 7,
-      "index": 54,
-      "total": 60
+      "index": 54
     },
     {
-      "type": "test:end",
       "id": "SUB-08",
       "name": "POST /subscriptions/unregister removes objects with per-item results",
       "level": "MUST",
@@ -838,12 +729,10 @@
       "refTitle": "Implementation Guide § Registering and Unregistering Objects",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#registering-and-unregistering-objects",
       "status": "pass",
-      "ms": 3,
-      "index": 55,
-      "total": 60
+      "ms": 4,
+      "index": 55
     },
     {
-      "type": "test:end",
       "id": "SUB-09",
       "name": "POST /subscriptions/stream opens a Server-Sent Events stream",
       "level": "MAY",
@@ -852,12 +741,10 @@
       "refTitle": "Implementation Guide § Streaming",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#streaming",
       "status": "pass",
-      "ms": 16,
-      "index": 56,
-      "total": 60
+      "ms": 4,
+      "index": 56
     },
     {
-      "type": "test:end",
       "id": "SUB-14",
       "name": "Opening a second stream closes the existing stream (single stream per subscription)",
       "level": "MAY",
@@ -867,12 +754,10 @@
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#streaming",
       "status": "pass",
       "message": "previous stream closed cleanly when the new stream opened",
-      "ms": 65,
-      "index": 57,
-      "total": 60
+      "ms": 7,
+      "index": 57
     },
     {
-      "type": "test:end",
       "id": "SUB-10",
       "name": "POST /subscriptions/delete deletes the subscription",
       "level": "MUST",
@@ -881,12 +766,10 @@
       "refTitle": "Implementation Guide § Subscriptions",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#subscriptions",
       "status": "pass",
-      "ms": 10,
-      "index": 58,
-      "total": 60
+      "ms": 4,
+      "index": 58
     },
     {
-      "type": "test:end",
       "id": "SUB-11",
       "name": "Sync against a deleted or unknown subscription returns 404",
       "level": "MUST",
@@ -895,12 +778,10 @@
       "refTitle": "Implementation Guide § Subscription Life Cycle",
       "refUrl": "https://github.com/cesmii/i3X/blob/1.0/spec/IMPLEMENTATION_GUIDE.md#subscription-life-cycle",
       "status": "pass",
-      "ms": 2,
-      "index": 59,
-      "total": 60
+      "ms": 3,
+      "index": 59
     },
     {
-      "type": "test:end",
       "id": "SUB-12",
       "name": "Stream endpoint honestly advertises lack of support (501 when capability is false)",
       "level": "SHOULD",
@@ -912,8 +793,7 @@
       "message": "Streaming is declared supported — covered by SUB-09",
       "reason": "untestable",
       "ms": 0,
-      "index": 60,
-      "total": 60
+      "index": 60
     }
   ]
 }

@@ -128,6 +128,11 @@ services:
       NGINX_BASIC_AUTH_USER: "admin"  # Basic Auth username.
       NGINX_BASIC_AUTH_PASSWORD: "pw1"  # Basic Auth password.
       NGINX_BASIC_AUTH_REALM: i3x2ua  # Basic Auth realm text.
+      # Edge admission control (zones in nginx/nginx.conf). Requests beyond the rate answer 429;
+      # set NGINX_RATE_LIMIT_ENABLED=0 to disable it at the proxy.
+      NGINX_RATE_LIMIT_ENABLED: 1  # Apply limit_req/limit_conn in the server blocks.
+      NGINX_RATE_LIMIT_BURST: 40  # Slack before requests are shed; covers a first page load.
+      NGINX_RATE_LIMIT_CONN_PER_CLIENT: 64  # Concurrent connections per client (SSE streams count).
     volumes:
       - ./certs:/etc/nginx/certs:ro
     read_only: true
@@ -148,6 +153,16 @@ services:
     security_opt:
       - no-new-privileges:true
     pids_limit: 128
+    healthcheck:
+      # Probes through the proxy rather than the app: it proves the proxy -> upstream path works,
+      # which the app's own /health check cannot (a healthy app behind a broken proxy is unusable).
+      # /v1/info is public because i3X requires it, so the probe needs no credentials. busybox wget
+      # speaks TLS, and the shipped sample certs are self-signed, hence --no-check-certificate.
+      test: ["CMD-SHELL", "wget -q --no-check-certificate -O /dev/null https://127.0.0.1:${NGINX_HTTPS_PORT:-443}/v1/info || wget -q -O /dev/null http://127.0.0.1:${NGINX_HTTP_PORT:-80}/v1/info"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     networks:
       - backend
 

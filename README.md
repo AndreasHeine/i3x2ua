@@ -1,4 +1,4 @@
-![i3x2ua Logo](img/logo-small.png)
+![i3x2ua Logo](static/logo-small.png)
 
 # The i3X API Gateway for OPC UA — REST, MCP & Real-Time Streaming
 
@@ -571,7 +571,15 @@ The app container runs uvicorn with a single worker plus `--limit-concurrency 20
 subscription state and MCP sessions are process-local, so extra workers would strand them,
 and the limit sheds load spikes with 503 instead of queueing them on the event loop.
 Container health checks probe the static `/health` readiness route, which never touches the
-OPC UA connection.
+OPC UA connection. The nginx container has its own health check that requests `/v1/info`
+*through* the proxy, so a healthy proxy means the proxy → upstream path actually works.
+
+The proxy ships hardening by default, not as a docs-only recommendation: every server block
+refuses framing (`X-Frame-Options: DENY`, matching the gateway CSP's `frame-ancestors 'none'`),
+the HTTPS server adds HSTS, and per-client request rate (`limit_req`, 20 r/s, burst 40) and
+connection count (`limit_conn`, 64) are enforced with `429` - the same status the app's own
+opt-in limiter uses. nginx logs every request, successful ones included, so the proxy is the
+audit trail even when the app logs at `WARN`.
 
 The default compose setup also enables container hardening (`read_only`, `tmpfs`, dropped Linux capabilities, `no-new-privileges`).
 
@@ -587,6 +595,7 @@ Optional environment variables:
 - `NGINX_BASIC_AUTH_ENABLED=1` with `NGINX_BASIC_AUTH_USER` and `NGINX_BASIC_AUTH_PASSWORD`
 - `NGINX_SERVER_NAME` for the public host name
 - `NGINX_FRONTEND_DIST` to serve SPA assets from a different dist directory (`/srv/frontend/dist` by default)
+- `NGINX_RATE_LIMIT_ENABLED=0` to drop the edge rate and connection limits, `NGINX_RATE_LIMIT_BURST` and `NGINX_RATE_LIMIT_CONN_PER_CLIENT` to tune them (`40` and `64` by default)
 
 If you enable HTTPS, mount or place the certificate files in the configured cert directory before starting Compose.
 
@@ -645,10 +654,11 @@ This application implements the i3X API specification and is designed to run **b
 
 | Requirement | Implementation |
 |---|---|
-| TLS (HTTPS) for all client-facing traffic | nginx `ssl_certificate` + `ssl_certificate_key` |
-| Client authentication (API key / OAuth / mTLS) | nginx `auth_request` or `satisfy any` directives |
-| Rate limiting | nginx `limit_req_zone` |
-| Access logging | nginx `access_log` |
+| TLS (HTTPS) for all client-facing traffic | nginx `ssl_certificate` + `ssl_certificate_key` (`NGINX_HTTPS_ENABLED=1`) |
+| Client authentication (API key / OAuth / mTLS) | nginx `auth_request` or `satisfy any` directives (compose ships Basic Auth via `NGINX_BASIC_AUTH_*`) |
+| Rate limiting | nginx `limit_req_zone` + `limit_conn_zone`, shipped on by default (`NGINX_RATE_LIMIT_*`) |
+| Access logging | nginx `access_log`, every request including 200s |
+| HSTS and frame refusal | shipped: HSTS on the HTTPS server, `X-Frame-Options: DENY` everywhere |
 
 The gateway extensions carry no auth layer either, so restrict them at the proxy when they should
 not be public - `/ua/*` diagnostics, MCP (`/mcp`), and the Prometheus scrape (`/metrics`), which a

@@ -269,28 +269,44 @@ server {
 
 ## Security Headers
 
-### Recommended Headers
+### Shipped defaults
+
+`nginx/entrypoint.sh` adds these to every server block, so nginx-generated error pages (429, 413)
+carry them too:
+
 ```nginx
-# Prevent clickjacking
-add_header X-Frame-Options "SAMEORIGIN" always;
+# Refuses framing, matching the CSP frame-ancestors 'none' the gateway sets on its HTML
+add_header X-Frame-Options "DENY" always;
 
-# Prevent MIME type sniffing
-add_header X-Content-Type-Options "nosniff" always;
+# Added only when NGINX_HTTPS_ENABLED=1, because TLS is the only entry point then
+add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+```
 
-# Enable XSS protection
-add_header X-XSS-Protection "1; mode=block" always;
+The gateway sets the rest itself in `bootstrap/request_middlewares.py` (`X-Content-Type-Options:
+nosniff`, `Referrer-Policy: no-referrer`, and a CSP whose script source is the hashed prerendered
+bundle), so the proxy deliberately does not repeat them.
 
-# Referrer policy
-add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+### Optional additions
 
+```nginx
 # Permissions policy
 add_header Permissions-Policy "geolocation=(), microphone=(), camera=()" always;
+```
 
-# HSTS
-add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+`X-XSS-Protection` is not recommended: the header is deprecated and ignored by current browsers,
+and a CSP is the mechanism that actually prevents injection.
 
-# Content Security Policy (optional)
-add_header Content-Security-Policy "default-src 'self'; script-src 'self'" always;
+### Inheritance gotcha
+
+A `location` that declares its own `add_header` does **not** inherit the server-level ones. The
+asset locations cache SPA bundles with `Cache-Control`, so they repeat the security headers:
+
+```nginx
+location ^~ /_app/ {
+  add_header Cache-Control "public, immutable";
+  add_header X-Frame-Options "DENY" always;
+  try_files $uri @frontend_asset_fallback;
+}
 ```
 
 ### CORS Headers
@@ -308,6 +324,32 @@ if ($request_method = 'OPTIONS') {
 ---
 
 ## Rate Limiting
+
+### Shipped defaults
+
+`nginx/nginx.conf` declares the zones and `nginx/entrypoint.sh` applies them in every server
+block, so an over-rate client answers `429` - the same status the gateway's own opt-in limiter
+(`I3X_REQUEST_RATE_LIMIT_PER_MINUTE`) uses:
+
+```nginx
+limit_req_zone $binary_remote_addr zone=i3x_client:10m rate=20r/s;
+limit_conn_zone $binary_remote_addr zone=i3x_conn:10m;
+limit_req_status 429;
+limit_conn_status 429;
+```
+
+```nginx
+server {
+  limit_req zone=i3x_client burst=40 nodelay;
+  limit_conn i3x_conn 64;
+}
+```
+
+The knobs are `NGINX_RATE_LIMIT_ENABLED` (default `1`; `0` omits the directives),
+`NGINX_RATE_LIMIT_BURST` (default `40`, enough for a first page load of hashed SPA assets) and
+`NGINX_RATE_LIMIT_CONN_PER_CLIENT` (default `64`; SSE and MCP streams each hold one connection).
+Both zones key on the connecting address, so behind another proxy every request shares that
+proxy's address and the limit belongs there instead.
 
 ### Define Rate Limit Zones
 ```nginx
@@ -486,17 +528,21 @@ http {
     'urt="$upstream_response_time" conn=$connection '
     'conn_reqs=$connection_requests';
 
-  map $status $log_non_200 {
-    200     0;
-    default 1;
-  }
-
-  access_log /dev/stdout upstream_timing if=$log_non_200;
+  # Every request is logged, successful ones included: the proxy is the audit trail, because the
+  # gateway logs its own request lines at INFO and the compose default is WARN.
+  access_log /dev/stdout upstream_timing;
   sendfile on;
   tcp_nopush on;
   keepalive_timeout 65s;
   keepalive_requests 1000;
   server_tokens off;
+
+  # Edge admission control zones; entrypoint.sh applies them per server block unless
+  # NGINX_RATE_LIMIT_ENABLED=0.
+  limit_req_zone $binary_remote_addr zone=i3x_client:10m rate=20r/s;
+  limit_conn_zone $binary_remote_addr zone=i3x_conn:10m;
+  limit_req_status 429;
+  limit_conn_status 429;
 
   include /etc/nginx/conf.d/*.conf;
 }
@@ -726,7 +772,7 @@ server {
   ssl_certificate_key /etc/nginx/certs/privkey.pem;
   
   add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
-  add_header X-Frame-Options "SAMEORIGIN" always;
+  add_header X-Frame-Options "DENY" always;
   
   location / {
     auth_basic "API Access";

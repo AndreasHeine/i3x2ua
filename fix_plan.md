@@ -251,7 +251,7 @@ new branches (visible via `coverage.xml` branch data after PR-01).
 | PR-09 | 9 | typed ports, asyncua out of domain | ☒ | 1234 pass / 1 skip (83 s) | line 87,92 % / branch 77,58 % | Full 1.0 (56/0/2/2) | 6ef17e5 |
 | PR-10 | 10 | typed state, bootstrap layer contract | ☒ | 1240 pass / 1 skip (84 s) | line 88,02 % / branch 77,66 % | Full 1.0 (56/0/2/2) | e92fbfa |
 | PR-11 | 11 | module splits, dedup, enums, docstrings | ☒ | 1261 pass / 1 skip (81 s) | line 88,71 % / branch 78,12 % | Full 1.0 (56/0/2/2) | 9655b80 |
-| PR-12 | 12 | JSON logs, request-id, Prometheus | ☐ | | | | |
+| PR-12 | 12 | JSON logs, request-id, Prometheus | ☒ | 1281 pass / 1 skip (99 s) | line 88,81 % / branch 78,21 % | Full 1.0 (56/0/2/2) | 100add5 |
 | PR-13 | 13 | docs drift, nginx hardening, hygiene, report refresh | ☐ | | | | |
 
 Status legend: ☐ pending / ◐ in progress / ☒ merged & gates green. Update this table after each PR;

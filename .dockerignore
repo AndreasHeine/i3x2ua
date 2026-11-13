@@ -20,3 +20,16 @@ python-coding-requirements.md
 frontend/node_modules/
 frontend/.svelte-kit/
 frontend/.vite/
+# Nothing here is copied by either image: the backend stage copies pyproject.toml, uv.lock,
+# README.md, i3x_server, static and overrides; the proxy stage copies nginx/ and frontend/.
+# certs/ stays out so the shipped image never carries a private key, even a sample one.
+certs/
+.env
+.env.*
+i3X/
+conf-test-server/
+run.py
+run_*.py
+coverage.xml
+.coverage
+htmlcov/

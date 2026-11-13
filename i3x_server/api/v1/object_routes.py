@@ -1,3 +1,5 @@
+"""Object endpoints: ``GET /objects`` and lookups by element id over the built model."""
+
 from __future__ import annotations
 
 import asyncio

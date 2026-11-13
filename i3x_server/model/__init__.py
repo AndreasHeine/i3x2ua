@@ -1,3 +1,5 @@
+"""Model building package: node mapping, semantic profiles, reference graph, and revision."""
+
 from i3x_server.model.mapper import (  # noqa: F401
     _classify_hierarchical_family,
     _normalize_token,

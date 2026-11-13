@@ -23,7 +23,6 @@ from typing import Any, cast
 from asyncua.ua.status_codes import StatusCodes
 
 from i3x_server.api.v1.common_helpers import (
-    _format_utc_timestamp,
     _raise_invalid_argument,
     _to_json_safe_value,
 )
@@ -44,20 +43,23 @@ from i3x_server.api.v1.contracts import (
 from i3x_server.api.v1.object_helpers import _composition_children_for_node, _find_model_node
 from i3x_server.api.v1.write_validation import WriteValidationError, WriteValueValidator
 from i3x_server.application.ports.opcua import DataValueDTO, OpcUaClientProtocol
-from i3x_server.config.settings import Settings, get_settings
+from i3x_server.config.settings import get_settings
 from i3x_server.domain.ports.opcua import (
     WRITE_METADATA_UNCERTAIN_MESSAGE,
     WRITE_METADATA_UNSUPPORTED_MESSAGE,
     OpcUaWriteMetadataUnsupportedError,
     OpcUaWriteMetadataVerificationError,
+    Quality,
 )
 from i3x_server.schemas.i3x import ModelNode
-from i3x_server.schemas.opcua_value import severity_quality
+from i3x_server.schemas.opcua_value import (
+    format_utc_timestamp,
+    normalize_timestamp,
+    quality_for_payload,
+    severity_quality,
+    status_code_of,
+)
 from i3x_server.schemas.state import BuildResult
-
-
-def _runtime_settings() -> Settings:
-    return get_settings()
 
 
 def _is_valid_write_type(value: Any, variant_type: str | None) -> bool:
@@ -88,15 +90,6 @@ def _decode_bytestring_write_value(value: Any, variant_type: str | None) -> Any:
         return base64.b64decode(value, validate=True)
     except (ValueError, binascii.Error) as exc:
         raise ValueError("Invalid base64 ByteString") from exc
-
-
-def _write_status_code(exc: BaseException) -> int | None:
-    """Raw OPC UA status code carried by an exception, ``None`` when it carries none."""
-    code = getattr(exc, "code", None)
-    if isinstance(code, int):
-        return code
-    value = getattr(code, "value", None)
-    return value if isinstance(value, int) else None
 
 
 # Stable OPC UA status codes for write failures. Classification is code-based: exception text
@@ -144,7 +137,7 @@ def _classify_write_error(exc: Exception, *, service_unsupported_is_write_unavai
     ``service_unsupported_is_write_unavailable`` is set by the current-value path, where a
     ``BadServiceUnsupported``/``BadNotImplemented`` rejection means the write itself is not offered.
     """
-    status_code = _write_status_code(exc)
+    status_code = status_code_of(exc)
     if status_code is not None:
         if status_code in _WRITE_UNSUPPORTED_STATUS_CODES:
             if service_unsupported_is_write_unavailable:
@@ -512,17 +505,20 @@ def _history_no_data_vqt(end_time: datetime | None) -> VQT:
     """
     now = datetime.now(timezone.utc)
     timestamp = min(now, end_time) if end_time is not None else now
-    return VQT(value=None, quality="GoodNoData", timestamp=_format_utc_timestamp(timestamp))
+    return VQT(value=None, quality=Quality.GOOD_NO_DATA, timestamp=format_utc_timestamp(timestamp))
 
 
 def _vqt_from_data_value(data_value: DataValueDTO) -> VQT:
     raw_value = data_value.value.value if data_value.value is not None else None
-    quality = severity_quality(data_value.status_code)
-    timestamp = _normalize_timestamp(data_value.source_timestamp or data_value.server_timestamp)
     safe_value = _to_json_safe_value(raw_value)
-    if safe_value is None and quality not in ("Bad", "GoodNoData"):
-        quality = "GoodNoData"
+    quality = quality_for_payload(safe_value, severity_quality(data_value.status_code))
+    timestamp = normalize_timestamp(data_value.source_timestamp or data_value.server_timestamp)
     return VQT(value=safe_value, quality=quality, timestamp=timestamp)
+
+
+def _to_vqt_from_history_value(data_value: DataValueDTO) -> VQT:
+    """History sample as a VQT: the same payload/quality rule as a current-value read."""
+    return _vqt_from_data_value(data_value)
 
 
 def _composition_traversal_limits() -> tuple[int | None, int | None]:
@@ -530,7 +526,7 @@ def _composition_traversal_limits() -> tuple[int | None, int | None]:
 
     ``None`` means unbounded; the configured ``0`` maps to unbounded as documented in the contract.
     """
-    settings = _runtime_settings()
+    settings = get_settings()
     max_levels = settings.composition_max_depth if settings.composition_max_depth > 0 else None
     max_nodes = settings.composition_max_nodes if settings.composition_max_nodes > 0 else None
     return max_levels, max_nodes
@@ -599,22 +595,6 @@ def _collect_value_component_nodes(
             break
 
     return components, truncated
-
-
-def _normalize_timestamp(value: Any) -> str:
-    if isinstance(value, datetime):
-        return _format_utc_timestamp(value)
-    return _format_utc_timestamp(datetime.now(timezone.utc))
-
-
-def _to_vqt_from_history_value(data_value: DataValueDTO) -> VQT:
-    value = data_value.value.value if data_value.value is not None else None
-    timestamp = data_value.source_timestamp or data_value.server_timestamp
-    quality = severity_quality(data_value.status_code)
-    safe_value = _to_json_safe_value(value)
-    if safe_value is None and quality not in ("Bad", "GoodNoData"):
-        quality = "GoodNoData"
-    return VQT(value=safe_value, quality=quality, timestamp=_normalize_timestamp(timestamp))
 
 
 def _increment_counter(counter: dict[str, int], key: str) -> None:

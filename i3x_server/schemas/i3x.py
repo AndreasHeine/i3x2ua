@@ -1,3 +1,5 @@
+"""The built i3X model node and the planes that reference it."""
+
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field

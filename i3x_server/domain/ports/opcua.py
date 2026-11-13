@@ -12,7 +12,50 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
+
+# Fallback batch sizes when the upstream server reports no limits. A Browse/Browse request is
+# capped per call; 128 is the value the adapter used before these constants existed.
+DEFAULT_MAX_NODES_PER_BROWSE = 128
+DEFAULT_MAX_NODES_PER_READ = 128
+
+
+class Quality(StrEnum):
+    """The quality vocabulary the i3X VQT contract publishes.
+
+    ``GoodNoData`` marks a Good-severity value that carries no payload; ``Uncertain`` and
+    ``Bad`` mirror the OPC UA severity bits (Part 6, 7.16). Values are plain strings, so
+    payloads serialized from this enum stay contract-compatible.
+    """
+
+    GOOD = "Good"
+    GOOD_NO_DATA = "GoodNoData"
+    UNCERTAIN = "Uncertain"
+    BAD = "Bad"
+
+
+class SecurityMode(StrEnum):
+    """Security modes accepted by the upstream adapter's asyncua security string.
+
+    ``NONE`` is the default: no encryption or signing. ``SIGN``/``SIGN_AND_ENCRYPT`` require
+    a policy, client certificate, and client key (see ``infrastructure.opcua.connection``).
+    """
+
+    NONE = "None"
+    SIGN = "Sign"
+    SIGN_AND_ENCRYPT = "SignAndEncrypt"
+
+
+# OPC UA AccessLevel bit for CurrentWrite (Part 6, Table 24).
+ACCESS_LEVEL_WRITE_BIT = 0x02
+
+# Qualities a request may report as "usable data" in metrics counters.
+GOODISH_QUALITIES: tuple[Quality, ...] = (Quality.GOOD, Quality.UNCERTAIN)
+
+# Qualities that must carry a null payload: the i3X write and history contracts reject a
+# value alongside ``Bad``/``GoodNoData`` (spec :426/:455).
+NULL_VALUE_QUALITIES: frozenset[Quality] = frozenset({Quality.BAD, Quality.GOOD_NO_DATA})
 
 
 @dataclass(slots=True)
@@ -139,7 +182,7 @@ class OpcUaRequestMetrics:
     history_read_count: int = 0
     history_write_count: int = 0
     failed_request_count: int = 0
-    goodish_qualities: list[str] = field(default_factory=lambda: ["Good", "Uncertain"])
+    goodish_qualities: list[str] = field(default_factory=lambda: list(GOODISH_QUALITIES))
 
 
 @dataclass(slots=True)
@@ -176,7 +219,7 @@ class DataValueDTO:
 
     value: OpcUaValue
     status_code: int | None = None
-    quality: str | None = None
+    quality: Quality | None = None
     source_timestamp: datetime | None = None
     server_timestamp: datetime | None = None
 

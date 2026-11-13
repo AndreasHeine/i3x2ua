@@ -1,3 +1,7 @@
+"""MCP tools that read the cached model directly.
+
+They never start a model build or contact OPC UA; a model that is not built yet answers 503."""
+
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping

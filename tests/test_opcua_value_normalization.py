@@ -12,8 +12,11 @@ from i3x_server.schemas.opcua_value import (
     decode_data_value,
     format_utc_timestamp,
     normalize_opcua_value,
+    normalize_timestamp,
+    now_iso,
     quality_from_status_code,
     severity_quality,
+    status_code_of,
 )
 
 
@@ -128,3 +131,27 @@ def test_format_utc_timestamp_renders_naive_and_zoned_values_as_utc() -> None:
     assert format_utc_timestamp(naive) == "2026-01-01T12:00:00Z"
     eastern = datetime(2026, 1, 1, 14, 0, tzinfo=timezone(timedelta(hours=2)))
     assert format_utc_timestamp(eastern) == "2026-01-01T12:00:00Z"
+
+
+def test_now_iso_and_normalize_timestamp_use_the_utc_contract_shape() -> None:
+    assert now_iso().endswith("Z")
+    assert normalize_timestamp(datetime(2026, 1, 1, 12, 0)) == "2026-01-01T12:00:00Z"
+    # A missing upstream timestamp falls back to the gateway clock rather than an empty field.
+    assert normalize_timestamp(None).endswith("Z")
+    assert normalize_timestamp("not-a-datetime").endswith("Z")
+
+
+def test_status_code_of_reads_plain_and_wrapped_codes() -> None:
+    class _PlainCodeError(RuntimeError):
+        code = 0x80000000
+
+    class _WrappedCodeError(RuntimeError):
+        code = _status_code(0x80770000)
+
+    class _StringCodeError(RuntimeError):
+        code = "BadNodeIdUnknown"
+
+    assert status_code_of(_PlainCodeError()) == 0x80000000
+    assert status_code_of(_WrappedCodeError()) == 0x80770000
+    assert status_code_of(RuntimeError("no code")) is None
+    assert status_code_of(_StringCodeError()) is None

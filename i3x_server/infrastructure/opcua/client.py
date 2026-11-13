@@ -2,15 +2,17 @@
 
 The transport internals are split into seam modules that each own one concern:
 ``recovery.py`` (asyncua supervisor, reconnect hand-off, error classification),
-``browse.py`` (tree traversal and Browse/BrowseNext plumbing), ``node_reading.py``
-(node-info attribute batches), ``metadata.py`` (operational limits, subscription
-capabilities, namespaces), ``object_types.py`` (object-type graph and type
-hierarchies) and ``values.py`` (reads, writes, history, method calls). Seam
-functions take the owning client and call back through its public entry points,
-so monkeypatching a client method still intercepts the seam; direct asyncua
-bypasses go through the adapter-owned escape hatches (``raw_client``,
-``browse_raw``, ``browse_next_raw``, ``raw_node``) instead of private
-attributes. Internals are tested in the source module that now owns them
+``connection.py`` (connect/disconnect, state mirroring, security setup),
+``metadata_cache.py`` (TTL rules, dict caches, coalesced loads), ``metrics.py``
+(request/runtime metric recording), ``browse.py`` (tree traversal and
+Browse/BrowseNext plumbing), ``node_reading.py`` (node-info attribute batches),
+``metadata.py`` (operational limits, subscription capabilities, namespaces),
+``object_types.py`` (object-type graph and type hierarchies) and ``values.py``
+(reads, writes, history, method calls). Seam functions take the owning client and
+call back through its public seams, so monkeypatching a client method still
+intercepts the seam; direct asyncua bypasses go through the adapter-owned escape
+hatches (``raw_client``, ``browse_raw``, ``browse_next_raw``, ``raw_node``) instead of
+private attributes. Internals are tested in the source module that now owns them
 (docs/architecture.md).
 """
 
@@ -21,10 +23,7 @@ import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 from contextvars import ContextVar
-from dataclasses import asdict
 from datetime import datetime, timezone
-from pathlib import Path
-from time import perf_counter
 from typing import Any, TypeVar, cast
 
 from asyncua import ua
@@ -51,8 +50,19 @@ from i3x_server.domain.ports.opcua import (
     OpcUaTypeDefinitionInfo,
     OpcUaWriteMetadataUnsupportedError,
     OpcUaWriteMetadataVerificationError,
+    SecurityMode,
 )
-from i3x_server.infrastructure.opcua import browse, metadata, node_reading, object_types, recovery, values
+from i3x_server.infrastructure.opcua import (
+    browse,
+    connection,
+    metadata,
+    metadata_cache,
+    metrics,
+    node_reading,
+    object_types,
+    recovery,
+    values,
+)
 from i3x_server.infrastructure.opcua.recovery import _SupervisedAsyncuaClient
 
 __all__ = [
@@ -80,14 +90,6 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 _T = TypeVar("_T")
-_METADATA_INVALIDATED_AT = float("-inf")
-
-# Caps for the node-id keyed metadata caches below. Entries only expire on read, so without
-# a cap a long-lived client accumulates every type it ever browsed. The caps are generous so
-# hot base types stay resident in normal deployments and eviction only bounds pathological
-# growth.
-_TYPE_DEFINITION_HIERARCHY_CACHE_MAX_ENTRIES = 2048
-_REFERENCE_TYPE_SUPERTYPES_CACHE_MAX_ENTRIES = 1024
 
 # Budget override for background model refreshes. Tasks created inside the scope inherit
 # it through their copied context, so a rebuild's round-trips are throttled by the smaller
@@ -146,7 +148,7 @@ class OpcUaClient:
         endpoint: str,
         username: str | None = None,
         password: str | None = None,
-        security_mode: str = "None",
+        security_mode: str = SecurityMode.NONE,
         security_policy: str | None = None,
         client_cert_path: str | None = None,
         client_key_path: str | None = None,
@@ -164,18 +166,18 @@ class OpcUaClient:
         self.endpoint = endpoint
         self._username = username.strip() if isinstance(username, str) and username.strip() else None
         self._password = password if isinstance(password, str) and password != "" else None
-        self._security_mode = security_mode.strip() if security_mode.strip() else "None"
-        self._security_policy = (
+        self.security_mode = security_mode.strip() if security_mode.strip() else SecurityMode.NONE
+        self.security_policy = (
             security_policy.strip() if isinstance(security_policy, str) and security_policy.strip() else None
         )
-        self._client_cert_path = (
+        self.client_cert_path = (
             client_cert_path.strip() if isinstance(client_cert_path, str) and client_cert_path.strip() else None
         )
-        self._client_key_path = (
+        self.client_key_path = (
             client_key_path.strip() if isinstance(client_key_path, str) and client_key_path.strip() else None
         )
-        self._client_key_password = client_key_password if client_key_password else None
-        self._server_cert_path = (
+        self.client_key_password = client_key_password if client_key_password else None
+        self.server_cert_path = (
             server_cert_path.strip() if isinstance(server_cert_path, str) and server_cert_path.strip() else None
         )
         self.browse_concurrency = max(1, browse_concurrency)
@@ -187,40 +189,40 @@ class OpcUaClient:
         self._read_semaphore = asyncio.Semaphore(self._read_concurrency)
         self._refresh_semaphore = asyncio.Semaphore(self._refresh_concurrency)
         self.browse_roots = tuple(browse_roots) if browse_roots is not None else None
-        self._metadata_cache_ttl_seconds = max(0, metadata_cache_ttl_seconds)
+        self.metadata_cache_ttl_seconds = max(0, metadata_cache_ttl_seconds)
         self._connection_monitor_interval_seconds = max(1, connection_monitor_interval_seconds)
         self.reconnect_request_timeout_seconds = max(0.1, float(reconnect_request_timeout_seconds))
-        self._reconnect_max_delay_seconds = max(1.0, float(reconnect_max_delay_seconds))
+        self.reconnect_max_delay_seconds = max(1.0, float(reconnect_max_delay_seconds))
         # asyncua's connection supervisor is the single owner of reconnects: it probes the
         # server every watchdog interval, re-activates or recreates the session with backoff,
         # gates new requests while reconnecting, and restores its tracked subscriptions.
         self.raw_client = _SupervisedAsyncuaClient(
             url=endpoint,
             watchdog_intervall=float(self._connection_monitor_interval_seconds),
-            reconnect_max_delay=self._reconnect_max_delay_seconds,
+            reconnect_max_delay=self.reconnect_max_delay_seconds,
             reconnect_request_timeout=self.reconnect_request_timeout_seconds,
             application_request_limit=self.browse_concurrency,
         )
-        self.raw_client.reconnected_callback = self._on_asyncua_reconnected
+        self.raw_client.reconnected_callback = self.on_asyncua_reconnected
         self.raw_client.application_uri = "urn:i3x2ua:opcua_client"
         self.raw_client.name = "i3x2ua-opcua-client"
         self.raw_client.description = "The i3X API Gateway for OPC UA"
         self.raw_client.product_uri = "urn:github.com/AndreasHeine/i3x2ua.git"
-        self._using_user_auth = False
-        self._using_security = False
+        self.using_user_auth = False
+        self.using_security = False
         if self._username is not None and self._password is not None:
             self.raw_client.set_user(self._username)
             self.raw_client.set_password(self._password)
-            self._using_user_auth = True
+            self.using_user_auth = True
         elif self._username is not None or self._password is not None:
             logger.warning(
                 "OPC UA auth config incomplete endpoint=%s; both username and password are "
                 "required. Falling back to anonymous session.",
                 self.endpoint,
             )
-        self._reconnect_listeners: list[Callable[[], Awaitable[None]]] = []
+        self.reconnect_listeners: list[Callable[[], Awaitable[None]]] = []
         self.reconnected_event = asyncio.Event()
-        self._reconnect_session_recreated = False
+        self.reconnect_session_recreated = False
         self.limits_cache: OpcUaOperationalLimits | None = None
         self.subscription_caps_cache: OpcUaSubscriptionCapabilities | None = None
         self.namespace_infos_cache: tuple[float, list[OpcUaNamespaceInfo]] | None = None
@@ -232,27 +234,29 @@ class OpcUaClient:
         self.runtime_metrics = OpcUaRuntimeMetrics()
         self.history_update_support: bool | None = None
         self.request_metrics = OpcUaRequestMetrics()
-        self._goodish_quality_labels = {"good", "uncertain"}
-        self._connection_state = "Disconnected"
-        self._connection_state_since = datetime.now(tz=timezone.utc)
-        self._connection_state_task: asyncio.Task[None] | None = None
-        self._reconnect_handler_task: asyncio.Task[None] | None = None
+        self.connection_state = "Disconnected"
+        self.connection_state_since = datetime.now(tz=timezone.utc)
+        self.connection_state_task: asyncio.Task[None] | None = None
+        self.reconnect_handler_task: asyncio.Task[None] | None = None
+
+    # ------------------------------------------------------------------
+    # Metrics and connection snapshot
+    # ------------------------------------------------------------------
 
     def reset_runtime_metrics(self) -> None:
-        self.runtime_metrics = OpcUaRuntimeMetrics()
-        self.request_metrics = OpcUaRequestMetrics()
+        metrics.reset_runtime_metrics(self)
 
     def snapshot_runtime_metrics(self) -> OpcUaRuntimeMetrics:
-        return OpcUaRuntimeMetrics(**asdict(self.runtime_metrics))
+        return metrics.snapshot_runtime_metrics(self)
 
     def snapshot_request_metrics(self) -> OpcUaRequestMetrics:
-        return OpcUaRequestMetrics(**asdict(self.request_metrics))
+        return metrics.snapshot_request_metrics(self)
 
     def get_connection_snapshot(self) -> OpcUaConnectionSnapshot:
         return OpcUaConnectionSnapshot(
-            state=self._connection_state,
+            state=self.connection_state,
             endpoint=self.endpoint,
-            since=self._connection_state_since,
+            since=self.connection_state_since,
         )
 
     def read_slot(self) -> asyncio.Semaphore:
@@ -266,43 +270,50 @@ class OpcUaClient:
         budget = _MODEL_REFRESH_BUDGET.get()
         return self._read_semaphore if budget is None else budget
 
+    def _is_goodish_status(self, status_code: Any) -> bool:
+        """Kept as the client-facing entry point; the classification lives in ``metrics``."""
+        return metrics.is_goodish_status(status_code)
+
+    def record_read_success(self) -> None:
+        metrics.record_read_success(self)
+
+    def record_history_read_success(self) -> None:
+        metrics.record_history_read_success(self)
+
+    def record_method_success(self) -> None:
+        metrics.record_method_success(self)
+
+    def record_failed_request(self) -> None:
+        metrics.record_failed_request(self)
+
+    def record_browse_results(self, results: list[ua.BrowseResult]) -> None:
+        metrics.record_browse_results(self, results)
+
+    def record_read_data_values(self, values: list[ua.DataValue]) -> None:
+        metrics.record_read_data_values(self, values)
+
+    # ------------------------------------------------------------------
+    # Metadata cache entry points (metadata_cache.py)
+    # ------------------------------------------------------------------
+
     def is_metadata_cache_entry_fresh(self, cached_at: float) -> bool:
         """TTL of 0 means entries never expire, unless explicitly invalidated."""
-        if cached_at == _METADATA_INVALIDATED_AT:
-            return False
-        if self._metadata_cache_ttl_seconds == 0:
-            return True
-        return perf_counter() - cached_at <= self._metadata_cache_ttl_seconds
+        return metadata_cache.is_metadata_cache_entry_fresh(self, cached_at)
 
     @staticmethod
     def invalidate_metadata_entry(cached: tuple[float, _T] | None) -> tuple[float, _T] | None:
         """Keep the value servable as stale, but force the next access to refresh it."""
-        if cached is None:
-            return None
-        return (_METADATA_INVALIDATED_AT, cached[1])
+        return metadata_cache.invalidate_metadata_entry(cached)
 
-    def _metadata_dict_cache_read(self, cache: dict[str, tuple[float, _T]], key: str) -> _T | None:
-        """Return the fresh value for ``key`` and mark the entry most-recently-used.
-
-        Stale entries are dropped rather than kept: dict-keyed metadata is never served as
-        stale, so unreachable entries would only delay eviction.
-        """
-        entry = cache.get(key)
-        if entry is None:
-            return None
-        if not self.is_metadata_cache_entry_fresh(entry[0]):
-            del cache[key]
-            return None
-        cache[key] = cache.pop(key)
-        return entry[1]
+    def _metadata_dict_cache_read(self, entries: dict[str, tuple[float, _T]], key: str) -> _T | None:
+        """Return the fresh value for ``key`` and mark the entry most-recently-used."""
+        return metadata_cache._metadata_dict_cache_read(self, entries, key)
 
     def _metadata_dict_cache_write(
-        self, cache: dict[str, tuple[float, _T]], key: str, value: _T, max_entries: int
+        self, entries: dict[str, tuple[float, _T]], key: str, value: _T, max_entries: int
     ) -> None:
         """Store an entry as most-recently-used and evict least-recently-used ones past the cap."""
-        cache[key] = (perf_counter(), value)
-        while len(cache) > max_entries:
-            del cache[next(iter(cache))]
+        metadata_cache._metadata_dict_cache_write(self, entries, key, value, max_entries)
 
     def cached_type_definition_hierarchy(self, type_id: str) -> list[OpcUaTypeDefinitionInfo] | None:
         return self._metadata_dict_cache_read(self._type_definition_hierarchy_cache, type_id)
@@ -312,7 +323,7 @@ class OpcUaClient:
             self._type_definition_hierarchy_cache,
             type_id,
             hierarchy,
-            _TYPE_DEFINITION_HIERARCHY_CACHE_MAX_ENTRIES,
+            metadata_cache._TYPE_DEFINITION_HIERARCHY_CACHE_MAX_ENTRIES,
         )
 
     def cached_reference_type_supertypes(self, type_id: str) -> list[str] | None:
@@ -323,24 +334,20 @@ class OpcUaClient:
             self._reference_type_supertypes_cache,
             type_id,
             names,
-            _REFERENCE_TYPE_SUPERTYPES_CACHE_MAX_ENTRIES,
+            metadata_cache._REFERENCE_TYPE_SUPERTYPES_CACHE_MAX_ENTRIES,
         )
 
+    def reset_metadata_dict_caches(self) -> None:
+        """Drop the node-id keyed caches (reconnect or disconnect made their servers stale)."""
+        self._reference_type_supertypes_cache = {}
+        self._type_definition_hierarchy_cache = {}
+
     def _start_metadata_load(self, key: str, loader: Callable[[], Awaitable[_T]]) -> asyncio.Future[_T]:
-        task = self.metadata_load_tasks.get(key)
-        if task is None:
-            task = asyncio.ensure_future(loader())
-            self.metadata_load_tasks[key] = task
-            task.add_done_callback(lambda done: self._finish_metadata_load(key, done))
-        return cast("asyncio.Future[_T]", task)
+        return metadata_cache._start_metadata_load(self, key, loader)
 
     async def _coalesce_metadata_load(self, key: str, loader: Callable[[], Awaitable[_T]]) -> _T:
-        """Share one in-flight OPC UA metadata load between concurrent callers.
-
-        Without this, every request that sees an expired cache entry starts its own full
-        browse, which overloads the OPC UA server under concurrent load.
-        """
-        return await asyncio.shield(self._start_metadata_load(key, loader))
+        """Share one in-flight OPC UA metadata load between concurrent callers."""
+        return await metadata_cache._coalesce_metadata_load(self, key, loader)
 
     async def _get_cached_metadata(
         self,
@@ -348,223 +355,60 @@ class OpcUaClient:
         cached: tuple[float, _T] | None,
         loader: Callable[[], Awaitable[_T]],
     ) -> _T:
-        """Serve stale metadata while one shared background load refreshes it.
-
-        Only a cold cache waits for OPC UA, so TTL expiry never stalls API requests.
-        """
-        if cached is None:
-            return await self._coalesce_metadata_load(key, loader)
-        cached_at, cached_value = cached
-        if not self.is_metadata_cache_entry_fresh(cached_at):
-            incident = self.stale_metadata_incidents.get(key)
-            if incident is None:
-                self.stale_metadata_incidents[key] = (perf_counter(), 0)
-                logger.warning(
-                    "OPC UA serving stale metadata while refreshing endpoint=%s key=%s age_s=%s ttl_s=%s",
-                    self.endpoint,
-                    key,
-                    "invalidated" if cached_at == _METADATA_INVALIDATED_AT else f"{perf_counter() - cached_at:.3f}",
-                    self._metadata_cache_ttl_seconds,
-                )
-            else:
-                started_at, suppressed_events = incident
-                self.stale_metadata_incidents[key] = (started_at, suppressed_events + 1)
-            self._start_metadata_load(key, loader)
-        return cached_value
+        """Serve stale metadata while one shared background load refreshes it."""
+        return await metadata_cache._get_cached_metadata(self, key, cached, loader)
 
     def _finish_metadata_load(self, key: str, task: asyncio.Future[Any]) -> None:
-        if self.metadata_load_tasks.get(key) is task:
-            del self.metadata_load_tasks[key]
-        if task.cancelled() or task.exception() is not None:
-            return
+        metadata_cache._finish_metadata_load(self, key, task)
 
-        incident = self.stale_metadata_incidents.pop(key, None)
-        if incident is not None:
-            started_at, suppressed_events = incident
-            logger.info(
-                "OPC UA metadata refresh recovered endpoint=%s key=%s stale_duration_s=%.3f suppressed_events=%d",
-                self.endpoint,
-                key,
-                perf_counter() - started_at,
-                suppressed_events,
-            )
+    # ------------------------------------------------------------------
+    # Connection lifecycle entry points (connection.py)
+    # ------------------------------------------------------------------
 
     async def connect(self) -> None:
-        started = perf_counter()
-        security_started = perf_counter()
-        await self._configure_security_if_needed()
-        security_duration_s = perf_counter() - security_started
-        logger.info(
-            "OPC UA connect started endpoint=%s auth_mode=%s security_mode=%s",
-            self.endpoint,
-            "userpass" if self._using_user_auth else "anonymous",
-            self._security_mode,
-        )
-        session_started = perf_counter()
-        # Client.disconnect() clears asyncua's request gate and never restores it on connect().
-        self.raw_client.uaclient.pre_request_hook = self.raw_client._wait_until_ready
-        await self.raw_client.connect(
-            auto_reconnect=True,
-            reconnect_max_delay=self._reconnect_max_delay_seconds,
-            reconnect_request_timeout=self.reconnect_request_timeout_seconds,
-        )
-        self._set_connection_state("Connected")
-        self._start_connection_tasks()
-        session_duration_s = perf_counter() - session_started
-        typedef_started = perf_counter()
-        await self.load_additional_typedefinitions()
-        typedef_duration_s = perf_counter() - typedef_started
-        limits_started = perf_counter()
-        self.limits_cache = await self.get_operational_limits()
-        limits_duration_s = perf_counter() - limits_started
-        logger.info(
-            "OPC UA limits endpoint=%s max_nodes_per_browse=%s max_nodes_per_read=%s",
-            self.endpoint,
-            self.limits_cache.max_nodes_per_browse,
-            self.limits_cache.max_nodes_per_read,
-        )
-        logger.info(
-            (
-                "OPC UA connect phases endpoint=%s security_s=%.3f session_s=%.3f "
-                "typedef_s=%.3f limits_s=%.3f total_s=%.3f"
-            ),
-            self.endpoint,
-            security_duration_s,
-            session_duration_s,
-            typedef_duration_s,
-            limits_duration_s,
-            perf_counter() - started,
-        )
+        await connection.connect(self)
 
     async def load_additional_typedefinitions(self) -> None:
-        started = perf_counter()
-        logger.info("OPC UA additional type definitions load started endpoint=%s", self.endpoint)
-        try:
-            await self.raw_client.load_data_type_definitions()
-        except Exception as e:
-            logger.warning(
-                "OPC UA additional v1.04 data type definitions load failed endpoint=%s error=%s", self.endpoint, e
-            )
-            try:
-                await self.raw_client.load_type_definitions()
-            except Exception as e:
-                logger.warning(
-                    "OPC UA additional v1.03 data type definitions load failed endpoint=%s error=%s", self.endpoint, e
-                )
-            else:
-                logger.info(
-                    "OPC UA additional type definitions v1.03 load finished endpoint=%s duration_s=%.3f",
-                    self.endpoint,
-                    perf_counter() - started,
-                )
-        else:
-            logger.info(
-                "OPC UA additional type definitions load finished endpoint=%s duration_s=%.3f",
-                self.endpoint,
-                perf_counter() - started,
-            )
+        await connection.load_additional_typedefinitions(self)
 
     async def disconnect(self) -> None:
-        started = perf_counter()
-        logger.info("OPC UA disconnect started endpoint=%s", self.endpoint)
-        await self._stop_connection_tasks()
-        # Drop reconnect bookkeeping: a later `connect()` must not run the reconnect
-        # handler for a stale event or re-fire listeners with a recreated-session flag (L10).
-        self.reconnected_event.clear()
-        self._reconnect_session_recreated = False
-        await self.raw_client.disconnect()
-        self._set_connection_state("Disconnected")
-        self.limits_cache = None
-        self.namespace_infos_cache = None
-        self.object_type_cache = None
-        self.subscription_caps_cache = None
-        self._reference_type_supertypes_cache = {}
-        self._type_definition_hierarchy_cache = {}
-        logger.info("OPC UA disconnect finished endpoint=%s duration_s=%.3f", self.endpoint, perf_counter() - started)
+        await connection.disconnect(self)
 
-    def _start_connection_tasks(self) -> None:
-        if self._connection_state_task is None or self._connection_state_task.done():
-            self._connection_state_task = asyncio.create_task(self._watch_connection_state())
-        if self._reconnect_handler_task is None or self._reconnect_handler_task.done():
-            self._reconnect_handler_task = asyncio.create_task(self._reconnect_handler_loop())
+    def start_connection_tasks(self) -> None:
+        connection.start_connection_tasks(self)
 
-    async def _stop_connection_tasks(self) -> None:
-        tasks = [self._connection_state_task, self._reconnect_handler_task]
-        self._connection_state_task = None
-        self._reconnect_handler_task = None
-        for task in tasks:
-            if task is None:
-                continue
-            task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
+    async def stop_connection_tasks(self) -> None:
+        await connection.stop_connection_tasks(self)
 
-    async def _watch_connection_state(self) -> None:
+    async def watch_connection_state(self) -> None:
         """Mirror asyncua's transport state into the connection snapshot."""
-        uaclient = self.raw_client.uaclient
-        async with uaclient.subscribe_state() as states:
-            self._apply_client_state(uaclient.state)
-            while True:
-                self._apply_client_state(await states.next_change())
+        await connection.watch_connection_state(self)
 
-    def _apply_client_state(self, state: UaClientState) -> None:
-        if state is UaClientState.CONNECTED:
-            self._set_connection_state("Connected")
-            return
-        if self.raw_client.uaclient.is_disconnect_requested:
-            self._set_connection_state("Disconnected")
-            return
-        if self._connection_state == "Connected":
-            logger.warning(
-                "OPC UA connection lost endpoint=%s client_state=%s; waiting for asyncua reconnect",
-                self.endpoint,
-                state.value,
-            )
-        self._set_connection_state("Reconnecting")
+    def apply_client_state(self, state: UaClientState) -> None:
+        connection.apply_client_state(self, state)
 
-    def _on_asyncua_reconnected(self, session_reused: bool) -> None:
+    def on_asyncua_reconnected(self, session_reused: bool) -> None:
         """Called by the asyncua supervisor once the session and its subscriptions are restored."""
-        self._set_connection_state("Connected")
-        self.limits_cache = None
-        self.subscription_caps_cache = None
-        # Keep the expensive browse results servable as stale so API requests do not
-        # block on a cold rebuild while the server is recovering from the reconnect.
-        self.namespace_infos_cache = self.invalidate_metadata_entry(self.namespace_infos_cache)
-        self.object_type_cache = self.invalidate_metadata_entry(self.object_type_cache)
-        self._reference_type_supertypes_cache = {}
-        self._type_definition_hierarchy_cache = {}
-        self._reconnect_session_recreated = self._reconnect_session_recreated or not session_reused
-        logger.info(
-            "OPC UA reconnect finished endpoint=%s session=%s",
-            self.endpoint,
-            "reused" if session_reused else "recreated",
-        )
-        # The follow-up work runs in our own task: the supervisor must not block on it, and
-        # requests issued from the supervisor's context would bypass asyncua's request gate.
-        self.reconnected_event.set()
+        connection.on_asyncua_reconnected(self, session_reused)
 
-    async def _reconnect_handler_loop(self) -> None:
-        while True:
-            await self.reconnected_event.wait()
-            self.reconnected_event.clear()
-            await self._handle_reconnected()
+    async def reconnect_handler_loop(self) -> None:
+        await connection.reconnect_handler_loop(self)
 
-    async def _handle_reconnected(self) -> None:
-        if self._reconnect_session_recreated:
-            self._reconnect_session_recreated = False
-            await self.load_additional_typedefinitions()
-        for listener in list(self._reconnect_listeners):
-            try:
-                await listener()
-            except Exception:
-                logger.exception("OPC UA reconnect listener failed endpoint=%s", self.endpoint)
+    async def handle_reconnected(self) -> None:
+        await connection.handle_reconnected(self)
 
     def add_reconnect_listener(self, listener: Callable[[], Awaitable[None]]) -> None:
-        self._reconnect_listeners.append(listener)
+        self.reconnect_listeners.append(listener)
 
     def remove_reconnect_listener(self, listener: Callable[[], Awaitable[None]]) -> None:
         with suppress(ValueError):
-            self._reconnect_listeners.remove(listener)
+            self.reconnect_listeners.remove(listener)
+
+    async def configure_security_if_needed(self) -> None:
+        await connection.configure_security_if_needed(self)
+
+    def set_connection_state(self, state: str) -> None:
+        connection.set_connection_state(self, state)
 
     # ------------------------------------------------------------------
     # Browse seam entry points (browse.py)
@@ -950,124 +794,3 @@ class OpcUaClient:
             if handle is not None:
                 result[node_id] = handle
         return result
-
-    # ------------------------------------------------------------------
-    # Security configuration
-    # ------------------------------------------------------------------
-
-    async def _configure_security_if_needed(self) -> None:
-        mode = self._security_mode.strip()
-        if mode.lower() == "none":
-            self._using_security = False
-            return
-
-        missing: list[str] = []
-        if self._security_policy is None:
-            missing.append("security_policy")
-        if self._client_cert_path is None:
-            missing.append("client_cert_path")
-        if self._client_key_path is None:
-            missing.append("client_key_path")
-        if missing:
-            raise ValueError(
-                f"OPC UA encryption requires policy, client cert, and client key. Missing: {', '.join(missing)}"
-            )
-
-        cert_path_str = self._client_cert_path
-        key_path_str = self._client_key_path
-        if cert_path_str is None or key_path_str is None:
-            raise ValueError("OPC UA encryption paths are not configured")
-
-        cert_path = Path(cert_path_str)
-        key_path = Path(key_path_str)
-        _assert_file_exists(cert_path, "OPC UA client certificate")
-        _assert_file_exists(key_path, "OPC UA client key")
-
-        key_value = str(key_path)
-        if self._client_key_password:
-            key_value = f"{key_value}::{self._client_key_password}"
-
-        security_policy = self._security_policy
-        if security_policy is None:
-            raise ValueError("OPC UA security policy is not configured")
-
-        security_items: list[str] = [security_policy, mode, str(cert_path), key_value]
-        if self._server_cert_path is not None:
-            server_cert = Path(self._server_cert_path)
-            _assert_file_exists(server_cert, "OPC UA server certificate")
-            security_items.append(str(server_cert))
-
-        security_string = ",".join(security_items)
-        await self.raw_client.set_security_string(security_string)
-        self._using_security = True
-
-    # ------------------------------------------------------------------
-    # Connection state and request metrics
-    # ------------------------------------------------------------------
-
-    def _set_connection_state(self, state: str) -> None:
-        if self._connection_state == state:
-            return
-        self._connection_state = state
-        self._connection_state_since = datetime.now(tz=timezone.utc)
-
-    def _is_goodish_status(self, status_code: Any) -> bool:
-        if status_code is None:
-            return True
-        is_uncertain = getattr(status_code, "is_uncertain", None)
-        if callable(is_uncertain):
-            try:
-                if bool(is_uncertain()):
-                    return "uncertain" in self._goodish_quality_labels
-            except Exception:
-                pass
-        is_good = getattr(status_code, "is_good", None)
-        if callable(is_good):
-            try:
-                if bool(is_good()):
-                    return "good" in self._goodish_quality_labels
-            except Exception:
-                pass
-        name = str(getattr(status_code, "name", status_code)).strip().lower()
-        if not name:
-            return False
-        if "uncertain" in name:
-            return "uncertain" in self._goodish_quality_labels
-        if "good" in name:
-            return "good" in self._goodish_quality_labels
-        return name in self._goodish_quality_labels
-
-    def record_read_success(self) -> None:
-        self.request_metrics.read_count += 1
-
-    def record_history_read_success(self) -> None:
-        self.request_metrics.history_read_count += 1
-
-    def record_method_success(self) -> None:
-        self.request_metrics.method_call_count += 1
-
-    def record_failed_request(self) -> None:
-        self.request_metrics.failed_request_count += 1
-
-    def record_browse_results(self, results: list[ua.BrowseResult]) -> None:
-        if not results:
-            self.record_failed_request()
-            return
-        if all(self._is_goodish_status(getattr(result, "StatusCode", None)) for result in results):
-            self.request_metrics.browse_count += 1
-            return
-        self.record_failed_request()
-
-    def record_read_data_values(self, values: list[ua.DataValue]) -> None:
-        if not values:
-            self.record_failed_request()
-            return
-        if all(self._is_goodish_status(value.StatusCode) for value in values):
-            self.record_read_success()
-            return
-        self.record_failed_request()
-
-
-def _assert_file_exists(path: Path, label: str) -> None:
-    if not path.is_file():
-        raise FileNotFoundError(f"{label} not found: {path}")

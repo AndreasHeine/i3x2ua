@@ -1,3 +1,5 @@
+"""OPC UA node and reference classification, and the i3X element id and kind they map to."""
+
 from __future__ import annotations
 
 import hashlib

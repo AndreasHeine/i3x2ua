@@ -1,3 +1,5 @@
+"""Validation of write payloads against the schema of the discovered object."""
+
 from __future__ import annotations
 
 import logging

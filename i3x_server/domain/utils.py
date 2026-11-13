@@ -15,6 +15,11 @@ from uuid import UUID
 
 from i3x_server.domain.ports.opcua import OpcUaNamespaceInfo
 
+# The i3X namespace the gateway reports for elements it synthesizes (no upstream namespace),
+# and the variant used when a namespace is genuinely unknown.
+I3X_NAMESPACE_URI = "https://cesmii.org/i3x"
+I3X_UNKNOWN_NAMESPACE_URI = "https://cesmii.org/i3x/unknown"
+
 
 def normalize_namespace_uri(uri: str) -> str:
     """Normalize namespace URI for comparison.
@@ -203,6 +208,18 @@ def display_name_for_uri(uri: str) -> str:
         return token.title()
     host = uri.split("//", 1)[-1].split(":", 1)[0].split(".")
     return host[0].title() if host and host[0] else uri
+
+
+def namespace_display_name(item: OpcUaNamespaceInfo) -> str:
+    """Display name of a namespace: the upstream name when present, else a URI-derived fallback.
+
+    Args:
+        item: Namespace definition read from the server
+
+    Returns:
+        The server's display name, or a human-readable name derived from the URI
+    """
+    return item.display_name or display_name_for_uri(item.uri)
 
 
 def namespace_infos_by_uri(namespace_infos: list[OpcUaNamespaceInfo]) -> dict[str, OpcUaNamespaceInfo]:

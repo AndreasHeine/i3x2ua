@@ -1,3 +1,5 @@
+"""Model traversal tools exposed over MCP."""
+
 from __future__ import annotations
 
 from collections import deque

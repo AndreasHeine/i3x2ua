@@ -8,8 +8,8 @@ from datetime import datetime, timezone
 import pytest
 from fastapi.testclient import TestClient
 
-from i3x_server.api.v1.monolithic import _expanded_node_id
 from i3x_server.api.v1.object_value_routes import _COMPOSITION_TRUNCATION_DETAIL
+from i3x_server.domain.utils import expanded_node_id
 from i3x_server.infrastructure.opcua.client import OpcUaNamespaceInfo
 from i3x_server.schemas.i3x import ModelNode
 from tests.conftest import (
@@ -265,7 +265,7 @@ def test_v1_history_query_serializes_binary_values(client: TestClient) -> None:
 
 def test_expanded_node_id_does_not_rewrite_non_node_ids() -> None:
     namespaces = [OpcUaNamespaceInfo(uri="http://example.com/default", display_name="Default")]
-    assert _expanded_node_id("asset-root", namespaces) == "asset-root"
+    assert expanded_node_id("asset-root", namespaces) == "asset-root"
 
 
 def test_expanded_node_id_rewrites_node_id_strings() -> None:
@@ -273,7 +273,7 @@ def test_expanded_node_id_rewrites_node_id_strings() -> None:
         OpcUaNamespaceInfo(uri="http://example.com/default", display_name="Default"),
         OpcUaNamespaceInfo(uri="http://example.com/custom", display_name="Custom"),
     ]
-    assert _expanded_node_id("ns=1;i=1001", namespaces) == "nsu=http://example.com/custom;i=1001"
+    assert expanded_node_id("ns=1;i=1001", namespaces) == "nsu=http://example.com/custom;i=1001"
 
 
 def test_v1_history_query_missing_object(client: TestClient) -> None:

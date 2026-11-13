@@ -1,3 +1,5 @@
-"""Subscription infrastructure adapters."""
+"""Subscription infrastructure adapters.
 
-from i3x_server.infrastructure.subscriptions.service import *  # noqa: F403
+The service, monitoring runtime, and stream helpers are imported from their own modules
+rather than re-exported here, so the package surface stays explicit.
+"""

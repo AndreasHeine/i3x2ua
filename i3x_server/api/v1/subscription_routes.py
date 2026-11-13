@@ -1,6 +1,9 @@
+"""Subscription endpoints: create, register, unregister, sync, list, delete, and the SSE stream."""
+
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends
@@ -33,14 +36,15 @@ from i3x_server.api.v1.contracts import (
     UnregisterMonitoredItemsRequest,
     _bulk_response,
 )
-from i3x_server.api.v1.monolithic import _stream_debug_enabled, logger
-from i3x_server.api.v1.object_helpers import _expanded_node_id
 from i3x_server.application.dependencies import get_opcua_client, get_or_build_model, get_subscription_app_service
 from i3x_server.application.ports.opcua import OpcUaClientProtocol
 from i3x_server.application.services.subscription import SubscriptionAppService
 from i3x_server.application.services.subscription_mapper import map_public_subscription_updates
+from i3x_server.config.settings import stream_debug_enabled
+from i3x_server.domain.utils import expanded_node_id
 from i3x_server.schemas.state import BuildResult
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1", tags=["Subscribe"])
 
 
@@ -191,7 +195,7 @@ async def stream_subscription_v1(
     stream_generation = stream_session["streamGeneration"]
     acknowledged = stream_session["acknowledged"]
 
-    if _stream_debug_enabled():
+    if stream_debug_enabled():
         logger.info(
             "Subscription stream open request client_id=%s subscription_id=%s acknowledge_sequence=%s",
             client_id,
@@ -220,7 +224,7 @@ async def stream_subscription_v1(
                 yield ": connected\n\n"
                 continue
             if kind == "keepalive":
-                if _stream_debug_enabled():
+                if stream_debug_enabled():
                     logger.info(
                         "Subscription stream keepalive subscription_id=%s generation=%s",
                         body.subscriptionId,
@@ -229,7 +233,7 @@ async def stream_subscription_v1(
                 yield ": keepalive\n\n"
                 continue
             if kind == "close":
-                if _stream_debug_enabled():
+                if stream_debug_enabled():
                     logger.info(
                         "Subscription stream closing subscription_id=%s generation=%s",
                         body.subscriptionId,
@@ -241,7 +245,7 @@ async def stream_subscription_v1(
             if kind == "dropped":
                 # Named event, additive: default `message`/`data` handlers ignore it, so
                 # existing consumers are unaffected while gaps become observable.
-                if _stream_debug_enabled():
+                if stream_debug_enabled():
                     logger.info(
                         "Subscription stream dropped sequences subscription_id=%s generation=%s from=%s to=%s",
                         body.subscriptionId,
@@ -261,7 +265,7 @@ async def stream_subscription_v1(
             updates = event["updates"]
             payload = map_public_subscription_updates(
                 updates,
-                element_id_mapper=lambda element_id: _expanded_node_id(element_id, namespace_infos),
+                element_id_mapper=lambda element_id: expanded_node_id(element_id, namespace_infos),
                 value_mapper=_to_json_safe_value,
             )
             payload = [
@@ -275,7 +279,7 @@ async def stream_subscription_v1(
                 for item in payload
             ]
             encoded_payload = jsonable_encoder(payload)
-            if _stream_debug_enabled():
+            if stream_debug_enabled():
                 first_item = encoded_payload[0] if encoded_payload else {}
                 logger.info(
                     (
@@ -355,7 +359,7 @@ async def sync_subscription_v1(
     public_updates = [
         SyncUpdate(
             sequenceNumber=item["sequenceNumber"],
-            elementId=_expanded_node_id(item["elementId"], namespace_infos),
+            elementId=expanded_node_id(item["elementId"], namespace_infos),
             value=_to_json_safe_value(item["value"]),
             quality=item["quality"],
             timestamp=item["timestamp"],

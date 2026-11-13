@@ -1,3 +1,5 @@
+"""Prompt package: registry, template renderer, and the execution endpoint."""
+
 from i3x_server.prompts.api import execute_prompt, get_prompt, list_prompt_metadata
 from i3x_server.prompts.registry import PromptDefinition, PromptRegistry
 

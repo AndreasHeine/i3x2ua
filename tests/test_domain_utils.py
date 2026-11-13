@@ -10,6 +10,7 @@ from i3x_server.domain.utils import (
     display_name_for_uri,
     expanded_node_id,
     is_null_opcua_type_node_id,
+    namespace_display_name,
     namespace_infos_by_uri,
     namespace_uri_for_node_id,
     namespace_uri_from_expanded_node_id,
@@ -94,6 +95,17 @@ def test_is_null_opcua_type_node_id_for_all_supported_forms() -> None:
     assert is_null_opcua_type_node_id("NS=3;I=0") is True
     assert is_null_opcua_type_node_id("nsu=http://example.com/Custom/;i=0") is True
     assert is_null_opcua_type_node_id("i=1") is False
+
+
+def test_namespace_display_name_prefers_server_name_then_uri_fallback() -> None:
+    """The shared namespace rule: the server's name wins; an empty one falls back to the URI."""
+    with_name = OpcUaNamespaceInfo(uri="http://example.com/Custom/", display_name="Custom")
+    assert namespace_display_name(with_name) == "Custom"
+    without_name = OpcUaNamespaceInfo(uri="http://example.com/prod_v2", display_name="")
+    assert namespace_display_name(without_name) == "PROD V2"
+    # A URI with no path tail falls back to the host, exactly like display_name_for_uri.
+    no_tail = OpcUaNamespaceInfo(uri="http://example.com/Custom/", display_name="")
+    assert namespace_display_name(no_tail) == "Example"
 
 
 def test_display_name_for_uri_prefers_tail_then_host_fallback() -> None:

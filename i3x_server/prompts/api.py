@@ -1,3 +1,5 @@
+"""Prompt execution endpoint: render a registered prompt template with the caller's parameters."""
+
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -8,19 +10,14 @@ from typing import Any
 from i3x_server.errors import i3x_http_error
 from i3x_server.prompts.registry import PromptRegistry
 from i3x_server.prompts.renderer import MissingTemplateVariableError, render_template
+from i3x_server.telemetry import load_otel_tracing
 
-
-def _load_otel_tracing() -> tuple[Any, Any, Any]:
-    try:
-        from opentelemetry import trace
-        from opentelemetry.trace import Status as otel_status
-        from opentelemetry.trace import StatusCode as otel_status_code
-    except ImportError:  # pragma: no cover - optional dependency
-        return None, None, None
-    return trace, otel_status, otel_status_code
-
-
-trace, _OtelStatus, _OtelStatusCode = _load_otel_tracing()
+# ``trace`` stays a module attribute: tests patch it to inject a tracer, and the span is
+# started through it at call time so the patch takes effect.
+_otel_tracing = load_otel_tracing()
+trace = _otel_tracing.trace
+_OtelStatus = _otel_tracing.status
+_OtelStatusCode = _otel_tracing.status_code
 
 
 def list_prompt_metadata(registry: PromptRegistry | None) -> list[dict[str, str]]:

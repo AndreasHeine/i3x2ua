@@ -20,7 +20,8 @@ from asyncua.ua import NodeClass
 from asyncua.ua.object_ids import ObjectIds
 from asyncua.ua.uaerrors import UaStatusCodeError
 
-from i3x_server.domain.ports.opcua import OpcUaNodeInfo
+from i3x_server.domain.ports.opcua import DEFAULT_MAX_NODES_PER_BROWSE, OpcUaNodeInfo
+from i3x_server.infrastructure.opcua.batching import chunked
 
 if TYPE_CHECKING:
     from asyncua.common.node import Node
@@ -67,7 +68,7 @@ async def browse_tree(client: OpcUaClient) -> list[OpcUaNodeInfo]:
     started = perf_counter()
     client.runtime_metrics.browse_tree_calls += 1
     limits = await client.get_operational_limits()
-    max_nodes_per_browse = limits.max_nodes_per_browse or 128
+    max_nodes_per_browse = limits.max_nodes_per_browse or DEFAULT_MAX_NODES_PER_BROWSE
     logger.info(
         "OPC UA browse started endpoint=%s browse_concurrency=%d max_nodes_per_browse=%d",
         client.endpoint,
@@ -150,6 +151,39 @@ async def browse_children_descriptions(
     )
 
 
+def _browse_description(
+    node: Any,
+    browse_direction: ua.BrowseDirection,
+    reference_type_id: int,
+    include_subtypes: bool,
+) -> ua.BrowseDescription:
+    """Browse request entry for one node, with the masks every call uses."""
+    desc = ua.BrowseDescription()
+    desc.NodeId = node.nodeid
+    desc.BrowseDirection = browse_direction
+    desc.ReferenceTypeId = ua.NodeId(ua.Int32(reference_type_id))
+    desc.IncludeSubtypes = include_subtypes
+    desc.NodeClassMask = ua.NodeClass.Unspecified
+    desc.ResultMask = ua.BrowseResultMask.All
+    return desc
+
+
+def _browse_parameters(
+    nodes: Sequence[Any],
+    browse_direction: ua.BrowseDirection,
+    reference_type_id: int,
+    include_subtypes: bool,
+) -> ua.BrowseParameters:
+    """A Browse request covering ``nodes``: entries plus the shared request fields."""
+    params = ua.BrowseParameters()
+    params.View = ua.ViewDescription()
+    params.RequestedMaxReferencesPerNode = 0
+    params.NodesToBrowse = [
+        _browse_description(node, browse_direction, reference_type_id, include_subtypes) for node in nodes
+    ]
+    return params
+
+
 async def browse_references_descriptions(
     client: OpcUaClient,
     nodes: list[Any],
@@ -162,22 +196,8 @@ async def browse_references_descriptions(
         return []
 
     results: list[tuple[Any, list[ua.ReferenceDescription]]] = []
-    for node_batch in _chunked_nodes(nodes, max(1, max_nodes_per_browse)):
-        browse_descriptions: list[ua.BrowseDescription] = []
-        for node in node_batch:
-            desc = ua.BrowseDescription()
-            desc.NodeId = node.nodeid
-            desc.BrowseDirection = browse_direction
-            desc.ReferenceTypeId = ua.NodeId(ua.Int32(reference_type_id))
-            desc.IncludeSubtypes = include_subtypes
-            desc.NodeClassMask = ua.NodeClass.Unspecified
-            desc.ResultMask = ua.BrowseResultMask.All
-            browse_descriptions.append(desc)
-
-        params = ua.BrowseParameters()
-        params.View = ua.ViewDescription()
-        params.RequestedMaxReferencesPerNode = 0
-        params.NodesToBrowse = browse_descriptions
+    for node_batch in chunked(nodes, max_nodes_per_browse):
+        params = _browse_parameters(node_batch, browse_direction, reference_type_id, include_subtypes)
 
         client.runtime_metrics.browse_calls += 1
         client.runtime_metrics.browse_nodes += len(node_batch)
@@ -226,23 +246,15 @@ async def browse_references_descriptions(
                     len(continuation_entries),
                     exc_info=True,
                 )
-                recovery_descriptions: list[ua.BrowseDescription] = []
-                for node, _, _ in continuation_entries:
-                    desc = ua.BrowseDescription()
-                    desc.NodeId = node.nodeid
-                    desc.BrowseDirection = browse_direction
-                    desc.ReferenceTypeId = ua.NodeId(ua.Int32(reference_type_id))
-                    desc.IncludeSubtypes = include_subtypes
-                    desc.NodeClassMask = ua.NodeClass.Unspecified
-                    desc.ResultMask = ua.BrowseResultMask.All
-                    recovery_descriptions.append(desc)
-                recovery_params = ua.BrowseParameters()
-                recovery_params.View = ua.ViewDescription()
-                recovery_params.RequestedMaxReferencesPerNode = 0
-                recovery_params.NodesToBrowse = recovery_descriptions
+                recovery_params = _browse_parameters(
+                    [node for node, _, _ in continuation_entries],
+                    browse_direction,
+                    reference_type_id,
+                    include_subtypes,
+                )
                 recovery_results = await client.browse_with_retry(
                     params=recovery_params,
-                    batch_size=len(recovery_descriptions),
+                    batch_size=len(continuation_entries),
                 )
                 if len(recovery_results) != len(continuation_entries):
                     raise RuntimeError(
@@ -331,14 +343,6 @@ async def browse_next_with_retry(
         results = await client.retry_call(client.browse_next_raw(next_params))
         client.record_browse_results(results)
         return results
-
-
-def _chunked(values: list[str], size: int) -> list[list[str]]:
-    return [values[idx : idx + size] for idx in range(0, len(values), size)]
-
-
-def _chunked_nodes(values: list[Any], size: int) -> list[list[Any]]:
-    return [values[idx : idx + size] for idx in range(0, len(values), size)]
 
 
 async def _gather_cancelled_on_failure(awaitables: Sequence[Awaitable[Any]]) -> list[Any]:

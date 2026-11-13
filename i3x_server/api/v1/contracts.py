@@ -1,3 +1,8 @@
+"""Request and response models of the v1 API.
+
+Includes the bulk envelope helpers and the null-value/quality validators the i3X contract requires
+(``Bad`` and ``GoodNoData`` carry a null value)."""
+
 from __future__ import annotations
 
 import http
@@ -16,7 +21,12 @@ from pydantic import (
     model_validator,
 )
 
+from i3x_server.domain.ports.opcua import NULL_VALUE_QUALITIES
+
 T = TypeVar("T")
+
+# The quality vocabulary request bodies accept; mirrors ``domain.ports.opcua.Quality``.
+QualityLiteral = Literal["Good", "GoodNoData", "Bad", "Uncertain"]
 
 
 def validate_write_element_id(value: str) -> str:
@@ -422,9 +432,7 @@ class WriteVQTRequest(BaseModel):
     value: Any = Field(
         description="Value matching the discovered object's schema. Null requires Bad or GoodNoData quality."
     )
-    quality: Literal["Good", "GoodNoData", "Bad", "Uncertain"] = Field(
-        default="Good", description="Bad and GoodNoData require a null value."
-    )
+    quality: QualityLiteral = Field(default="Good", description="Bad and GoodNoData require a null value.")
     timestamp: AwareDatetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
         description=(
@@ -452,9 +460,9 @@ class WriteVQTRequest(BaseModel):
 
     @model_validator(mode="after")
     def _validate_null_quality(self) -> WriteVQTRequest:
-        if self.value is None and self.quality not in {"Bad", "GoodNoData"}:
+        if self.value is None and self.quality not in NULL_VALUE_QUALITIES:
             raise ValueError("A null value requires Bad or GoodNoData quality")
-        if self.quality in {"Bad", "GoodNoData"} and self.value is not None:
+        if self.quality in NULL_VALUE_QUALITIES and self.value is not None:
             raise ValueError("Bad and GoodNoData quality require a null value")
         return self
 
@@ -496,9 +504,7 @@ class HistoryWriteVQTRequest(BaseModel):
     value: Any = Field(
         description="Value matching the discovered object's schema. Null requires Bad or GoodNoData quality."
     )
-    quality: Literal["Good", "Uncertain", "Bad", "GoodNoData"] = Field(
-        description="Required historical quality. Bad and GoodNoData require a null value."
-    )
+    quality: QualityLiteral = Field(description="Required historical quality. Bad and GoodNoData require a null value.")
     timestamp: AwareDatetime = Field(
         description="Required RFC 3339 timestamp with a timezone, exactly representable at microsecond precision."
     )
@@ -533,9 +539,9 @@ class HistoryWriteVQTRequest(BaseModel):
 
     @model_validator(mode="after")
     def _validate_null_quality(self) -> HistoryWriteVQTRequest:
-        if self.value is None and self.quality not in {"Bad", "GoodNoData"}:
+        if self.value is None and self.quality not in NULL_VALUE_QUALITIES:
             raise ValueError("A null value requires Bad or GoodNoData quality")
-        if self.quality in {"Bad", "GoodNoData"} and self.value is not None:
+        if self.quality in NULL_VALUE_QUALITIES and self.value is not None:
             raise ValueError("Bad and GoodNoData quality require a null value")
         return self
 

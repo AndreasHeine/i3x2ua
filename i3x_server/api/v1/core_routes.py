@@ -1,3 +1,5 @@
+"""Core v1 endpoints: server info, namespaces, and relationship types."""
+
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query, Request

@@ -1,3 +1,9 @@
+"""MCP tool invocation.
+
+A tool call is dispatched to the REST routes in-process through the ASGI app, so MCP and HTTP share
+one implementation of the i3X contract. Tracing and metrics degrade to no-op when OpenTelemetry is
+not installed."""
+
 from __future__ import annotations
 
 import json
@@ -49,27 +55,15 @@ from i3x_server.mcp.tool_definitions import (
 from i3x_server.model.revision import model_revision
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
+from i3x_server.telemetry import load_otel_tracing
 
-
-def _load_otel_tracing() -> tuple[Any, Any, Any, Any]:
-    try:
-        from opentelemetry import trace as otel_trace
-        from opentelemetry.trace import Status as otel_status
-        from opentelemetry.trace import StatusCode as otel_status_code
-        from opentelemetry.trace import get_current_span
-    except ImportError:  # pragma: no cover - optional dependency
-        return None, None, None, None
-
-    # Tracer is a proxy — it forwards to the global TracerProvider configured later.
-    return (
-        otel_status,
-        otel_status_code,
-        get_current_span,
-        otel_trace.get_tracer("i3x_server.mcp"),
-    )
-
-
-_OtelStatus, _OtelStatusCode, get_current_span, _mcp_tracer = _load_otel_tracing()
+# Tracer/status names are module attributes so the tracing seam stays patchable; they are
+# ``None`` when the optional ``opentelemetry`` dependency is unavailable.
+_otel_tracing = load_otel_tracing("i3x_server.mcp")
+_OtelStatus = _otel_tracing.status
+_OtelStatusCode = _otel_tracing.status_code
+get_current_span = _otel_tracing.get_current_span
+_mcp_tracer = _otel_tracing.tracer
 
 # Meter instruments bind to the provider at creation time, so they are populated
 # by init_mcp_metrics() after the provider is configured.

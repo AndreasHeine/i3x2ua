@@ -1,3 +1,5 @@
+"""Build state: the ``BuildResult`` model and the caches it owns."""
+
 from dataclasses import dataclass, field
 from typing import Any
 

@@ -9,7 +9,8 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 from starlette.responses import StreamingResponse
 
-from i3x_server.api.v1.monolithic import StreamRequest, stream_subscription_v1
+from i3x_server.api.v1.contracts import StreamRequest
+from i3x_server.api.v1.subscription_routes import stream_subscription_v1
 from i3x_server.application.ports.subscription import SubscriptionServicePort
 from i3x_server.application.services.subscription import SubscriptionAppService
 from i3x_server.domain.ports.opcua import OpcUaClientProtocol, OpcUaNamespaceInfo

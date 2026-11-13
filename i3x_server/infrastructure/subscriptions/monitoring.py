@@ -21,7 +21,7 @@ from i3x_server.infrastructure.subscriptions.state import (
     _signal_from_data_value,
     _ValueSignal,
 )
-from i3x_server.schemas.opcua_value import decode_data_value
+from i3x_server.schemas.opcua_value import decode_data_value, status_code_of
 
 if TYPE_CHECKING:
     from i3x_server.infrastructure.subscriptions.service import SubscriptionService
@@ -41,18 +41,8 @@ _SUBSCRIPTION_LEVEL_STATUS_CODES = frozenset(
 )
 
 
-def _status_code_of(exc: BaseException) -> int | None:
-    """The OPC UA status code of an upstream failure.
-
-    ``asyncua.ua.uaerrors.UaStatusCodeError`` exposes ``code`` as an ``int``; the runtime deliberately
-    stays free of an asyncua import, so the code is read structurally.
-    """
-    code = getattr(exc, "code", None)
-    return code if isinstance(code, int) else None
-
-
 def _is_subscription_level_failure(exc: BaseException) -> bool:
-    return _status_code_of(exc) in _SUBSCRIPTION_LEVEL_STATUS_CODES
+    return status_code_of(exc) in _SUBSCRIPTION_LEVEL_STATUS_CODES
 
 
 class _NodeDataChangeHandler:
@@ -221,7 +211,7 @@ async def _start_node_monitor_runtime(service: SubscriptionService, monitor: _No
             logger.warning(
                 "Native OPC UA monitor rejected for node_id=%s (status code=%s); this node falls back to polling",
                 monitor.node_id,
-                _status_code_of(exc),
+                status_code_of(exc),
             )
         acquired = False
 

@@ -20,7 +20,7 @@ from asyncua import ua
 from asyncua.ua.uaprotocol_auto import Argument
 
 from i3x_server.domain.ports.opcua import OpcUaNamespaceInfo, OpcUaObjectTypeInfo, OpcUaObjectTypeMemberInfo
-from i3x_server.domain.utils import expanded_node_id as _expanded_node_id
+from i3x_server.domain.utils import expanded_node_id
 from i3x_server.schemas import objecttype_annotations, objecttype_registry
 from i3x_server.schemas.objecttype_registry import (
     deduplicate_schema_fragments,
@@ -147,15 +147,15 @@ def build_object_type_schema(
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "title": item.display_name,
-        "x-opcua-nodeId": _expanded_node_id(item.node_id, namespace_infos),
+        "x-opcua-nodeId": expanded_node_id(item.node_id, namespace_infos),
         "x-opcua-displayName": item.display_name,
         "properties": merged_properties,
         "$defs": registry.defs,
         "allOf": all_of,
     }
     if item.parent_node_id:
-        schema["x-opcua-superTypeNodeId"] = _expanded_node_id(item.parent_node_id, namespace_infos)
-        schema["x-opcua-typeDefinition"] = _expanded_node_id(item.parent_node_id, namespace_infos)
+        schema["x-opcua-superTypeNodeId"] = expanded_node_id(item.parent_node_id, namespace_infos)
+        schema["x-opcua-typeDefinition"] = expanded_node_id(item.parent_node_id, namespace_infos)
     type_references = _references_for_type(item, namespace_infos)
     if type_references:
         schema["x-opcua-references"] = type_references
@@ -214,12 +214,12 @@ def _schema_for_single_type(
     output: dict[str, Any] = {
         "type": "object",
         "title": item.display_name,
-        "x-opcua-nodeId": _expanded_node_id(item.node_id, namespace_infos),
+        "x-opcua-nodeId": expanded_node_id(item.node_id, namespace_infos),
         "x-opcua-displayName": item.display_name,
         "properties": properties,
     }
     if item.parent_node_id:
-        output["x-opcua-superTypeNodeId"] = _expanded_node_id(item.parent_node_id, namespace_infos)
+        output["x-opcua-superTypeNodeId"] = expanded_node_id(item.parent_node_id, namespace_infos)
     description = getattr(item, "description", None)
     if description:
         output["description"] = description
@@ -298,7 +298,7 @@ def _schema_for_member(
             namespace_infos,
         )
         schema["x-opcua-typeDefinition"] = normalized_type_definition_id or member_type_definition_id
-    schema["x-opcua-nodeId"] = _expanded_node_id(member.node_id, namespace_infos)
+    schema["x-opcua-nodeId"] = expanded_node_id(member.node_id, namespace_infos)
     schema["x-opcua-displayName"] = member.display_name
     member_reference_type_id = getattr(member, "reference_type_id", None)
     member_reference_type = getattr(member, "reference_type", None)
@@ -714,7 +714,7 @@ def _to_json_metadata_value(value: Any, namespace_infos: list[OpcUaNamespaceInfo
 def _expanded_if_node_id(value: str | None, namespace_infos: list[OpcUaNamespaceInfo]) -> str | None:
     if value is None:
         return None
-    return _expanded_node_id(value, namespace_infos)
+    return expanded_node_id(value, namespace_infos)
 
 
 def _indexed_node_id(value: str, namespace_infos: list[OpcUaNamespaceInfo]) -> str | None:
@@ -773,7 +773,7 @@ def _references_for_type(item: OpcUaObjectTypeInfo, namespace_infos: list[OpcUaN
         refs.append(
             {
                 "referenceType": "HasSubtype",
-                "targetNodeId": _expanded_node_id(item.parent_node_id, namespace_infos),
+                "targetNodeId": expanded_node_id(item.parent_node_id, namespace_infos),
             }
         )
     return refs
@@ -788,8 +788,8 @@ def _references_for_member(
         return []
 
     reference: dict[str, Any] = {
-        "sourceNodeId": _expanded_node_id(parent_node_id, namespace_infos),
-        "targetNodeId": _expanded_node_id(member.node_id, namespace_infos),
+        "sourceNodeId": expanded_node_id(parent_node_id, namespace_infos),
+        "targetNodeId": expanded_node_id(member.node_id, namespace_infos),
     }
 
     reference_type = getattr(member, "reference_type", None)

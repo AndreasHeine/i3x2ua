@@ -19,14 +19,15 @@ from asyncua.ua.uaerrors import UaStatusCodeError
 
 from i3x_server.application.services.model_query import ModelQueryService
 from i3x_server.domain.ports.opcua import DataValueDTO, OpcUaNodeInfo
-from i3x_server.infrastructure.opcua.browse import _chunked, _chunked_nodes, _gather_cancelled_on_failure
+from i3x_server.infrastructure.opcua.batching import chunked, halved_size, split_batch
+from i3x_server.infrastructure.opcua.browse import _gather_cancelled_on_failure
 from i3x_server.infrastructure.opcua.client import (
     OpcUaClient,
     OpcUaNamespaceInfo,
     OpcUaOperationalLimits,
-    _assert_file_exists,
     model_refresh_budget,
 )
+from i3x_server.infrastructure.opcua.connection import _assert_file_exists
 from i3x_server.infrastructure.opcua.object_types import _to_json_compatible
 from i3x_server.infrastructure.opcua.values import _to_explicit_ua_variant
 from i3x_server.model.builder import ModelBuilder
@@ -327,8 +328,8 @@ class _FakeBrowseNode:
 
 
 def test_chunk_and_json_helpers() -> None:
-    assert _chunked(["a", "b", "c"], 2) == [["a", "b"], ["c"]]
-    assert _chunked_nodes([1, 2, 3], 2) == [[1, 2], [3]]
+    assert chunked(["a", "b", "c"], 2) == [["a", "b"], ["c"]]
+    assert chunked([1, 2, 3], 2) == [[1, 2], [3]]
 
     raw = {
         "now": datetime(2026, 1, 1, 12, 0, 0),
@@ -339,6 +340,17 @@ def test_chunk_and_json_helpers() -> None:
     assert isinstance(out["now"], str)
     assert out["list"][1]["nested"] == [2, 3]
     assert isinstance(out["other"], str)
+
+
+def test_batching_helpers_split_and_clamp() -> None:
+    """Consolidated batch arithmetic: halving keeps the first half non-empty, sizes clamp to 1."""
+    assert split_batch([1, 2, 3, 4]) == ([1, 2], [3, 4])
+    assert split_batch([1, 2, 3]) == ([1], [2, 3])
+    assert split_batch([1]) == ([1], [])
+    assert halved_size([1, 2, 3, 4]) == 2
+    assert halved_size([1]) == 1
+    assert chunked([1, 2], 0) == [[1], [2]]
+    assert chunked([], 3) == []
 
 
 def test_to_json_compatible_encodes_byte_payloads_as_base64() -> None:
@@ -462,14 +474,14 @@ def _client_with_real_uaclient() -> tuple[OpcUaClient, UaClient]:
 def test_apply_client_state_maps_asyncua_states() -> None:
     client, uaclient = _client_with_real_uaclient()
 
-    client._apply_client_state(UaClientState.CONNECTED)
+    client.apply_client_state(UaClientState.CONNECTED)
     assert client.get_connection_snapshot().state == "Connected"
 
-    client._apply_client_state(UaClientState.RECONNECTING)
+    client.apply_client_state(UaClientState.RECONNECTING)
     assert client.get_connection_snapshot().state == "Reconnecting"
 
     uaclient._disconnect_requested = True
-    client._apply_client_state(UaClientState.DISCONNECTED)
+    client.apply_client_state(UaClientState.DISCONNECTED)
     assert client.get_connection_snapshot().state == "Disconnected"
 
 
@@ -1001,13 +1013,13 @@ def test_get_monitored_item_handles_maps_node_ids_to_current_server_handles() ->
 async def test_configure_security_none_and_missing_config(tmp_path: Path) -> None:
     client = OpcUaClient(endpoint="opc.tcp://localhost:4840", security_mode="None")
     cast(Any, client).raw_client = _FakeClient()
-    await client._configure_security_if_needed()
-    assert client._using_security is False
+    await client.configure_security_if_needed()
+    assert client.using_security is False
 
     with pytest.raises(ValueError):
         bad = OpcUaClient(endpoint="opc.tcp://localhost:4840", security_mode="Sign")
         cast(Any, bad).raw_client = _FakeClient()
-        await bad._configure_security_if_needed()
+        await bad.configure_security_if_needed()
 
     cert = tmp_path / "client-cert.pem"
     key = tmp_path / "client-key.pem"
@@ -1024,8 +1036,8 @@ async def test_configure_security_none_and_missing_config(tmp_path: Path) -> Non
     )
     secure_fake = _FakeClient()
     cast(Any, secure).raw_client = secure_fake
-    await secure._configure_security_if_needed()
-    assert secure._using_security is True
+    await secure.configure_security_if_needed()
+    assert secure.using_security is True
     assert secure_fake.security_string is not None
     assert "Basic256Sha256,Sign" in secure_fake.security_string
 
@@ -1054,15 +1066,15 @@ async def test_handle_reconnected_calls_listeners_even_if_one_fails(monkeypatch:
 
     monkeypatch.setattr(client, "load_additional_typedefinitions", _count_typedef_load)
 
-    client._on_asyncua_reconnected(True)
-    await client._handle_reconnected()
+    client.on_asyncua_reconnected(True)
+    await client.handle_reconnected()
     assert called == ["fail", "ok"]
     assert typedef_loads == 0
 
-    client._on_asyncua_reconnected(False)
-    await client._handle_reconnected()
+    client.on_asyncua_reconnected(False)
+    await client.handle_reconnected()
     assert typedef_loads == 1
-    await client._handle_reconnected()
+    await client.handle_reconnected()
     assert typedef_loads == 1
 
 
@@ -1075,9 +1087,9 @@ async def test_reconnect_handler_loop_runs_follow_up_work_outside_supervisor() -
         handled.set()
 
     client.add_reconnect_listener(listener)
-    task = asyncio.create_task(client._reconnect_handler_loop())
+    task = asyncio.create_task(client.reconnect_handler_loop())
     try:
-        client._on_asyncua_reconnected(True)
+        client.on_asyncua_reconnected(True)
         await asyncio.wait_for(handled.wait(), timeout=1)
     finally:
         task.cancel()
@@ -1088,13 +1100,13 @@ async def test_reconnect_handler_loop_runs_follow_up_work_outside_supervisor() -
 def test_supervised_client_reports_finished_reconnect(monkeypatch: pytest.MonkeyPatch) -> None:
     client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
     asyncua_client = cast(Any, client).raw_client
-    assert asyncua_client.reconnected_callback == client._on_asyncua_reconnected
+    assert asyncua_client.reconnected_callback == client.on_asyncua_reconnected
 
     async def _base_finalize(self: Any, reused: bool) -> None:
         del self, reused
 
     monkeypatch.setattr(Client, "_finalize_reconnect", _base_finalize)
-    client._set_connection_state("Reconnecting")
+    client.set_connection_state("Reconnecting")
 
     asyncio.run(asyncua_client._finalize_reconnect(False))
 
@@ -1110,7 +1122,7 @@ def test_reconnect_keeps_browse_metadata_as_stale_and_clears_limits() -> None:
     cast(Any, client).namespace_infos_cache = (1.0, ["old-ns"])
     cast(Any, client).object_type_cache = (1.0, ["old-type"])
 
-    client._on_asyncua_reconnected(True)
+    client.on_asyncua_reconnected(True)
 
     assert cast(Any, client).limits_cache is None
     assert cast(Any, client).subscription_caps_cache is None
@@ -1206,7 +1218,7 @@ async def test_expired_metadata_cache_serves_stale_while_one_background_reload_r
 
     monkeypatch.setattr(client, "_load_object_types", _slow_load)
 
-    caplog.set_level("INFO", logger="i3x_server.infrastructure.opcua.client")
+    caplog.set_level("INFO", logger="i3x_server.infrastructure.opcua.metadata_cache")
     results = await asyncio.wait_for(asyncio.gather(*(client.get_object_types() for _ in range(20))), 1)
 
     stale_logs = [r for r in caplog.records if "serving stale metadata" in r.getMessage()]
@@ -1246,7 +1258,7 @@ async def test_failed_background_metadata_reload_keeps_serving_stale_value(
 
     monkeypatch.setattr(client, "_load_namespace_infos", _failing_load)
 
-    caplog.set_level("INFO", logger="i3x_server.infrastructure.opcua.client")
+    caplog.set_level("INFO", logger="i3x_server.infrastructure.opcua.metadata_cache")
     assert cast(list[Any], await client.get_namespace_infos()) == ["stale"]
     with pytest.raises(RuntimeError):
         await cast(Any, client).metadata_load_tasks["namespace_infos"]
@@ -1603,7 +1615,9 @@ async def test_reference_type_supertypes_cache_is_bounded(monkeypatch: pytest.Mo
     fake_client = _RefTypeClient()
     client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
     cast(Any, client).raw_client = fake_client
-    monkeypatch.setattr("i3x_server.infrastructure.opcua.client._REFERENCE_TYPE_SUPERTYPES_CACHE_MAX_ENTRIES", 2)
+    monkeypatch.setattr(
+        "i3x_server.infrastructure.opcua.metadata_cache._REFERENCE_TYPE_SUPERTYPES_CACHE_MAX_ENTRIES", 2
+    )
     monkeypatch.setattr(client, "browse_references_descriptions", _ref_type_browse_stub(fake_client))
 
     assert await client.resolve_reference_type_supertype_browse_names("HasComponent") == [

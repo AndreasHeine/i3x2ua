@@ -15,8 +15,9 @@ from i3x_server.application.errors import ApplicationServiceError
 from i3x_server.config.settings import get_settings
 from i3x_server.domain.ports.opcua import OpcUaClientProtocol, OpcUaNamespaceInfo
 from i3x_server.domain.utils import (
+    I3X_NAMESPACE_URI,
     canonical_namespace_uri,
-    display_name_for_uri,
+    namespace_display_name,
     namespace_uri_for_node_id,
     normalize_namespace_uri,
 )
@@ -25,8 +26,6 @@ from i3x_server.schemas.state import BuildResult
 from i3x_server.version import get_server_version
 
 logger = logging.getLogger(__name__)
-
-_I3X_NAMESPACE = "https://cesmii.org/i3x"
 
 
 class NamespaceSnapshotCache:
@@ -110,8 +109,7 @@ class ServerInfo:
 
 
 def _to_namespace(item: OpcUaNamespaceInfo) -> Namespace:
-    display_name = item.display_name or display_name_for_uri(item.uri)
-    return Namespace(uri=item.uri, displayName=display_name)
+    return Namespace(uri=item.uri, displayName=namespace_display_name(item))
 
 
 def _build_server_info(
@@ -151,28 +149,28 @@ def _relationship_type_items(model: BuildResult | None = None) -> list[dict[str,
         {
             "elementId": "HasParent",
             "displayName": "HasParent",
-            "namespaceUri": _I3X_NAMESPACE,
+            "namespaceUri": I3X_NAMESPACE_URI,
             "relationshipId": "HasParent",
             "reverseOf": "HasChildren",
         },
         {
             "elementId": "HasChildren",
             "displayName": "HasChildren",
-            "namespaceUri": _I3X_NAMESPACE,
+            "namespaceUri": I3X_NAMESPACE_URI,
             "relationshipId": "HasChildren",
             "reverseOf": "HasParent",
         },
         {
             "elementId": "HasComponent",
             "displayName": "HasComponent",
-            "namespaceUri": _I3X_NAMESPACE,
+            "namespaceUri": I3X_NAMESPACE_URI,
             "relationshipId": "HasComponent",
             "reverseOf": "ComponentOf",
         },
         {
             "elementId": "ComponentOf",
             "displayName": "ComponentOf",
-            "namespaceUri": _I3X_NAMESPACE,
+            "namespaceUri": I3X_NAMESPACE_URI,
             "relationshipId": "ComponentOf",
             "reverseOf": "HasComponent",
         },

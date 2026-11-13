@@ -24,12 +24,15 @@ from asyncua.ua.attribute_ids import AttributeIds
 from asyncua.ua.object_ids import ObjectIds
 
 from i3x_server.domain.ports.opcua import (
+    DEFAULT_MAX_NODES_PER_BROWSE,
+    DEFAULT_MAX_NODES_PER_READ,
     OpcUaObjectTypeInfo,
     OpcUaObjectTypeMemberInfo,
     OpcUaOperationalLimits,
     OpcUaTypeDefinitionInfo,
 )
-from i3x_server.infrastructure.opcua.browse import _chunked_nodes, _gather_cancelled_on_failure
+from i3x_server.infrastructure.opcua.batching import chunked
+from i3x_server.infrastructure.opcua.browse import _gather_cancelled_on_failure
 from i3x_server.infrastructure.opcua.node_reading import _normalize_type_definition_id
 
 if TYPE_CHECKING:
@@ -176,7 +179,7 @@ async def resolve_type_definition_hierarchies(
         if limits is None:
             limits = await client.get_operational_limits()
         nodes = [client.raw_node(type_id) for type_id in unresolved]
-        for node_batch in _chunked_nodes(nodes, limits.max_nodes_per_read or 128):
+        for node_batch in chunked(nodes, limits.max_nodes_per_read or DEFAULT_MAX_NODES_PER_READ):
             values = await client.read_attribute_batch(node_batch, AttributeIds.BrowseName)
             for node, value in zip(node_batch, values, strict=True):
                 type_id = node.nodeid.to_string()
@@ -186,7 +189,7 @@ async def resolve_type_definition_hierarchies(
                 type_infos[type_id] = OpcUaTypeDefinitionInfo(type_id, qualified_name.Name)
         browsed = await client.browse_references_descriptions(
             nodes,
-            max_nodes_per_browse=limits.max_nodes_per_browse or 128,
+            max_nodes_per_browse=limits.max_nodes_per_browse or DEFAULT_MAX_NODES_PER_BROWSE,
             reference_type_id=ObjectIds.HasSubtype,
             browse_direction=ua.BrowseDirection.Inverse,
             include_subtypes=False,
@@ -306,7 +309,7 @@ async def _load_object_types(client: OpcUaClient) -> list[OpcUaObjectTypeInfo]:
 
     started = perf_counter()
     limits = await client.get_operational_limits()
-    max_nodes_per_browse = limits.max_nodes_per_browse or 128
+    max_nodes_per_browse = limits.max_nodes_per_browse or DEFAULT_MAX_NODES_PER_BROWSE
 
     root = client.raw_client.nodes.object_types
     root_node_id = root.nodeid.to_string()
@@ -508,7 +511,7 @@ async def read_object_type_members_limited(
     # Batched reference browses: HasModellingRule for every member and HasTypeDefinition
     # for object members, one multi-node Browse per chunk instead of one browse per node.
     limits = await client.get_operational_limits()
-    max_nodes_per_browse = limits.max_nodes_per_browse or 128
+    max_nodes_per_browse = limits.max_nodes_per_browse or DEFAULT_MAX_NODES_PER_BROWSE
 
     modelling_rule_by_node_id: dict[str, str | None] = {}
     modelling_rules_batch_ok = True

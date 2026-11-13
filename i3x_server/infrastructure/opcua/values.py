@@ -22,6 +22,7 @@ from asyncua.ua.status_codes import StatusCodes
 from asyncua.ua.uaerrors import UaError, UaStatusCodeError
 
 from i3x_server.domain.ports.opcua import (
+    ACCESS_LEVEL_WRITE_BIT,
     WRITE_METADATA_UNCERTAIN_MESSAGE,
     WRITE_METADATA_UNSUPPORTED_MESSAGE,
     DataValueDTO,
@@ -29,7 +30,8 @@ from i3x_server.domain.ports.opcua import (
     OpcUaWriteMetadataUnsupportedError,
     OpcUaWriteMetadataVerificationError,
 )
-from i3x_server.infrastructure.opcua.browse import _chunked, _gather_cancelled_on_failure
+from i3x_server.infrastructure.opcua.batching import chunked, split_batch
+from i3x_server.infrastructure.opcua.browse import _gather_cancelled_on_failure
 from i3x_server.infrastructure.opcua.history import historical_data_value, quality_status_code
 from i3x_server.schemas.opcua_value import quality_from_status_code
 
@@ -85,10 +87,6 @@ def _to_explicit_ua_variant(value: Any, variant_type: str | None) -> ua.Variant 
     return ua.Variant(value, ua_variant_type)
 
 
-def _quality_from_status_code(status_code: ua.StatusCode | None) -> str | None:
-    return quality_from_status_code(status_code)
-
-
 def _attribute_scalar_value(data_value: Any) -> Any:
     if data_value is None:
         return None
@@ -108,7 +106,7 @@ def _is_write_access_allowed(value: Any) -> bool:
     if isinstance(raw, bool):
         return raw
     if isinstance(raw, int):
-        return bool(raw & 0x02)
+        return bool(raw & ACCESS_LEVEL_WRITE_BIT)
     try:
         numeric = int(raw)
     except (TypeError, ValueError):
@@ -187,7 +185,7 @@ async def read_values(client: OpcUaClient, node_ids: list[str]) -> list[Any]:
     max_nodes = limits.max_nodes_per_read or len(node_ids)
     batch_size = max(1, min(max_nodes, len(node_ids)))
 
-    batches = _chunked(node_ids, batch_size)
+    batches = chunked(node_ids, batch_size)
     semaphore = client.read_slot()
 
     async def read_batch(batch: list[str]) -> list[Any]:
@@ -302,7 +300,7 @@ async def read_data_values_per_node(client: OpcUaClient, node_ids: list[str]) ->
                 return dv
 
     results: list[ua.DataValue] = []
-    for chunk in _chunked(node_ids, batch_size):
+    for chunk in chunked(node_ids, batch_size):
         tasks = [asyncio.create_task(_read_one(nid)) for nid in chunk]
         try:
             chunk_results = await asyncio.gather(*tasks)
@@ -362,17 +360,17 @@ async def read_values_batch_with_fallback(client: OpcUaClient, node_ids: list[st
             )
             return [None]
 
-        split_at = max(1, len(node_ids) // 2)
+        left_ids, right_ids = split_batch(node_ids)
         logger.warning(
             "OPC UA batch read split fallback endpoint=%s batch_size=%d split_at=%d error=%s",
             client.endpoint,
             len(node_ids),
-            split_at,
+            len(left_ids),
             candidate_error,
         )
         left, right = await asyncio.gather(
-            client.read_values_batch_with_fallback(node_ids[:split_at]),
-            client.read_values_batch_with_fallback(node_ids[split_at:]),
+            client.read_values_batch_with_fallback(left_ids),
+            client.read_values_batch_with_fallback(right_ids),
         )
         return left + right
 
@@ -529,7 +527,7 @@ async def write_value(
     except Exception as exc:
         client.record_failed_request()
         raise OpcUaWriteMetadataVerificationError(WRITE_METADATA_UNCERTAIN_MESSAGE) from exc
-    actual_quality = _quality_from_status_code(written_data_value.StatusCode)
+    actual_quality = quality_from_status_code(written_data_value.StatusCode)
     actual_timestamp = written_data_value.SourceTimestamp
     expected_timestamp = timestamp.astimezone(timezone.utc)
     if actual_quality != quality or actual_timestamp != expected_timestamp:
@@ -558,7 +556,7 @@ async def read_history_values(
         ReturnBounds=False,
     )
     values_by_node_id: dict[str, list[ua.DataValue]] = {}
-    history_batches = _chunked(node_ids, max(1, batch_size))
+    history_batches = chunked(node_ids, batch_size)
     semaphore = client.read_slot()
 
     async def read_history_batch(node_batch: list[str]) -> dict[str, list[ua.DataValue]]:
@@ -655,15 +653,15 @@ async def read_history_batch(
             await client.wait_for_reconnect(exc)
             results = await client.retry_call(client.raw_client.uaclient.history_read(params))
         elif client.is_too_many_operations_error(exc) and len(node_ids) > 1:
-            split_at = max(1, len(node_ids) // 2)
+            left_ids, right_ids = split_batch(node_ids)
             logger.warning(
                 "OPC UA history read split retry endpoint=%s batch_size=%d split_at=%d",
                 client.endpoint,
                 len(node_ids),
-                split_at,
+                len(left_ids),
             )
-            left = await client.read_history_batch(details, node_ids[:split_at], points[:split_at])
-            right = await client.read_history_batch(details, node_ids[split_at:], points[split_at:])
+            left = await client.read_history_batch(details, left_ids, points[: len(left_ids)])
+            right = await client.read_history_batch(details, right_ids, points[len(left_ids) :])
             return left + right
         else:
             client.record_failed_request()

@@ -1,3 +1,5 @@
+"""Template rendering that reports missing variables instead of substituting them."""
+
 from __future__ import annotations
 
 import re

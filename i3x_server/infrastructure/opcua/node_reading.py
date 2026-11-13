@@ -20,7 +20,8 @@ from asyncua.ua.attribute_ids import AttributeIds
 from asyncua.ua.object_ids import ObjectIds
 
 from i3x_server.domain.ports.opcua import OpcUaNodeInfo, OpcUaReferenceInfo
-from i3x_server.infrastructure.opcua.browse import _chunked_nodes, _gather_cancelled_on_failure
+from i3x_server.infrastructure.opcua.batching import chunked, halved_size, split_batch
+from i3x_server.infrastructure.opcua.browse import _gather_cancelled_on_failure
 
 if TYPE_CHECKING:
     from i3x_server.infrastructure.opcua.client import OpcUaClient
@@ -228,7 +229,7 @@ async def read_node_infos_limited(client: OpcUaClient, entries: list[tuple[Any, 
     index_by_node_id = {node.nodeid.to_string(): index for index, (node, _parent) in enumerate(entries)}
     slots: list[OpcUaNodeInfo | None] = [None] * len(entries)
 
-    for entry_batch in _chunked_nodes(entries, batch_size):
+    for entry_batch in chunked(entries, batch_size):
         nodes = [node for node, _ in entry_batch]
         parent_by_node_id = {node.nodeid.to_string(): parent_node_id for node, parent_node_id in entry_batch}
 
@@ -420,7 +421,7 @@ async def read_attribute_pairs(
         limits = await client.get_operational_limits()
         batch_size = limits.max_nodes_per_read or len(node_attributes)
 
-    batches = _chunked_nodes(node_attributes, max(1, batch_size))
+    batches = chunked(node_attributes, batch_size)
     semaphore = client.read_slot()
 
     async def read_batch(batch: list[tuple[Any, AttributeIds]]) -> list[ua.DataValue]:
@@ -454,16 +455,16 @@ async def read_attribute_pairs_batch(
             await client.wait_for_reconnect(exc)
             values = await client.retry_call(client.raw_client.uaclient.read(params))
         elif client.is_too_many_operations_error(exc) and len(node_attributes) > 1:
-            split_at = max(1, len(node_attributes) // 2)
+            left_batch, right_batch = split_batch(node_attributes)
             logger.warning(
                 "OPC UA multi-attribute read split retry endpoint=%s batch_size=%d split_at=%d",
                 client.endpoint,
                 len(node_attributes),
-                split_at,
+                len(left_batch),
             )
             left, right = await asyncio.gather(
-                client.read_attribute_pairs_batch(node_attributes[:split_at]),
-                client.read_attribute_pairs_batch(node_attributes[split_at:]),
+                client.read_attribute_pairs_batch(left_batch),
+                client.read_attribute_pairs_batch(right_batch),
             )
             return left + right
         else:
@@ -492,7 +493,7 @@ async def read_attribute_batch_limited(
         max_nodes = limits.max_nodes_per_read or len(nodes)
         effective_batch_size = max(1, min(max_nodes, len(nodes)))
 
-    batches = _chunked_nodes(nodes, max(1, effective_batch_size))
+    batches = chunked(nodes, effective_batch_size)
     semaphore = client.read_slot()
 
     async def read_batch(node_batch: list[Any]) -> list[ua.DataValue]:
@@ -503,7 +504,7 @@ async def read_attribute_batch_limited(
                 if not client.is_too_many_operations_error(exc) or len(node_batch) <= 1:
                     raise
 
-                reduced_batch_size = max(1, len(node_batch) // 2)
+                reduced_batch_size = halved_size(node_batch)
                 logger.warning(
                     "OPC UA attribute read split retry endpoint=%s attr=%s batch_size=%d reduced_batch_size=%d",
                     client.endpoint,

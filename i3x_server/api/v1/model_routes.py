@@ -1,15 +1,17 @@
+"""Diagnostics endpoints over the built model: build metrics and namespace-gap reporting."""
+
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query
 
 from i3x_server.api.openapi import CONDITIONAL_GET_OPENAPI
+from i3x_server.api.v1.common_helpers import _namespace_index_from_node_id
 from i3x_server.api.v1.contracts import (
     ModelMetricsResponse,
     ModelNamespaceGapItem,
     ModelNamespaceGapResponse,
     SuccessResponse,
 )
-from i3x_server.api.v1.monolithic import _namespace_index_from_node_id
 from i3x_server.api.v1.object_value_helpers import _build_model_metrics
 from i3x_server.application.dependencies import get_or_build_model
 from i3x_server.http_caching import enable_etag

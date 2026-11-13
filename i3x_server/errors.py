@@ -1,3 +1,6 @@
+"""The shared error shape: ``i3x_http_error`` builds the documented error envelope for a status
+code and detail payload."""
+
 import http
 
 from fastapi import HTTPException

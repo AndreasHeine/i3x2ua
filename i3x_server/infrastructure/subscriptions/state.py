@@ -13,8 +13,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
 
-from i3x_server.config.settings import get_settings
-from i3x_server.domain.ports.opcua import DataValueDTO
+from i3x_server.domain.ports.opcua import DataValueDTO, Quality
 from i3x_server.schemas.opcua_value import decode_data_value
 
 
@@ -26,7 +25,7 @@ class _ValueSignal:
     instead of inventing ``Good`` and a gateway timestamp for every update.
     """
 
-    quality: str | None = None
+    quality: Quality | None = None
     timestamp: str | None = None
 
 
@@ -38,17 +37,13 @@ def _signal_from_data_value(data_value: DataValueDTO | None) -> _ValueSignal:
     return _ValueSignal(quality=quality, timestamp=timestamp)
 
 
-def _stream_debug_enabled() -> bool:
-    return get_settings().debug_subscription_stream
-
-
 @dataclass(slots=True)
 class SubscriptionUpdate:
     sequence_number: int
     element_id: str
     node_id: str
     value: Any
-    quality: str
+    quality: Quality
     timestamp: str
 
 

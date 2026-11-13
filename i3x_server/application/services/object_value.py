@@ -8,19 +8,22 @@ resolution for i3X model objects.
 from __future__ import annotations
 
 import logging
-from base64 import b64encode
 from collections import deque
-from dataclasses import fields, is_dataclass
 from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import HTTPException, Request
-from pydantic import BaseModel
 
-from i3x_server.domain.ports.opcua import DataValueDTO, OpcUaClientProtocol
+from i3x_server.domain.ports.opcua import DataValueDTO, OpcUaClientProtocol, Quality
 from i3x_server.errors import i3x_http_error
 from i3x_server.schemas.i3x import ModelNode
-from i3x_server.schemas.opcua_value import normalize_opcua_value, severity_quality
+from i3x_server.schemas.opcua_value import (
+    normalize_timestamp,
+    now_iso,
+    quality_for_payload,
+    severity_quality,
+    to_json_safe_value,
+)
 from i3x_server.schemas.state import BuildResult
 
 logger = logging.getLogger(__name__)
@@ -250,12 +253,12 @@ class ObjectValueService:
     async def _read_current_value(self, node: ModelNode) -> VQT:
         """Read current value from OPC UA for a node."""
         if node.kind != "property":
-            return VQT(value=None, quality="GoodNoData", timestamp=self._now_iso())
+            return VQT(value=None, quality=Quality.GOOD_NO_DATA, timestamp=self._now_iso())
 
         source_node_id = self.model.property_to_node.get(node.id) or node.source_node_id
         data_values = await self.opcua_client.read_data_values([source_node_id])
         if not data_values:
-            return VQT(value=None, quality="GoodNoData", timestamp=self._now_iso())
+            return VQT(value=None, quality=Quality.GOOD_NO_DATA, timestamp=self._now_iso())
         return self._vqt_from_data_value(data_values[0])
 
     async def _read_history_values(self, node: ModelNode, start_time: datetime, end_time: datetime) -> list[VQT]:
@@ -364,60 +367,24 @@ class ObjectValueService:
         return parsed.astimezone(timezone.utc)
 
     def _now_iso(self) -> str:
-        """Get current time as ISO 8601 string."""
-        return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        """Current time as an i3X ISO 8601 string (UTC, ``Z`` suffix)."""
+        return now_iso()
 
-    def _normalize_quality(self, status_code: int | None) -> str:
+    def _normalize_quality(self, status_code: int | None) -> Quality:
         return severity_quality(status_code)
 
     def _normalize_timestamp(self, value: Any) -> str:
-        if isinstance(value, datetime):
-            if value.tzinfo is None:
-                value = value.replace(tzinfo=timezone.utc)
-            return str(value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"))
-        return self._now_iso()
+        return normalize_timestamp(value)
 
     def _to_json_safe_value(self, value: Any) -> Any:
-        if value is None:
-            return None
-        if isinstance(value, (str, int, float, bool)):
-            return value
-        if isinstance(value, datetime):
-            return self._normalize_timestamp(value)
-        if isinstance(value, (bytes, bytearray, memoryview)):
-            return b64encode(bytes(value)).decode("ascii")
-        if hasattr(value, "TypeId") and hasattr(value, "Body"):
-            body = value.Body
-            if body is None:
-                return None
-            return {
-                "TypeId": self._to_json_safe_value(value.TypeId),
-                "Body": self._to_json_safe_value(body),
-            }
-        if isinstance(value, BaseModel):
-            return self._to_json_safe_value(value.model_dump(mode="json", by_alias=True))
-        if is_dataclass(value):
-            value = normalize_opcua_value(value)
-            return {item.name: self._to_json_safe_value(getattr(value, item.name)) for item in fields(value)}
-        if isinstance(value, (list, tuple, set)):
-            return [self._to_json_safe_value(item) for item in value]
-        if isinstance(value, dict):
-            return {str(key): self._to_json_safe_value(item) for key, item in value.items()}
-        if hasattr(value, "__dict__") and type(value).__module__ != "builtins":
-            return {
-                str(key): self._to_json_safe_value(item)
-                for key, item in vars(value).items()
-                if not key.startswith("_") and not callable(item)
-            }
-        return str(value)
+        """JSON-safe payload. ``encoding`` fields stay: the service reports the value as read."""
+        return to_json_safe_value(value)
 
     def _vqt_from_data_value(self, data_value: DataValueDTO) -> VQT:
         raw_value = data_value.value.value if data_value.value is not None else None
-        quality = self._normalize_quality(data_value.status_code)
-        timestamp = self._normalize_timestamp(data_value.source_timestamp or data_value.server_timestamp)
         safe_value = self._to_json_safe_value(raw_value)
-        if safe_value is None and quality not in {"Bad", "GoodNoData"}:
-            quality = "GoodNoData"
+        quality = quality_for_payload(safe_value, self._normalize_quality(data_value.status_code))
+        timestamp = self._normalize_timestamp(data_value.source_timestamp or data_value.server_timestamp)
         return VQT(value=safe_value, quality=quality, timestamp=timestamp)
 
     def _to_vqt_from_history_value(self, data_value: DataValueDTO) -> VQT:

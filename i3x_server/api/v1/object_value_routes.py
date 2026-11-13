@@ -1,3 +1,7 @@
+"""Value endpoints: related objects, last-known values, history queries, and the write and history
+update paths. Bulk endpoints own the per-item diagnostics and status classification the
+application service does not implement."""
+
 from __future__ import annotations
 
 import logging
@@ -9,7 +13,9 @@ from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse
 
 from i3x_server.api.v1.common_helpers import (
+    _audit_principal,
     _good_no_data_vqt,
+    _not_implemented,
     _raise_opcua_error,
     _resolve_model_nodes,
 )
@@ -33,7 +39,6 @@ from i3x_server.api.v1.contracts import (
     _bulk_result_success,
     _status_title,
 )
-from i3x_server.api.v1.monolithic import _audit_principal, _not_implemented, _writes_enabled
 from i3x_server.api.v1.object_helpers import (
     _build_related_objects_for_node,
     _composition_children_for_node,
@@ -53,6 +58,7 @@ from i3x_server.api.v1.objecttype_helpers import _get_object_endpoint_context
 from i3x_server.api.v1.write_validation import WriteValidationError, WriteValueValidator
 from i3x_server.application.dependencies import get_opcua_client, get_or_build_model
 from i3x_server.application.ports.opcua import DataValueDTO, OpcUaClientProtocol
+from i3x_server.config.settings import writes_enabled
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
 
@@ -404,7 +410,7 @@ async def update_object_values_v1(
     model: BuildResult = Depends(get_or_build_model),
     opcua_client: OpcUaClientProtocol = Depends(get_opcua_client),
 ) -> BulkResponse[None]:
-    if not _writes_enabled():
+    if not writes_enabled():
         _not_implemented("Current value updates")
 
     results: list[BulkResultItem[None]] = []
@@ -448,7 +454,7 @@ async def update_historical_values_v1(
     model: BuildResult = Depends(get_or_build_model),
     opcua_client: OpcUaClientProtocol = Depends(get_opcua_client),
 ) -> BulkResponse[None] | JSONResponse:
-    if not _writes_enabled():
+    if not writes_enabled():
         _not_implemented("Historical value updates")
 
     results: list[BulkResultItem[None]] = []

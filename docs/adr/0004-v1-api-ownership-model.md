@@ -81,3 +81,18 @@ which is added to the rule 4 list above:
 - `monolithic.py` keeps its role under rule 6 (compatibility module) for the object-type machinery
   that tests still target. Its remaining size above the module guidance threshold is a deliberate
   deferral until test imports stop targeting it.
+
+## Decision update (2026-11-13)
+
+The condition in rule 6 and in the 2026-11-08 update is now met, so `i3x_server/api/v1/monolithic.py`
+has been removed rather than kept:
+
+- every direct import and test targets the owning module (`contracts.py`, the feature route modules,
+  the helper modules, `config/settings.py`, `domain/utils.py`)
+- the helpers that still had no owning home (`_audit_principal`, `_not_implemented`,
+  `_namespace_index_from_node_id`) moved to `common_helpers.py`
+- the `_`-prefixed re-export chains of domain helpers in `object_helpers.py` are gone; callers import
+  `domain.utils` directly, which also removes the wrapper layer tests had to monkeypatch through
+
+Rule 3 and the "tests target source modules, not wrapper re-exports" rule in
+`docs/architecture.md` now hold without an exception.

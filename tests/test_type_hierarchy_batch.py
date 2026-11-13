@@ -138,7 +138,9 @@ async def test_type_hierarchy_batch_cycle_is_bounded(monkeypatch: pytest.MonkeyP
 async def test_type_definition_hierarchy_cache_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
     """Hierarchy chains must not accumulate every type id a long-lived client browses."""
     client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
-    monkeypatch.setattr("i3x_server.infrastructure.opcua.client._TYPE_DEFINITION_HIERARCHY_CACHE_MAX_ENTRIES", 2)
+    monkeypatch.setattr(
+        "i3x_server.infrastructure.opcua.metadata_cache._TYPE_DEFINITION_HIERARCHY_CACHE_MAX_ENTRIES", 2
+    )
 
     names = {f"ns=2;i={index}": f"Type{index}" for index in range(1, 6)}
     names["i=58"] = "BaseObjectType"

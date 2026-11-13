@@ -1,3 +1,5 @@
+"""Prompt definitions, loaded from the overrides file when one is configured."""
+
 from __future__ import annotations
 
 from collections.abc import Mapping

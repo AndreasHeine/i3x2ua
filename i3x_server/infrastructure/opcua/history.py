@@ -1,3 +1,6 @@
+"""History value conversion at the adapter boundary: quality to status code, payload to variant,
+and timestamp validation for historized writes."""
+
 from __future__ import annotations
 
 import base64
@@ -10,6 +13,8 @@ from uuid import UUID
 from asyncua import ua
 from asyncua.ua.status_codes import StatusCodes
 
+from i3x_server.domain.ports.opcua import NULL_VALUE_QUALITIES, Quality
+
 _INTEGER_BITS = {
     ua.VariantType.SByte: (8, True),
     ua.VariantType.Byte: (8, False),
@@ -20,11 +25,11 @@ _INTEGER_BITS = {
     ua.VariantType.Int64: (64, True),
     ua.VariantType.UInt64: (64, False),
 }
-_QUALITY_CODES = {
-    "Good": StatusCodes.Good,
-    "Uncertain": StatusCodes.Uncertain,
-    "Bad": StatusCodes.Bad,
-    "GoodNoData": StatusCodes.GoodNoData,
+_QUALITY_CODES: dict[str, int] = {
+    Quality.GOOD: StatusCodes.Good,
+    Quality.UNCERTAIN: StatusCodes.Uncertain,
+    Quality.BAD: StatusCodes.Bad,
+    Quality.GOOD_NO_DATA: StatusCodes.GoodNoData,
 }
 _SUPPORTED_TYPES = set(_INTEGER_BITS) | {
     ua.VariantType.Boolean,
@@ -109,11 +114,11 @@ def historical_data_value(
     if timestamp.tzinfo is None:
         raise ValueError("Historical timestamp must include a timezone")
     if value is None:
-        if quality not in {"Bad", "GoodNoData"}:
+        if quality not in NULL_VALUE_QUALITIES:
             raise ValueError("A null value requires Bad or GoodNoData quality")
         variant = ua.Variant(None, ua.VariantType.Null)
     else:
-        if quality in {"Bad", "GoodNoData"}:
+        if quality in NULL_VALUE_QUALITIES:
             raise ValueError("Bad and GoodNoData quality require a null value")
         if variant_type not in _SUPPORTED_TYPES:
             raise ValueError(f"Historical writes for {variant_type.name} values are not supported")

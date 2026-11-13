@@ -1,3 +1,5 @@
+"""Server version resolution for ``GET /v1/server-info``."""
+
 from __future__ import annotations
 
 import logging

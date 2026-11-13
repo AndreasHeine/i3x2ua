@@ -18,6 +18,7 @@ from asyncua.ua.attribute_ids import AttributeIds
 from asyncua.ua.object_ids import ObjectIds
 
 from i3x_server.domain.ports.opcua import (
+    DEFAULT_MAX_NODES_PER_BROWSE,
     OpcUaNamespaceInfo,
     OpcUaOperationalLimits,
     OpcUaSubscriptionCapabilities,
@@ -208,7 +209,7 @@ async def _load_namespace_infos(client: OpcUaClient) -> list[OpcUaNamespaceInfo]
 
     try:
         limits = await client.get_operational_limits()
-        max_nodes_per_browse = limits.max_nodes_per_browse or 128
+        max_nodes_per_browse = limits.max_nodes_per_browse or DEFAULT_MAX_NODES_PER_BROWSE
         namespaces_node = client.raw_node("i=11715")
         namespace_components_browse = await client.browse_children_descriptions(
             [namespaces_node],

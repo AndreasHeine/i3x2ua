@@ -1,3 +1,6 @@
-"""OPC UA infrastructure adapters."""
+"""OPC UA infrastructure adapters.
 
-from i3x_server.infrastructure.opcua.client import *  # noqa: F403
+Adapters are imported from their own modules (``client``, ``browse``, ``values``, ...) rather
+than re-exported here, so the package surface stays explicit and mypy can see where a name
+comes from.
+"""

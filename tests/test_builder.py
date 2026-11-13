@@ -7,7 +7,7 @@ import pytest
 from i3x_server.application.services.model_query import ModelQueryService
 from i3x_server.domain.ports.opcua import OpcUaNamespaceInfo, OpcUaTypeDefinitionInfo
 from i3x_server.infrastructure.opcua.client import OpcUaClientProtocol, OpcUaNodeInfo, OpcUaReferenceInfo
-from i3x_server.model.builder import ModelBuilder, _kind_for_node
+from i3x_server.model.builder import ModelBuilder
 from i3x_server.model.mapper import infer_kind, map_type, stable_i3x_id
 from i3x_server.schemas.state import BuildResult
 
@@ -1247,18 +1247,6 @@ async def test_model_builder_profile_relationship_flags_override_reference_class
     assert result.composition_children_by_id[root_id] == [data_item_id]
     assert result.relationships_by_id[root_id]["HasChildren"] == [group_id]
     assert result.relationships_by_id[root_id]["HasComponent"] == [data_item_id]
-
-
-def test_kind_for_node_branches() -> None:
-    event_source = OpcUaNodeInfo("n1", None, "A", "A", "Object", None, event_notifier=True)
-    variable = OpcUaNodeInfo("n2", None, "B", "B", "Variable", "Double", event_notifier=False)
-    method = OpcUaNodeInfo("n3", None, "C", "C", "Method", None, event_notifier=False)
-    other = OpcUaNodeInfo("n4", None, "D", "D", "ObjectType", None, event_notifier=False)
-
-    assert _kind_for_node(event_source) == "eventSource"
-    assert _kind_for_node(variable) == "property"
-    assert _kind_for_node(method) == "action"
-    assert _kind_for_node(other) == "asset"
 
 
 def test_mapper_helper_functions() -> None:

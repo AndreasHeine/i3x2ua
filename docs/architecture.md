@@ -66,7 +66,7 @@ The project follows a layered architecture inside i3x_server:
 
 1. presentation
 - Responsibility: protocol-facing endpoints, request parsing, response shaping, and protocol adapters (REST and MCP). The MCP adapter dispatches tool calls to existing REST routes in-process. Cached-model tools read the cached model directly and answer 503 when it is not built yet; they never start a model build or contact OPC UA. Only `readContainerValues` uses the application model provider, because it fetches live values from OPC UA.
-- Current primary modules: i3x_server/api, i3x_server/mcp/*, i3x_server/api/v1/*_routes.py, i3x_server/api/v1/contracts.py, i3x_server/api/v1/*helpers.py, i3x_server/api/mcp/monolithic.py.
+- Current primary modules: i3x_server/api, i3x_server/mcp/*, i3x_server/api/v1/*_routes.py, i3x_server/api/v1/contracts.py, i3x_server/api/v1/*helpers.py, i3x_server/api/mcp/router.py.
 
 2. application
 - Responsibility: use-case orchestration, coordination between services, cross-cutting workflow logic. The typed runtime state container (`GatewayState` in `application/state.py`) lives here because routes and application dependencies read it; the composition root owns construction and lifecycle assignment.
@@ -167,16 +167,19 @@ The v1 API now follows this split:
 - `api/v1/*_routes.py`: feature-specific HTTP handlers
 - `api/v1/contracts.py`: shared request/response DTOs and bulk-response helpers
 - `api/v1/object_helpers.py`, `api/v1/objecttype_helpers.py`, `api/v1/common_helpers.py`: presentation-local helper logic
-- `api/v1/monolithic.py`: compatibility and transitional shims only; no new route ownership
 
-This means orchestration should not move back into `monolithic.py`. New behavior should be added to a feature route module, a helper module, or an application service depending on responsibility.
+The legacy `api/v1/monolithic.py` compatibility surface has been removed (ADR 0004 follow-up): every
+caller imports the owning module directly, so there is no shim left to keep in sync.
+
+This means orchestration stays out of the helper modules. New behavior should be added to a feature route module, a helper module, or an application service depending on responsibility.
 
 ## Transitional Rules
 
 During migration, compatibility wrappers are expected:
 
 - i3x_server/api/v1/__init__.py is the v1 router aggregator
-- i3x_server/api/v1/monolithic.py is retained only as a compatibility surface for remaining direct imports/tests
+- The v1 compatibility module (`api/v1/monolithic.py`) has been removed: direct imports and tests
+  point at the owning modules, so no wrapper re-export exists
 - i3x_server/api/mcp/__init__.py re-exports the composed router and transport helpers; the MCP protocol
   is split into focused adapters (jsonrpc.py, tools.py, prompts.py, resources.py, roots.py, router.py)
 

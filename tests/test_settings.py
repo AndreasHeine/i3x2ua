@@ -4,7 +4,7 @@ import pytest
 from pydantic import ValidationError
 from pytest import MonkeyPatch
 
-from i3x_server.config.settings import Settings
+from i3x_server.config.settings import Settings, stream_debug_enabled, trust_principal_header, writes_enabled
 
 
 def test_settings_trim_whitespace_from_env_values(monkeypatch: MonkeyPatch) -> None:
@@ -126,3 +126,22 @@ def test_settings_mcp_origins_and_principal_trust(monkeypatch: MonkeyPatch) -> N
 
     assert settings.mcp_allowed_origins == ["https://trusted.example", "https://app.example"]
     assert settings.trust_principal_header is True
+
+
+def test_runtime_flag_helpers_track_current_environment(monkeypatch: MonkeyPatch) -> None:
+    """The flag helpers go through ``get_settings()``, so env changes apply immediately."""
+    monkeypatch.setenv("I3X_ENABLE_WRITES", "1")
+    monkeypatch.setenv("I3X_TRUST_PRINCIPAL_HEADER", "1")
+    monkeypatch.setenv("I3X_DEBUG_SUBSCRIPTION_STREAM", "1")
+
+    assert writes_enabled() is True
+    assert trust_principal_header() is True
+    assert stream_debug_enabled() is True
+
+    monkeypatch.setenv("I3X_ENABLE_WRITES", "0")
+    monkeypatch.setenv("I3X_TRUST_PRINCIPAL_HEADER", "0")
+    monkeypatch.setenv("I3X_DEBUG_SUBSCRIPTION_STREAM", "0")
+
+    assert writes_enabled() is False
+    assert trust_principal_header() is False
+    assert stream_debug_enabled() is False

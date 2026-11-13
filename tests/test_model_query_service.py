@@ -90,7 +90,7 @@ def test_to_namespace_prefers_display_name_or_fallback(monkeypatch: pytest.Monke
     with_display = OpcUaNamespaceInfo(uri="http://example.com/with", display_name="With")
     assert _to_namespace(with_display).model_dump() == {"uri": "http://example.com/with", "displayName": "With"}
 
-    monkeypatch.setattr("i3x_server.application.services.model_query.display_name_for_uri", lambda uri: f"Name:{uri}")
+    monkeypatch.setattr("i3x_server.domain.utils.display_name_for_uri", lambda uri: f"Name:{uri}")
     without_display = OpcUaNamespaceInfo(uri="http://example.com/without", display_name="")
     assert _to_namespace(without_display).model_dump() == {
         "uri": "http://example.com/without",

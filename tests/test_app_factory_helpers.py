@@ -17,18 +17,17 @@ from starlette.requests import Request
 
 from i3x_server.application.services.model_cache import get_or_build_model
 from i3x_server.application.state import GatewayState, ObjectTypeContextCache, install_gateway_state
-from i3x_server.bootstrap import app_factory
-from i3x_server.bootstrap.app_factory import (
-    _extract_inline_script_bodies,
-    _frontend_inline_script_hashes,
+from i3x_server.bootstrap import app_factory, runtime_setup
+from i3x_server.bootstrap.app_factory import create_app
+from i3x_server.bootstrap.error_handlers import _status_title
+from i3x_server.bootstrap.frontend import _extract_inline_script_bodies, _frontend_inline_script_hashes
+from i3x_server.bootstrap.openapi_config import _readable_operation_id, _to_lower_camel_case
+from i3x_server.bootstrap.runtime_setup import (
     _prepare_otel_environment,
-    _readable_operation_id,
     _run_model_preload,
     _run_periodic_model_refresh,
-    _status_title,
-    _to_lower_camel_case,
-    create_app,
 )
+from i3x_server.config.settings import settings
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
 
@@ -133,8 +132,8 @@ async def test_run_model_preload_success_sets_cache(monkeypatch: pytest.MonkeyPa
         await allow_warm_finish.wait()
         warm_finished.set()
 
-    monkeypatch.setattr("i3x_server.bootstrap.app_factory.settings.model_preload_blocking", blocking)
-    monkeypatch.setattr(app_factory, "_warm_object_type_context", warm_context)
+    monkeypatch.setattr(settings, "model_preload_blocking", blocking)
+    monkeypatch.setattr(runtime_setup, "_warm_object_type_context", warm_context)
     preload_task = asyncio.create_task(_run_model_preload(app))
     try:
         await asyncio.wait_for(warm_started.wait(), timeout=2)
@@ -174,8 +173,8 @@ async def test_run_model_preload_failure_without_raise(monkeypatch: pytest.Monke
         app,
         GatewayState(opcua_client=_OpcUaClient(), model_builder=_ModelBuilder(), model_cache=None),
     )
-    monkeypatch.setattr("i3x_server.bootstrap.app_factory.settings.fail_startup_on_model_preload_error", False)
-    monkeypatch.setattr("i3x_server.bootstrap.app_factory.settings.model_preload_blocking", False)
+    monkeypatch.setattr(settings, "fail_startup_on_model_preload_error", False)
+    monkeypatch.setattr(settings, "model_preload_blocking", False)
     await _run_model_preload(app)
 
 
@@ -221,8 +220,8 @@ async def test_run_periodic_model_refresh_rebuilds_cache(monkeypatch: pytest.Mon
         GatewayState(model_builder=_ModelBuilder(), opcua_client=_OpcUaClient(), model_cache=None),
     )
 
-    monkeypatch.setattr("i3x_server.bootstrap.app_factory.settings.model_refresh_interval_seconds", 1)
-    monkeypatch.setattr("i3x_server.bootstrap.app_factory.asyncio.sleep", _fake_sleep)
+    monkeypatch.setattr(settings, "model_refresh_interval_seconds", 1)
+    monkeypatch.setattr(asyncio, "sleep", _fake_sleep)
 
     with pytest.raises(asyncio.CancelledError):
         await _run_periodic_model_refresh(app)
@@ -250,14 +249,14 @@ async def test_run_periodic_model_refresh_disabled_when_interval_zero(monkeypatc
         GatewayState(model_builder=_ModelBuilder(), opcua_client=_OpcUaClient(), model_cache=None),
     )
 
-    monkeypatch.setattr("i3x_server.bootstrap.app_factory.settings.model_refresh_interval_seconds", 0)
+    monkeypatch.setattr(settings, "model_refresh_interval_seconds", 0)
     await _run_periodic_model_refresh(app)
 
 
 @pytest.mark.asyncio
 async def test_browse_roots_are_wired_at_startup(monkeypatch: pytest.MonkeyPatch) -> None:
     roots = ["nsu=urn:plant;s=Machine1", "nsu=urn:plant;s=Machine2"]
-    monkeypatch.setattr("i3x_server.bootstrap.app_factory.settings.opcua_browse_roots", roots)
+    monkeypatch.setattr(settings, "opcua_browse_roots", roots)
     monkeypatch.setenv("I3X_SKIP_OPCUA_CONNECT", "1")
     monkeypatch.setenv("I3X_ENABLE_MCP", "0")
     app = FastAPI()
@@ -296,8 +295,8 @@ async def test_failed_refresh_preserves_previous_model(monkeypatch: pytest.Monke
         if sleeps == 2:
             raise asyncio.CancelledError()
 
-    monkeypatch.setattr("i3x_server.bootstrap.app_factory.settings.model_refresh_interval_seconds", 1)
-    monkeypatch.setattr("i3x_server.bootstrap.app_factory.asyncio.sleep", sleep)
+    monkeypatch.setattr(settings, "model_refresh_interval_seconds", 1)
+    monkeypatch.setattr(asyncio, "sleep", sleep)
     with pytest.raises(asyncio.CancelledError):
         await _run_periodic_model_refresh(app)
     build.assert_awaited_once()
@@ -366,8 +365,8 @@ async def test_periodic_refresh_builds_outside_lock_and_readers_keep_old_revisio
         ),
     )
 
-    monkeypatch.setattr("i3x_server.bootstrap.app_factory.settings.model_refresh_interval_seconds", 1)
-    monkeypatch.setattr("i3x_server.bootstrap.app_factory.asyncio.sleep", _fake_sleep)
+    monkeypatch.setattr(settings, "model_refresh_interval_seconds", 1)
+    monkeypatch.setattr(asyncio, "sleep", _fake_sleep)
 
     refresh = asyncio.create_task(_run_periodic_model_refresh(app))
     await build_started.wait()
@@ -387,7 +386,7 @@ async def test_periodic_refresh_builds_outside_lock_and_readers_keep_old_revisio
 
 @pytest.mark.parametrize("enabled", [False, True])
 def test_create_app_configures_native_telemetry(monkeypatch: pytest.MonkeyPatch, enabled: bool) -> None:
-    monkeypatch.setattr("i3x_server.bootstrap.app_factory.settings.otel_enabled", enabled)
+    monkeypatch.setattr(settings, "otel_enabled", enabled)
     monkeypatch.setenv("OTEL_SERVICE_NAME", "test-service")
     app = create_app()
 
@@ -405,9 +404,9 @@ def test_create_app_configures_native_telemetry(monkeypatch: pytest.MonkeyPatch,
 
 
 def test_prepare_otel_environment_preserves_standard_values(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("i3x_server.bootstrap.app_factory.settings.otel_enabled", True)
-    monkeypatch.setattr("i3x_server.bootstrap.app_factory.settings.otel_service_name", "legacy-service")
-    monkeypatch.setattr("i3x_server.bootstrap.app_factory.settings.otel_otlp_endpoint", "http://legacy:4318")
+    monkeypatch.setattr(settings, "otel_enabled", True)
+    monkeypatch.setattr(settings, "otel_service_name", "legacy-service")
+    monkeypatch.setattr(settings, "otel_otlp_endpoint", "http://legacy:4318")
     monkeypatch.setenv("OTEL_SERVICE_NAME", "standard-service")
     monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
 
@@ -514,7 +513,7 @@ async def test_degraded_startup_serves_empty_model_and_supervisor_rebuilds_after
     )
     monkeypatch.setattr("i3x_server.model.builder.ModelBuilder.build", AsyncMock(return_value=built))
     monkeypatch.setattr(
-        "i3x_server.bootstrap.app_factory.warm_object_type_context",
+        "i3x_server.bootstrap.runtime_setup.warm_object_type_context",
         AsyncMock(return_value=SimpleNamespace(items=[])),
     )
 

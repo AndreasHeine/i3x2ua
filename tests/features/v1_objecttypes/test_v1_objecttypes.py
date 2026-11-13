@@ -493,8 +493,8 @@ def test_v1_objecttypes_generic_custom_id_uses_browse_name_lookup(
     schema, no registry name), so the generic inference path runs and the inferred name is
     replaced by the ``read_browse_name`` result.
     """
-    monkeypatch.setattr("i3x_server.api.v1.objecttype_helpers._ENABLE_LIVE_TYPE_NAME_LOOKUP", True)
-    monkeypatch.setattr("i3x_server.api.v1.objecttype_helpers._LIVE_TYPE_NAME_LOOKUP_MAX_PER_REQUEST", 100)
+    monkeypatch.setattr("i3x_server.api.v1.objecttype_runtime_flags._ENABLE_LIVE_TYPE_NAME_LOOKUP", True)
+    monkeypatch.setattr("i3x_server.api.v1.objecttype_runtime_flags._LIVE_TYPE_NAME_LOOKUP_MAX_PER_REQUEST", 100)
 
     app = fastapi_app(client)
     _add_unresolved_custom_object_type(app, "asset-custom-900001", "CustomAsset", "ns=2;s=CustomAsset", 900001)
@@ -518,8 +518,8 @@ def test_v1_objecttypes_lookup_budget_limits_browse_name_reads(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The per-request budget caps how many inferred type ids may be looked up."""
-    monkeypatch.setattr("i3x_server.api.v1.objecttype_helpers._ENABLE_LIVE_TYPE_NAME_LOOKUP", True)
-    monkeypatch.setattr("i3x_server.api.v1.objecttype_helpers._LIVE_TYPE_NAME_LOOKUP_MAX_PER_REQUEST", 1)
+    monkeypatch.setattr("i3x_server.api.v1.objecttype_runtime_flags._ENABLE_LIVE_TYPE_NAME_LOOKUP", True)
+    monkeypatch.setattr("i3x_server.api.v1.objecttype_runtime_flags._LIVE_TYPE_NAME_LOOKUP_MAX_PER_REQUEST", 1)
 
     app = fastapi_app(client)
     _add_unresolved_custom_object_type(app, "asset-custom-900001", "CustomAsset", "ns=2;s=CustomAsset", 900001)
@@ -537,8 +537,8 @@ async def test_v1_objecttypes_standard_namespace_lookup_remaps_to_ns0_index(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Standard-UA inferred ids are looked up with ``ns=0;i=…``, not the expanded ``nsu=`` form."""
-    monkeypatch.setattr("i3x_server.api.v1.objecttype_helpers._ENABLE_LIVE_TYPE_NAME_LOOKUP", True)
-    monkeypatch.setattr("i3x_server.api.v1.objecttype_helpers._LIVE_TYPE_NAME_LOOKUP_MAX_PER_REQUEST", 100)
+    monkeypatch.setattr("i3x_server.api.v1.objecttype_runtime_flags._ENABLE_LIVE_TYPE_NAME_LOOKUP", True)
+    monkeypatch.setattr("i3x_server.api.v1.objecttype_runtime_flags._LIVE_TYPE_NAME_LOOKUP_MAX_PER_REQUEST", 100)
 
     app = fastapi_app(client)
     looked_up: list[str] = []
@@ -585,9 +585,11 @@ async def test_v1_objecttypes_lookup_timeout_falls_back_to_inferred_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A slow upstream BrowseName read must degrade to the inferred name, not hang the request."""
-    monkeypatch.setattr("i3x_server.api.v1.objecttype_helpers._ENABLE_LIVE_TYPE_NAME_LOOKUP", True)
-    monkeypatch.setattr("i3x_server.api.v1.objecttype_helpers._LIVE_TYPE_NAME_LOOKUP_MAX_PER_REQUEST", 100)
-    monkeypatch.setattr("i3x_server.api.v1.objecttype_helpers._live_type_name_lookup_timeout_seconds", lambda: 0.05)
+    monkeypatch.setattr("i3x_server.api.v1.objecttype_runtime_flags._ENABLE_LIVE_TYPE_NAME_LOOKUP", True)
+    monkeypatch.setattr("i3x_server.api.v1.objecttype_runtime_flags._LIVE_TYPE_NAME_LOOKUP_MAX_PER_REQUEST", 100)
+    monkeypatch.setattr(
+        "i3x_server.api.v1.objecttype_runtime_flags._live_type_name_lookup_timeout_seconds", lambda: 0.05
+    )
 
     app = fastapi_app(client)
 

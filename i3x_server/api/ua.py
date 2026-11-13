@@ -1,3 +1,8 @@
+"""``/ua`` diagnostics endpoints.
+
+Connection state, operational limits, server capabilities, and request/runtime metrics are read
+from the gateway state; the endpoints never contact OPC UA, so probes stay cheap."""
+
 from __future__ import annotations
 
 from dataclasses import fields, is_dataclass

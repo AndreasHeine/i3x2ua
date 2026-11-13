@@ -1,3 +1,8 @@
+"""Environment-driven settings (``I3X_*``) and the runtime flag readers.
+
+``settings`` is the process-wide snapshot; ``get_settings()`` re-parses the environment, and the
+flag readers consult it so a test or a deployment that changes the env takes effect immediately."""
+
 import base64
 import json
 import os
@@ -8,6 +13,8 @@ from uuid import UUID
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+from i3x_server.domain.ports.opcua import SecurityMode
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="I3X_", env_file=".env", extra="ignore")
@@ -15,7 +22,9 @@ class Settings(BaseSettings):
     opcua_endpoint: str = Field(default="opc.tcp://opcua.umati.app:4843")
     opcua_username: str | None = Field(default=None)
     opcua_password: str | None = Field(default=None)
-    opcua_security_mode: str = Field(default="None")
+    # Kept as ``str`` so lenient env values (e.g. ``none``) still parse; the adapter normalizes
+    # the mode before it reaches the asyncua security string.
+    opcua_security_mode: str = Field(default=SecurityMode.NONE)
     opcua_security_policy: str | None = Field(default=None)
     opcua_client_cert_path: str | None = Field(default=None)
     opcua_client_key_path: str | None = Field(default=None)
@@ -164,3 +173,26 @@ def get_settings() -> Settings:
     while len(_settings_cache) > _MAX_CACHED_SETTINGS:
         _settings_cache.pop(next(iter(_settings_cache)))
     return parsed
+
+
+def stream_debug_enabled() -> bool:
+    """Whether subscription stream internals emit debug diagnostics.
+
+    Read per call through ``get_settings()`` so the toggle reacts to the current environment,
+    like every other documented env knob.
+    """
+    return get_settings().debug_subscription_stream
+
+
+def writes_enabled() -> bool:
+    """Whether value and history writes are allowed at all (upstream permissions still apply)."""
+    return get_settings().enable_writes
+
+
+def trust_principal_header() -> bool:
+    """Whether the ``x-principal`` request header may name the audit principal.
+
+    Default false: the header is attacker-controlled, so audit records stay "anonymous" unless
+    an operator explicitly opts in (e.g. behind a trusted proxy that sets the header).
+    """
+    return get_settings().trust_principal_header

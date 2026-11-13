@@ -1,3 +1,5 @@
+"""Semantic profiles that override node and relationship classification per namespace or node."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

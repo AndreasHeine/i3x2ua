@@ -43,8 +43,8 @@ addopts = [
 ]
 
 [tool.coverage.run]
-# ``api/v1/monolithic.py`` is deliberately *not* omitted: live routes import behaviour from it
-# (model_routes.py, subscription_routes.py, object_value_routes.py), so it must be measured.
+# ``api/v1`` helper modules are deliberately *not* omitted: the route modules import their
+# behaviour, so the shared helpers must be measured with the routes that call them.
 # ``infrastructure/opcua/client.py`` stays omitted with justification: it is the real asyncua
 # adapter (transport, subscriptions, browse) and is only exercised against a live OPC UA server;
 # the unit suites drive the fake client, so instrumenting it would measure unreachable branches.

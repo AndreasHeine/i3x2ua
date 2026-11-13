@@ -12,13 +12,21 @@ import pytest
 from fastapi import HTTPException
 from jsonschema import Draft202012Validator
 
-import i3x_server.api.v1.monolithic as v1
-from i3x_server.api.v1 import object_helpers, object_value_helpers, objecttype_helpers
-from i3x_server.api.v1.contracts import ValueUpdateItemRequest, WriteVQTRequest
+from i3x_server.api.v1 import (
+    object_helpers,
+    object_value_helpers,
+    objecttype_helpers,
+    objecttype_schema_utils,
+    objecttype_type_resolution,
+    objecttype_ua_names,
+)
+from i3x_server.api.v1.common_helpers import _namespace_index_from_node_id, _not_implemented
+from i3x_server.api.v1.contracts import GetObjectHistoryRequest, ValueUpdateItemRequest, WriteVQTRequest
 from i3x_server.api.v1.write_validation import WriteValueValidator
 from i3x_server.application.services.model_query import _relationship_type_items
 from i3x_server.application.state import GatewayState
 from i3x_server.domain.ports.opcua import DataValueDTO
+from i3x_server.domain.utils import display_name_for_uri
 from i3x_server.infrastructure.opcua.client import (
     OpcUaClientProtocol,
     OpcUaNamespaceInfo,
@@ -27,7 +35,7 @@ from i3x_server.infrastructure.opcua.client import (
 )
 from i3x_server.model.revision import model_revision
 from i3x_server.schemas.i3x import ModelNode
-from i3x_server.schemas.opcua_value import severity_quality
+from i3x_server.schemas.opcua_value import normalize_timestamp, severity_quality
 from i3x_server.schemas.state import BuildResult
 from tests.conftest import data_value_dto
 
@@ -123,33 +131,20 @@ def _sample_model() -> BuildResult:
 
 
 def test_display_name_for_uri_variants() -> None:
-    assert object_helpers._display_name_for_uri("https://cesmii.org/i3x") == "I3X"
-    assert object_helpers._display_name_for_uri("https://example.com/ns/device_model") == "Device Model"
-    assert object_helpers._display_name_for_uri("https://example.com/ns/a12") == "A12"
+    # The display-name rule lives in the domain layer (single implementation).
+    assert display_name_for_uri("https://cesmii.org/i3x") == "I3X"
+    assert display_name_for_uri("https://example.com/ns/device_model") == "Device Model"
+    assert display_name_for_uri("https://example.com/ns/a12") == "A12"
 
 
-def test_namespace_and_expanded_node_helpers() -> None:
-    infos = [
-        OpcUaNamespaceInfo(uri="http://default", display_name="Default"),
-        OpcUaNamespaceInfo(uri="http://custom", display_name="Custom"),
-    ]
-    assert v1._namespace_uri_for_node_id("ns=1;i=42", infos) == "http://custom"
-    assert v1._namespace_uri_for_node_id("ns=99;i=42", infos) == ""
-    assert v1._expanded_node_id("ns=1;i=42", infos) == "nsu=http://custom;i=42"
-    assert v1._expanded_node_id("nsu=http://custom;i=42", infos) == "nsu=http://custom;i=42"
-    assert v1._expanded_node_id("asset-root", infos) == "asset-root"
-    assert v1._namespace_uri_from_expanded_node_id("nsu=http://custom;i=42") == "http://custom"
-    assert v1._namespace_uri_from_expanded_node_id("ns=1;i=42") is None
-
-
-def test_namespace_canonicalization_helper() -> None:
-    infos = [
-        OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/", display_name="UA"),
-        OpcUaNamespaceInfo(uri="http://example.com/custom/", display_name="Custom"),
-    ]
-    assert v1._canonical_namespace_uri("http://opcfoundation.org/UA", infos) == "http://opcfoundation.org/UA/"
-    assert v1._canonical_namespace_uri("http://example.com/custom", infos) == "http://example.com/custom/"
-    assert v1._canonical_namespace_uri("http://not-declared", infos) == "http://not-declared"
+def test_namespace_index_from_node_id_covers_indexed_default_and_invalid_forms() -> None:
+    """An explicit ``ns=`` index wins; bare identifiers are namespace 0; anything else is None."""
+    assert _namespace_index_from_node_id("ns=3;i=1") == 3
+    assert _namespace_index_from_node_id("ns=0;s=Machine") == 0
+    assert _namespace_index_from_node_id("i=42") == 0
+    assert _namespace_index_from_node_id("s=Machine") == 0
+    assert _namespace_index_from_node_id("nsu=http://example.com/Custom/;i=42") is None
+    assert _namespace_index_from_node_id("asset-root") is None
 
 
 def test_unknown_type_placeholder_uses_declared_namespace_when_unresolved() -> None:
@@ -157,7 +152,7 @@ def test_unknown_type_placeholder_uses_declared_namespace_when_unresolved() -> N
         OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/", display_name="UA"),
         OpcUaNamespaceInfo(uri="http://example.com/custom", display_name="Custom"),
     ]
-    placeholder = objecttype_helpers._unknown_type_placeholder("unknown-type", infos)
+    placeholder = objecttype_type_resolution._unknown_type_placeholder("unknown-type", infos)
     assert placeholder.namespaceUri == "http://opcfoundation.org/UA/"
 
 
@@ -168,12 +163,12 @@ def test_element_and_urn_token_helpers() -> None:
 
 
 def test_builtin_ua_datatype_helper_detection() -> None:
-    assert objecttype_helpers._is_builtin_ua_datatype_node_id("nsu=http://opcfoundation.org/UA/;i=12") is True
-    assert objecttype_helpers._is_builtin_ua_datatype_node_id("nsu=http://opcfoundation.org/UA/;i=11492") is False
+    assert objecttype_ua_names._is_builtin_ua_datatype_node_id("nsu=http://opcfoundation.org/UA/;i=12") is True
+    assert objecttype_ua_names._is_builtin_ua_datatype_node_id("nsu=http://opcfoundation.org/UA/;i=11492") is False
 
 
 def test_unconstrained_datatype_wrapper_accepts_null_and_arrays_without_overlapping_branches() -> None:
-    schema = objecttype_helpers._wrapped_value_schema(
+    schema = objecttype_schema_utils._wrapped_value_schema(
         {},
         display_name="Unknown",
         source_type_id="nsu=urn:custom;i=999999",
@@ -186,8 +181,8 @@ def test_unconstrained_datatype_wrapper_accepts_null_and_arrays_without_overlapp
 
 
 def test_unresolved_builtin_datatype_fallback_is_unconstrained(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(objecttype_helpers, "build_data_type_schema", lambda *_args: None)
-    response = objecttype_helpers._datatype_object_type_from_source_type_id(
+    monkeypatch.setattr(objecttype_type_resolution, "build_data_type_schema", lambda *_args: None)
+    response = objecttype_type_resolution._datatype_object_type_from_source_type_id(
         "nsu=http://opcfoundation.org/UA/;i=24",
         [OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/", display_name="UA")],
     )
@@ -224,10 +219,10 @@ def test_custom_scalar_datatype_uses_nearest_concrete_builtin_ancestor(
         OpcUaNamespaceInfo(uri="http://www.siemens.com/simatic-s7-opcua", display_name="Siemens"),
     ]
 
-    assert objecttype_helpers._scalar_schema_from_type_hierarchy(hierarchy, namespace_infos) == expected
-    assert objecttype_helpers._scalar_schema_from_type_hierarchy(hierarchy[:2] + hierarchy[3:], namespace_infos) == {
-        "type": "integer"
-    }
+    assert objecttype_type_resolution._scalar_schema_from_type_hierarchy(hierarchy, namespace_infos) == expected
+    assert objecttype_type_resolution._scalar_schema_from_type_hierarchy(
+        hierarchy[:2] + hierarchy[3:], namespace_infos
+    ) == {"type": "integer"}
 
 
 @pytest.mark.asyncio
@@ -249,14 +244,14 @@ async def test_custom_scalar_datatype_hierarchies_are_batched_and_keyed_by_expan
         OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/", display_name="UA"),
         OpcUaNamespaceInfo(uri="http://www.siemens.com/simatic-s7-opcua", display_name="Siemens"),
     ]
-    result = await objecttype_helpers._resolve_custom_scalar_datatype_schemas(
+    result = await objecttype_type_resolution._resolve_custom_scalar_datatype_schemas(
         {source_type_id},
         namespace_infos,
         Client(),  # type: ignore[arg-type]
     )
 
     assert result == {
-        source_type_id: objecttype_helpers._ResolvedCustomDataType(
+        source_type_id: objecttype_type_resolution._ResolvedCustomDataType(
             {"type": "integer", "minimum": 0, "maximum": 255},
             "BYTE",
         )
@@ -336,9 +331,9 @@ async def test_object_type_context_applies_resolved_custom_datatype_schema() -> 
 def test_custom_scalar_datatype_object_type_uses_resolved_primitive_schema(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(objecttype_helpers, "build_data_type_schema", lambda *_args: {"type": "object"})
+    monkeypatch.setattr(objecttype_type_resolution, "build_data_type_schema", lambda *_args: {"type": "object"})
     source_type_id = "nsu=http://www.siemens.com/simatic-s7-opcua;i=3001"
-    response = objecttype_helpers._datatype_object_type_from_source_type_id(
+    response = objecttype_type_resolution._datatype_object_type_from_source_type_id(
         source_type_id,
         [
             OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/", display_name="UA"),
@@ -358,27 +353,39 @@ def test_custom_scalar_datatype_object_type_uses_resolved_primitive_schema(
 
 
 def test_standard_ua_datatype_scalar_schema_detection() -> None:
-    schema = v1._scalar_schema_for_standard_ua_datatype_node_id("nsu=http://opcfoundation.org/UA/;i=95")
+    schema = objecttype_type_resolution._scalar_schema_for_standard_ua_datatype_node_id(
+        "nsu=http://opcfoundation.org/UA/;i=95"
+    )
     assert schema == {"type": "integer"}
 
-    structured = v1._scalar_schema_for_standard_ua_datatype_node_id("nsu=http://opcfoundation.org/UA/;i=865")
+    structured = objecttype_type_resolution._scalar_schema_for_standard_ua_datatype_node_id(
+        "nsu=http://opcfoundation.org/UA/;i=865"
+    )
     assert structured == {"type": "object"}
 
-    enum_like = v1._scalar_schema_for_standard_ua_datatype_node_id("nsu=http://opcfoundation.org/UA/;i=852")
+    enum_like = objecttype_type_resolution._scalar_schema_for_standard_ua_datatype_node_id(
+        "nsu=http://opcfoundation.org/UA/;i=852"
+    )
     assert enum_like == {"type": "integer"}
 
-    role_permission = v1._scalar_schema_for_standard_ua_datatype_node_id("nsu=http://opcfoundation.org/UA/;i=96")
+    role_permission = objecttype_type_resolution._scalar_schema_for_standard_ua_datatype_node_id(
+        "nsu=http://opcfoundation.org/UA/;i=96"
+    )
     assert role_permission == {"type": "object"}
 
-    type_like = v1._scalar_schema_for_standard_ua_datatype_node_id("nsu=http://opcfoundation.org/UA/;i=61")
+    type_like = objecttype_type_resolution._scalar_schema_for_standard_ua_datatype_node_id(
+        "nsu=http://opcfoundation.org/UA/;i=61"
+    )
     assert type_like is None
 
-    non_datatype = v1._scalar_schema_for_standard_ua_datatype_node_id("nsu=http://opcfoundation.org/UA/;i=11492")
+    non_datatype = objecttype_type_resolution._scalar_schema_for_standard_ua_datatype_node_id(
+        "nsu=http://opcfoundation.org/UA/;i=11492"
+    )
     assert non_datatype is None
 
 
 def test_generic_object_type_from_source_type_id() -> None:
-    """Generic inference and the live BrowseName lookup live in ``objecttype_helpers`` (source module)."""
+    """Generic inference and the live BrowseName lookup live in ``objecttype_type_resolution``."""
     infos = [
         OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/", display_name="UA"),
         OpcUaNamespaceInfo(uri="http://example.com/custom", display_name="Custom"),
@@ -391,7 +398,7 @@ def test_generic_object_type_from_source_type_id() -> None:
     client = cast(Any, _NoopClient())
 
     standard = asyncio.run(
-        objecttype_helpers._generic_object_type_from_source_type_id(
+        objecttype_type_resolution._generic_object_type_from_source_type_id(
             "nsu=http://opcfoundation.org/UA/;i=865",
             infos,
             client,
@@ -404,7 +411,7 @@ def test_generic_object_type_from_source_type_id() -> None:
     assert standard.schema_["type"] == "object"
 
     custom = asyncio.run(
-        objecttype_helpers._generic_object_type_from_source_type_id(
+        objecttype_type_resolution._generic_object_type_from_source_type_id(
             "nsu=http://example.com/custom;s=Vendor.TypeA",
             infos,
             client,
@@ -485,7 +492,7 @@ def test_parse_iso_and_history_range_validation() -> None:
     start = object_value_helpers._parse_iso_datetime("2026-01-01T12:00:00", "startTime")
     assert start.tzinfo is not None
 
-    body = v1.GetObjectHistoryRequest(
+    body = GetObjectHistoryRequest(
         elementIds=["x"],
         startTime="2026-01-01T00:00:00Z",
         endTime="2026-01-01T01:00:00Z",
@@ -499,7 +506,7 @@ def test_parse_iso_and_history_range_validation() -> None:
     with pytest.raises(HTTPException):
         object_value_helpers._parse_iso_datetime("not-a-time", "startTime")
 
-    bad = v1.GetObjectHistoryRequest(
+    bad = GetObjectHistoryRequest(
         elementIds=["x"],
         startTime="2026-01-02T00:00:00Z",
         endTime="2026-01-01T00:00:00Z",
@@ -518,9 +525,9 @@ def test_quality_timestamp_and_history_conversion_helpers() -> None:
 
     naive_dt = datetime(2026, 1, 1, 12, 0, 0)
     aware_dt = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
-    assert object_value_helpers._normalize_timestamp(naive_dt).endswith("Z")
-    assert object_value_helpers._normalize_timestamp(aware_dt).endswith("Z")
-    assert object_value_helpers._normalize_timestamp("invalid").endswith("Z")
+    assert normalize_timestamp(naive_dt).endswith("Z")
+    assert normalize_timestamp(aware_dt).endswith("Z")
+    assert normalize_timestamp("invalid").endswith("Z")
 
     data_value = data_value_dto(123, "Good", aware_dt)
     vqt = object_value_helpers._to_vqt_from_history_value(data_value)
@@ -531,7 +538,7 @@ def test_quality_timestamp_and_history_conversion_helpers() -> None:
 
 def test_not_implemented_helper() -> None:
     with pytest.raises(HTTPException) as exc_info:
-        v1._not_implemented("x")
+        _not_implemented("x")
     assert exc_info.value.status_code == 501
 
 

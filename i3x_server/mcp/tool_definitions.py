@@ -1,3 +1,5 @@
+"""MCP tool and prompt definitions, including the overrides loaded from disk."""
+
 from __future__ import annotations
 
 import json

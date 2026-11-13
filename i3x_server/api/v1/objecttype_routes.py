@@ -1,3 +1,5 @@
+"""Object type endpoints: listing and lookup of the served object types."""
+
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query, Request
@@ -13,10 +15,10 @@ from i3x_server.api.v1.contracts import (
     _bulk_response,
     _map_lookup_bulk_result_items,
 )
-from i3x_server.api.v1.object_helpers import _canonical_namespace_uri
 from i3x_server.api.v1.objecttype_helpers import _get_object_type_context
 from i3x_server.application.dependencies import get_opcua_client, get_or_build_model
 from i3x_server.application.ports.opcua import OpcUaClientProtocol
+from i3x_server.domain.utils import canonical_namespace_uri
 from i3x_server.http_caching import enable_etag, raise_if_not_modified
 from i3x_server.schemas.state import BuildResult
 
@@ -56,7 +58,7 @@ async def get_object_types_v1(
     items = list(context.items)
 
     if namespace_uri:
-        canonical_filter = _canonical_namespace_uri(namespace_uri, namespace_infos)
+        canonical_filter = canonical_namespace_uri(namespace_uri, namespace_infos)
         items = [item for item in items if item.namespaceUri == canonical_filter]
     return SuccessResponse(success=True, result=items)
 

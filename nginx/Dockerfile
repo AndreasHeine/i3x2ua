@@ -1,7 +1,7 @@
 # The proxy serves the prebuilt SPA assets from disk, so the frontend build happens in
 # this image too. docker-compose.yml uses the repository root as the build context, and
 # only the dist output is copied into the nginx layer - node/npm never reach the runtime.
-FROM node:24-alpine AS frontend
+FROM node:26-alpine AS frontend
 
 WORKDIR /app/frontend
 

@@ -14,7 +14,7 @@ from asyncua.server.server import Server
 from asyncua.ua.object_ids import ObjectIds
 from asyncua.ua.uaerrors import BadUserAccessDenied
 from fastapi import FastAPI
-from httpx import ASGITransport, AsyncClient
+from httpx2 import ASGITransport, AsyncClient
 
 from i3x_server.api.v1.object_routes import router
 from i3x_server.config.settings import Settings

@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import ModuleType
 
-import httpx
+import httpx2
 import pytest
 from asyncua import ua
 from asyncua.client.client import Client
@@ -114,7 +114,7 @@ async def test_fixture_history_upserts_over_opcua(monkeypatch: pytest.MonkeyPatc
                 property_to_node={"history-signal": node_id},
                 action_to_method={},
             )
-            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as rest:
+            async with httpx2.AsyncClient(transport=httpx2.ASGITransport(app=app), base_url="http://test") as rest:
                 response = await rest.put(
                     "/v1/objects/history",
                     json={

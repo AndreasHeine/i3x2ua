@@ -1,0 +1,27 @@
+version: 2
+
+updates:
+  # Action pins in .github/workflows (checkout, trivy, codeql, setup-uv, ...).
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns:
+          - "*"
+
+  # Python requirements plus the uv lockfile. The pins in pyproject.toml stay exact for the
+  # core packages, so upgrade PRs are reviewed rather than auto-merged.
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+
+  # Frontend build dependencies (frontend/package.json + package-lock.json).
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10

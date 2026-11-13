@@ -173,6 +173,34 @@ jobs:
           name: coverage-xml-${{ matrix.python-version }}
           path: coverage.xml
 
+  pip-audit:
+    name: Dependency Audit
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.15"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10.3.3
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        # The dev group is included so test-only packages are audited too; the lock is the
+        # source of truth, so this audits exactly what the image and CI install.
+        run: uv sync --group dev --frozen
+
+      - name: Audit the locked environment
+        # Audits every installed distribution against the PyPI advisory DB; a known CVE exits
+        # non-zero, which is what makes SECURITY.md's claim checkable instead of aspirational.
+        run: uv run pip-audit
+
   conformance:
     name: i3X Conformance (headless)
     runs-on: ubuntu-26.04

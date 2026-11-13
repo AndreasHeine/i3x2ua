@@ -1,0 +1,8 @@
+name: "CodeQL"
+
+# The vendored i3X submodule (conformance tool + demo apps) is third-party code: analyzing it
+# would report findings this repository does not own and cannot fix.
+paths-ignore:
+  - i3X
+  - dist
+  - nginx

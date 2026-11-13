@@ -9,9 +9,8 @@ from dataclasses import dataclass
 from posixpath import normpath
 from time import perf_counter
 from typing import Any
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, quote_plus, urlencode, urlsplit
 
-import httpx
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response
 
@@ -693,6 +692,29 @@ async def invoke_mcp_tool(request: Request, tool: McpToolDefinition, arguments: 
             raise
 
 
+def _query_string(query_params: Mapping[str, Any]) -> bytes:
+    """Percent-encode MCP tool arguments into an ASGI ``query_string``.
+
+    Reproduces the encoding ``httpx.QueryParams`` produced: sequences repeat their key, spaces
+    encode as ``+``, and booleans render lowercase (``true``/``false``) instead of ``True``.
+    Keeping it in the stdlib removes httpx from the runtime dependency set - it is only needed
+    by the test suite.
+    """
+    if not query_params:
+        return b""
+
+    def _primitive(value: Any) -> Any:
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        return value
+
+    normalized = {
+        key: [_primitive(item) for item in value] if isinstance(value, (list, tuple)) else _primitive(value)
+        for key, value in query_params.items()
+    }
+    return urlencode(normalized, doseq=True, quote_via=quote_plus).encode("ascii")
+
+
 async def _invoke_internal_asgi(
     app: Any,
     method: str,
@@ -700,7 +722,7 @@ async def _invoke_internal_asgi(
     query_params: Mapping[str, Any],
     request_body: Any,
 ) -> _InternalASGIResponse:
-    query_string = str(httpx.QueryParams(query_params)).encode("ascii") if query_params else b""
+    query_string = _query_string(query_params)
     body_bytes = b""
     headers: list[tuple[bytes, bytes]] = [(b"host", b"mcp.local"), (b"accept", b"application/json")]
     if request_body is not None:

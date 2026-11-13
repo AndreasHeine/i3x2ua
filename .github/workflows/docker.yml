@@ -28,7 +28,15 @@ env:
 
 jobs:
   build-and-push:
-    runs-on: ubuntu-latest
+    # Runner version pinned (not `ubuntu-latest`): a runner image change must not silently
+    # alter the build or the scan toolchain.
+    runs-on: ubuntu-26.04
+    timeout-minutes: 90
+    # One build per ref at a time: concurrent pushes to master would race on the same
+    # `:master` tag and interleave GHA cache writes.
+    concurrency:
+      group: docker-build-${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: true
 
     steps:
       - name: Checkout repository
@@ -47,6 +55,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract Docker metadata
+        if: ${{ github.event_name != 'pull_request' }}
         id: metadata
         uses: docker/metadata-action@v6
         with:
@@ -79,6 +88,8 @@ jobs:
             value="${{ github.event.release.tag_name }}"
           elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             value="${{ github.event.inputs.tag }}"
+          elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            value="pr-${{ github.event.pull_request.number }}"
           else
             value="${{ github.ref_name }}"
           fi
@@ -91,12 +102,57 @@ jobs:
           echo "build_version=${value}" >> "$GITHUB_OUTPUT"
           echo "Resolved BUILD_VERSION=${value}"
 
-      - name: Build Docker image (push on non-PR events)
-        id: build
+      # The image is scanned *before* anything is published: a vulnerable build must never
+      # reach the registry, so the pushable multi-platform build only runs after the gate.
+      # `--load` only supports a single platform, so the scan image is built for amd64 only.
+      - name: Build image for scanning (no push)
+        id: scan_build
         uses: docker/build-push-action@v7
         with:
           context: .
-          push: ${{ github.event_name != 'pull_request' }}
+          push: false
+          load: true
+          platforms: linux/amd64
+          tags: ${{ steps.image_ref.outputs.name }}:scan-${{ github.sha }}
+          build-args: |
+            BUILD_VERSION=${{ steps.build_version.outputs.build_version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Scan image for vulnerabilities (report)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ steps.image_ref.outputs.name }}:scan-${{ github.sha }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH
+          # Unfixed findings stay visible: a distribution package with no released fix is
+          # exactly the case a report must not hide.
+          ignore-unfixed: false
+
+      - name: Upload vulnerability scan results
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-results.sarif
+
+      - name: Fail on critical vulnerabilities
+        # Runs on pull requests as well, so a dependency that introduces a CRITICAL CVE is
+        # caught before the image exists in the registry at all.
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ steps.image_ref.outputs.name }}:scan-${{ github.sha }}
+          format: table
+          severity: CRITICAL
+          ignore-unfixed: false
+          exit-code: "1"
+
+      - name: Build Docker image (push on non-PR events)
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
           platforms: ${{ env.PLATFORMS }}
           tags: ${{ steps.metadata.outputs.tags }}
           labels: ${{ steps.metadata.outputs.labels }}
@@ -106,30 +162,3 @@ jobs:
           sbom: true
           provenance: mode=max
           cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Scan image for vulnerabilities (report)
-        if: ${{ github.event_name != 'pull_request' }}
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          image-ref: ${{ steps.image_ref.outputs.name }}@${{ steps.build.outputs.digest }}
-          format: sarif
-          output: trivy-results.sarif
-          severity: CRITICAL,HIGH
-          ignore-unfixed: true
-
-      - name: Upload vulnerability scan results
-        if: ${{ github.event_name != 'pull_request' }}
-        uses: github/codeql-action/upload-sarif@v4
-        with:
-          sarif_file: trivy-results.sarif
-
-      - name: Fail on critical vulnerabilities
-        if: ${{ github.event_name != 'pull_request' }}
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          image-ref: ${{ steps.image_ref.outputs.name }}@${{ steps.build.outputs.digest }}
-          format: table
-          severity: CRITICAL
-          ignore-unfixed: true
-          exit-code: "1"

@@ -32,6 +32,7 @@ from i3x_server.mcp import (
     load_prompt_overrides,
     load_tool_overrides,
 )
+from i3x_server.mcp.invocation import _query_string
 from i3x_server.mcp.model_tools import MCP_MODEL_TOOL_SCHEMAS
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
@@ -902,3 +903,40 @@ async def test_invoke_internal_asgi_and_call_path_helpers() -> None:
     )
     assert echoed.status_code == 200
     assert json.loads(echoed.body.decode("utf-8")) == {"x": 1}
+
+
+def test_internal_asgi_query_string_encoding_is_byte_identical() -> None:
+    """The stdlib encoder must emit exactly the bytes ``httpx.QueryParams`` produced."""
+    assert _query_string({}) == b""
+    assert _query_string({"plain": "abc"}) == b"plain=abc"
+    # Spaces as ``+`` (not ``%20``), sequences repeat their key, booleans render lowercase, and
+    # non-ASCII values are percent-encoded as UTF-8 so the result stays ASCII.
+    assert _query_string({"q": "pH Wert/ä", "flag": True, "tags": ["a b", "c&d"], "pct": "100%", "empty": ""}) == (
+        b"q=pH+Wert%2F%C3%A4&flag=true&tags=a+b&tags=c%26d&pct=100%25&empty="
+    )
+    assert _query_string({"flag": False, "nested": [True, 2, "x y"]}) == b"flag=false&nested=true&nested=2&nested=x+y"
+
+
+@pytest.mark.asyncio
+async def test_internal_asgi_decodes_unicode_query_params_at_the_route() -> None:
+    """Encoded MCP arguments arrive at the route decoded, including multi-value keys."""
+    app = FastAPI()
+
+    @app.get("/echo")
+    async def echo(request: Request) -> dict[str, Any]:
+        return {
+            "q": request.query_params.get("q"),
+            "flag": request.query_params.get("flag"),
+            "tags": request.query_params.getlist("tags"),
+        }
+
+    response = await _invoke_internal_asgi(
+        app=app,
+        method="GET",
+        path="/echo",
+        query_params={"q": "pH Wert/ä", "flag": True, "tags": ["a b", "c&d"]},
+        request_body=None,
+    )
+
+    assert response.status_code == 200
+    assert json.loads(response.body.decode("utf-8")) == {"q": "pH Wert/ä", "flag": "true", "tags": ["a b", "c&d"]}

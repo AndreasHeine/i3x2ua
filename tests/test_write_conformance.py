@@ -136,6 +136,7 @@ def test_current_write_passes_explicit_vqt_fields_to_adapter(
         variant_type="Double",
         quality="Uncertain",
         timestamp=datetime(2026, 1, 1, 10, tzinfo=timezone.utc),
+        verify_metadata=False,
     )
 
 

@@ -56,6 +56,10 @@ class Settings(BaseSettings):
     # gateway concern outside the i3X contract, so tripping it answers 429 with the spec-neutral
     # error envelope.
     request_rate_limit_per_minute: int = Field(default=0, ge=0)
+    # Concurrent OPC UA write round-trips for one bulk current-value request. Items targeting
+    # the same node stay sequential (request order), so the bound only parallelises distinct
+    # nodes - enough to pipeline writes without flooding the server session.
+    write_concurrency: int = Field(default=8, ge=1)
     log_level: str = Field(default="INFO")
     cors_allowed_origins: list[str] = Field(default_factory=list)
     otel_enabled: bool = Field(default=False)

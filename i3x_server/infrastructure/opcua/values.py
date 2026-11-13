@@ -22,6 +22,8 @@ from asyncua.ua.status_codes import StatusCodes
 from asyncua.ua.uaerrors import UaError, UaStatusCodeError
 
 from i3x_server.domain.ports.opcua import (
+    WRITE_METADATA_UNCERTAIN_MESSAGE,
+    WRITE_METADATA_UNSUPPORTED_MESSAGE,
     OpcUaWriteMetadataUnsupportedError,
     OpcUaWriteMetadataVerificationError,
 )
@@ -462,6 +464,7 @@ async def write_value(
     variant_type: str | None,
     quality: str,
     timestamp: datetime,
+    verify_metadata: bool = True,
 ) -> None:
     if timestamp.tzinfo is None:
         # A naive timestamp would be reinterpreted in the host timezone by the read-back
@@ -482,23 +485,22 @@ async def write_value(
         client._record_failed_request()
         raise
 
+    if not verify_metadata:
+        # Bulk writes verify once with a batched read after the write phase (the helper groups
+        # items per node, so the read-back of the last write covers the whole group).
+        return
+
     try:
         written_data_value = await node.read_data_value(raise_on_bad_status=False)
     except Exception as exc:
         client._record_failed_request()
-        raise OpcUaWriteMetadataVerificationError(
-            "OPC UA server accepted the current-value write, but the requested quality and source timestamp "
-            "could not be verified; write outcome is uncertain"
-        ) from exc
+        raise OpcUaWriteMetadataVerificationError(WRITE_METADATA_UNCERTAIN_MESSAGE) from exc
     actual_quality = _quality_from_status_code(written_data_value.StatusCode)
     actual_timestamp = written_data_value.SourceTimestamp
     expected_timestamp = timestamp.astimezone(timezone.utc)
     if actual_quality != quality or actual_timestamp != expected_timestamp:
         client._record_failed_request()
-        raise OpcUaWriteMetadataUnsupportedError(
-            "OPC UA server did not preserve the requested quality and source timestamp; "
-            "current-value VQT writes are unsupported by this server"
-        )
+        raise OpcUaWriteMetadataUnsupportedError(WRITE_METADATA_UNSUPPORTED_MESSAGE)
 
 
 async def read_history_values(

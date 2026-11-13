@@ -156,6 +156,18 @@ class OpcUaWriteMetadataVerificationError(Exception):
     """Raised when current-value VQT metadata cannot be verified after writing."""
 
 
+# Verification messages shared by the adapter (per-write verification) and the bulk write
+# path (batched read-back), so both attribute the same detail text to failed items.
+WRITE_METADATA_UNCERTAIN_MESSAGE = (
+    "OPC UA server accepted the current-value write, but the requested quality and source "
+    "timestamp could not be verified; write outcome is uncertain"
+)
+WRITE_METADATA_UNSUPPORTED_MESSAGE = (
+    "OPC UA server did not preserve the requested quality and source timestamp; "
+    "current-value VQT writes are unsupported by this server"
+)
+
+
 class OpcUaClientProtocol(Protocol):
     async def browse_tree(self) -> list[OpcUaNodeInfo]: ...
 
@@ -202,6 +214,7 @@ class OpcUaClientProtocol(Protocol):
         variant_type: str | None,
         quality: str,
         timestamp: datetime,
+        verify_metadata: bool = True,
     ) -> None: ...
 
     async def read_server_status_data_value(self) -> ua.DataValue: ...

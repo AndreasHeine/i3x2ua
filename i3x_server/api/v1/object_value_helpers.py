@@ -46,10 +46,13 @@ from i3x_server.api.v1.write_validation import WriteValidationError, WriteValueV
 from i3x_server.application.ports.opcua import OpcUaClientProtocol
 from i3x_server.config.settings import Settings, get_settings
 from i3x_server.domain.ports.opcua import (
+    WRITE_METADATA_UNCERTAIN_MESSAGE,
+    WRITE_METADATA_UNSUPPORTED_MESSAGE,
     OpcUaWriteMetadataUnsupportedError,
     OpcUaWriteMetadataVerificationError,
 )
 from i3x_server.schemas.i3x import ModelNode
+from i3x_server.schemas.opcua_value import quality_from_status_code
 from i3x_server.schemas.state import BuildResult
 
 
@@ -199,8 +202,10 @@ async def _write_object_values_bulk(
     Per-item semantics are preserved (order, error classification, no-op fallback), but the
     per-node attribute round-trips are hoisted out of the loop: write access for every unique
     target node is gathered concurrently, current values for non-writable targets are read in
-    one batch, and variant types are gathered for writable targets. Writes themselves stay
-    sequential to keep request order and per-item attribution.
+    one batch, and variant types are gathered for writable targets. Writes for distinct nodes
+    run concurrently under ``I3X_WRITE_CONCURRENCY``; items targeting the same node stay
+    sequential in request order, and the mandatory VQT read-back is one batched Read after
+    the write phase instead of one read per write.
     """
     outcomes: list[tuple[str, bool, int, str] | None] = [None] * len(updates)
     pending: list[tuple[int, str, ModelNode, Any, str, datetime]] = []
@@ -264,6 +269,12 @@ async def _write_object_values_bulk(
     # Same alignment guarantee as ``access_by_id`` above: one outcome per id.
     variant_by_id: dict[str, Any] = dict(zip(writable_ids, variant_results, strict=True))
 
+    # Writes run per node: items targeting the same node stay sequential in request order
+    # (the server must observe request order, and only the last write of a node can be
+    # verified afterwards), while distinct nodes run concurrently under a semaphore bound
+    # by ``I3X_WRITE_CONCURRENCY``.
+    semaphore = asyncio.Semaphore(max(1, get_settings().write_concurrency))
+    groups: dict[str, list[tuple[int, str, Any, str, datetime]]] = {}
     for index, element_id, node, write_value, quality, timestamp in pending:
         target_node_id = node.source_node_id
         access = access_by_id[target_node_id]
@@ -300,26 +311,89 @@ async def _write_object_values_bulk(
             outcomes[index] = (element_id, False, 400, "bad_type_or_range")
             continue
 
-        try:
-            await opcua_client.write_value(
-                target_node_id,
-                write_value,
-                variant_type=variant_type,
-                quality=quality,
-                timestamp=timestamp,
-            )
-        except OpcUaWriteMetadataUnsupportedError as exc:
-            outcomes[index] = (element_id, False, 501, str(exc))
-            continue
-        except OpcUaWriteMetadataVerificationError as exc:
-            outcomes[index] = (element_id, False, 502, str(exc))
-            continue
-        except Exception as exc:
-            status_code, error_class = _classify_write_error(exc, service_unsupported_is_write_unavailable=True)
-            outcomes[index] = (element_id, False, status_code, error_class)
-            continue
+        groups.setdefault(target_node_id, []).append((index, element_id, write_value, quality, timestamp))
 
-        outcomes[index] = (element_id, True, 200, "ok")
+    async def write_node_group(
+        target_node_id: str, items: list[tuple[int, str, Any, str, datetime]]
+    ) -> list[tuple[int, str, str, datetime]]:
+        """Write one node's items in request order; report the items that reached the server."""
+        variant_type = variant_by_id.get(target_node_id)
+        written: list[tuple[int, str, str, datetime]] = []
+        async with semaphore:
+            for index, element_id, value, quality, timestamp in items:
+                try:
+                    await opcua_client.write_value(
+                        target_node_id,
+                        value,
+                        variant_type=variant_type,
+                        quality=quality,
+                        timestamp=timestamp,
+                        verify_metadata=False,
+                    )
+                except OpcUaWriteMetadataUnsupportedError as exc:
+                    outcomes[index] = (element_id, False, 501, str(exc))
+                    continue
+                except OpcUaWriteMetadataVerificationError as exc:
+                    outcomes[index] = (element_id, False, 502, str(exc))
+                    continue
+                except Exception as exc:
+                    status_code, error_class = _classify_write_error(exc, service_unsupported_is_write_unavailable=True)
+                    outcomes[index] = (element_id, False, status_code, error_class)
+                    continue
+                written.append((index, element_id, quality, timestamp))
+        return written
+
+    group_results = await asyncio.gather(
+        *(write_node_group(target_node_id, items) for target_node_id, items in groups.items()),
+        return_exceptions=True,
+    )
+    written_by_node: dict[str, list[tuple[int, str, str, datetime]]] = {}
+    for (target_node_id, items), result in zip(groups.items(), group_results, strict=True):
+        if isinstance(result, BaseException):
+            # The per-item loop above catches write failures, so an escaping exception is
+            # unexpected; classify it onto every item of the group that has no outcome yet.
+            if not isinstance(result, Exception):
+                raise result
+            status_code, error_class = _classify_write_error(result, service_unsupported_is_write_unavailable=True)
+            for group_index, element_id, _value, _quality, _timestamp in items:
+                if outcomes[group_index] is None:
+                    outcomes[group_index] = (element_id, False, status_code, error_class)
+            continue
+        if result:
+            written_by_node[target_node_id] = result
+
+    # The mandatory read-back is spec-required but batched: one Read covers every written
+    # node instead of one read per item. VQT preservation is a server capability, so the
+    # answer for a node's last write stands for the whole group: a server that preserves
+    # metadata preserved every write, and one that does not failed every per-write read in
+    # the old sequential path - attributing the verdict to all items keeps outcomes equal.
+    verified_ids = list(written_by_node)
+    read_back_by_id: dict[str, Any] = {}
+    read_failure: Exception | None = None
+    if verified_ids:
+        try:
+            read_values = await opcua_client.read_data_values(verified_ids)
+            # ``strict=True``: a short read must not pair answers with the wrong node ids.
+            read_back_by_id = dict(zip(verified_ids, read_values, strict=True))
+        except Exception as exc:
+            read_failure = exc
+
+    for target_node_id, written_items in written_by_node.items():
+        if read_failure is not None:
+            # The write reached the server but its metadata cannot be verified at all.
+            for index, element_id, _quality, _timestamp in written_items:
+                outcomes[index] = (element_id, False, 502, WRITE_METADATA_UNCERTAIN_MESSAGE)
+            continue
+        data_value = read_back_by_id.get(target_node_id)
+        expected_quality, expected_timestamp = written_items[-1][2], written_items[-1][3]
+        actual_quality = quality_from_status_code(getattr(data_value, "StatusCode", None))
+        actual_timestamp = getattr(data_value, "SourceTimestamp", None)
+        if actual_quality != expected_quality or actual_timestamp != expected_timestamp.astimezone(timezone.utc):
+            for index, element_id, _quality, _timestamp in written_items:
+                outcomes[index] = (element_id, False, 501, WRITE_METADATA_UNSUPPORTED_MESSAGE)
+            continue
+        for index, element_id, _quality, _timestamp in written_items:
+            outcomes[index] = (element_id, True, 200, "ok")
 
     resolved: list[tuple[str, bool, int, str]] = [outcome for outcome in outcomes if outcome is not None]
     return resolved

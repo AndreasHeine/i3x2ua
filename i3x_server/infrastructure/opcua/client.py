@@ -788,8 +788,9 @@ class OpcUaClient:
         variant_type: str | None,
         quality: str,
         timestamp: datetime,
+        verify_metadata: bool = True,
     ) -> None:
-        await values.write_value(self, node_id, value, variant_type, quality, timestamp)
+        await values.write_value(self, node_id, value, variant_type, quality, timestamp, verify_metadata)
 
     async def read_history_values(
         self,

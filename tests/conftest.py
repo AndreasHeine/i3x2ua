@@ -363,6 +363,24 @@ class FakeOpcUaClient:
         results: list[Any] = []
         for node_id in node_ids:
             base = self.values.get(node_id, 1.0)
+            # Mirrors a server that preserves the last written VQT: the bulk write path
+            # verifies quality and source timestamp through this batched read. Written
+            # values are answered verbatim (no simulated drift), so a verification read
+            # does not alter the stored value.
+            written = self.last_write_vqt_by_node_id.get(node_id)
+            if written is not None:
+                quality_name, source_timestamp = written
+                value = bytes(base) if isinstance(base, (bytes, bytearray, memoryview)) else base
+                results.append(
+                    SimpleNamespace(
+                        Value=SimpleNamespace(Value=value),
+                        # Name-only code: ``quality_from_status_code`` maps it verbatim.
+                        StatusCode=SimpleNamespace(name=quality_name),
+                        SourceTimestamp=source_timestamp,
+                        ServerTimestamp=None,
+                    )
+                )
+                continue
             value: Any
             if isinstance(base, (bytes, bytearray, memoryview)):
                 value = bytes(base)
@@ -432,8 +450,9 @@ class FakeOpcUaClient:
         variant_type: str | None,
         quality: str,
         timestamp: datetime,
+        verify_metadata: bool = True,
     ) -> None:
-        del variant_type
+        del variant_type, verify_metadata
         failure = self.write_failures.get(node_id)
         if failure is not None:
             self._request_metrics.failed_request_count += 1

@@ -1024,3 +1024,213 @@ async def test_bulk_write_prefetch_mismatch_raises_instead_of_mispairing(monkeyp
                 updates=updates,
                 schema_validator=cast(WriteValueValidator, _AcceptingValidator()),
             )
+
+
+def _preserved_data_value(quality: str, timestamp: datetime) -> SimpleNamespace:
+    return SimpleNamespace(
+        Value=SimpleNamespace(Value=1.0),
+        # Name-only code: ``quality_from_status_code`` maps it verbatim.
+        StatusCode=SimpleNamespace(name=quality),
+        SourceTimestamp=timestamp,
+        ServerTimestamp=None,
+    )
+
+
+class _BulkWriteFake:
+    """Writable-node stub: records writes and answers batched reads with the last written VQT."""
+
+    def __init__(
+        self,
+        *,
+        write_failures: dict[str, Exception] | None = None,
+        read_error: Exception | None = None,
+        answer_quality: str | None = None,
+        write_gate: asyncio.Event | None = None,
+        gate_arrivals: int = 0,
+    ) -> None:
+        self.writes: list[tuple[str, Any, dict[str, Any]]] = []
+        self.read_requests: list[list[str]] = []
+        self.last_vqt: dict[str, tuple[str, datetime]] = {}
+        self.in_flight = 0
+        self.max_in_flight = 0
+        self._write_failures = write_failures or {}
+        self._read_error = read_error
+        self._answer_quality = answer_quality
+        self._write_gate = write_gate
+        self._gate_arrivals = gate_arrivals
+        self._arrivals = 0
+
+    async def read_write_access(self, node_id: str) -> tuple[bool, bool]:
+        del node_id
+        return (True, True)
+
+    async def read_variant_type(self, node_id: str) -> str | None:
+        del node_id
+        return "Double"
+
+    async def write_value(self, node_id: str, value: Any, **kwargs: Any) -> None:
+        self._arrivals += 1
+        self.in_flight += 1
+        self.max_in_flight = max(self.max_in_flight, self.in_flight)
+        try:
+            if self._write_gate is not None and self._arrivals >= self._gate_arrivals:
+                self._write_gate.set()
+            # Hold the round-trip long enough for concurrent admissions to overlap.
+            await asyncio.sleep(0.02)
+            if self._write_gate is not None:
+                await self._write_gate.wait()
+            failure = self._write_failures.get(node_id)
+            if failure is not None:
+                raise failure
+            self.writes.append((node_id, value, kwargs))
+            self.last_vqt[node_id] = (kwargs["quality"], kwargs["timestamp"])
+        finally:
+            self.in_flight -= 1
+
+    async def read_data_values(self, node_ids: list[str]) -> list[Any]:
+        self.read_requests.append(list(node_ids))
+        if self._read_error is not None:
+            raise self._read_error
+        answers: list[Any] = []
+        for node_id in node_ids:
+            quality, timestamp = self.last_vqt.get(node_id, ("Good", datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)))
+            answers.append(_preserved_data_value(self._answer_quality or quality, timestamp))
+        return answers
+
+
+async def _run_bulk(client: _BulkWriteFake, updates: list[ValueUpdateItemRequest]) -> list[tuple[str, bool, int, str]]:
+    return await object_value_helpers._write_object_values_bulk(
+        model=_sample_model(),
+        opcua_client=cast(OpcUaClientProtocol, client),
+        updates=updates,
+        schema_validator=cast(WriteValueValidator, _AcceptingValidator()),
+    )
+
+
+@pytest.mark.asyncio
+async def test_bulk_write_read_back_is_one_batch_and_outcomes_keep_request_order() -> None:
+    """N writes cost one Read after the write phase, not one read per write (L6)."""
+    client = _BulkWriteFake()
+    updates = [
+        ValueUpdateItemRequest(
+            elementId="prop-a", value=WriteVQTRequest(value=1.0, quality="Good", timestamp="2026-01-01T10:00:00Z")
+        ),
+        ValueUpdateItemRequest(
+            elementId="prop-b", value=WriteVQTRequest(value=2.0, quality="Uncertain", timestamp="2026-01-01T10:00:01Z")
+        ),
+    ]
+
+    outcomes = await _run_bulk(client, updates)
+
+    assert outcomes == [("prop-a", True, 200, "ok"), ("prop-b", True, 200, "ok")]
+    assert client.read_requests == [["ns=2;s=Temperature", "ns=2;s=Pressure"]]
+    # Verification moves out of the write round-trip into the batched read.
+    assert all(write[2]["verify_metadata"] is False for write in client.writes)
+
+
+@pytest.mark.asyncio
+async def test_bulk_write_same_node_items_stay_sequential_in_request_order() -> None:
+    """Duplicate node ids keep request order; the last write's VQT stands for the group."""
+    client = _BulkWriteFake()
+    updates = [
+        ValueUpdateItemRequest(
+            elementId="prop-a", value=WriteVQTRequest(value=1.0, quality="Good", timestamp="2026-01-01T10:00:00Z")
+        ),
+        ValueUpdateItemRequest(
+            elementId="prop-a", value=WriteVQTRequest(value=2.0, quality="Uncertain", timestamp="2026-01-01T10:00:01Z")
+        ),
+    ]
+
+    outcomes = await _run_bulk(client, updates)
+
+    assert outcomes == [("prop-a", True, 200, "ok"), ("prop-a", True, 200, "ok")]
+    assert [write[1] for write in client.writes] == [1.0, 2.0]
+    assert client.max_in_flight == 1
+    # Only the node's final state is read back - once, not per item.
+    assert client.read_requests == [["ns=2;s=Temperature"]]
+
+
+@pytest.mark.asyncio
+async def test_bulk_write_distinct_nodes_run_concurrently() -> None:
+    """Writes to distinct nodes pipeline; a serialized regression deadlocks the gating fake."""
+    gate = asyncio.Event()
+    client = _BulkWriteFake(write_gate=gate, gate_arrivals=2)
+    updates = [
+        ValueUpdateItemRequest(elementId="prop-a", value=WriteVQTRequest(value=1.0)),
+        ValueUpdateItemRequest(elementId="prop-b", value=WriteVQTRequest(value=2.0)),
+    ]
+
+    outcomes = await asyncio.wait_for(_run_bulk(client, updates), timeout=5)
+
+    assert outcomes == [("prop-a", True, 200, "ok"), ("prop-b", True, 200, "ok")]
+    assert client.max_in_flight == 2
+
+
+@pytest.mark.asyncio
+async def test_bulk_write_concurrency_limit_bounds_in_flight(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``I3X_WRITE_CONCURRENCY=1`` restores strictly sequential write round-trips."""
+    monkeypatch.setenv("I3X_WRITE_CONCURRENCY", "1")
+    client = _BulkWriteFake()
+    updates = [
+        ValueUpdateItemRequest(elementId="prop-a", value=WriteVQTRequest(value=1.0)),
+        ValueUpdateItemRequest(elementId="prop-b", value=WriteVQTRequest(value=2.0)),
+    ]
+
+    outcomes = await asyncio.wait_for(_run_bulk(client, updates), timeout=5)
+
+    assert outcomes == [("prop-a", True, 200, "ok"), ("prop-b", True, 200, "ok")]
+    assert client.max_in_flight == 1
+
+
+@pytest.mark.asyncio
+async def test_bulk_write_partial_failure_attributes_only_failed_item() -> None:
+    """A write rejection classifies per item; the batched read covers only surviving nodes."""
+    client = _BulkWriteFake(write_failures={"ns=2;s=Temperature": Exception("boom")})
+    updates = [
+        ValueUpdateItemRequest(elementId="prop-a", value=WriteVQTRequest(value=1.0)),
+        ValueUpdateItemRequest(elementId="prop-b", value=WriteVQTRequest(value=2.0)),
+    ]
+
+    outcomes = await _run_bulk(client, updates)
+
+    assert outcomes == [("prop-a", False, 502, "opcua_write_failed"), ("prop-b", True, 200, "ok")]
+    assert client.read_requests == [["ns=2;s=Pressure"]]
+
+
+@pytest.mark.asyncio
+async def test_bulk_write_metadata_mismatch_fails_the_whole_node_group() -> None:
+    """A server that does not preserve VQT metadata fails every item of the node (501)."""
+    client = _BulkWriteFake(answer_quality="Bad")
+    updates = [
+        ValueUpdateItemRequest(
+            elementId="prop-a", value=WriteVQTRequest(value=1.0, quality="Good", timestamp="2026-01-01T10:00:00Z")
+        ),
+        ValueUpdateItemRequest(
+            elementId="prop-a", value=WriteVQTRequest(value=2.0, quality="Good", timestamp="2026-01-01T10:00:01Z")
+        ),
+    ]
+
+    outcomes = await _run_bulk(client, updates)
+
+    assert [outcome[:3] for outcome in outcomes] == [("prop-a", False, 501), ("prop-a", False, 501)]
+    assert all("did not preserve" in outcome[3] for outcome in outcomes)
+
+
+@pytest.mark.asyncio
+async def test_bulk_write_read_back_failure_reports_uncertain_outcome() -> None:
+    """A failed batched read-back turns surviving writes into 502 outcome-uncertain items."""
+    client = _BulkWriteFake(
+        write_failures={"ns=2;s=Temperature": Exception("boom")}, read_error=RuntimeError("short read")
+    )
+    updates = [
+        ValueUpdateItemRequest(elementId="prop-a", value=WriteVQTRequest(value=1.0)),
+        ValueUpdateItemRequest(elementId="prop-b", value=WriteVQTRequest(value=2.0)),
+    ]
+
+    outcomes = await _run_bulk(client, updates)
+
+    assert outcomes[0] == ("prop-a", False, 502, "opcua_write_failed")
+    assert outcomes[1][0] == "prop-b"
+    assert outcomes[1][1] is False
+    assert outcomes[1][2] == 502
+    assert "could not be verified" in outcomes[1][3]

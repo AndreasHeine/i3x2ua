@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Any
 
@@ -220,3 +221,42 @@ def test_known_unsupported_history_service_is_not_advertised_or_called(
     assert response.status_code == 501
     assert response.json()["responseDetail"]["status"] == 501
     assert opcua.snapshot_request_metrics().history_write_count == 0
+
+
+def test_history_write_audit_principal_defaults_to_anonymous(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """``x-principal`` is not trusted by default, so a caller cannot forge audit identity."""
+    monkeypatch.setenv("I3X_ENABLE_WRITES", "1")
+
+    with caplog.at_level(logging.INFO, logger="i3x_server.api.v1.object_value_routes"):
+        response = client.put(
+            "/v1/objects/history", json={"updates": [_update()]}, headers={"x-principal": "spoofed-identity"}
+        )
+
+    assert response.status_code == 200
+    assert "principal=anonymous" in caplog.text
+    assert "spoofed-identity" not in caplog.text
+
+
+def test_history_write_audit_principal_is_honored_only_when_trusted(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv("I3X_ENABLE_WRITES", "1")
+    monkeypatch.setenv("I3X_TRUST_PRINCIPAL_HEADER", "1")
+
+    with caplog.at_level(logging.INFO, logger="i3x_server.api.v1.object_value_routes"):
+        response = client.put("/v1/objects/history", json={"updates": [_update()]}, headers={"x-principal": "ops-user"})
+
+    assert response.status_code == 200
+    assert "principal=ops-user" in caplog.text
+
+    # Without the header the principal stays the default identity.
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="i3x_server.api.v1.object_value_routes"):
+        assert client.put("/v1/objects/history", json={"updates": [_update()]}).status_code == 200
+    assert "principal=anonymous" in caplog.text

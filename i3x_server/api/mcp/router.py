@@ -14,7 +14,7 @@ import time
 from collections.abc import AsyncIterator
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from i3x_server.api.mcp import jsonrpc, prompts, resources, roots, tools
@@ -35,15 +35,20 @@ from i3x_server.api.mcp.jsonrpc import (
     _modern_request_error,
     _origin_is_allowed,
     _register_mcp_session,
+    _require_allowed_origin,
 )
 
 router = APIRouter(prefix="/mcp")
 logger = logging.getLogger(__name__)
 
-router.include_router(tools.router)
-router.include_router(prompts.router)
-router.include_router(resources.router)
-router.include_router(roots.router)
+# The origin gate covers every MCP route, not only the JSON-RPC transport: the helper routes
+# below reach the same tool/resource semantics, so a browser from a disallowed origin must not
+# be able to bypass the transport check by calling a helper route directly.
+_helper_origin_guard = [Depends(_require_allowed_origin)]
+router.include_router(tools.router, dependencies=_helper_origin_guard)
+router.include_router(prompts.router, dependencies=_helper_origin_guard)
+router.include_router(resources.router, dependencies=_helper_origin_guard)
+router.include_router(roots.router, dependencies=_helper_origin_guard)
 
 
 @router.get(

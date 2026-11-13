@@ -640,7 +640,13 @@ def create_app() -> FastAPI:
     if rate_limit_per_minute > 0:
         app.add_middleware(RateLimitMiddleware, limit_per_minute=rate_limit_per_minute)
     cors_origins = settings.cors_allowed_origins
-    app.state.mcp_allowed_origins = [origin for origin in cors_origins if origin != "*"]
+    # MCP origin allowlist: dedicated origins win, otherwise the CORS allowlist (without the
+    # wildcard) is the source of truth. Wildcards are never a usable comparison target. The
+    # values are read from the current environment (like the rate-limit toggle), not from the
+    # import-time snapshot, so the setting behaves like every other documented env knob.
+    origin_settings = _runtime_settings()
+    mcp_origin_sources = origin_settings.mcp_allowed_origins or origin_settings.cors_allowed_origins
+    app.state.mcp_allowed_origins = [origin for origin in mcp_origin_sources if origin != "*"]
     if cors_origins:
         app.add_middleware(
             CORSMiddleware,

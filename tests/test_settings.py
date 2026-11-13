@@ -108,3 +108,21 @@ def test_settings_reject_invalid_browse_roots(monkeypatch: MonkeyPatch, raw: str
 def test_settings_default_browse_roots(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.delenv("I3X_OPCUA_BROWSE_ROOTS", raising=False)
     assert Settings(_env_file=None).opcua_browse_roots is None  # type: ignore[call-arg]
+
+
+def test_settings_security_defaults() -> None:
+    """Neither the MCP origin allowlist nor principal trust is enabled by default."""
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+    assert settings.mcp_allowed_origins == []
+    assert settings.trust_principal_header is False
+
+
+def test_settings_mcp_origins_and_principal_trust(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setenv("I3X_MCP_ALLOWED_ORIGINS", '["https://trusted.example", "https://app.example"]')
+    monkeypatch.setenv("I3X_TRUST_PRINCIPAL_HEADER", "1")
+
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+    assert settings.mcp_allowed_origins == ["https://trusted.example", "https://app.example"]
+    assert settings.trust_principal_header is True

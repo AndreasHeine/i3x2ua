@@ -62,6 +62,14 @@ class Settings(BaseSettings):
     write_concurrency: int = Field(default=8, ge=1)
     log_level: str = Field(default="INFO")
     cors_allowed_origins: list[str] = Field(default_factory=list)
+    # Origins a browser is allowed to call the MCP endpoints from. Empty falls back to the CORS
+    # origins (minus "*"). A present ``Origin`` header must match one of these exactly; it is
+    # never matched against the request's own host, which is attacker-controlled via ``Host``.
+    mcp_allowed_origins: list[str] = Field(default_factory=list)
+    # Audit principal: the ``x-principal`` request header is trusted only when this is enabled.
+    # Default false keeps audit records at "anonymous", so a caller cannot forge who performed a
+    # write by sending an arbitrary header.
+    trust_principal_header: bool = Field(default=False)
     otel_enabled: bool = Field(default=False)
     otel_service_name: str = Field(default="i3x2ua")
     otel_otlp_endpoint: str | None = Field(default=None)

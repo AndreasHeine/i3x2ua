@@ -34,7 +34,7 @@ from i3x_server.api.v1.contracts import (
     _bulk_result_success,
     _status_title,
 )
-from i3x_server.api.v1.monolithic import _not_implemented, _writes_enabled
+from i3x_server.api.v1.monolithic import _audit_principal, _not_implemented, _writes_enabled
 from i3x_server.api.v1.object_helpers import (
     _build_related_objects_for_node,
     _composition_children_for_node,
@@ -455,7 +455,9 @@ async def update_historical_values_v1(
     results: list[BulkResultItem[None]] = []
     schema_validator = WriteValueValidator(request, model, opcua_client)
     service_unsupported = opcua_client.history_update_supported() is False
-    principal = request.headers.get("x-principal") or "anonymous"
+    # ``x-principal`` is only honored when explicitly trusted (I3X_TRUST_PRINCIPAL_HEADER);
+    # otherwise a caller could forge the audit identity of a historical write.
+    principal = _audit_principal(request)
     for update in body.updates:
         node = _find_model_node(model, update.elementId)
         status_code, message = 200, "ok"

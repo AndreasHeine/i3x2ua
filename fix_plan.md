@@ -244,7 +244,7 @@ new branches (visible via `coverage.xml` branch data after PR-01).
 | PR-02 | 2 | startup degraded mode, supervisor-before-connect, readiness | ☒ | 1143 pass / 1 skip (74 s) | line 87,24 % / branch 76,81 % | Full 1.0 (56/0/2/2) | f5fcc61 |
 | PR-03 | 3 | admission caps, rate limit, cache fingerprint, zip strict | ☒ | 1165 pass / 1 skip (75 s) | line 87,46 % / branch 77,02 % | Full 1.0 (56/0/2/2) | 67ff6e3 |
 | PR-04 | 4 | fan-out: deque, cursor, per-sub locks, batched adds | ☒ | 1177 pass / 1 skip (73 s) | line 87,67 % / branch 77,25 % | Full 1.0 (56/0/2/2) | 223d828 |
-| PR-05 | 5 | bulk writes parallel + batched read-back | ☐ | | | | |
+| PR-05 | 5 | bulk writes parallel + batched read-back | ☒ | 1184 pass / 1 skip (72 s) | line 87,69 % / branch 77,29 % | Full 1.0 (56/0/2/2) | 015d591 |
 | PR-06 | 6 | eval removal, origin guards, audit principal | ☐ | | | | |
 | PR-07 | 7 | scan-before-push, CodeQL, pip-audit, dependabot, dep cleanup | ☐ | | | | |
 | PR-08 | 8 | adapter seams, private access removal | ☐ | | | | |

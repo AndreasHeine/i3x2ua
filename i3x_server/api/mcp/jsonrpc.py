@@ -17,12 +17,12 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any, Literal
-from urllib.parse import urlsplit
 from uuid import uuid4
 
 from fastapi import FastAPI, Request
 from pydantic import BaseModel
 
+from i3x_server.errors import i3x_http_error
 from i3x_server.version import get_server_version
 
 MCP_PROTOCOL_VERSION = "2026-07-28"
@@ -129,16 +129,24 @@ def _register_mcp_session(sessions: dict[str, McpTransportSession], protocol_ver
 
 
 def _origin_is_allowed(request: Request) -> bool:
+    """Browser-origin gate for every MCP route.
+
+    An absent ``Origin`` header stays allowed: non-browser MCP clients (CLI tools, desktop
+    apps) do not send it. A present one must match a configured origin exactly. The request's
+    own ``base_url`` is never a comparison target - it is derived from the ``Host`` header, so
+    a forged host would otherwise authorize any origin.
+    """
     origin = request.headers.get("origin")
     if origin is None:
         return True
     allowed_origins = getattr(request.app.state, "mcp_allowed_origins", [])
-    same_local_origin = origin == str(request.base_url).rstrip("/") and urlsplit(origin).hostname in {
-        "localhost",
-        "127.0.0.1",
-        "::1",
-    }
-    return same_local_origin or (origin != "*" and origin in allowed_origins)
+    return origin != "*" and origin in allowed_origins
+
+
+def _require_allowed_origin(request: Request) -> None:
+    """Dependency form of the origin gate for the plain JSON MCP helper routes."""
+    if not _origin_is_allowed(request):
+        raise i3x_http_error(403, "Forbidden", "Origin not allowed", {"origin": request.headers.get("origin")})
 
 
 class McpJsonRpcErrorDetail(BaseModel):

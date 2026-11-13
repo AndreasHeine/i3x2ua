@@ -17,6 +17,8 @@ import logging
 import re
 from typing import Any
 
+from fastapi import Request
+
 from i3x_server.api.v1.common_helpers import (
     _raise_invalid_argument,
     _to_json_safe_value,
@@ -60,6 +62,8 @@ __all__ = [
     "_namespace_index_from_node_id",
     "_stream_debug_enabled",
     "_writes_enabled",
+    "_trust_principal_header",
+    "_audit_principal",
     "_not_implemented",
     "logger",
 ]
@@ -75,6 +79,22 @@ def _stream_debug_enabled() -> bool:
 
 def _writes_enabled() -> bool:
     return _runtime_settings().enable_writes
+
+
+def _trust_principal_header() -> bool:
+    """Whether the ``x-principal`` request header may name the audit principal.
+
+    Default false: the header is attacker-controlled, so audit records stay "anonymous" unless
+    an operator explicitly opts in (e.g. behind a trusted proxy that sets the header).
+    """
+    return _runtime_settings().trust_principal_header
+
+
+def _audit_principal(request: Request) -> str:
+    """Audit principal for a request, gated by ``I3X_TRUST_PRINCIPAL_HEADER``."""
+    if not _trust_principal_header():
+        return "anonymous"
+    return request.headers.get("x-principal") or "anonymous"
 
 
 def _not_implemented(feature: str) -> None:

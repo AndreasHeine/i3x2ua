@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import sys
 import types
 import typing
@@ -851,6 +852,48 @@ def test_generated_dep_annotation_is_evaluated_in_owner_module_context() -> None
         schema = objecttype_annotations._structure_schema_for_type(_Carrier, registry)
         child_ref = _extract_ref(schema["properties"]["Child"])
         assert child_ref == "#/$defs/Nested"
+    finally:
+        sys.modules.pop(module.__name__, None)
+
+
+def test_generated_annotation_resolves_type_expressions_without_executing() -> None:
+    """Safe parsing keeps the shapes that real annotations use."""
+    owner = type("Owner", (), {"__module__": __name__})
+
+    assert objecttype_annotations._evaluate_generated_annotation("ua.String", owner) is ua.String
+    assert objecttype_annotations._evaluate_generated_annotation("typing.Optional[int]", owner) == int | None
+    assert objecttype_annotations._evaluate_generated_annotation("list[ua.String]", owner) == list[ua.String]
+    assert objecttype_annotations._evaluate_generated_annotation("ua.String | None", owner) == ua.String | None
+
+
+def test_generated_annotation_never_executes_code(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Annotation strings come from upstream metadata: expressions must degrade, never run."""
+    module = types.ModuleType("generated.evil")
+    calls: list[str] = []
+
+    def evil() -> str:
+        calls.append("evil")
+        return "payload"
+
+    module_any = cast(Any, module)
+    module_any.evil = evil
+    module_any.system = evil
+    sys.modules[module.__name__] = module
+    try:
+        owner = type("Owner", (), {"__module__": module.__name__})
+        with caplog.at_level(logging.WARNING):
+            assert objecttype_annotations._evaluate_generated_annotation("__import__('os').system('id')", owner) is None
+            assert objecttype_annotations._evaluate_generated_annotation("evil()", owner) is None
+            # Attribute traversal onto interpreter internals is rejected as well.
+            assert objecttype_annotations._evaluate_generated_annotation("evil.__globals__", owner) is None
+            assert objecttype_annotations._evaluate_generated_annotation("[x for x in range(3)]", owner) is None
+            assert objecttype_annotations._evaluate_generated_annotation("1 +", owner) is None
+
+        assert calls == []
+        assert "not evaluated" in caplog.text
+        assert "not parsed" in caplog.text
     finally:
         sys.modules.pop(module.__name__, None)
 

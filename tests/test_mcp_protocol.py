@@ -5,7 +5,7 @@ import json
 from typing import Any, cast
 
 import pytest
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 from jsonschema import validate
 
@@ -634,6 +634,7 @@ def test_request_ids_are_preserved(protocol_client: TestClient, request_id: int 
 
 
 def test_origin_cannot_be_authorized_by_forged_host(protocol_client: TestClient) -> None:
+    """``Origin`` is compared with the configured allowlist, never with ``base_url``."""
     message = {"jsonrpc": "2.0", "id": 1, "method": "ping"}
     assert (
         protocol_client.post(
@@ -641,14 +642,19 @@ def test_origin_cannot_be_authorized_by_forged_host(protocol_client: TestClient)
         ).status_code
         == 403
     )
+    # base_url-derived matching authorized any origin that mirrored the Host header, so a
+    # request presenting the server's own host is rejected unless that origin is configured.
     assert (
         protocol_client.post(
             "/mcp", json=message, headers={"Host": "127.0.0.1:8000", "Origin": "http://127.0.0.1:8000"}
         ).status_code
-        == 200
+        == 403
     )
     assert protocol_client.post("/mcp", json=message, headers={"Origin": "null"}).status_code == 403
     assert protocol_client.post("/mcp", json=message, headers={"Origin": "*"}).status_code == 403
+    # Absent Origin stays allowed: non-browser MCP clients do not send the header.
+    assert protocol_client.post("/mcp", json=message).status_code == 200
+    assert protocol_client.post("/mcp", json=message, headers={"Origin": "https://trusted.example"}).status_code == 200
 
 
 def test_execution_exceptions_and_internal_errors(
@@ -697,3 +703,37 @@ def test_invalid_tool_response_is_logged(
     result = rpc(protocol_client, "tools/call", {"name": "readValues", "arguments": {"body": {}}})
     assert result["error"]["code"] == -32603
     assert "Invalid MCP tool response" in caplog.text
+
+
+def _origin_request(app: FastAPI, origin: str | None, host: str) -> Request:
+    headers: list[tuple[bytes, bytes]] = []
+    if origin is not None:
+        headers.append((b"origin", origin.encode()))
+    headers.append((b"host", host.encode()))
+    return Request(
+        {
+            "type": "http",
+            "app": app,
+            "method": "POST",
+            "path": "/mcp",
+            "scheme": "http",
+            "query_string": b"",
+            "headers": headers,
+            "server": ("testserver", 80),
+        }
+    )
+
+
+def test_origin_gate_compares_only_configured_origins() -> None:
+    app = FastAPI()
+    app.state.mcp_allowed_origins = ["https://trusted.example"]
+
+    assert jsonrpc._origin_is_allowed(_origin_request(app, "https://trusted.example", "evil.example"))
+    # Absent Origin stays allowed for non-browser clients.
+    assert jsonrpc._origin_is_allowed(_origin_request(app, None, "anything.example"))
+    # The request's own host/base_url is never an allowed origin: mirroring it authorized any
+    # origin that a forged Host header claimed.
+    assert not jsonrpc._origin_is_allowed(_origin_request(app, "http://testserver", "testserver"))
+    assert not jsonrpc._origin_is_allowed(_origin_request(app, "http://127.0.0.1:8000", "127.0.0.1:8000"))
+    assert not jsonrpc._origin_is_allowed(_origin_request(app, "*", "testserver"))
+    assert not jsonrpc._origin_is_allowed(_origin_request(app, "https://evil.example", "testserver"))

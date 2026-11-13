@@ -10,7 +10,10 @@ modules free of an import cycle. Tests and monkeypatching target this module.
 
 from __future__ import annotations
 
+import ast
+import builtins
 import importlib
+import logging
 import re
 import sys
 import typing
@@ -25,6 +28,28 @@ from asyncua import ua
 from asyncua.ua.uaprotocol_auto import Argument
 
 from i3x_server.schemas.objecttype_registry import _SchemaRegistry
+
+logger = logging.getLogger(__name__)
+
+# Inert builtin names an annotation string may reference. Anything callable (``__import__``,
+# ``open``, ...) is deliberately absent, so a malformed annotation cannot execute code.
+_ANNOTATION_BUILTINS: dict[str, Any] = {
+    name: getattr(builtins, name)
+    for name in (
+        "bool",
+        "bytearray",
+        "bytes",
+        "dict",
+        "float",
+        "frozenset",
+        "int",
+        "list",
+        "set",
+        "str",
+        "tuple",
+        "type",
+    )
+}
 
 _CANONICAL_STRUCTURE_CORE_KEYS: dict[str, str] = {
     "nodeid": "canonical-structure:nodeid",
@@ -265,6 +290,50 @@ def _schema_from_hint_token(token: Any, registry: _SchemaRegistry) -> dict[str, 
     return None
 
 
+def _safe_annotation_expression(node: ast.AST, globals_dict: Mapping[str, Any]) -> Any:
+    """Evaluate an annotation AST without executing code.
+
+    Annotation strings are sourced from upstream OPC UA structure metadata, so they must never
+    be executed. Only constructs a type annotation can legitimately contain are accepted:
+    literals, name lookups resolved against the owner module's globals, attribute chains on
+    modules/classes, subscripts of typing constructs, containers, and ``X | Y`` unions. Anything
+    else - calls, lambdas, comprehensions, ``__globals__`` traversal - raises, and the caller
+    degrades to ``None`` instead of running it.
+    """
+    if isinstance(node, ast.Expression):
+        return _safe_annotation_expression(node.body, globals_dict)
+    if isinstance(node, ast.Constant):
+        return node.value
+    if isinstance(node, ast.Name):
+        if node.id in globals_dict:
+            return globals_dict[node.id]
+        # Annotation strings reference builtins like ``int``/``str`` the same way ``eval`` did;
+        # only these inert type objects are resolvable, never ``__import__`` or other callables.
+        if node.id in _ANNOTATION_BUILTINS:
+            return _ANNOTATION_BUILTINS[node.id]
+        raise ValueError(f"unknown annotation name {node.id!r}")
+    if isinstance(node, ast.Attribute):
+        base = _safe_annotation_expression(node.value, globals_dict)
+        if not isinstance(base, (ModuleType, type)):
+            # Attribute chains on arbitrary instances can trigger user code (properties,
+            # ``__getattr__``); module and class attributes are inert lookups.
+            raise ValueError("annotation attribute must start at a module or class")
+        return getattr(base, node.attr)
+    if isinstance(node, ast.Subscript):
+        base = _safe_annotation_expression(node.value, globals_dict)
+        key = _safe_annotation_expression(node.slice, globals_dict)
+        return base[key]
+    if isinstance(node, ast.Tuple):
+        return tuple(_safe_annotation_expression(item, globals_dict) for item in node.elts)
+    if isinstance(node, ast.List):
+        return [_safe_annotation_expression(item, globals_dict) for item in node.elts]
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        return _safe_annotation_expression(node.left, globals_dict) | _safe_annotation_expression(
+            node.right, globals_dict
+        )
+    raise ValueError(f"unsupported annotation expression {type(node).__name__}")
+
+
 def _evaluate_generated_annotation(annotation: Any, owner_type: type[Any], field_name: str | None = None) -> Any | None:
     if not isinstance(annotation, str):
         return None
@@ -285,8 +354,27 @@ def _evaluate_generated_annotation(annotation: Any, owner_type: type[Any], field
                 globals_dict.setdefault(dep_name, guessed_type)
 
     try:
-        return eval(annotation, globals_dict, {})
+        tree = ast.parse(annotation, mode="eval")
+    except (SyntaxError, ValueError):
+        logger.warning(
+            "Generated annotation not parsed owner=%s field=%s annotation=%r",
+            owner_type.__name__,
+            field_name,
+            annotation,
+        )
+        return None
+
+    try:
+        return _safe_annotation_expression(tree, globals_dict)
     except Exception:
+        # An annotation the safe evaluator cannot resolve is a malformed upstream hint; it must
+        # degrade to the runtime type rather than run anything the string contains.
+        logger.warning(
+            "Generated annotation not evaluated owner=%s field=%s annotation=%r",
+            owner_type.__name__,
+            field_name,
+            annotation,
+        )
         return None
 
 

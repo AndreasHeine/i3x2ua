@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 
 import i3x_server.api.mcp.resources as mcp_resources
 from i3x_server.mcp import get_api_prefix, load_overrides
-from tests.conftest import fastapi_app
+from tests.conftest import _client_with_env, fastapi_app
 
 
 def _resolve_openapi_schema(schema: Any, components: Mapping[str, Any]) -> Any:
@@ -885,3 +885,92 @@ def test_mcp_call_strips_host_from_runtime_api_prefix(client: TestClient) -> Non
     namespaces_id = _operation_id_for(client, "GET", "/v1/namespaces")
     response = client.post("/mcp/call", json={"tool": namespaces_id, "arguments": {}})
     assert response.status_code == 200
+
+
+_MCP_HELPER_ROUTES: list[tuple[str, str, dict[str, Any] | None]] = [
+    ("GET", "/mcp/tools", None),
+    ("POST", "/mcp/call", {"tool": "getServerInfoV1", "arguments": {}}),
+    ("GET", "/mcp/prompts", None),
+    ("GET", "/mcp/prompts/machine_health_snapshot", None),
+    ("POST", "/mcp/prompts/execute", {"name": "machine_health_snapshot", "parameters": {}}),
+    ("GET", "/mcp/resources", None),
+    ("POST", "/mcp/resources/read", {"uri": "i3x://roots/asset-root"}),
+    ("GET", "/mcp/roots", None),
+]
+
+
+@pytest.mark.parametrize(("method", "path", "body"), _MCP_HELPER_ROUTES)
+def test_mcp_helper_routes_reject_unlisted_origin(
+    client: TestClient, method: str, path: str, body: dict[str, Any] | None
+) -> None:
+    """The origin gate covers helper routes too: they reach the same semantics as the transport."""
+    response = client.request(method, path, json=body, headers={"Origin": "https://evil.example"})
+
+    assert response.status_code == 403
+    payload = response.json()
+    assert payload["success"] is False
+    assert payload["error"]["code"] == 403
+    assert "Origin not allowed" in payload["responseDetail"]["detail"]
+
+
+def _valid_helper_requests(client: TestClient) -> list[tuple[str, str, dict[str, Any] | None]]:
+    """Helper-route requests that answer 200 when the origin gate lets them through."""
+    namespaces_id = _operation_id_for(client, "GET", "/v1/namespaces")
+    return [
+        ("GET", "/mcp/tools", None),
+        ("POST", "/mcp/call", {"tool": namespaces_id, "arguments": {}}),
+        ("GET", "/mcp/prompts", None),
+        ("GET", "/mcp/prompts/machine_health_snapshot", None),
+        (
+            "POST",
+            "/mcp/prompts/execute",
+            {"name": "machine_health_snapshot", "parameters": {"asset_id": "Press-01", "lookback_minutes": "60"}},
+        ),
+        ("GET", "/mcp/resources", None),
+        ("POST", "/mcp/resources/read", {"uri": "i3x://roots/asset-root"}),
+        ("GET", "/mcp/roots", None),
+    ]
+
+
+def test_mcp_helper_routes_allow_configured_origin(client: TestClient) -> None:
+    app = fastapi_app(client)
+    app.state.mcp_allowed_origins = ["https://trusted.example"]
+
+    for method, path, body in _valid_helper_requests(client):
+        response = client.request(method, path, json=body, headers={"Origin": "https://trusted.example"})
+        assert response.status_code == 200, f"{method} {path} blocked for a configured origin"
+
+
+def test_mcp_helper_routes_allow_absent_origin(client: TestClient) -> None:
+    """Non-browser MCP clients send no Origin header and must keep working."""
+    for method, path, body in _valid_helper_requests(client):
+        response = client.request(method, path, json=body)
+        assert response.status_code == 200, f"{method} {path} blocked without an Origin header"
+
+
+def test_mcp_helper_origin_is_not_authorized_by_the_servers_own_host(client: TestClient) -> None:
+    """Matching ``base_url`` used to authorize any origin that mirrored the ``Host`` header."""
+    response = client.get("/mcp/tools", headers={"Host": "evil.example", "Origin": "http://evil.example"})
+    assert response.status_code == 403
+
+    # The client's own base_url (``http://testserver``) is not a configured origin either.
+    assert client.get("/mcp/tools", headers={"Origin": "http://testserver"}).status_code == 403
+    assert client.get("/mcp/tools", headers={"Origin": "*"}).status_code == 403
+
+
+def test_mcp_origin_allowlist_comes_from_dedicated_setting(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``I3X_MCP_ALLOWED_ORIGINS`` wins over CORS, and the wildcard is never an allowlist entry."""
+    with _client_with_env(
+        monkeypatch,
+        {"I3X_CORS_ALLOWED_ORIGINS": '["*"]', "I3X_MCP_ALLOWED_ORIGINS": '["https://trusted.example"]'},
+    ) as env_client:
+        assert fastapi_app(env_client).state.mcp_allowed_origins == ["https://trusted.example"]
+        assert env_client.get("/mcp/tools", headers={"Origin": "https://evil.example"}).status_code == 403
+        assert env_client.get("/mcp/tools", headers={"Origin": "https://trusted.example"}).status_code == 200
+
+
+def test_mcp_origin_allowlist_falls_back_to_cors_origins(monkeypatch: pytest.MonkeyPatch) -> None:
+    with _client_with_env(monkeypatch, {"I3X_CORS_ALLOWED_ORIGINS": '["https://cors.example", "*"]'}) as env_client:
+        assert fastapi_app(env_client).state.mcp_allowed_origins == ["https://cors.example"]
+        assert env_client.get("/mcp/roots", headers={"Origin": "https://cors.example"}).status_code == 200
+        assert env_client.get("/mcp/roots", headers={"Origin": "https://other.example"}).status_code == 403

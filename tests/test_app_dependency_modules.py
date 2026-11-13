@@ -8,15 +8,13 @@ import pytest
 from fastapi import FastAPI
 from starlette.requests import Request
 
-from i3x_server.api.dependencies import get_model_query_service
 from i3x_server.application.dependencies import (
-    get_model_query_service as get_app_model_query_service,
-)
-from i3x_server.application.dependencies import (
+    get_model_query_service,
     get_namespace_snapshot,
     get_object_value_service,
     get_subscription_app_service,
 )
+from i3x_server.application.state import GatewayState
 from i3x_server.domain.ports.opcua import OpcUaClientProtocol, OpcUaNamespaceInfo
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
@@ -24,6 +22,7 @@ from i3x_server.schemas.state import BuildResult
 
 def _request() -> Request:
     app = FastAPI()
+    app.state = GatewayState()
     return Request({"type": "http", "app": app})
 
 
@@ -47,7 +46,7 @@ def _model() -> BuildResult:
 
 
 @pytest.mark.asyncio
-async def test_api_and_application_dependency_factories() -> None:
+async def test_application_dependency_factories() -> None:
     request = _request()
     model = _model()
     opcua_client = SimpleNamespace()
@@ -55,10 +54,7 @@ async def test_api_and_application_dependency_factories() -> None:
 
     model_query = await get_model_query_service(request=request, model=model, opcua_client=opcua_client)
     assert model_query.model is model
-
-    app_model_query = await get_app_model_query_service(request=request, model=model, opcua_client=opcua_client)
-    assert app_model_query.model is model
-    assert app_model_query._namespace_cache is request.app.state.namespace_query_cache
+    assert model_query._namespace_cache is request.app.state.namespace_query_cache
 
     value_service = await get_object_value_service(request=request, model=model, opcua_client=opcua_client)
     assert value_service.model is model
@@ -92,8 +88,8 @@ async def test_model_query_services_share_namespace_snapshot_cache() -> None:
 
     client = _NamespaceClient()
     typed_client = cast(OpcUaClientProtocol, client)
-    first = await get_app_model_query_service(request=request, model=model, opcua_client=typed_client)
-    second = await get_app_model_query_service(request=request, model=model, opcua_client=typed_client)
+    first = await get_model_query_service(request=request, model=model, opcua_client=typed_client)
+    second = await get_model_query_service(request=request, model=model, opcua_client=typed_client)
     assert first._namespace_cache is second._namespace_cache is get_namespace_snapshot(request)
 
     namespaces = await first.get_namespaces()

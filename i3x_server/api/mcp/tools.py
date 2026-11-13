@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Mapping
 from typing import Any, Never
 
 from fastapi import APIRouter, HTTPException, Request
@@ -12,6 +11,7 @@ from jsonschema import Draft202012Validator
 from pydantic import BaseModel, Field
 
 from i3x_server.api.mcp.jsonrpc import _jsonrpc_error, _jsonrpc_response
+from i3x_server.application.state import gateway_state
 from i3x_server.errors import i3x_http_error
 from i3x_server.mcp.invocation import call_mcp_tool, invoke_mcp_tool
 
@@ -29,9 +29,6 @@ def _raise_invalid_tool(tool_name: str) -> Never:
 
 
 def _tool_catalog(request: Request) -> list[dict[str, Any]]:
-    tools = getattr(request.app.state, "mcp_tools", {})
-    if not isinstance(tools, Mapping):
-        return []
     return [
         {
             "name": tool.name,
@@ -40,7 +37,7 @@ def _tool_catalog(request: Request) -> list[dict[str, Any]]:
             "outputSchema": tool.output_schema,
             "annotations": tool.annotations,
         }
-        for tool in tools.values()
+        for tool in gateway_state(request).mcp_tools.values()
     ]
 
 
@@ -187,8 +184,8 @@ async def handle_tools_call(request: Request, message_id: Any, params: Any) -> d
     arguments = params.get("arguments", {})
     if not isinstance(tool_name, str) or not isinstance(arguments, dict):
         return _jsonrpc_error(message_id, -32602, "Invalid params")
-    tools = getattr(request.app.state, "mcp_tools", {})
-    if not isinstance(tools, Mapping) or tool_name not in tools:
+    tools = gateway_state(request).mcp_tools
+    if tool_name not in tools:
         return _jsonrpc_error(message_id, -32602, f"Unknown tool {tool_name}")
     tool = tools[tool_name]
     validation_error = next(Draft202012Validator(tool.input_schema).iter_errors(arguments), None)
@@ -210,25 +207,22 @@ async def handle_tools_call(request: Request, message_id: Any, params: Any) -> d
 
 @router.get("/tools", tags=["MCP Helpers"])
 async def list_tools(request: Request) -> dict[str, Any]:
-    tools = getattr(request.app.state, "mcp_tools", {})
-    if isinstance(tools, Mapping):
-        payload: dict[str, dict[str, Any]] = {}
-        for name, tool in tools.items():
-            item = tool.to_dict()
-            # Keep legacy snake_case fields while exposing MCP-compatible camelCase.
-            item["inputSchema"] = item.get("input_schema", {})
-            item["pathParameters"] = item.get("path_parameters", [])
-            item["queryParameters"] = item.get("query_parameters", [])
-            item["bodyRequired"] = item.get("body_required", False)
-            payload[name] = item
-        return {"tools": payload}
-    return {"tools": {}}
+    payload: dict[str, dict[str, Any]] = {}
+    for name, tool in gateway_state(request).mcp_tools.items():
+        item = tool.to_dict()
+        # Keep legacy snake_case fields while exposing MCP-compatible camelCase.
+        item["inputSchema"] = item.get("input_schema", {})
+        item["pathParameters"] = item.get("path_parameters", [])
+        item["queryParameters"] = item.get("query_parameters", [])
+        item["bodyRequired"] = item.get("body_required", False)
+        payload[name] = item
+    return {"tools": payload}
 
 
 @router.post("/call", tags=["MCP Helpers"])
 async def call_tool(request: Request, payload: McpCallRequest) -> Any:
-    tools = getattr(request.app.state, "mcp_tools", {})
-    if not isinstance(tools, Mapping) or payload.tool not in tools:
+    tools = gateway_state(request).mcp_tools
+    if payload.tool not in tools:
         _raise_invalid_tool(payload.tool)
 
     tool = tools[payload.tool]

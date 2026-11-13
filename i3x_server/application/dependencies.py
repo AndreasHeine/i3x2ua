@@ -8,8 +8,6 @@ is re-exported here so bootstrap and routes share one implementation.
 
 from __future__ import annotations
 
-from typing import cast
-
 from fastapi import Depends, Request
 
 from i3x_server.application.ports.subscription import SubscriptionServicePort
@@ -17,6 +15,7 @@ from i3x_server.application.services.model_cache import get_model_builder, get_o
 from i3x_server.application.services.model_query import ModelQueryService, NamespaceSnapshotCache
 from i3x_server.application.services.object_value import ObjectValueService
 from i3x_server.application.services.subscription import SubscriptionAppService
+from i3x_server.application.state import gateway_state
 from i3x_server.domain.ports.opcua import OpcUaClientProtocol
 from i3x_server.errors import i3x_http_error
 from i3x_server.schemas.state import BuildResult
@@ -34,14 +33,14 @@ __all__ = [
 
 
 def get_opcua_client(request: Request) -> OpcUaClientProtocol:
-    client = cast(OpcUaClientProtocol | None, getattr(request.app.state, "opcua_client", None))
+    client = gateway_state(request).opcua_client
     if client is None:
         raise i3x_http_error(500, "InternalError", "OPC UA client not initialized")
     return client
 
 
 def get_subscription_service(request: Request) -> SubscriptionServicePort:
-    service = cast(SubscriptionServicePort | None, getattr(request.app.state, "subscription_service", None))
+    service = gateway_state(request).subscription_service
     if service is None:
         raise i3x_http_error(500, "InternalError", "Subscription service not initialized")
     return service
@@ -66,12 +65,8 @@ async def get_object_value_service(
 
 
 def get_namespace_snapshot(request: Request) -> NamespaceSnapshotCache:
-    """Return the application-wide namespace snapshot holder, creating it on first use."""
-    cache = getattr(request.app.state, "namespace_query_cache", None)
-    if not isinstance(cache, NamespaceSnapshotCache):
-        cache = NamespaceSnapshotCache()
-        request.app.state.namespace_query_cache = cache
-    return cache
+    """Return the application-wide namespace snapshot holder installed on the app state."""
+    return gateway_state(request).namespace_query_cache
 
 
 async def get_model_query_service(

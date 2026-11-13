@@ -4,12 +4,11 @@ import asyncio
 import logging
 import re
 from collections.abc import Mapping
-from contextlib import nullcontext as _nullcontext
 from copy import deepcopy
 from dataclasses import dataclass
 from time import perf_counter
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any
 
 from asyncua import ua
 
@@ -28,6 +27,7 @@ from i3x_server.api.v1.object_helpers import (
     _virtual_object_type_element_id,
 )
 from i3x_server.application.ports.opcua import OpcUaClientProtocol, OpcUaNamespaceInfo, OpcUaObjectTypeInfo
+from i3x_server.application.state import ObjectTypeContextCache, ObjectTypeContextSlot, gateway_state
 from i3x_server.config.settings import Settings, get_settings
 from i3x_server.errors import i3x_http_error
 from i3x_server.http_caching import (
@@ -253,10 +253,10 @@ def _memoized_object_types_token(request: Any, object_types: list[OpcUaObjectTyp
     # The OPC UA client serves the same cached list until its metadata reload replaces it,
     # so hashing every definition once per list keeps this off the per-request path.
     # Holding the list in the memo keeps its id from being reused by another object.
-    state = request.app.state
-    memo = getattr(state, "object_types_token_memo", None)
-    if isinstance(memo, tuple) and len(memo) == 2 and memo[0] is object_types:
-        return str(memo[1])
+    state = gateway_state(request)
+    memo = state.object_types_token_memo
+    if memo is not None and memo[0] is object_types:
+        return memo[1]
     token = _object_types_token(object_types)
     state.object_types_token_memo = (object_types, token)
     return token
@@ -1020,48 +1020,17 @@ async def _build_object_type_context(
 # Contexts are heavyweight (schema items per object type), but requests can alternate
 # between token triples — e.g. a request that still holds the previous model revision while
 # a periodic refresh switched the cache. A single slot thrashed on that alternation, so the
-# cache keeps a bounded LRU of slots. The top-level keys mirror the most-recently-used slot,
-# which is what stale serving and other readers use.
+# cache keeps a bounded LRU of slots. The most-recently-used slot is what stale serving and
+# other readers use.
 _OBJECT_TYPE_CONTEXT_CACHE_MAX_ENTRIES = 8
 
 
-def _object_type_slot_tokens(slot: Mapping[str, Any]) -> tuple[Any, ...]:
-    return (slot.get("model_token"), slot.get("namespace_token"), slot.get("object_types_token"))
-
-
-def _object_type_cache_slots(cache: Any) -> list[dict[str, Any]]:
-    """Cache slots in least-recently-used order.
-
-    A legacy single-slot cache dict without an ``entries`` list counts as one slot.
-    """
-    if not isinstance(cache, dict):
-        return []
-    entries = cache.get("entries")
-    slots: list[dict[str, Any]] = []
-    if isinstance(entries, list):
-        for entry in entries:
-            if isinstance(entry, dict):
-                slots.append(cast("dict[str, Any]", entry))
-        return slots
-    slots.append(cast("dict[str, Any]", cache))
-    return slots
-
-
-def _promote_object_type_slot(request: Any, slot: dict[str, Any]) -> None:
-    """Mark a slot as most-recently-used and mirror it as the current slot."""
-    cache = getattr(request.app.state, "object_type_context_cache", None)
-    if not isinstance(cache, dict):
+def _promote_object_type_slot(request: Any, slot: ObjectTypeContextSlot) -> None:
+    """Mark a slot as most-recently-used."""
+    cache = gateway_state(request).object_type_context_cache
+    if cache is None:
         return
-    entries = cache.get("entries")
-    if isinstance(entries, list):
-        index = next((index for index, entry in enumerate(entries) if entry is slot), None)
-        if index is not None:
-            del entries[index]
-        entries.append(slot)
-    cache["model_token"] = slot.get("model_token")
-    cache["namespace_token"] = slot.get("namespace_token")
-    cache["object_types_token"] = slot.get("object_types_token")
-    cache["context"] = slot.get("context")
+    cache.promote(slot)
 
 
 def _cached_object_type_context(
@@ -1070,17 +1039,17 @@ def _cached_object_type_context(
     namespace_token: tuple[Any, ...],
     object_types_token: str,
 ) -> _ObjectTypeContext | None:
-    cache = getattr(request.app.state, "object_type_context_cache", None)
-    tokens = (model_token, namespace_token, object_types_token)
-    for slot in reversed(_object_type_cache_slots(cache)):
-        if _object_type_slot_tokens(slot) != tokens:
-            continue
-        context = slot.get("context")
-        if not isinstance(context, _ObjectTypeContext):
-            continue
-        _promote_object_type_slot(request, slot)
-        return context
-    return None
+    cache = gateway_state(request).object_type_context_cache
+    if cache is None:
+        return None
+    slot = cache.find((model_token, namespace_token, object_types_token))
+    if slot is None:
+        return None
+    context = slot.context
+    if not isinstance(context, _ObjectTypeContext):
+        return None
+    _promote_object_type_slot(request, slot)
+    return context
 
 
 def _store_object_type_context(
@@ -1095,47 +1064,42 @@ def _store_object_type_context(
     Slots are bounded: contexts are heavyweight, so the least-recently-used slot is evicted
     once the cap is reached instead of accumulating every token triple ever requested.
     """
-    slots = _object_type_cache_slots(getattr(request.app.state, "object_type_context_cache", None))
-    tokens = (model_token, namespace_token, object_types_token)
-    slots = [slot for slot in slots if _object_type_slot_tokens(slot) != tokens]
-    slots.append(
-        {
-            "model_token": model_token,
-            "namespace_token": namespace_token,
-            "object_types_token": object_types_token,
-            "context": context,
-        }
+    state = gateway_state(request)
+    cache = state.object_type_context_cache
+    if cache is None:
+        cache = ObjectTypeContextCache(max_entries=_OBJECT_TYPE_CONTEXT_CACHE_MAX_ENTRIES)
+    cache.store(
+        ObjectTypeContextSlot(
+            model_token=model_token,
+            namespace_token=namespace_token,
+            object_types_token=object_types_token,
+            context=context,
+        )
     )
-    del slots[:-_OBJECT_TYPE_CONTEXT_CACHE_MAX_ENTRIES]
-    request.app.state.object_type_context_cache = {
-        "model_token": model_token,
-        "namespace_token": namespace_token,
-        "object_types_token": object_types_token,
-        "context": context,
-        "entries": slots,
-    }
+    state.object_type_context_cache = cache
 
 
 def _stale_object_type_context(request: Any) -> _ObjectTypeContext | None:
-    cache = getattr(request.app.state, "object_type_context_cache", None)
-    for slot in reversed(_object_type_cache_slots(cache)):
-        cached_context = slot.get("context")
-        if isinstance(cached_context, _ObjectTypeContext):
-            return cached_context
+    cache = gateway_state(request).object_type_context_cache
+    if cache is None:
+        return None
+    for slot in reversed(cache.entries):
+        if isinstance(slot.context, _ObjectTypeContext):
+            return slot.context
     return None
 
 
 def _schedule_object_type_context_refresh(app: Any, model: BuildResult, opcua_client: OpcUaClientProtocol) -> None:
-    task = getattr(app.state, "object_type_refresh_task", None)
-    if isinstance(task, asyncio.Task) and not task.done():
+    state = gateway_state(app)
+    task = state.object_type_refresh_task
+    if task is not None and not task.done():
         return
-    app.state.object_type_refresh_task = asyncio.create_task(_refresh_object_type_context(app, model, opcua_client))
+    state.object_type_refresh_task = asyncio.create_task(_refresh_object_type_context(app, model, opcua_client))
 
 
 async def _refresh_object_type_context(app: Any, model: BuildResult, opcua_client: OpcUaClientProtocol) -> None:
     # Rebuild for the newest model: a request may still hold the model from before a refresh.
-    current_model = getattr(app.state, "model_cache", None)
-    target_model = current_model if isinstance(current_model, BuildResult) else model
+    target_model = gateway_state(app).model_cache or model
     try:
         await _get_object_type_context(SimpleNamespace(app=app), target_model, opcua_client, allow_stale=False)
     except Exception:
@@ -1188,8 +1152,7 @@ async def _resolve_object_type_context(
             _schedule_object_type_context_refresh(request.app, model, opcua_client)
             return stale_context
 
-    lock = getattr(request.app.state, "object_type_lock", None)
-    async with lock if lock else _nullcontext():
+    async with gateway_state(request).object_type_lock:
         cached_context = _cached_object_type_context(request, model_token, namespace_token, object_types_token)
         if cached_context is not None:
             logger.debug(

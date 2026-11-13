@@ -3,9 +3,10 @@
 ``create_app`` is re-exported lazily via ``__getattr__`` (PEP 562). An eager
 re-export here made every ``i3x_server.api.v1`` import chain resolve
 ``bootstrap`` -> ``app_factory`` -> ``api.v1.router`` while ``api.v1`` was only
-partially initialized (routes import ``bootstrap.dependencies``), which raised
-a circular ``ImportError`` whenever ``api.v1`` was imported first. Keeping this
-module free of package imports also removes the cycle from static analysis.
+partially initialized, which raised a circular ``ImportError`` whenever
+``api.v1`` was imported first. Keeping this module free of package imports also
+removes the cycle from static analysis: routes depend on
+``i3x_server.application.dependencies``, so ``api`` never imports ``bootstrap``.
 """
 
 from typing import Any

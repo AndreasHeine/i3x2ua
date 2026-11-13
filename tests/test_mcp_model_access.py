@@ -13,6 +13,12 @@ from i3x_server.api.mcp.router import router
 from i3x_server.api.v1.contracts import ObjectTypeResponse
 from i3x_server.api.v1.objecttype_helpers import _object_type_context_revision, _ObjectTypeContext
 from i3x_server.application.ports.opcua import OpcUaNamespaceInfo, OpcUaObjectTypeInfo
+from i3x_server.application.state import (
+    GatewayState,
+    ObjectTypeContextCache,
+    ObjectTypeContextSlot,
+    install_gateway_state,
+)
 from i3x_server.mcp import build_mcp_tools, invoke_mcp_tool, load_overrides
 from i3x_server.mcp.model_access import MCP_MODEL_ACCESS_SCHEMAS, invoke_model_access_tool
 from i3x_server.mcp.model_tools import (
@@ -41,6 +47,21 @@ def _configured_access_tool_names() -> set[str]:
     excluded = load_overrides().get("excluded_tools", [])
     excluded_names = {name for name in excluded if isinstance(name, str)} if isinstance(excluded, list) else set()
     return set(MCP_MODEL_ACCESS_SCHEMAS) - excluded_names
+
+
+def _context_cache(model_token: str, context: _ObjectTypeContext | None) -> ObjectTypeContextCache:
+    """A one-slot context cache whose most-recently-used slot carries ``model_token``."""
+    return ObjectTypeContextCache(
+        max_entries=1,
+        entries=[
+            ObjectTypeContextSlot(
+                model_token=model_token,
+                namespace_token=(),
+                object_types_token="",
+                context=context,
+            )
+        ],
+    )
 
 
 class _ForbiddenLiveAccess:
@@ -482,12 +503,17 @@ async def test_all_access_tools_are_registered_read_only_and_never_build_or_cont
     model: BuildResult, context: _ObjectTypeContext
 ) -> None:
     app = FastAPI()
-    app.state.model_cache = model
-    app.state.object_type_context_cache = {"model_token": model_revision(model), "context": context}
     forbidden = AsyncMock(side_effect=AssertionError("Cached model tools must not contact OPC UA or build a model"))
-    app.state.mcp_model_provider = forbidden
-    app.state.model_builder = _ForbiddenLiveAccess()
-    app.state.opcua_client = _ForbiddenLiveAccess()
+    install_gateway_state(
+        app,
+        GatewayState(
+            model_cache=model,
+            object_type_context_cache=_context_cache(model_revision(model), context),
+            mcp_model_provider=forbidden,
+            model_builder=_ForbiddenLiveAccess(),
+            opcua_client=_ForbiddenLiveAccess(),
+        ),
+    )
     request = Request({"type": "http", "app": app, "headers": []})
     tools = build_mcp_tools({"paths": {}})
     access_tool_names = _configured_access_tool_names()
@@ -541,9 +567,10 @@ async def test_composite_model_tools_read_the_cache_and_never_build(model: Build
     """The four composite tools run on the cached model only (`docs/MCP_SERVER_GUIDE.md`)."""
     app = FastAPI()
     provider = AsyncMock(side_effect=AssertionError("Composite tools must not build a model or contact OPC UA"))
-    app.state.mcp_model_provider = provider
-    app.state.model_cache = model
-    app.state.opcua_client = _ForbiddenLiveAccess()
+    install_gateway_state(
+        app,
+        GatewayState(mcp_model_provider=provider, model_cache=model, opcua_client=_ForbiddenLiveAccess()),
+    )
     request = Request({"type": "http", "app": app, "headers": []})
     tools = build_mcp_tools({"paths": {}}, overrides={})
     for name, arguments in _COMPOSITE_ARGUMENTS.items():
@@ -558,7 +585,7 @@ async def test_composite_model_tools_answer_503_without_cached_model() -> None:
     """A cache miss must answer 503 instead of starting a full address-space browse."""
     app = FastAPI()
     provider = AsyncMock(side_effect=AssertionError("A cache miss must not build a model"))
-    app.state.mcp_model_provider = provider
+    install_gateway_state(app, GatewayState(mcp_model_provider=provider))
     request = Request({"type": "http", "app": app, "headers": []})
     tools = build_mcp_tools({"paths": {}}, overrides={})
     for name, arguments in _COMPOSITE_ARGUMENTS.items():
@@ -571,7 +598,8 @@ async def test_composite_model_tools_answer_503_without_cached_model() -> None:
 @pytest.mark.asyncio
 async def test_missing_or_stale_cached_context_never_refreshes(model: BuildResult, context: _ObjectTypeContext) -> None:
     app = FastAPI()
-    app.state.mcp_model_provider = AsyncMock(side_effect=AssertionError("Must not build a model"))
+    provider = AsyncMock(side_effect=AssertionError("Must not build a model"))
+    install_gateway_state(app, GatewayState(mcp_model_provider=provider))
     request = Request({"type": "http", "app": app, "headers": []})
     tools = build_mcp_tools({"paths": {}})
     registered_argument_names = set(_ACCESS_ARGUMENTS).intersection(tools)
@@ -580,24 +608,35 @@ async def test_missing_or_stale_cached_context_never_refreshes(model: BuildResul
         with pytest.raises(HTTPException) as exc:
             await invoke_mcp_tool(request, tools[name], arguments)
         assert exc.value.status_code == 503
-    app.state.model_cache = model
+    state = app.state
+    state.model_cache = model
     if "getInstancesOfType" in registered_argument_names:
-        for cache in (None, {"model_token": "old", "context": context}, {"model_token": model_revision(model)}):
-            app.state.object_type_context_cache = cache
+        caches: list[ObjectTypeContextCache | None] = [
+            None,
+            _context_cache("old", context),
+            _context_cache(model_revision(model), None),
+        ]
+        for cache in caches:
+            state.object_type_context_cache = cache
             with pytest.raises(HTTPException) as exc:
                 await invoke_mcp_tool(request, tools["getInstancesOfType"], {"typeElementId": "type-base"})
             assert exc.value.status_code == 503
-    app.state.mcp_model_provider.assert_not_called()
+    provider.assert_not_called()
 
 
 def test_model_access_json_rpc_preserves_compact_payloads(model: BuildResult, context: _ObjectTypeContext) -> None:
     app = FastAPI()
     app.include_router(router)
-    app.state.mcp_tools = build_mcp_tools({"paths": {}})
-    app.state.model_cache = model
-    app.state.object_type_context_cache = {"model_token": model_revision(model), "context": context}
-    app.state.opcua_client = _ForbiddenLiveAccess()
-    app.state.model_builder = _ForbiddenLiveAccess()
+    install_gateway_state(
+        app,
+        GatewayState(
+            mcp_tools=build_mcp_tools({"paths": {}}),
+            model_cache=model,
+            object_type_context_cache=_context_cache(model_revision(model), context),
+            opcua_client=_ForbiddenLiveAccess(),
+            model_builder=_ForbiddenLiveAccess(),
+        ),
+    )
     with TestClient(app) as client:
         listed = client.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"}).json()
         registered_argument_names = set(_ACCESS_ARGUMENTS).intersection(app.state.mcp_tools)

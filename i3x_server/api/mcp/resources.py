@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Never
 
@@ -16,6 +15,7 @@ from i3x_server.api.mcp.jsonrpc import MCP_ROOT_RESOURCE_PREFIX, _jsonrpc_error,
 from i3x_server.api.mcp.prompts import _prompt_registry
 from i3x_server.api.mcp.roots import _roots_catalog
 from i3x_server.api.v1.contracts import _status_title
+from i3x_server.application.state import gateway_state
 from i3x_server.errors import i3x_http_error
 from i3x_server.prompts.api import get_prompt, list_prompt_metadata
 
@@ -192,11 +192,11 @@ def _resource_catalog(request: Request) -> list[dict[str, Any]]:
         },
     ]
 
-    model_cache = getattr(request.app.state, "model_cache", None)
-    root_nodes = getattr(model_cache, "nodes_by_id", {})
+    model_cache = gateway_state(request).model_cache
+    root_nodes = model_cache.nodes_by_id if model_cache is not None else {}
     for root in _roots_catalog(request):
         root_id = root["uri"].removeprefix(MCP_ROOT_RESOURCE_PREFIX)
-        if not isinstance(root_nodes, Mapping) or root_id not in root_nodes:
+        if root_id not in root_nodes:
             continue
         resources.append(
             {
@@ -221,10 +221,8 @@ def _resource_catalog(request: Request) -> list[dict[str, Any]]:
 
 
 def _model_overview_content(request: Request) -> dict[str, Any]:
-    model = getattr(request.app.state, "model_cache", None)
-    nodes_by_id = getattr(model, "nodes_by_id", None)
-    root_ids = getattr(model, "root_ids", None)
-    if not isinstance(nodes_by_id, Mapping) or not isinstance(root_ids, list):
+    model = gateway_state(request).model_cache
+    if model is None:
         overview: dict[str, Any] = {
             "modelAvailable": False,
             "message": "The i3X model has not been built or loaded yet.",
@@ -234,6 +232,8 @@ def _model_overview_content(request: Request) -> dict[str, Any]:
             ),
         }
     else:
+        nodes_by_id = model.nodes_by_id
+        root_ids = model.root_ids
         nodes = [node for node in nodes_by_id.values() if node is not None]
         kind_counts: dict[str, int] = {}
         for node in nodes:
@@ -248,36 +248,32 @@ def _model_overview_content(request: Request) -> dict[str, Any]:
             ("graph", "graph_related_by_id"),
         ):
             edges_by_id = getattr(model, attribute, {})
-            edge_counts[plane] = (
-                sum(len(edges) for edges in edges_by_id.values()) if isinstance(edges_by_id, Mapping) else 0
-            )
+            edge_counts[plane] = sum(len(edges) for edges in edges_by_id.values())
 
         root_summaries: list[dict[str, Any]] = []
         for root_id in root_ids:
-            node = nodes_by_id.get(root_id) if isinstance(root_id, str) else None
-            if node is None:
+            root_node = nodes_by_id.get(root_id)
+            if root_node is None:
                 continue
             root_summaries.append(
                 {
                     "uri": f"{MCP_ROOT_RESOURCE_PREFIX}{root_id}",
                     "elementId": root_id,
-                    "displayName": getattr(node, "name", root_id),
-                    "kind": getattr(node, "kind", "unknown"),
+                    "displayName": getattr(root_node, "name", root_id),
+                    "kind": getattr(root_node, "kind", "unknown"),
                     "typeElementId": (
-                        getattr(node, "type", None)
-                        or getattr(node, "source_type_id", None)
-                        or getattr(node, "kind", "unknown")
+                        getattr(root_node, "type", None)
+                        or getattr(root_node, "source_type_id", None)
+                        or getattr(root_node, "kind", "unknown")
                     ),
-                    "namespaceUri": getattr(model, "namespace_uri_by_id", {}).get(root_id)
-                    if isinstance(getattr(model, "namespace_uri_by_id", {}), Mapping)
-                    else None,
+                    "namespaceUri": model.namespace_uri_by_id.get(root_id),
                 }
             )
 
         overview = {
             "modelAvailable": True,
-            "revision": getattr(model, "revision", ""),
-            "buildCompletedAtUtc": getattr(model, "build_completed_at_utc", None),
+            "revision": model.revision,
+            "buildCompletedAtUtc": model.build_completed_at_utc,
             "summary": {
                 "totalElements": len(nodes),
                 "rootCount": len(root_summaries),
@@ -303,35 +299,25 @@ def _model_overview_content(request: Request) -> dict[str, Any]:
 
 def _root_resource_content(request: Request, uri: str) -> dict[str, Any]:
     root_id = uri.removeprefix(MCP_ROOT_RESOURCE_PREFIX)
-    model = getattr(request.app.state, "model_cache", None)
-    nodes_by_id = getattr(model, "nodes_by_id", None)
-    root_ids = getattr(model, "root_ids", None)
-    if not root_id or not isinstance(root_ids, list) or root_id not in root_ids or not isinstance(nodes_by_id, Mapping):
+    model = gateway_state(request).model_cache
+    if model is None or not root_id or root_id not in model.root_ids:
         _raise_invalid_resource(uri)
 
-    node = nodes_by_id.get(root_id)
+    node = model.nodes_by_id.get(root_id)
     if node is None:
         _raise_invalid_resource(uri)
 
-    namespace_uri_by_id = getattr(model, "namespace_uri_by_id", {})
     summary = {
         "elementId": root_id,
         "displayName": getattr(node, "name", root_id),
         "kind": getattr(node, "kind", "unknown"),
-        "semanticRole": getattr(model, "semantic_role_by_id", {}).get(
-            root_id,
-            getattr(node, "semantic_role", "unknown"),
-        )
-        if isinstance(getattr(model, "semantic_role_by_id", {}), Mapping)
-        else getattr(node, "semantic_role", "unknown"),
+        "semanticRole": model.semantic_role_by_id.get(root_id, getattr(node, "semantic_role", "unknown")),
         "typeElementId": getattr(node, "type", None)
         or getattr(node, "source_type_id", None)
         or getattr(node, "kind", "unknown"),
-        "namespaceUri": namespace_uri_by_id.get(root_id) if isinstance(namespace_uri_by_id, Mapping) else None,
+        "namespaceUri": model.namespace_uri_by_id.get(root_id),
         "relationshipCounts": {
             plane: len(getattr(model, attribute, {}).get(root_id, []))
-            if isinstance(getattr(model, attribute, {}), Mapping)
-            else 0
             for plane, attribute in (
                 ("hierarchyChildren", "hierarchy_children_by_id"),
                 ("compositionChildren", "composition_children_by_id"),
@@ -385,7 +371,7 @@ def _read_resource_content(request: Request, uri: str) -> dict[str, Any]:
         if not path.exists():
             _raise_invalid_resource(uri)
         raw = path.read_text(encoding="utf-8")
-        applied = bool(getattr(request.app.state, "mcp_overrides_applied", False))
+        applied = gateway_state(request).mcp_overrides_applied
         try:
             document: dict[str, Any] = {"applied": applied, "contents": json.loads(raw)}
         except json.JSONDecodeError as exc:

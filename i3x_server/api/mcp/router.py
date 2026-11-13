@@ -27,7 +27,6 @@ from i3x_server.api.mcp.jsonrpc import (
     MCP_SSE_KEEPALIVE_SECONDS,
     McpJsonRpcError,
     McpJsonRpcSuccess,
-    McpTransportSession,
     _add_modern_response_metadata,
     _handle_jsonrpc,
     _jsonrpc_error,
@@ -241,7 +240,7 @@ async def mcp_post(request: Request) -> Response:
         # Every legacy request refreshes the session; idle sessions without a stream are pruned
         # when a new initialize arrives.
         existing = sessions.get(session_id)
-        if isinstance(existing, McpTransportSession):
+        if existing is not None:
             existing.last_used = time.monotonic()
     if not modern and message.get("method") == "initialize" and response is not None and "result" in response:
         negotiated_version = response["result"].get("protocolVersion", MCP_LEGACY_PROTOCOL_VERSION)

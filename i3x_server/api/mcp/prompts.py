@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from i3x_server.api.mcp.jsonrpc import _jsonrpc_error, _jsonrpc_response
+from i3x_server.application.state import gateway_state
 from i3x_server.prompts.api import execute_prompt, get_prompt, list_prompt_metadata
 from i3x_server.prompts.registry import PromptRegistry
 
@@ -20,8 +21,7 @@ class McpPromptExecuteRequest(BaseModel):
 
 
 def _prompt_registry(request: Request) -> PromptRegistry | None:
-    registry = getattr(request.app.state, "mcp_prompts", None)
-    return registry if isinstance(registry, PromptRegistry) else None
+    return gateway_state(request).mcp_prompts
 
 
 async def handle_prompts_list(request: Request, message_id: Any, params: Any) -> dict[str, Any]:

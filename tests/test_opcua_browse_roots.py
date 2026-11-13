@@ -17,6 +17,7 @@ from fastapi import FastAPI
 from httpx2 import ASGITransport, AsyncClient
 
 from i3x_server.api.v1.object_routes import router
+from i3x_server.application.state import GatewayState, install_gateway_state
 from i3x_server.config.settings import Settings
 from i3x_server.domain.ports.opcua import DataValueDTO
 from i3x_server.infrastructure.opcua.client import OpcUaClient
@@ -69,8 +70,7 @@ async def test_browse_roots_model_and_api(browse_server: tuple[Server, str], mod
         assert {node.name for node in model.nodes_by_id.values()} == expected_nodes
         app = FastAPI()
         app.include_router(router)
-        app.state.opcua_client = client
-        app.state.model_cache = model
+        install_gateway_state(app, GatewayState(opcua_client=client, model_cache=model))
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as api:
             response = await api.get("/v1/objects", params={"root": "true"})
         assert response.status_code == 200

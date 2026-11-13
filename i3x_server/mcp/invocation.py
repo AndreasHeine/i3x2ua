@@ -14,6 +14,7 @@ from urllib.parse import quote, quote_plus, urlencode, urlsplit
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response
 
+from i3x_server.application.state import gateway_state
 from i3x_server.errors import i3x_http_error
 from i3x_server.mcp.model_access import MCP_MODEL_ACCESS_SCHEMAS, invoke_model_access_tool
 from i3x_server.mcp.model_tools import (
@@ -180,8 +181,8 @@ async def _invoke_model_tool(
     function - dispatch routes them to `_invoke_cached_identity_tool` first.
     """
     _validate_model_tool_arguments(tool_name, arguments)
-    model = getattr(request.app.state, "model_cache", None)
-    if not isinstance(model, BuildResult):
+    model = gateway_state(request).model_cache
+    if model is None:
         raise i3x_http_error(503, "Service Unavailable", "Cached model is not available")
     handlers = {
         "searchModelElements": _search_model_elements,
@@ -203,8 +204,8 @@ async def _invoke_cached_identity_tool(
     arguments: Mapping[str, Any],
 ) -> _InternalASGIResponse:
     _validate_model_tool_arguments(tool_name, arguments)
-    model = getattr(request.app.state, "model_cache", None)
-    if not isinstance(model, BuildResult):
+    model = gateway_state(request).model_cache
+    if model is None:
         raise i3x_http_error(503, "Service Unavailable", "Cached model is not available")
     if tool_name == "resolveElementIdsToNodeIds":
         body = _resolve_element_ids_to_node_ids(model, arguments["elementIds"])
@@ -222,16 +223,17 @@ async def _invoke_cached_model_access_tool(
     tool_name: str,
     arguments: Mapping[str, Any],
 ) -> _InternalASGIResponse:
-    model = getattr(request.app.state, "model_cache", None)
-    if not isinstance(model, BuildResult):
+    model = gateway_state(request).model_cache
+    if model is None:
         raise i3x_http_error(503, "Service Unavailable", "Cached model is not available")
     context = None
     if tool_name == "getInstancesOfType":
         from i3x_server.api.v1.objecttype_helpers import _ObjectTypeContext
 
-        cache = getattr(request.app.state, "object_type_context_cache", None)
-        if isinstance(cache, dict) and cache.get("model_token") == model_revision(model):
-            candidate = cache.get("context")
+        cache = gateway_state(request).object_type_context_cache
+        slot = cache.current_slot() if cache is not None else None
+        if slot is not None and slot.model_token == model_revision(model):
+            candidate = slot.context
             if isinstance(candidate, _ObjectTypeContext):
                 context = candidate
     body = invoke_model_access_tool(model, tool_name, arguments, context)
@@ -256,8 +258,8 @@ async def _invoke_container_values(
     if type(offset) is not int or offset < 0:
         raise i3x_http_error(400, "Bad Request", "offset must be a non-negative integer")
 
-    model_provider = getattr(request.app.state, "mcp_model_provider", None)
-    if not callable(model_provider):
+    model_provider = gateway_state(request).mcp_model_provider
+    if model_provider is None:
         raise i3x_http_error(500, "Internal Error", "MCP model provider is not initialized")
     model: BuildResult = await model_provider(request)
     container = model.nodes_by_id.get(container_id)
@@ -297,9 +299,7 @@ async def _invoke_container_values(
     total = len(properties)
     page = properties[offset : offset + limit]
     values_by_id: dict[str, Any] = {}
-    api_prefix = getattr(request.app.state, "mcp_api_prefix", "")
-    if not isinstance(api_prefix, str):
-        api_prefix = ""
+    api_prefix = gateway_state(request).mcp_api_prefix
     value_path = _safe_request_path(api_prefix, "/v1/objects/value")
 
     for start in range(0, len(page), MCP_CONTAINER_VALUES_BATCH_SIZE):
@@ -567,9 +567,7 @@ async def invoke_mcp_tool(request: Request, tool: McpToolDefinition, arguments: 
                 if type(offset) is not int or offset < 0:
                     raise i3x_http_error(400, "Bad Request", "offset must be a non-negative integer")
 
-            api_prefix = getattr(request.app.state, "mcp_api_prefix", "")
-            if not isinstance(api_prefix, str):
-                api_prefix = ""
+            api_prefix = gateway_state(request).mcp_api_prefix
 
             # Use per-path server override if present, otherwise use global api_prefix
             if tool.server_url_override is not None:

@@ -35,11 +35,10 @@ from i3x_server.api.v1.contracts import (
 )
 from i3x_server.api.v1.monolithic import _stream_debug_enabled, logger
 from i3x_server.api.v1.object_helpers import _expanded_node_id
-from i3x_server.application.dependencies import get_subscription_app_service
+from i3x_server.application.dependencies import get_opcua_client, get_or_build_model, get_subscription_app_service
 from i3x_server.application.ports.opcua import OpcUaClientProtocol
 from i3x_server.application.services.subscription import SubscriptionAppService
 from i3x_server.application.services.subscription_mapper import map_public_subscription_updates
-from i3x_server.bootstrap.dependencies import get_opcua_client, get_or_build_model
 from i3x_server.schemas.state import BuildResult
 
 router = APIRouter(prefix="/v1", tags=["Subscribe"])

@@ -10,6 +10,7 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from starlette.requests import Request
 
+from i3x_server.application.state import GatewayState, install_gateway_state
 from i3x_server.mcp import (
     McpToolDefinition,
     _InternalASGIResponse,
@@ -40,7 +41,7 @@ from i3x_server.schemas.state import BuildResult
 
 def _request() -> Request:
     app = FastAPI()
-    app.state.mcp_api_prefix = ""
+    install_gateway_state(app, GatewayState())
     return Request({"type": "http", "app": app, "headers": []})
 
 

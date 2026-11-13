@@ -16,6 +16,7 @@ from asyncua.ua.uaerrors import BadHistoryOperationUnsupported, BadNotWritable, 
 from fastapi import FastAPI
 
 from i3x_server.api.v1.object_value_routes import router
+from i3x_server.application.state import GatewayState, install_gateway_state
 from i3x_server.infrastructure.opcua.client import OpcUaClient
 from i3x_server.infrastructure.opcua.history import historical_data_value
 from i3x_server.schemas.i3x import ModelNode
@@ -95,7 +96,7 @@ async def test_fixture_history_upserts_over_opcua(monkeypatch: pytest.MonkeyPatc
             monkeypatch.setenv("I3X_ENABLE_WRITES", "1")
             app = FastAPI()
             app.include_router(router)
-            app.state.opcua_client = adapter
+            install_gateway_state(app, GatewayState(opcua_client=adapter))
             app.state.model_cache = BuildResult(
                 nodes_by_id={
                     "history-signal": ModelNode(

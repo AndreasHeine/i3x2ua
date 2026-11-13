@@ -6,6 +6,7 @@ include_external_packages = True
 name = Core layering direction
 type = layers
 layers =
+    i3x_server.bootstrap
     i3x_server.api
     i3x_server.application
     i3x_server.domain

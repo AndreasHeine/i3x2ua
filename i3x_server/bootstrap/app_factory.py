@@ -14,7 +14,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from time import perf_counter
-from typing import Any, cast
+from typing import Any
 
 from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
@@ -33,10 +33,11 @@ from i3x_server.api.ua import router as ua_router
 from i3x_server.api.v1 import router as v1_router
 from i3x_server.api.v1.contracts import HttpErrorResponse
 from i3x_server.api.v1.objecttype_helpers import warm_object_type_context
+from i3x_server.application.dependencies import get_or_build_model
 from i3x_server.application.errors import ApplicationServiceError
-from i3x_server.application.services.model_query import NamespaceSnapshotCache
-from i3x_server.bootstrap.dependencies import get_or_build_model
+from i3x_server.application.state import GatewayState, gateway_state, install_gateway_state
 from i3x_server.config.settings import Settings, get_settings, settings
+from i3x_server.domain.ports.opcua import OpcUaClientProtocol
 from i3x_server.errors import format_error_details
 from i3x_server.http_caching import MODEL_REVISION_HEADER, ModelRevisionMiddleware, NotModifiedError
 from i3x_server.http_rate_limit import RateLimitMiddleware
@@ -110,6 +111,22 @@ def _runtime_settings() -> Settings:
     return get_settings()
 
 
+def _installed_client(state: GatewayState) -> OpcUaClientProtocol:
+    """Lifecycle helpers run after startup installed the client; a missing client is a bug."""
+    client = state.opcua_client
+    if client is None:
+        raise RuntimeError("OPC UA client is not installed on the app state")
+    return client
+
+
+def _installed_model_builder(state: GatewayState) -> ModelBuilder:
+    """Same guarantee as :func:`_installed_client`, for the model builder."""
+    builder = state.model_builder
+    if builder is None:
+        raise RuntimeError("ModelBuilder is not installed on the app state")
+    return builder
+
+
 def _frontend_inline_script_hashes(frontend_dist: Path) -> tuple[str, ...]:
     if not frontend_dist.exists():
         return ()
@@ -170,7 +187,7 @@ def _prepare_otel_environment() -> None:
 async def _warm_object_type_context(app: FastAPI, model: BuildResult) -> None:
     started = perf_counter()
     try:
-        context = await warm_object_type_context(app, model, app.state.opcua_client)
+        context = await warm_object_type_context(app, model, _installed_client(gateway_state(app)))
     except Exception:
         logger.exception("Object type context warm-up failed; will build on first request")
         return
@@ -182,17 +199,19 @@ async def _warm_object_type_context(app: FastAPI, model: BuildResult) -> None:
 
 
 async def _run_model_preload(app: FastAPI) -> None:
+    state = gateway_state(app)
     try:
         started = asyncio.get_running_loop().time()
-        app.state.opcua_client.reset_runtime_metrics()
+        client = _installed_client(state)
+        client.reset_runtime_metrics()
         build_started = asyncio.get_running_loop().time()
         # Background refresh work runs under the dedicated refresh budget so a rebuild
         # cannot consume the read budget that request handlers share.
-        async with model_refresh_budget(app.state.opcua_client):
-            preload = await app.state.model_builder.build()
+        async with model_refresh_budget(client):
+            preload = await _installed_model_builder(state).build()
         build_duration_s = asyncio.get_running_loop().time() - build_started
-        app.state.model_cache = preload
-        metrics = app.state.opcua_client.snapshot_runtime_metrics()
+        state.model_cache = preload
+        metrics = client.snapshot_runtime_metrics()
         duration_s = asyncio.get_running_loop().time() - started
         logger.info(
             "Model preload finished nodes=%d roots=%d properties=%d actions=%d build_s=%.3f total_s=%.3f",
@@ -234,13 +253,13 @@ async def _run_model_preload(app: FastAPI) -> None:
             metrics.object_type_reads,
             metrics.object_type_count_last,
         )
-        async with model_refresh_budget(app.state.opcua_client):
+        async with model_refresh_budget(client):
             if settings.model_preload_blocking:
                 await _warm_object_type_context(app, preload)
             else:
                 # Keep background preload from holding model-only requests behind type warm-up.
                 # The task copies the refresh-budget context, so warm-up stays throttled.
-                app.state.object_type_warm_task = asyncio.create_task(_warm_object_type_context(app, preload))
+                state.object_type_warm_task = asyncio.create_task(_warm_object_type_context(app, preload))
     except Exception:
         logger.exception("Model preload failed")
         if settings.fail_startup_on_model_preload_error and settings.model_preload_blocking:
@@ -249,6 +268,7 @@ async def _run_model_preload(app: FastAPI) -> None:
 
 
 async def _run_periodic_model_refresh(app: FastAPI) -> None:
+    state = gateway_state(app)
     interval_seconds = settings.model_refresh_interval_seconds
     if interval_seconds <= 0:
         logger.info("Periodic model refresh disabled interval_s=%d", interval_seconds)
@@ -257,7 +277,7 @@ async def _run_periodic_model_refresh(app: FastAPI) -> None:
     logger.info("Periodic model refresh enabled interval_s=%d", interval_seconds)
     while True:
         await asyncio.sleep(interval_seconds)
-        preload_task = cast(asyncio.Task[None] | None, getattr(app.state, "model_preload_task", None))
+        preload_task = state.model_preload_task
         if preload_task is not None and not preload_task.done():
             logger.info("Periodic model refresh waiting for preload completion")
             try:
@@ -271,10 +291,11 @@ async def _run_periodic_model_refresh(app: FastAPI) -> None:
             # while the refresh round-trips run; only the swap is serialized. The refresh
             # budget keeps the rebuild's round-trips from consuming the read budget that
             # request handlers share.
-            async with model_refresh_budget(getattr(app.state, "opcua_client", None)):
-                built = await app.state.model_builder.build()
-            async with app.state.model_lock:
-                app.state.model_cache = built
+            client = _installed_client(state)
+            async with model_refresh_budget(client):
+                built = await _installed_model_builder(state).build()
+            async with state.model_lock:
+                state.model_cache = built
                 # Keep the existing object-type context unless the refreshed model is
                 # materially different. This avoids a pointless rebuild on equivalent
                 # refreshes while still allowing _get_object_type_context() to detect
@@ -287,7 +308,7 @@ async def _run_periodic_model_refresh(app: FastAPI) -> None:
                 len(built.action_to_method),
                 perf_counter() - started,
             )
-            async with model_refresh_budget(getattr(app.state, "opcua_client", None)):
+            async with model_refresh_budget(client):
                 await _warm_object_type_context(app, built)
         except Exception:
             logger.exception("Periodic model refresh failed")
@@ -314,6 +335,7 @@ async def _retry_opcua_connect(app: FastAPI, opcua_client: OpcUaClient) -> None:
     builds the model and hands periodic refresh back to ``_run_periodic_model_refresh``.
     """
     runtime = _runtime_settings()
+    state = gateway_state(app)
     attempt = 0
     while True:
         delay = min(
@@ -333,15 +355,15 @@ async def _retry_opcua_connect(app: FastAPI, opcua_client: OpcUaClient) -> None:
                 exc,
             )
             continue
-        app.state.ua_startup_mode = "connected"
+        state.ua_startup_mode = "connected"
         logger.info("OPC UA startup retry connected endpoint=%s attempt=%d", runtime.opcua_endpoint, attempt)
         if runtime.model_preload_on_startup:
             try:
                 await _run_model_preload(app)
             except Exception:
                 logger.exception("Model preload after startup retry failed; model builds lazily on demand")
-        if runtime.model_refresh_interval_seconds > 0 and getattr(app.state, "model_refresh_task", None) is None:
-            app.state.model_refresh_task = asyncio.create_task(_run_periodic_model_refresh(app))
+        if runtime.model_refresh_interval_seconds > 0 and state.model_refresh_task is None:
+            state.model_refresh_task = asyncio.create_task(_run_periodic_model_refresh(app))
         return
 
 
@@ -407,14 +429,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 settings.opcua_endpoint,
                 exc,
             )
-    app.state.ua_startup_mode = startup_mode
-    app.state.opcua_client = opcua_client
-    app.state.model_builder = ModelBuilder(opcua_client)
-    app.state.mcp_model_provider = get_or_build_model
-    app.state.object_type_context_cache = None
-    app.state.object_type_lock = asyncio.Lock()
-    app.state.namespace_query_cache = NamespaceSnapshotCache()
-    app.state.subscription_service = SubscriptionService(
+    state = gateway_state(app)
+    state.ua_startup_mode = startup_mode
+    state.opcua_client = opcua_client
+    state.model_builder = ModelBuilder(opcua_client)
+    state.mcp_model_provider = get_or_build_model
+    subscription_service = SubscriptionService(
         opcua_client=opcua_client,
         interval_seconds=settings.subscription_interval_seconds,
         max_updates_per_subscription=settings.subscription_max_updates,
@@ -430,12 +450,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         native_max_bins=settings.subscription_native_max_bins,
         native_max_monitored_items=settings.subscription_native_max_monitored_items,
     )
+    state.subscription_service = subscription_service
     # Install a chained signal handler so that active SSE streaming connections
     # are closed *before* Uvicorn's "Waiting for connections to close" phase.
     # On Windows (and as a fallback on Unix), Uvicorn uses signal.signal(), so we
     # save the existing handler and wrap it.  On Unix, asyncio's add_signal_handler
     # is tried first so that the event-loop callback is already on the right thread.
-    _sub_svc = app.state.subscription_service
+    _sub_svc = subscription_service
     _loop = asyncio.get_event_loop()
 
     def _early_shutdown() -> None:
@@ -474,46 +495,42 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 # signal registration silently rather than crashing.
                 pass
 
-    app.state.model_lock = asyncio.Lock()
-    app.state.model_build_task = None
-    app.state.model_preload_task = None
-    app.state.model_refresh_task = None
-    app.state.object_type_warm_task = None
-    app.state.object_type_refresh_task = None
     if mcp_enabled:
         openapi_spec = app.openapi()
         if not isinstance(openapi_spec, dict):
             raise ValueError(f"OpenAPI spec must be dict, got {type(openapi_spec)}")
 
-        app.state.mcp_tools = build_mcp_tools(openapi_spec)
+        state.mcp_tools = build_mcp_tools(openapi_spec)
         # The overrides file may be rejected by validation (runtime then applies nothing).
         # Record whether it was applied so `i3x://mcp-overrides` cannot be mistaken for the
         # effective catalog (L11).
-        app.state.mcp_overrides_applied = bool(load_overrides())
-        app.state.mcp_api_prefix = get_api_prefix(openapi_spec)
-        app.state.mcp_transport_sessions = {}
+        state.mcp_overrides_applied = bool(load_overrides())
+        state.mcp_api_prefix = get_api_prefix(openapi_spec)
+        # A startup owns its transport sessions; a previous lifespan in the same process
+        # (tests, repeated create_app) must not carry its queues over.
+        state.mcp_transport_sessions = {}
         prompt_overrides = load_prompt_overrides()
-        app.state.mcp_prompts = PromptRegistry.load_from_overrides(
+        state.mcp_prompts = PromptRegistry.load_from_overrides(
             prompt_overrides,
         )
         logger.info(
             "MCP prompt registry loaded from overrides count=%d",
-            len(app.state.mcp_prompts.list_metadata()),
+            len(state.mcp_prompts.list_metadata()),
         )
     if skip_connect or startup_mode == "degraded":
-        app.state.model_cache = _empty_model_result()
+        state.model_cache = _empty_model_result()
         if startup_mode == "degraded":
-            app.state.opcua_retry_task = asyncio.create_task(_retry_opcua_connect(app, opcua_client))
+            state.opcua_retry_task = asyncio.create_task(_retry_opcua_connect(app, opcua_client))
     else:
-        app.state.model_cache = None
+        state.model_cache = None
         if settings.model_preload_on_startup:
             if settings.model_preload_blocking:
                 logger.info("Model preload at startup enabled (blocking)")
                 await _run_model_preload(app)
             else:
                 logger.info("Model preload at startup enabled (background)")
-                app.state.model_preload_task = asyncio.create_task(_run_model_preload(app))
-        app.state.model_refresh_task = asyncio.create_task(_run_periodic_model_refresh(app))
+                state.model_preload_task = asyncio.create_task(_run_model_preload(app))
+        state.model_refresh_task = asyncio.create_task(_run_periodic_model_refresh(app))
     try:
         yield
     finally:
@@ -530,37 +547,29 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             if original_handler is not None:
                 with suppress(Exception):
                     signal.signal(_sig, original_handler)
-        refresh_task = getattr(app.state, "model_refresh_task", None)
-        if refresh_task is not None and not refresh_task.done():
-            refresh_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await refresh_task
-        preload_task = getattr(app.state, "model_preload_task", None)
-        if preload_task is not None and not preload_task.done():
-            preload_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await preload_task
-        retry_task = getattr(app.state, "opcua_retry_task", None)
-        if retry_task is not None and not retry_task.done():
-            retry_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await retry_task
-        for task_name in ("object_type_warm_task", "object_type_refresh_task"):
-            warm_task = getattr(app.state, task_name, None)
-            if warm_task is not None and not warm_task.done():
-                warm_task.cancel()
+        # Background tasks must not outlive the app: cancel and await each one so their
+        # cleanup runs before the client disconnect below.
+        for task in (
+            state.model_refresh_task,
+            state.model_preload_task,
+            state.opcua_retry_task,
+            state.object_type_warm_task,
+            state.object_type_refresh_task,
+        ):
+            if task is not None and not task.done():
+                task.cancel()
                 with suppress(asyncio.CancelledError):
-                    await warm_task
-        await app.state.subscription_service.close()
+                    await task
+        await subscription_service.close()
         # Close every legacy MCP SSE stream and drop the transport session map. The signal handler
         # only covers terminated processes; a plain shutdown (uvicorn exit, TestClient context)
         # must not leave sessions - and their queues - alive.
         shutdown_mcp_transport(app)
         # Degraded startup may never have established a session; disconnecting an unconnected
         # client would raise during shutdown and mask the real startup failure.
-        if app.state.ua_startup_mode == "degraded":
+        if state.ua_startup_mode == "degraded":
             logger.info("OPC UA disconnect skipped endpoint=%s (never connected)", settings.opcua_endpoint)
-        elif app.state.ua_startup_mode != "skipped":
+        elif state.ua_startup_mode != "skipped":
             await opcua_client.disconnect()
         logger.info("App shutdown finished")
 
@@ -626,6 +635,10 @@ def create_app() -> FastAPI:
             "auto_configure": settings.otel_enabled,
         },
     )
+    # The typed state container is installed here, before the lifecycle runs, so every
+    # collaborator field exists from the first request onward. Fields the lifespan fills
+    # later keep their declared defaults.
+    state = install_gateway_state(app, GatewayState())
     # Added first so it is the innermost middleware and sees uncompressed responses.
     app.add_middleware(ModelRevisionMiddleware)
     # Spec CORE-04 / Implementation Guide § Transport & Encoding: any response to a request
@@ -646,7 +659,7 @@ def create_app() -> FastAPI:
     # import-time snapshot, so the setting behaves like every other documented env knob.
     origin_settings = _runtime_settings()
     mcp_origin_sources = origin_settings.mcp_allowed_origins or origin_settings.cors_allowed_origins
-    app.state.mcp_allowed_origins = [origin for origin in mcp_origin_sources if origin != "*"]
+    state.mcp_allowed_origins = [origin for origin in mcp_origin_sources if origin != "*"]
     if cors_origins:
         app.add_middleware(
             CORSMiddleware,

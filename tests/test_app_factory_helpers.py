@@ -16,6 +16,7 @@ from fastapi.routing import APIRoute
 from starlette.requests import Request
 
 from i3x_server.application.services.model_cache import get_or_build_model
+from i3x_server.application.state import GatewayState, ObjectTypeContextCache, install_gateway_state
 from i3x_server.bootstrap import app_factory
 from i3x_server.bootstrap.app_factory import (
     _extract_inline_script_bodies,
@@ -117,10 +118,10 @@ async def test_run_model_preload_success_sets_cache(monkeypatch: pytest.MonkeyPa
             )
 
     app = FastAPI()
-    app.state.opcua_client = _OpcUaClient()
-    app.state.model_builder = _ModelBuilder()
-    app.state.model_cache = None
-    app.state.object_type_warm_task = None
+    install_gateway_state(
+        app,
+        GatewayState(opcua_client=_OpcUaClient(), model_builder=_ModelBuilder(), model_cache=None),
+    )
     warm_started = asyncio.Event()
     allow_warm_finish = asyncio.Event()
     warm_finished = asyncio.Event()
@@ -169,9 +170,10 @@ async def test_run_model_preload_failure_without_raise(monkeypatch: pytest.Monke
             return SimpleNamespace()
 
     app = FastAPI()
-    app.state.opcua_client = _OpcUaClient()
-    app.state.model_builder = _ModelBuilder()
-    app.state.model_cache = None
+    install_gateway_state(
+        app,
+        GatewayState(opcua_client=_OpcUaClient(), model_builder=_ModelBuilder(), model_cache=None),
+    )
     monkeypatch.setattr("i3x_server.bootstrap.app_factory.settings.fail_startup_on_model_preload_error", False)
     monkeypatch.setattr("i3x_server.bootstrap.app_factory.settings.model_preload_blocking", False)
     await _run_model_preload(app)
@@ -214,12 +216,10 @@ async def test_run_periodic_model_refresh_rebuilds_cache(monkeypatch: pytest.Mon
             raise asyncio.CancelledError()
 
     app = FastAPI()
-    app.state.model_builder = _ModelBuilder()
-    app.state.opcua_client = _OpcUaClient()
-    app.state.model_lock = asyncio.Lock()
-    app.state.model_preload_task = None
-    app.state.model_cache = None
-    app.state.object_type_context_cache = object()
+    install_gateway_state(
+        app,
+        GatewayState(model_builder=_ModelBuilder(), opcua_client=_OpcUaClient(), model_cache=None),
+    )
 
     monkeypatch.setattr("i3x_server.bootstrap.app_factory.settings.model_refresh_interval_seconds", 1)
     monkeypatch.setattr("i3x_server.bootstrap.app_factory.asyncio.sleep", _fake_sleep)
@@ -229,7 +229,9 @@ async def test_run_periodic_model_refresh_rebuilds_cache(monkeypatch: pytest.Mon
 
     assert build_calls == 1
     assert app.state.model_cache is model
-    assert isinstance(app.state.object_type_context_cache, dict)
+    cache = app.state.object_type_context_cache
+    assert isinstance(cache, ObjectTypeContextCache)
+    assert cache.current_slot() is not None
 
 
 @pytest.mark.asyncio
@@ -243,12 +245,10 @@ async def test_run_periodic_model_refresh_disabled_when_interval_zero(monkeypatc
             return None
 
     app = FastAPI()
-    app.state.model_builder = _ModelBuilder()
-    app.state.opcua_client = _OpcUaClient()
-    app.state.model_lock = asyncio.Lock()
-    app.state.model_preload_task = None
-    app.state.model_cache = None
-    app.state.object_type_context_cache = object()
+    install_gateway_state(
+        app,
+        GatewayState(model_builder=_ModelBuilder(), opcua_client=_OpcUaClient(), model_cache=None),
+    )
 
     monkeypatch.setattr("i3x_server.bootstrap.app_factory.settings.model_refresh_interval_seconds", 0)
     await _run_periodic_model_refresh(app)
@@ -261,6 +261,7 @@ async def test_browse_roots_are_wired_at_startup(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setenv("I3X_SKIP_OPCUA_CONNECT", "1")
     monkeypatch.setenv("I3X_ENABLE_MCP", "0")
     app = FastAPI()
+    install_gateway_state(app, GatewayState())
     async with app_factory.lifespan(app):
         assert app.state.opcua_client.browse_roots == tuple(roots)
 
@@ -275,11 +276,18 @@ async def test_failed_refresh_preserves_previous_model(monkeypatch: pytest.Monke
         property_to_node={},
         action_to_method={},
     )
-    app = FastAPI()
-    app.state.model_cache = model
     build = AsyncMock(side_effect=ValueError("Browse root namespace is not available"))
-    app.state.model_builder = SimpleNamespace(build=build)
-    app.state.model_lock = asyncio.Lock()
+    app = FastAPI()
+    # Lifecycle helpers require an installed client; the refresh budget ignores doubles
+    # without a semaphore, so the bare object only has to satisfy the typed state.
+    install_gateway_state(
+        app,
+        GatewayState(
+            model_cache=model,
+            model_builder=SimpleNamespace(build=build),
+            opcua_client=object(),
+        ),
+    )
     sleeps = 0
 
     async def sleep(_: float) -> None:
@@ -349,12 +357,14 @@ async def test_periodic_refresh_builds_outside_lock_and_readers_keep_old_revisio
             raise asyncio.CancelledError()
 
     app = FastAPI()
-    app.state.model_builder = _ModelBuilder()
-    app.state.opcua_client = _OpcUaClient()
-    app.state.model_lock = asyncio.Lock()
-    app.state.model_preload_task = None
-    app.state.model_cache = old
-    app.state.object_type_context_cache = None
+    install_gateway_state(
+        app,
+        GatewayState(
+            model_builder=_ModelBuilder(),
+            opcua_client=_OpcUaClient(),
+            model_cache=old,
+        ),
+    )
 
     monkeypatch.setattr("i3x_server.bootstrap.app_factory.settings.model_refresh_interval_seconds", 1)
     monkeypatch.setattr("i3x_server.bootstrap.app_factory.asyncio.sleep", _fake_sleep)
@@ -417,6 +427,7 @@ async def test_lifespan_deregisters_signal_handlers_on_shutdown(monkeypatch: pyt
     monkeypatch.setenv("I3X_SKIP_OPCUA_CONNECT", "1")
     monkeypatch.setenv("I3X_ENABLE_MCP", "0")
     app = FastAPI()
+    install_gateway_state(app, GatewayState())
 
     before = signal.getsignal(signal.SIGINT)
     async with app_factory.lifespan(app):
@@ -428,7 +439,7 @@ async def test_lifespan_deregisters_signal_handlers_on_shutdown(monkeypatch: pyt
 def test_api_v1_imports_first_without_bootstrap_cycle() -> None:
     """`api.v1` must import cleanly as the first package imported.
 
-    Routes import ``bootstrap.dependencies`` at module level, so an eager
+    Routes import ``application.dependencies`` at module level, so an eager
     ``create_app`` re-export in ``bootstrap/__init__.py`` resolved
     ``bootstrap`` -> ``app_factory`` -> ``api.v1.router`` while ``api.v1`` was
     still initializing and raised a circular ``ImportError``.
@@ -460,6 +471,7 @@ async def test_lifespan_hard_fails_on_opcua_connect_error_by_default(monkeypatch
 
     monkeypatch.setattr("i3x_server.infrastructure.opcua.client.OpcUaClient.connect", failing_connect)
     app = FastAPI()
+    install_gateway_state(app, GatewayState())
     with pytest.raises(ConnectionError, match="upstream unreachable"):
         async with app_factory.lifespan(app):
             pass
@@ -507,6 +519,7 @@ async def test_degraded_startup_serves_empty_model_and_supervisor_rebuilds_after
     )
 
     app = FastAPI()
+    install_gateway_state(app, GatewayState())
     async with app_factory.lifespan(app):
         assert app.state.ua_startup_mode == "degraded"
         assert app.state.model_cache.nodes_by_id == {}
@@ -548,6 +561,7 @@ async def test_degraded_startup_shutdown_skips_disconnect_while_never_connected(
     monkeypatch.setattr("i3x_server.infrastructure.opcua.client.OpcUaClient.disconnect", disconnects)
 
     app = FastAPI()
+    install_gateway_state(app, GatewayState())
     async with app_factory.lifespan(app):
         assert app.state.ua_startup_mode == "degraded"
         assert app.state.model_cache.nodes_by_id == {}

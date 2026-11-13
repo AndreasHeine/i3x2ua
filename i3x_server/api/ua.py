@@ -9,8 +9,9 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 
 from i3x_server.api.v1.contracts import HttpErrorResponse
+from i3x_server.application.dependencies import get_opcua_client
 from i3x_server.application.ports.opcua import OpcUaClientProtocol
-from i3x_server.bootstrap.dependencies import get_opcua_client
+from i3x_server.application.state import UaStatusSnapshot, gateway_state
 from i3x_server.errors import i3x_http_error
 
 router = APIRouter(prefix="/ua", tags=["Diagnostics"])
@@ -93,17 +94,6 @@ def _to_json_safe(value: Any) -> Any:
     return str(value)
 
 
-class _ServerStatusSnapshot:
-    """Last successful ServerStatus read plus when it was taken and on which connection."""
-
-    __slots__ = ("connection_state", "fetched_at", "payload")
-
-    def __init__(self, payload: Any, connection_state: str, fetched_at: float) -> None:
-        self.payload = payload
-        self.connection_state = connection_state
-        self.fetched_at = fetched_at
-
-
 def _connection_state(opcua_client: OpcUaClientProtocol) -> str:
     """Local connection state used to invalidate the cached ServerStatus after a reconnect."""
     snapshot_reader = getattr(opcua_client, "get_connection_snapshot", None)
@@ -127,9 +117,10 @@ async def get_ua_status(
     opcua_client: OpcUaClientProtocol = Depends(get_opcua_client),
 ) -> UaSuccessResponse:
     connection_state = _connection_state(opcua_client)
-    cached = getattr(request.app.state, "ua_status_snapshot", None)
+    state = gateway_state(request)
+    cached = state.ua_status_snapshot
     if (
-        isinstance(cached, _ServerStatusSnapshot)
+        cached is not None
         and cached.connection_state == connection_state
         and monotonic() - cached.fetched_at < _SERVER_STATUS_TTL_SECONDS
     ):
@@ -147,7 +138,9 @@ async def get_ua_status(
 
     payload = data_value.value.value if data_value.value is not None else None
     result = _to_json_safe(payload)
-    request.app.state.ua_status_snapshot = _ServerStatusSnapshot(result, connection_state, monotonic())
+    state.ua_status_snapshot = UaStatusSnapshot(
+        payload=result, connection_state=connection_state, fetched_at=monotonic()
+    )
     return UaSuccessResponse(result=result)
 
 
@@ -166,7 +159,7 @@ async def get_ua_connection(
             {"cause": str(exc)},
         ) from exc
 
-    startup_mode = str(getattr(request.app.state, "ua_startup_mode", "unknown"))
+    startup_mode = gateway_state(request).ua_startup_mode
     result = UaConnectionResult(
         state=snapshot.state,
         endpoint=snapshot.endpoint,

@@ -21,7 +21,11 @@ from tests.conftest import fastapi_app
 def _publish_schema(client: TestClient, schema: dict[str, Any]) -> None:
     assert client.get("/v1/objecttypes").status_code == 200
     app = fastapi_app(client)
-    context = app.state.object_type_context_cache["context"]
+    cache = app.state.object_type_context_cache
+    assert cache is not None
+    slot = cache.current_slot()
+    assert slot is not None
+    context = slot.context
     type_id = _resolved_type_element_id_for_node(
         app.state.model_cache.nodes_by_id["property-abc"],
         context.namespace_infos,
@@ -312,7 +316,11 @@ def test_schema_resolution_failure_never_writes(
             }[mode],
         )
         if mode == "missing":
-            fastapi_app(client).state.object_type_context_cache["context"].items.clear()
+            cache = fastapi_app(client).state.object_type_context_cache
+            assert cache is not None
+            slot = cache.current_slot()
+            assert slot is not None and slot.context is not None
+            slot.context.items.clear()
     write = AsyncMock()
     history_write = AsyncMock()
     monkeypatch.setattr(opcua, "write_value", write)

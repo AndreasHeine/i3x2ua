@@ -11,6 +11,7 @@ from starlette.requests import Request
 
 from i3x_server.application.ports.subscription import SubscriptionServicePort
 from i3x_server.application.services.subscription import SubscriptionAppService
+from i3x_server.application.state import GatewayState, install_gateway_state
 from i3x_server.domain.ports.opcua import OpcUaClientProtocol
 from i3x_server.infrastructure.subscriptions.state import (
     SubscriptionDeleteResult,
@@ -43,6 +44,7 @@ def _model() -> BuildResult:
 
 def _request() -> Request:
     app = FastAPI()
+    install_gateway_state(app, GatewayState())
     return Request({"type": "http", "app": app})
 
 

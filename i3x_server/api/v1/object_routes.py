@@ -22,8 +22,8 @@ from i3x_server.api.v1.object_helpers import (
     _to_object_instance,
 )
 from i3x_server.api.v1.objecttype_helpers import _get_object_endpoint_context
+from i3x_server.application.dependencies import get_opcua_client, get_or_build_model
 from i3x_server.application.ports.opcua import OpcUaClientProtocol
-from i3x_server.bootstrap.dependencies import get_opcua_client, get_or_build_model
 from i3x_server.http_caching import enable_etag, raise_if_not_modified
 from i3x_server.schemas.state import BuildResult
 

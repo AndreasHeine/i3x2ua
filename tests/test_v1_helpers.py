@@ -17,6 +17,7 @@ from i3x_server.api.v1 import object_helpers, object_value_helpers, objecttype_h
 from i3x_server.api.v1.contracts import ValueUpdateItemRequest, WriteVQTRequest
 from i3x_server.api.v1.write_validation import WriteValueValidator
 from i3x_server.application.services.model_query import _relationship_type_items
+from i3x_server.application.state import GatewayState
 from i3x_server.domain.ports.opcua import DataValueDTO
 from i3x_server.infrastructure.opcua.client import (
     OpcUaClientProtocol,
@@ -600,7 +601,7 @@ async def test_object_type_context_cache_hit_skips_lock(monkeypatch: pytest.Monk
 
     monkeypatch.setattr(objecttype_helpers, "_build_object_type_context", _build)
     lock = asyncio.Lock()
-    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(object_type_lock=lock)))
+    request = SimpleNamespace(app=SimpleNamespace(state=GatewayState(object_type_lock=lock)))
     client = cast(Any, _EmptyOpcUaClient())
 
     first = await objecttype_helpers._get_object_type_context(request, model, client)
@@ -625,7 +626,7 @@ async def test_object_type_context_cache_hits_for_equivalent_rebuilt_model(monke
         return objecttype_helpers._ObjectTypeContext([], [], {}, [], {})
 
     monkeypatch.setattr(objecttype_helpers, "_build_object_type_context", _build)
-    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(object_type_lock=asyncio.Lock())))
+    request = SimpleNamespace(app=SimpleNamespace(state=GatewayState(object_type_lock=asyncio.Lock())))
     client = cast(Any, _EmptyOpcUaClient())
     model_a = _context_model()
     model_b = _context_model()
@@ -635,7 +636,7 @@ async def test_object_type_context_cache_hits_for_equivalent_rebuilt_model(monke
 
     assert second is first
     assert builds == 1
-    assert getattr(request.app.state, "object_type_refresh_task", None) is None
+    assert request.app.state.object_type_refresh_task is None
 
     changed = _context_model()
     changed.nodes_by_id["n2"] = ModelNode(id="n2", name="n2", kind="asset", source_node_id="n2")
@@ -663,7 +664,7 @@ async def test_object_type_context_serves_stale_while_rebuild_holds_lock(
         return objecttype_helpers._ObjectTypeContext([], [], {}, [], {})
 
     monkeypatch.setattr(objecttype_helpers, "_build_object_type_context", _build)
-    state = SimpleNamespace(object_type_lock=asyncio.Lock())
+    state = GatewayState(object_type_lock=asyncio.Lock())
     request = SimpleNamespace(app=SimpleNamespace(state=state))
     client = cast(Any, _EmptyOpcUaClient())
     first = await objecttype_helpers._get_object_type_context(request, _context_model(), client)
@@ -691,8 +692,12 @@ async def test_object_type_context_serves_stale_while_rebuild_holds_lock(
     release.set()
     await refresh_task
     assert builds == 2
-    assert state.object_type_context_cache["model_token"] == model_revision(newest)
-    assert state.object_type_context_cache["context"] is not first
+    cache = state.object_type_context_cache
+    assert cache is not None
+    slot = cache.current_slot()
+    assert slot is not None
+    assert slot.model_token == model_revision(newest)
+    assert slot.context is not first
 
 
 @pytest.mark.asyncio
@@ -705,7 +710,7 @@ async def test_object_type_context_cold_cache_and_warm_up_wait_for_build(monkeyp
         return objecttype_helpers._ObjectTypeContext([], [], {}, [], {})
 
     monkeypatch.setattr(objecttype_helpers, "_build_object_type_context", _build)
-    app = SimpleNamespace(state=SimpleNamespace(object_type_lock=asyncio.Lock()))
+    app = SimpleNamespace(state=GatewayState(object_type_lock=asyncio.Lock()))
     client = cast(Any, _EmptyOpcUaClient())
     model = _context_model()
     first = await objecttype_helpers._get_object_type_context(SimpleNamespace(app=app), model, client)
@@ -716,8 +721,12 @@ async def test_object_type_context_cold_cache_and_warm_up_wait_for_build(monkeyp
 
     assert builds == 2
     assert warmed is not first
-    assert app.state.object_type_context_cache["model_token"] == model_revision(changed)
-    assert getattr(app.state, "object_type_refresh_task", None) is None
+    cache = app.state.object_type_context_cache
+    assert cache is not None
+    slot = cache.current_slot()
+    assert slot is not None
+    assert slot.model_token == model_revision(changed)
+    assert app.state.object_type_refresh_task is None
 
 
 @pytest.mark.asyncio
@@ -732,7 +741,7 @@ async def test_object_type_context_cache_is_a_bounded_lru(monkeypatch: pytest.Mo
 
     monkeypatch.setattr(objecttype_helpers, "_build_object_type_context", _build)
     monkeypatch.setattr(objecttype_helpers, "_OBJECT_TYPE_CONTEXT_CACHE_MAX_ENTRIES", 3)
-    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(object_type_lock=asyncio.Lock())))
+    request = SimpleNamespace(app=SimpleNamespace(state=GatewayState(object_type_lock=asyncio.Lock())))
     client = cast(Any, _EmptyOpcUaClient())
 
     models = [_context_model() for _ in range(5)]
@@ -748,8 +757,12 @@ async def test_object_type_context_cache_is_a_bounded_lru(monkeypatch: pytest.Mo
         await objecttype_helpers._get_object_type_context(request, model, client, allow_stale=False) for model in models
     ]
     assert builds == 5
-    assert len(request.app.state.object_type_context_cache["entries"]) == 3
-    assert request.app.state.object_type_context_cache["context"] is contexts[-1]
+    cache = request.app.state.object_type_context_cache
+    assert cache is not None
+    assert len(cache.entries) == 3
+    slot = cache.current_slot()
+    assert slot is not None
+    assert slot.context is contexts[-1]
 
     # The three most recently used contexts still hit, in any order.
     builds = 0
@@ -762,8 +775,12 @@ async def test_object_type_context_cache_is_a_bounded_lru(monkeypatch: pytest.Mo
     assert stale is contexts[3]
     await request.app.state.object_type_refresh_task
     assert builds == 1
-    assert len(request.app.state.object_type_context_cache["entries"]) == 3
-    assert request.app.state.object_type_context_cache["model_token"] == model_revision(models[0])
+    cache = request.app.state.object_type_context_cache
+    assert cache is not None
+    assert len(cache.entries) == 3
+    slot = cache.current_slot()
+    assert slot is not None
+    assert slot.model_token == model_revision(models[0])
 
     rebuilt = await objecttype_helpers._get_object_type_context(request, models[0], client)
     assert rebuilt is not contexts[0]
@@ -782,7 +799,7 @@ async def test_failed_background_object_type_refresh_keeps_stale_context(monkeyp
         return objecttype_helpers._ObjectTypeContext([], [], {}, [], {})
 
     monkeypatch.setattr(objecttype_helpers, "_build_object_type_context", _build)
-    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(object_type_lock=asyncio.Lock())))
+    request = SimpleNamespace(app=SimpleNamespace(state=GatewayState(object_type_lock=asyncio.Lock())))
     client = cast(Any, _EmptyOpcUaClient())
     first = await objecttype_helpers._get_object_type_context(request, _context_model(), client)
     changed = _context_model()
@@ -790,7 +807,11 @@ async def test_failed_background_object_type_refresh_keeps_stale_context(monkeyp
 
     assert await objecttype_helpers._get_object_type_context(request, changed, client) is first
     await request.app.state.object_type_refresh_task
-    assert request.app.state.object_type_context_cache["context"] is first
+    cache = request.app.state.object_type_context_cache
+    assert cache is not None
+    slot = cache.current_slot()
+    assert slot is not None
+    assert slot.context is first
     assert await objecttype_helpers._get_object_type_context(request, changed, client) is first
 
 
@@ -816,7 +837,7 @@ async def test_object_type_definition_change_with_same_node_id_rebuilds_and_chan
             return list(self.types)
 
     client = _TypesClient()
-    app = SimpleNamespace(state=SimpleNamespace(object_type_lock=asyncio.Lock()))
+    app = SimpleNamespace(state=GatewayState(object_type_lock=asyncio.Lock()))
     model = _context_model()
     first = await objecttype_helpers.warm_object_type_context(app, model, cast(Any, client))
 
@@ -827,7 +848,7 @@ async def test_object_type_definition_change_with_same_node_id_rebuilds_and_chan
     assert changed.revision != first.revision
 
     # A fresh process rebuilding from the same inputs serves the same revision.
-    other_app = SimpleNamespace(state=SimpleNamespace(object_type_lock=asyncio.Lock()))
+    other_app = SimpleNamespace(state=GatewayState(object_type_lock=asyncio.Lock()))
     rebuilt = await objecttype_helpers.warm_object_type_context(other_app, model, cast(Any, client))
     assert rebuilt.revision == changed.revision
 
@@ -842,7 +863,7 @@ def test_object_types_token_is_memoized_per_object_types_list(monkeypatch: pytes
         return original(object_types)
 
     monkeypatch.setattr(objecttype_helpers, "_object_types_token", _counting)
-    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace()))
+    request = SimpleNamespace(app=SimpleNamespace(state=GatewayState()))
     cached_list: list[Any] = [SimpleNamespace(node_id="ns=1;i=1", display_name="Pump")]
 
     first = objecttype_helpers._memoized_object_types_token(request, cached_list)

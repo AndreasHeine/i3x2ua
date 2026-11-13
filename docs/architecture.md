@@ -14,12 +14,13 @@ graph LR
 	end
 
 	subgraph Bootstrap["Composition Root"]
-		BOOT["bootstrap/app_factory.py\nbootstrap/dependencies.py"]
+		BOOT["bootstrap/app_factory.py"]
 	end
 
 	subgraph App["Application Layer"]
 		APP_SVC["application/services/*"]
 		APP_DEP["application/dependencies.py"]
+		APP_STATE["application/state.py\n(typed GatewayState)"]
 		APP_PORTS["application/ports/*\nsubscription.py\nopcua.py (facade)"]
 	end
 
@@ -37,12 +38,14 @@ graph LR
 	REST --> APP_SVC
 	REST --> APP_DEP
 	REST --> APP_PORTS
+	REST --> APP_STATE
 	MCP --> REST
 	MCP --> APP_DEP
 
 	BOOT --> REST
 	BOOT --> MCP
 	BOOT --> APP_DEP
+	BOOT --> APP_STATE
 	BOOT --> OPCUA_ADAPTER
 	BOOT --> SUB_ADAPTER
 
@@ -66,8 +69,8 @@ The project follows a layered architecture inside i3x_server:
 - Current primary modules: i3x_server/api, i3x_server/mcp/*, i3x_server/api/v1/*_routes.py, i3x_server/api/v1/contracts.py, i3x_server/api/v1/*helpers.py, i3x_server/api/mcp/monolithic.py.
 
 2. application
-- Responsibility: use-case orchestration, coordination between services, cross-cutting workflow logic.
-- Current primary modules: i3x_server/application/services, i3x_server/application/dependencies.py.
+- Responsibility: use-case orchestration, coordination between services, cross-cutting workflow logic. The typed runtime state container (`GatewayState` in `application/state.py`) lives here because routes and application dependencies read it; the composition root owns construction and lifecycle assignment.
+- Current primary modules: i3x_server/application/services, i3x_server/application/dependencies.py, i3x_server/application/state.py.
 
 3. domain
 - Responsibility: protocol-agnostic rules and reusable core utilities.
@@ -141,6 +144,7 @@ Disallowed direction:
 - domain importing presentation
 - domain importing FastAPI, Starlette, or protocol route modules
 - domain importing direct network/framework runtime primitives
+- presentation importing bootstrap (bootstrap is the top layer; routes use application.dependencies)
 - presentation directly orchestrating deep OPC UA workflows when an application service exists
 
 ## Ownership Guide

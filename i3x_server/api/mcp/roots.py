@@ -7,20 +7,19 @@ from typing import Any
 from fastapi import APIRouter, Request
 
 from i3x_server.api.mcp.jsonrpc import MCP_ROOT_RESOURCE_PREFIX
+from i3x_server.application.state import gateway_state
 
 router = APIRouter()
 
 
 def _roots_catalog(request: Request) -> list[dict[str, str]]:
-    model_cache = getattr(request.app.state, "model_cache", None)
+    model_cache = gateway_state(request).model_cache
     if model_cache is None:
         return []
 
-    root_ids = getattr(model_cache, "root_ids", [])
-    nodes_by_id = getattr(model_cache, "nodes_by_id", {})
     roots: list[dict[str, str]] = []
-    for root_id in root_ids:
-        node = nodes_by_id.get(root_id)
+    for root_id in model_cache.root_ids:
+        node = model_cache.nodes_by_id.get(root_id)
         display_name = getattr(node, "name", str(root_id)) if node is not None else str(root_id)
         roots.append(
             {

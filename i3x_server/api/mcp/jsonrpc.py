@@ -9,12 +9,10 @@ adapters can import the envelope helpers here without an import cycle.
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import binascii
 import time
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any, Literal
 from uuid import uuid4
@@ -22,6 +20,7 @@ from uuid import uuid4
 from fastapi import FastAPI, Request
 from pydantic import BaseModel
 
+from i3x_server.application.state import McpTransportSession, gateway_state
 from i3x_server.errors import i3x_http_error
 from i3x_server.version import get_server_version
 
@@ -59,13 +58,6 @@ MCP_MAX_TRANSPORT_SESSIONS = 200
 MCP_SESSION_IDLE_TTL_SECONDS = 900.0
 
 
-@dataclass(slots=True)
-class McpTransportSession:
-    protocol_version: str = MCP_LEGACY_PROTOCOL_VERSION
-    streams: set[asyncio.Queue[dict[str, Any] | None]] = field(default_factory=set)
-    last_used: float = field(default_factory=time.monotonic)
-
-
 def publish_mcp_notification(
     app: FastAPI,
     session_id: str,
@@ -74,9 +66,8 @@ def publish_mcp_notification(
 ) -> int:
     if not method.startswith("notifications/") or len(method) == len("notifications/"):
         raise ValueError("MCP server notifications must use a notifications/ method")
-    sessions = getattr(app.state, "mcp_transport_sessions", {})
-    session = sessions.get(session_id) if isinstance(sessions, dict) else None
-    if not isinstance(session, McpTransportSession):
+    session = gateway_state(app).mcp_transport_sessions.get(session_id)
+    if session is None:
         return 0
     session.last_used = time.monotonic()
     message: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
@@ -88,22 +79,15 @@ def publish_mcp_notification(
 
 
 def shutdown_mcp_transport(app: FastAPI) -> None:
-    sessions = getattr(app.state, "mcp_transport_sessions", {})
-    if not isinstance(sessions, dict):
-        return
+    sessions = gateway_state(app).mcp_transport_sessions
     for session in sessions.values():
-        if isinstance(session, McpTransportSession):
-            for stream in tuple(session.streams):
-                stream.put_nowait(None)
+        for stream in tuple(session.streams):
+            stream.put_nowait(None)
     sessions.clear()
 
 
 def _mcp_sessions(request: Request) -> dict[str, McpTransportSession]:
-    sessions = getattr(request.app.state, "mcp_transport_sessions", None)
-    if not isinstance(sessions, dict):
-        sessions = {}
-        request.app.state.mcp_transport_sessions = sessions
-    return sessions
+    return gateway_state(request).mcp_transport_sessions
 
 
 def _prune_idle_mcp_sessions(sessions: dict[str, McpTransportSession]) -> None:
@@ -139,7 +123,7 @@ def _origin_is_allowed(request: Request) -> bool:
     origin = request.headers.get("origin")
     if origin is None:
         return True
-    allowed_origins = getattr(request.app.state, "mcp_allowed_origins", [])
+    allowed_origins = gateway_state(request).mcp_allowed_origins
     return origin != "*" and origin in allowed_origins
 
 

@@ -1,26 +1,25 @@
 from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI, HTTPException
 from starlette.requests import Request
 
-from i3x_server.bootstrap.dependencies import (
+from i3x_server.application.dependencies import (
     get_model_builder,
     get_opcua_client,
     get_or_build_model,
     get_subscription_service,
 )
+from i3x_server.application.state import GatewayState
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
 
 
-def _request_with_state(state: SimpleNamespace) -> Request:
+def _request_with_state(state: GatewayState) -> Request:
     app = FastAPI()
-    for key, value in vars(state).items():
-        setattr(app.state, key, value)
+    app.state = state
     return Request({"type": "http", "app": app})
 
 
@@ -44,15 +43,17 @@ def _build_result() -> BuildResult:
 
 
 def test_dependency_getters_return_initialized_instances() -> None:
-    state = SimpleNamespace(model_builder=object(), opcua_client=object(), subscription_service=object())
+    state = GatewayState(model_builder=object(), opcua_client=object(), subscription_service=object())
     request = _request_with_state(state)
     assert get_model_builder(request) is state.model_builder
     assert get_opcua_client(request) is state.opcua_client
     assert get_subscription_service(request) is state.subscription_service
 
 
-def test_dependency_getters_raise_when_missing() -> None:
-    request = _request_with_state(SimpleNamespace())
+def test_dependency_getters_raise_when_unset() -> None:
+    # A fresh container has every field declared, so unset collaborators are the
+    # declared default (None) and surface as HTTP 500 - not a silent getattr fallback.
+    request = _request_with_state(GatewayState())
     with pytest.raises(HTTPException):
         get_model_builder(request)
     with pytest.raises(HTTPException):
@@ -64,10 +65,9 @@ def test_dependency_getters_raise_when_missing() -> None:
 @pytest.mark.asyncio
 async def test_get_or_build_model_returns_cached_value() -> None:
     cached = _build_result()
-    state = SimpleNamespace(
+    state = GatewayState(
         model_preload_task=None,
         model_cache=cached,
-        model_lock=asyncio.Lock(),
         model_builder=object(),
     )
     request = _request_with_state(state)
@@ -87,10 +87,9 @@ async def test_get_or_build_model_builds_and_sets_cache() -> None:
             return built
 
     builder = FakeBuilder()
-    state = SimpleNamespace(
+    state = GatewayState(
         model_preload_task=None,
         model_cache=None,
-        model_lock=asyncio.Lock(),
         model_builder=builder,
     )
     request = _request_with_state(state)
@@ -114,38 +113,30 @@ async def test_get_or_build_model_coalesces_concurrent_lazy_builds() -> None:
             await release.wait()
             return built
 
-    app = FastAPI()
-    app.state.model_preload_task = None
-    app.state.model_cache = None
-    app.state.model_lock = asyncio.Lock()
-    app.state.model_builder = FakeBuilder()
+    builder = FakeBuilder()
+    state = GatewayState(model_cache=None, model_builder=builder)
 
-    first = asyncio.create_task(get_or_build_model(Request({"type": "http", "app": app})))
+    first = asyncio.create_task(get_or_build_model(_request_with_state(state)))
     await asyncio.sleep(0)
-    second = asyncio.create_task(get_or_build_model(Request({"type": "http", "app": app})))
+    second = asyncio.create_task(get_or_build_model(_request_with_state(state)))
     await asyncio.sleep(0)
 
-    assert app.state.model_builder.calls == 1
+    # Both tasks share one app state (the same GatewayState instance).
+    assert builder.calls == 1
 
     release.set()
     results = await asyncio.gather(first, second)
     assert results[0] is built
     assert results[1] is built
-    assert app.state.model_cache is built
-    assert app.state.model_builder.calls == 1
+    assert state.model_cache is built
+    assert builder.calls == 1
 
 
 @pytest.mark.asyncio
 async def test_get_or_build_model_waits_for_preload_task() -> None:
     cached = _build_result()
 
-    state = SimpleNamespace(
-        model_preload_task=None,
-        model_cache=None,
-        model_lock=asyncio.Lock(),
-        model_builder=object(),
-    )
-    request = _request_with_state(state)
+    request = _request_with_state(GatewayState(model_cache=None, model_builder=object()))
 
     async def preload() -> None:
         await asyncio.sleep(0)

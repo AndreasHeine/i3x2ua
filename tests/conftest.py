@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import Callable, Generator, Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any, cast
@@ -23,7 +23,7 @@ from jsonschema import Draft202012Validator
 
 from i3x_server.bootstrap.app_factory import create_app
 from i3x_server.config.settings import get_settings
-from i3x_server.domain.ports.opcua import DataValueDTO, OpcUaValue
+from i3x_server.domain.ports.opcua import DataValueDTO, OpcUaRuntimeMetrics, OpcUaValue
 from i3x_server.infrastructure.opcua.client import (
     OpcUaConnectionSnapshot,
     OpcUaNamespaceInfo,
@@ -245,6 +245,7 @@ class FakeOpcUaClient:
             failed_request_count=14,
             goodish_qualities=["Good", "Uncertain"],
         )
+        self._runtime_metrics = OpcUaRuntimeMetrics()
         self._operational_limits = OpcUaOperationalLimits(
             max_nodes_per_browse=1000,
             max_nodes_per_read=1000,
@@ -473,6 +474,13 @@ class FakeOpcUaClient:
 
     def snapshot_request_metrics(self) -> OpcUaRequestMetrics:
         return self._request_metrics
+
+    def reset_runtime_metrics(self) -> None:
+        self._runtime_metrics = OpcUaRuntimeMetrics()
+
+    def snapshot_runtime_metrics(self) -> OpcUaRuntimeMetrics:
+        # Mirrors the adapter: a copy, so a logged snapshot cannot mutate live counters.
+        return replace(self._runtime_metrics)
 
     async def get_operational_limits(self) -> OpcUaOperationalLimits:
         return self._operational_limits

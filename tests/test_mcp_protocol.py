@@ -11,6 +11,7 @@ from jsonschema import validate
 
 from i3x_server.api.mcp import jsonrpc
 from i3x_server.api.mcp.jsonrpc import (
+    MCP_LEGACY_PROTOCOL_VERSION,
     MCP_META_CLIENT_CAPABILITIES,
     MCP_META_PROTOCOL_VERSION,
     MCP_PROTOCOL_VERSION,
@@ -23,6 +24,7 @@ from i3x_server.api.mcp.jsonrpc import (
 from i3x_server.api.mcp.resources import MCP_IDENTITY_GUIDE_URI
 from i3x_server.api.mcp.router import router
 from i3x_server.api.mcp.tools import _compact_tool_body
+from i3x_server.application.state import GatewayState, install_gateway_state
 from i3x_server.bootstrap.app_factory import create_app
 from i3x_server.mcp import build_mcp_tools
 from i3x_server.prompts.registry import PromptDefinition, PromptRegistry
@@ -32,27 +34,32 @@ from i3x_server.prompts.registry import PromptDefinition, PromptRegistry
 def protocol_client() -> TestClient:
     app = FastAPI()
     app.include_router(router)
-    app.state.mcp_allowed_origins = ["https://trusted.example"]
-    app.state.mcp_tools = build_mcp_tools(
-        {
-            "paths": {
-                "/v1/objects/value": {
-                    "post": {
-                        "operationId": "readValues",
-                        "requestBody": {
-                            "required": True,
-                            "content": {"application/json": {"schema": {"type": "object"}}},
+    install_gateway_state(
+        app,
+        GatewayState(
+            mcp_allowed_origins=["https://trusted.example"],
+            mcp_tools=build_mcp_tools(
+                {
+                    "paths": {
+                        "/v1/objects/value": {
+                            "post": {
+                                "operationId": "readValues",
+                                "requestBody": {
+                                    "required": True,
+                                    "content": {"application/json": {"schema": {"type": "object"}}},
+                                },
+                            }
                         },
+                        "/v1/subscriptions": {"post": {"operationId": "createSubscription"}},
+                        "/v1/subscriptions/sync": {"post": {"operationId": "syncSubscription"}},
                     }
                 },
-                "/v1/subscriptions": {"post": {"operationId": "createSubscription"}},
-                "/v1/subscriptions/sync": {"post": {"operationId": "syncSubscription"}},
-            }
-        },
-        overrides={},
-    )
-    app.state.mcp_prompts = PromptRegistry(
-        {"inspect": PromptDefinition("inspect", "Inspect asset", ("asset",), "Inspect {{asset}}")}
+                overrides={},
+            ),
+            mcp_prompts=PromptRegistry(
+                {"inspect": PromptDefinition("inspect", "Inspect asset", ("asset",), "Inspect {{asset}}")}
+            ),
+        ),
     )
     return TestClient(app)
 
@@ -363,7 +370,7 @@ def test_lifespan_shutdown_closes_mcp_transport_sessions(monkeypatch: pytest.Mon
 
     with TestClient(app):
         sessions = app.state.mcp_transport_sessions
-        sessions["legacy-session"] = McpTransportSession(streams={stream})
+        sessions["legacy-session"] = McpTransportSession(protocol_version=MCP_LEGACY_PROTOCOL_VERSION, streams={stream})
 
     assert sessions == {}
     assert stream.get_nowait() is None
@@ -726,7 +733,7 @@ def _origin_request(app: FastAPI, origin: str | None, host: str) -> Request:
 
 def test_origin_gate_compares_only_configured_origins() -> None:
     app = FastAPI()
-    app.state.mcp_allowed_origins = ["https://trusted.example"]
+    install_gateway_state(app, GatewayState(mcp_allowed_origins=["https://trusted.example"]))
 
     assert jsonrpc._origin_is_allowed(_origin_request(app, "https://trusted.example", "evil.example"))
     # Absent Origin stays allowed for non-browser clients.

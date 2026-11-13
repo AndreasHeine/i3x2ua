@@ -28,8 +28,10 @@ from i3x_server.api.mcp.resources import (
 )
 from i3x_server.api.mcp.roots import _roots_catalog
 from i3x_server.api.mcp.tools import _tool_catalog
+from i3x_server.application.state import GatewayState, install_gateway_state
 from i3x_server.mcp import McpToolDefinition
 from i3x_server.prompts.registry import PromptDefinition, PromptRegistry
+from i3x_server.schemas.state import BuildResult
 
 
 def _request(state: dict[str, Any] | None = None) -> Request:
@@ -38,8 +40,7 @@ def _request(state: dict[str, Any] | None = None) -> Request:
             return {"openapi": "3.1.0"}
 
     app = _App()
-    for key, value in (state or {}).items():
-        setattr(app.state, key, value)
+    install_gateway_state(app, GatewayState(**(state or {})))
     return Request({"type": "http", "app": app, "headers": []})
 
 
@@ -69,7 +70,9 @@ def test_tool_and_resource_and_roots_catalogs(monkeypatch: pytest.MonkeyPatch) -
     assert tools[0]["outputSchema"]["type"] == "object"
     assert tools[0]["annotations"]["readOnlyHint"] is True
 
-    request_bad_tools = _request({"mcp_tools": []})
+    # The typed container declares ``mcp_tools`` as a mapping; an empty catalog is the
+    # negative path now that non-mapping state bags no longer exist.
+    request_bad_tools = _request({"mcp_tools": {}})
     assert _tool_catalog(request_bad_tools) == []
 
     monkeypatch.setattr(
@@ -99,9 +102,13 @@ def test_tool_and_resource_and_roots_catalogs(monkeypatch: pytest.MonkeyPatch) -
     request_no_model = _request()
     assert _roots_catalog(request_no_model) == []
 
-    model_cache = SimpleNamespace(
-        root_ids=["root-1", "root-missing"],
+    model_cache = BuildResult(
         nodes_by_id={"root-1": SimpleNamespace(name="Root 1")},
+        root_ids=["root-1", "root-missing"],
+        children_by_id={},
+        instances_by_type_id={},
+        property_to_node={},
+        action_to_method={},
     )
     request_roots = _request({"model_cache": model_cache})
     assert _roots_catalog(request_roots) == [
@@ -127,9 +134,12 @@ def test_tool_and_resource_and_roots_catalogs(monkeypatch: pytest.MonkeyPatch) -
         _read_resource_content(request_roots, f"{MCP_ROOT_RESOURCE_PREFIX}not-a-root")
 
 
-def test_prompt_registry_type_guard() -> None:
-    request = _request({"mcp_prompts": {"invalid": True}})
-    assert _prompt_registry(request) is None
+def test_prompt_registry_reads_typed_container() -> None:
+    """The typed container replaces the old ``isinstance`` guard: unset reads ``None``."""
+    assert _prompt_registry(_request()) is None
+
+    registry = PromptRegistry({})
+    assert _prompt_registry(_request({"mcp_prompts": registry})) is registry
 
 
 def test_read_resource_content_variants(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

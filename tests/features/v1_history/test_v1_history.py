@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import base64
 from datetime import datetime, timezone
-from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -13,7 +12,12 @@ from i3x_server.api.v1.monolithic import _expanded_node_id
 from i3x_server.api.v1.object_value_routes import _COMPOSITION_TRUNCATION_DETAIL
 from i3x_server.infrastructure.opcua.client import OpcUaNamespaceInfo
 from i3x_server.schemas.i3x import ModelNode
-from tests.conftest import add_composition_depth_chain, assert_documented_response, fastapi_app
+from tests.conftest import (
+    add_composition_depth_chain,
+    assert_documented_response,
+    data_value_dto,
+    fastapi_app,
+)
 
 
 def test_v1_history_query(client: TestClient) -> None:
@@ -64,12 +68,7 @@ def test_v1_history_query_includes_component_histories_when_depth_allows(client:
     # ChildProp has history data, but it hangs on a hierarchical child (HasChildren):
     # composition recursion must not collect it via the parent (spec :1111/:1924).
     app.state.opcua_client.history_values["ns=2;s=ChildProp"] = [
-        SimpleNamespace(
-            Value=SimpleNamespace(Value=5.0),
-            StatusCode=SimpleNamespace(name="Good"),
-            SourceTimestamp=datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc),
-            ServerTimestamp=None,
-        )
+        data_value_dto(5.0, "Good", datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc))
     ]
 
     response = client.post(
@@ -245,12 +244,7 @@ def test_v1_history_component_without_data_reports_goodnodata_per_component(clie
 
 def test_v1_history_query_serializes_binary_values(client: TestClient) -> None:
     fastapi_app(client).state.opcua_client.history_values["ns=2;s=Temperature"] = [
-        SimpleNamespace(
-            Value=SimpleNamespace(Value=b"\xff\x00"),
-            StatusCode=SimpleNamespace(name="Good"),
-            SourceTimestamp=datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc),
-            ServerTimestamp=None,
-        )
+        data_value_dto(b"\xff\x00", "Good", datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc))
     ]
 
     response = client.post(

@@ -247,7 +247,7 @@ new branches (visible via `coverage.xml` branch data after PR-01).
 | PR-05 | 5 | bulk writes parallel + batched read-back | ☒ | 1184 pass / 1 skip (72 s) | line 87,69 % / branch 77,29 % | Full 1.0 (56/0/2/2) | 015d591 |
 | PR-06 | 6 | eval removal, origin guards, audit principal | ☒ | 1204 pass / 1 skip (74 s) | line 87,73 % / branch 77,35 % | Full 1.0 (56/0/2/2) | 386d209 |
 | PR-07 | 7 | scan-before-push, CodeQL, pip-audit, dependabot, dep cleanup | ☒ | 1206 pass / 1 skip (77 s) | line 87,74 % / branch 77,37 % | Full 1.0 (56/0/2/2) | 3f5fb44 |
-| PR-08 | 8 | adapter seams, private access removal | ☐ | | | | |
+| PR-08 | 8 | adapter seams, private access removal | ☒ | 1209 pass / 1 skip (80 s) | line 87,74 % / branch 77,37 % | Full 1.0 (56/0/2/2) | 8af94be |
 | PR-09 | 9 | typed ports, asyncua out of domain | ☐ | | | | |
 | PR-10 | 10 | typed state, bootstrap layer contract | ☐ | | | | |
 | PR-11 | 11 | module splits, dedup, enums, docstrings | ☐ | | | | |

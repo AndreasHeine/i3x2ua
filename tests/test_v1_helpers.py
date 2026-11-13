@@ -17,6 +17,7 @@ from i3x_server.api.v1 import object_helpers, object_value_helpers, objecttype_h
 from i3x_server.api.v1.contracts import ValueUpdateItemRequest, WriteVQTRequest
 from i3x_server.api.v1.write_validation import WriteValueValidator
 from i3x_server.application.services.model_query import _relationship_type_items
+from i3x_server.domain.ports.opcua import DataValueDTO
 from i3x_server.infrastructure.opcua.client import (
     OpcUaClientProtocol,
     OpcUaNamespaceInfo,
@@ -25,7 +26,9 @@ from i3x_server.infrastructure.opcua.client import (
 )
 from i3x_server.model.revision import model_revision
 from i3x_server.schemas.i3x import ModelNode
+from i3x_server.schemas.opcua_value import severity_quality
 from i3x_server.schemas.state import BuildResult
+from tests.conftest import data_value_dto
 
 
 def test_relationship_type_helpers_use_model_namespaces() -> None:
@@ -506,11 +509,11 @@ def test_parse_iso_and_history_range_validation() -> None:
 
 
 def test_quality_timestamp_and_history_conversion_helpers() -> None:
-    assert object_value_helpers._normalize_quality(None) == "Good"
-    assert object_value_helpers._normalize_quality(SimpleNamespace(is_good=lambda: False)) == "Bad"
-    assert object_value_helpers._normalize_quality(SimpleNamespace(name="UncertainLastUsableValue")) == "Uncertain"
-    assert object_value_helpers._normalize_quality(SimpleNamespace(name="GoodClamped")) == "Good"
-    assert object_value_helpers._normalize_quality(SimpleNamespace(name="SomethingElse")) == "Bad"
+    assert severity_quality(None) == "Good"
+    assert severity_quality(0x00000000) == "Good"
+    assert severity_quality(0x00020000) == "Good"  # GoodNoData severity stays Good
+    assert severity_quality(0x40000000) == "Uncertain"
+    assert severity_quality(0x80000000) == "Bad"
 
     naive_dt = datetime(2026, 1, 1, 12, 0, 0)
     aware_dt = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
@@ -518,11 +521,7 @@ def test_quality_timestamp_and_history_conversion_helpers() -> None:
     assert object_value_helpers._normalize_timestamp(aware_dt).endswith("Z")
     assert object_value_helpers._normalize_timestamp("invalid").endswith("Z")
 
-    data_value = SimpleNamespace(
-        Value=SimpleNamespace(Value=123),
-        SourceTimestamp=aware_dt,
-        StatusCode=SimpleNamespace(name="Good"),
-    )
+    data_value = data_value_dto(123, "Good", aware_dt)
     vqt = object_value_helpers._to_vqt_from_history_value(data_value)
     assert vqt.value == 123
     assert vqt.quality == "Good"
@@ -974,12 +973,7 @@ class _ShortBatchReadClient:
 async def test_bulk_write_noop_read_length_mismatch_is_not_mispaired() -> None:
     """A short batched read must not pair a value with the wrong id; both items degrade to 403."""
     timestamp = datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc)
-    matching_for_prop_a = SimpleNamespace(
-        Value=SimpleNamespace(Value=10.0),
-        StatusCode=SimpleNamespace(name="Good"),
-        SourceTimestamp=timestamp,
-        ServerTimestamp=None,
-    )
+    matching_for_prop_a = data_value_dto(10.0, "Good", timestamp)
     updates = [
         ValueUpdateItemRequest(
             elementId="prop-a",
@@ -1026,14 +1020,8 @@ async def test_bulk_write_prefetch_mismatch_raises_instead_of_mispairing(monkeyp
             )
 
 
-def _preserved_data_value(quality: str, timestamp: datetime) -> SimpleNamespace:
-    return SimpleNamespace(
-        Value=SimpleNamespace(Value=1.0),
-        # Name-only code: ``quality_from_status_code`` maps it verbatim.
-        StatusCode=SimpleNamespace(name=quality),
-        SourceTimestamp=timestamp,
-        ServerTimestamp=None,
-    )
+def _preserved_data_value(quality: str, timestamp: datetime) -> DataValueDTO:
+    return data_value_dto(1.0, quality, timestamp)
 
 
 class _BulkWriteFake:

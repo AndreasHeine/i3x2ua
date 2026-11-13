@@ -145,8 +145,7 @@ async def get_ua_status(
             {"cause": str(exc)},
         ) from exc
 
-    variant = getattr(data_value, "Value", None)
-    payload = getattr(variant, "Value", variant)
+    payload = data_value.value.value if data_value.value is not None else None
     result = _to_json_safe(payload)
     request.app.state.ua_status_snapshot = _ServerStatusSnapshot(result, connection_state, monotonic())
     return UaSuccessResponse(result=result)

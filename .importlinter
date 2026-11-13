@@ -18,6 +18,14 @@ source_modules =
 forbidden_modules =
     i3x_server.infrastructure
 
+[importlinter:contract:domain_no_asyncua]
+name = Domain must not import asyncua
+type = forbidden
+source_modules =
+    i3x_server.domain
+forbidden_modules =
+    asyncua
+
 [importlinter:contract:application_no_presentation]
 name = Application must not depend on presentation
 type = forbidden

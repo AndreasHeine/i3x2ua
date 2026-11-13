@@ -7,21 +7,18 @@ import pytest
 from asyncua import ua
 from asyncua.ua.status_codes import StatusCodes
 
+from i3x_server.domain.ports.opcua import DataValueDTO, OpcUaValue
 from i3x_server.schemas.opcua_value import (
     decode_data_value,
     format_utc_timestamp,
     normalize_opcua_value,
-    notification_data_value,
     quality_from_status_code,
+    severity_quality,
 )
 
 
 def _status_code(value: int) -> ua.StatusCode:
     return ua.StatusCode(ua.UInt32(value))
-
-
-def _server_timestamp(moment: datetime) -> ua.DateTime:
-    return ua.DateTime.fromisoformat(moment.astimezone(timezone.utc).isoformat())
 
 
 @pytest.mark.parametrize("rank", [-3, -2, -1, 0])
@@ -73,36 +70,57 @@ def test_quality_from_status_code_maps_the_i3x_vocabulary(status_code: Any, expe
 
 
 def test_decode_data_value_reads_payload_quality_and_server_timestamp() -> None:
-    data_value = ua.DataValue(ua.Variant(23.5, ua.VariantType.Double), _status_code(0x40000000))
-    data_value.SourceTimestamp = _server_timestamp(datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc))
-    value, quality, timestamp = decode_data_value(data_value)
+    dto = DataValueDTO(
+        value=OpcUaValue(23.5, variant_type="Double"),
+        status_code=0x40000000,
+        quality=quality_from_status_code(_status_code(0x40000000)),
+        source_timestamp=datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
+    )
+    value, quality, timestamp = decode_data_value(dto)
     assert value == 23.5
     assert quality == "Uncertain"
     assert timestamp == "2026-01-02T03:04:05Z"
 
 
 def test_decode_data_value_falls_back_to_server_timestamp_only() -> None:
-    data_value = ua.DataValue(ua.Variant(1.0, ua.VariantType.Double))
-    data_value.ServerTimestamp = _server_timestamp(datetime(2026, 5, 6, 7, 8, tzinfo=timezone.utc))
-    _value, quality, timestamp = decode_data_value(data_value)
+    dto = DataValueDTO(
+        value=OpcUaValue(1.0, variant_type="Double"),
+        status_code=0x00000000,
+        quality="Good",
+        server_timestamp=datetime(2026, 5, 6, 7, 8, tzinfo=timezone.utc),
+    )
+    _value, quality, timestamp = decode_data_value(dto)
     assert quality == "Good"
     assert timestamp == "2026-05-06T07:08:00Z"
 
 
 def test_decode_data_value_reports_no_signal_for_missing_metadata() -> None:
     assert decode_data_value(None) == (None, None, None)
-    value, quality, timestamp = decode_data_value(SimpleNamespace(Value=SimpleNamespace(Value=7), StatusCode=None))
+    value, quality, timestamp = decode_data_value(DataValueDTO(value=OpcUaValue(7)))
     assert value == 7
     assert quality is None
     assert timestamp is None
 
 
-def test_notification_data_value_extracts_the_monitored_item_value() -> None:
-    data_value = ua.DataValue(ua.Variant(9.0, ua.VariantType.Double), _status_code(0x80000000))
-    notification = SimpleNamespace(monitored_item=SimpleNamespace(ClientHandle=3, Value=data_value))
-    assert notification_data_value(notification) is data_value
-    assert notification_data_value(None) is None
-    assert notification_data_value(SimpleNamespace(monitored_item=None)) is None
+def test_decode_data_value_drops_a_non_datetime_timestamp() -> None:
+    dto = DataValueDTO(value=OpcUaValue(7), quality="Good", source_timestamp=None, server_timestamp=None)
+    _value, _quality, timestamp = decode_data_value(dto)
+    assert timestamp is None
+
+
+@pytest.mark.parametrize(
+    ("status_code", "expected"),
+    [
+        (None, "Good"),
+        (0x00000000, "Good"),
+        (int(StatusCodes.GoodNoData), "Good"),
+        (0x40000000, "Uncertain"),
+        (0x80000000, "Bad"),
+        (0xC0000000, "Bad"),
+    ],
+)
+def test_severity_quality_maps_severity_bits(status_code: int | None, expected: str) -> None:
+    assert severity_quality(status_code) == expected
 
 
 def test_format_utc_timestamp_renders_naive_and_zoned_values_as_utc() -> None:

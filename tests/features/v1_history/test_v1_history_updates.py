@@ -47,9 +47,9 @@ def test_history_upsert_preserves_current_value(client: TestClient, monkeypatch:
         "responseDetail": None,
     }
     assert len(records) == count
-    assert records[0].Value.Value == 19.5
-    assert records[0].StatusCode.name == "Uncertain"
-    assert records[0].SourceTimestamp == datetime(2026, 1, 1, 10, tzinfo=timezone.utc)
+    assert records[0].value.value == 19.5
+    assert records[0].quality == "Uncertain"
+    assert records[0].source_timestamp == datetime(2026, 1, 1, 10, tzinfo=timezone.utc)
     update["value"]["timestamp"] = "2026-01-01T10:02:00Z"
     response = client.put("/v1/objects/history", json={"updates": [update]})
     assert response.json()["success"] is True
@@ -69,7 +69,7 @@ def test_history_write_accepts_rfc3339_offset(client: TestClient, monkeypatch: p
 
     assert response.status_code == 200
     assert response.json()["success"] is True
-    assert opcua.history_values["ns=2;s=Temperature"][0].SourceTimestamp == datetime(
+    assert opcua.history_values["ns=2;s=Temperature"][0].source_timestamp == datetime(
         2026,
         1,
         1,

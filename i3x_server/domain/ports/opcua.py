@@ -1,7 +1,10 @@
 """Domain port contracts for OPC UA access.
 
 Single source of truth for OPC UA Protocol interfaces and data-transfer
-objects used by the application and infrastructure layers.
+objects used by the application and infrastructure layers. The port stays
+free of transport libraries: asyncua ``DataValue``/``Variant`` objects are
+converted into the DTOs below at the adapter boundary (PR-09), and
+``.importlinter`` forbids ``asyncua`` imports here permanently.
 """
 
 from __future__ import annotations
@@ -9,9 +12,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Protocol
-
-from asyncua import ua
+from typing import Any, Protocol, runtime_checkable
 
 
 @dataclass(slots=True)
@@ -148,6 +149,61 @@ class OpcUaConnectionSnapshot:
     since: datetime
 
 
+@dataclass(frozen=True, slots=True)
+class OpcUaValue:
+    """Decoded OPC UA variant payload as delivered across the adapter boundary.
+
+    ``value`` is the variant payload in Python-native form (``None`` for a Null
+    variant); ``variant_type`` is the variant type name (``"Double"`` ...) when the
+    adapter could identify it, and ``is_array`` marks array payloads.
+    """
+
+    value: Any
+    variant_type: str | None = None
+    is_array: bool | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DataValueDTO:
+    """A value/quality/timestamp triple (VQT) in domain form.
+
+    ``quality`` is the adapter-decoded signal (``Good``/``Uncertain``/``Bad``/
+    ``GoodNoData``; ``None`` when the status code carries no signal), and
+    ``status_code`` is the numeric OPC UA status code so callers can apply their
+    own severity mapping. ``source_timestamp`` is preferred over
+    ``server_timestamp`` when both are present.
+    """
+
+    value: OpcUaValue
+    status_code: int | None = None
+    quality: str | None = None
+    source_timestamp: datetime | None = None
+    server_timestamp: datetime | None = None
+
+
+class OpcUaDataChangeHandler(Protocol):
+    """Callback for datachange notifications handed over by the adapter.
+
+    ``node_id`` is the monitored node as a string, ``value`` the notification
+    payload, and ``data_value`` the notification's VQT (``None`` when the
+    notification carries no monitored-item value).
+    """
+
+    def datachange_notification(self, node_id: str, value: Any, data_value: DataValueDTO | None) -> None: ...
+
+    def event_notification(self, event: Any) -> None: ...
+
+
+@runtime_checkable
+class OpcUaSubscriptionHandle(Protocol):
+    """Opaque handle for a native OPC UA subscription.
+
+    The adapter owns the handle's shape; callers only pass it back to the
+    subscription methods of :class:`OpcUaClientProtocol`. ``runtime_checkable``
+    documents the structural guarantee: an empty protocol matches any object.
+    """
+
+
 class OpcUaWriteMetadataUnsupportedError(Exception):
     """Raised when an OPC UA server does not preserve current-value VQT metadata."""
 
@@ -197,7 +253,7 @@ class OpcUaClientProtocol(Protocol):
 
     async def read_values(self, node_ids: list[str]) -> list[Any]: ...
 
-    async def read_data_values(self, node_ids: list[str]) -> list[ua.DataValue]: ...
+    async def read_data_values(self, node_ids: list[str]) -> list[DataValueDTO]: ...
 
     async def read_write_access(self, node_id: str) -> tuple[bool, bool]: ...
 
@@ -217,28 +273,32 @@ class OpcUaClientProtocol(Protocol):
         verify_metadata: bool = True,
     ) -> None: ...
 
-    async def read_server_status_data_value(self) -> ua.DataValue: ...
+    async def read_server_status_data_value(self) -> DataValueDTO: ...
 
     async def read_history_values(
         self,
         node_ids: list[str],
         start_time: datetime | None,
         end_time: datetime | None,
-    ) -> dict[str, list[ua.DataValue]]: ...
+    ) -> dict[str, list[DataValueDTO]]: ...
 
     async def write_history_value(self, node_id: str, value: Any, quality: str, timestamp: datetime) -> None: ...
 
     async def call_method(self, object_node_id: str, method_node_id: str, args: list[Any]) -> Any: ...
 
-    async def create_datachange_subscription(self, publishing_interval_ms: float, handler: Any) -> Any: ...
+    async def create_datachange_subscription(
+        self, publishing_interval_ms: float, handler: OpcUaDataChangeHandler
+    ) -> OpcUaSubscriptionHandle: ...
 
-    async def subscribe_data_changes(self, subscription: Any, node_ids: list[str]) -> Any: ...
+    async def subscribe_data_changes(self, subscription: OpcUaSubscriptionHandle, node_ids: list[str]) -> list[int]: ...
 
-    async def unsubscribe_data_changes(self, subscription: Any, handles: list[int]) -> None: ...
+    async def unsubscribe_data_changes(self, subscription: OpcUaSubscriptionHandle, handles: list[int]) -> None: ...
 
-    async def delete_subscription(self, subscription: Any) -> None: ...
+    async def delete_subscription(self, subscription: OpcUaSubscriptionHandle) -> None: ...
 
-    def get_monitored_item_handles(self, subscription: Any, node_ids: list[str]) -> dict[str, int] | None: ...
+    def get_monitored_item_handles(
+        self, subscription: OpcUaSubscriptionHandle, node_ids: list[str]
+    ) -> dict[str, int] | None: ...
 
     def add_reconnect_listener(self, listener: Callable[[], Awaitable[None]]) -> None: ...
 
@@ -246,8 +306,10 @@ class OpcUaClientProtocol(Protocol):
 
 
 __all__ = [
+    "DataValueDTO",
     "OpcUaClientProtocol",
     "OpcUaConnectionSnapshot",
+    "OpcUaDataChangeHandler",
     "OpcUaNamespaceInfo",
     "OpcUaNodeInfo",
     "OpcUaObjectTypeInfo",
@@ -257,5 +319,7 @@ __all__ = [
     "OpcUaRequestMetrics",
     "OpcUaRuntimeMetrics",
     "OpcUaSubscriptionCapabilities",
+    "OpcUaSubscriptionHandle",
     "OpcUaTypeDefinitionInfo",
+    "OpcUaValue",
 ]

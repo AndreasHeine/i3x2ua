@@ -15,6 +15,7 @@ from asyncua.ua.status_codes import StatusCodes
 from asyncua.ua.uaerrors import UaStatusCodeError
 
 from i3x_server.domain.errors import AdmissionLimitError
+from i3x_server.domain.ports.opcua import DataValueDTO, OpcUaValue
 from i3x_server.infrastructure.opcua.client import (
     OpcUaClientProtocol,
     OpcUaSubscriptionCapabilities,
@@ -34,16 +35,18 @@ from i3x_server.infrastructure.subscriptions.state import (
     _ValueSignal,
 )
 from i3x_server.schemas.i3x import ModelNode
-from i3x_server.schemas.opcua_value import normalize_opcua_value
+from i3x_server.schemas.opcua_value import normalize_opcua_value, quality_from_status_code
 from i3x_server.schemas.state import BuildResult
 
 
-def _server_timestamp(moment: datetime) -> ua.DateTime:
-    return ua.DateTime.fromisoformat(moment.astimezone(timezone.utc).isoformat())
-
-
-def _status_code(severity: int) -> ua.StatusCode:
-    return ua.StatusCode(ua.UInt32(severity))
+def _signed_dto(value: Any, severity: int, timestamp: datetime) -> DataValueDTO:
+    """DTO for a server-signed value: numeric severity code plus the adapter-decoded quality."""
+    return DataValueDTO(
+        value=OpcUaValue(value=value),
+        status_code=severity,
+        quality=quality_from_status_code(SimpleNamespace(value=severity)),
+        source_timestamp=timestamp,
+    )
 
 
 class FakeOpcUaClient:
@@ -58,8 +61,8 @@ class FakeOpcUaClient:
         self.unsubscribed_calls: list[tuple[Any, list[int]]] = []
         # Handlers handed to create_datachange_subscription, so tests can fire notifications.
         self.handlers: list[Any] = []
-        # node_id -> DataValue to serve instead of the generated Good value.
-        self.data_value_overrides: dict[str, ua.DataValue] = {}
+        # node_id -> DTO to serve instead of the generated Good value.
+        self.data_value_overrides: dict[str, DataValueDTO] = {}
         # id(ua_subscription) -> handles asyncua reports after a reconnect (None = subscription lost).
         self.restored_handles: dict[int, dict[str, int] | None] = {}
 
@@ -108,17 +111,21 @@ class FakeOpcUaClient:
         self.read_values_calls += 1
         return [float(i + self.read_values_calls) for i, _ in enumerate(node_ids)]
 
-    async def read_data_values(self, node_ids: list[str]) -> list[ua.DataValue]:
+    async def read_data_values(self, node_ids: list[str]) -> list[DataValueDTO]:
         self.read_data_values_calls += 1
-        results: list[ua.DataValue] = []
+        results: list[DataValueDTO] = []
         for index, node_id in enumerate(node_ids):
             override = self.data_value_overrides.get(node_id)
             if override is not None:
                 results.append(override)
                 continue
-            data_value = ua.DataValue(ua.Variant(float(index + self.read_data_values_calls), ua.VariantType.Double))
-            data_value.SourceTimestamp = _server_timestamp(datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc))
-            results.append(data_value)
+            results.append(
+                _signed_dto(
+                    float(index + self.read_data_values_calls),
+                    0x00000000,
+                    datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc),
+                )
+            )
         return results
 
 
@@ -624,7 +631,7 @@ async def test_shared_queue_overflow_marks_dropped_sequence_range() -> None:
 class _SlowReadOpcUaClient(FakeOpcUaClient):
     """Reads that take time must not push the whole polling schedule backwards."""
 
-    async def read_data_values(self, node_ids: list[str]) -> list[ua.DataValue]:
+    async def read_data_values(self, node_ids: list[str]) -> list[DataValueDTO]:
         self.read_data_values_calls += 1
         await asyncio.sleep(0.03)
         return await super().read_data_values(node_ids)
@@ -1990,17 +1997,10 @@ async def test_sync_with_active_stream_refreshes_ttl() -> None:
     await service.close()
 
 
-def _signed_data_value(value: Any, severity: int, timestamp: datetime) -> ua.DataValue:
-    data_value = ua.DataValue(ua.Variant(value, ua.VariantType.Double) if value is not None else None)
-    data_value.StatusCode = _status_code(severity)
-    data_value.SourceTimestamp = _server_timestamp(timestamp)
-    return data_value
-
-
 @pytest.mark.asyncio
 async def test_initial_snapshot_reports_server_status_not_good_nodata() -> None:
     client = FakeOpcUaClient()
-    client.data_value_overrides["ns=2;s=Temperature"] = _signed_data_value(
+    client.data_value_overrides["ns=2;s=Temperature"] = _signed_dto(
         None, 0x80000000, datetime(2026, 2, 3, 4, 5, tzinfo=timezone.utc)
     )
     service = SubscriptionService(cast(OpcUaClientProtocol, client), interval_seconds=1, seed_initial_values=True)
@@ -2026,7 +2026,7 @@ async def test_shared_polling_loop_maps_server_status_and_timestamp() -> None:
         raise RuntimeError("native subscriptions unavailable")
 
     client.create_datachange_subscription = _no_native_subscriptions  # type: ignore[method-assign]
-    client.data_value_overrides["ns=2;s=Temperature"] = _signed_data_value(
+    client.data_value_overrides["ns=2;s=Temperature"] = _signed_dto(
         7.0, 0x40000000, datetime(2026, 3, 4, 5, 6, tzinfo=timezone.utc)
     )
 
@@ -2057,16 +2057,10 @@ async def test_native_handler_maps_status_code_and_source_timestamp() -> None:
     )
     assert client.handlers
 
-    notification = SimpleNamespace(
-        monitored_item=SimpleNamespace(
-            ClientHandle=1,
-            Value=_signed_data_value(None, 0x80000000, datetime(2026, 4, 5, 6, 7, tzinfo=timezone.utc)),
-        )
-    )
+    # The fake hands the port callback straight to the service (the real client wraps it in
+    # the adapter's notification bridge, exercised in test_opcua_dto_ports.py).
     client.handlers[0].datachange_notification(
-        SimpleNamespace(nodeid=SimpleNamespace(to_string=lambda: "ns=2;s=Temperature")),
-        None,
-        notification,
+        "ns=2;s=Temperature", None, _signed_dto(None, 0x80000000, datetime(2026, 4, 5, 6, 7, tzinfo=timezone.utc))
     )
 
     updates = await service.wait_for_updates("c1", created.subscription_id, after_sequence=0, timeout_seconds=2)

@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from i3x_server.config.settings import get_settings
+from i3x_server.domain.ports.opcua import DataValueDTO
 from i3x_server.schemas.opcua_value import decode_data_value
 
 
@@ -32,7 +33,7 @@ class _ValueSignal:
 _NO_SIGNAL = _ValueSignal()
 
 
-def _signal_from_data_value(data_value: Any) -> _ValueSignal:
+def _signal_from_data_value(data_value: DataValueDTO | None) -> _ValueSignal:
     _payload, quality, timestamp = decode_data_value(data_value)
     return _ValueSignal(quality=quality, timestamp=timestamp)
 

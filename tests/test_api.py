@@ -36,7 +36,7 @@ from i3x_server.infrastructure.subscriptions.service import SubscriptionService
 from i3x_server.mcp import load_overrides, load_tool_overrides
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
-from tests.conftest import _MCP_DISABLED_ENV, _MCP_ENABLED_ENV, assert_documented_response
+from tests.conftest import _MCP_DISABLED_ENV, _MCP_ENABLED_ENV, assert_documented_response, data_value_dto
 
 
 @dataclass(slots=True)
@@ -165,20 +165,10 @@ class FakeOpcUaClient:
         self.last_write_variant_type_by_node_id: dict[str, str | None] = {}
         self.write_failures: dict[str, Exception] = {}
         self.history_update_support: bool | None = None
-        self.history_values: dict[str, list[SimpleNamespace]] = {
+        self.history_values: dict[str, list[Any]] = {
             "ns=2;s=Temperature": [
-                SimpleNamespace(
-                    Value=SimpleNamespace(Value=40.0),
-                    StatusCode=SimpleNamespace(name="Good"),
-                    SourceTimestamp=datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc),
-                    ServerTimestamp=None,
-                ),
-                SimpleNamespace(
-                    Value=SimpleNamespace(Value=41.5),
-                    StatusCode=SimpleNamespace(name="Good"),
-                    SourceTimestamp=datetime(2026, 1, 1, 10, 5, tzinfo=timezone.utc),
-                    ServerTimestamp=None,
-                ),
+                data_value_dto(40.0, "Good", datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc)),
+                data_value_dto(41.5, "Good", datetime(2026, 1, 1, 10, 5, tzinfo=timezone.utc)),
             ]
         }
         self._reads = 0
@@ -339,17 +329,9 @@ class FakeOpcUaClient:
             # does not alter the stored value.
             written = self.last_write_vqt_by_node_id.get(node_id)
             if written is not None:
-                quality_name, source_timestamp = written
+                quality, source_timestamp = written
                 value = bytes(base) if isinstance(base, (bytes, bytearray, memoryview)) else base
-                results.append(
-                    SimpleNamespace(
-                        Value=SimpleNamespace(Value=value),
-                        # Name-only code: ``quality_from_status_code`` maps it verbatim.
-                        StatusCode=SimpleNamespace(name=quality_name),
-                        SourceTimestamp=source_timestamp,
-                        ServerTimestamp=None,
-                    )
-                )
+                results.append(data_value_dto(value, quality, source_timestamp))
                 continue
             value: Any
             if isinstance(base, (bytes, bytearray, memoryview)):
@@ -357,14 +339,7 @@ class FakeOpcUaClient:
             else:
                 value = float(base) + self._reads
                 self.values[node_id] = value
-            results.append(
-                SimpleNamespace(
-                    Value=SimpleNamespace(Value=value),
-                    StatusCode=SimpleNamespace(name="Good", is_good=lambda: True),
-                    SourceTimestamp=datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc),
-                    ServerTimestamp=None,
-                )
-            )
+            results.append(data_value_dto(value, "Good", datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)))
         return results
 
     async def read_history_values(
@@ -406,27 +381,24 @@ class FakeOpcUaClient:
 
     async def read_server_status_data_value(self) -> Any:
         self.server_status_reads += 1
-        return SimpleNamespace(
-            Value=SimpleNamespace(
-                Value={
-                    "StartTime": datetime(2026, 1, 1, 8, 11, 22, tzinfo=timezone.utc),
-                    "CurrentTime": datetime(2026, 1, 1, 9, 3, 47, tzinfo=timezone.utc),
-                    "State": "Running",
-                    "BuildInfo": {
-                        "ProductUri": "urn:vendor:server",
-                        "ManufacturerName": "Vendor",
-                        "ProductName": "UA Server",
-                        "SoftwareVersion": "1.2.3",
-                        "BuildNumber": "20260613",
-                        "BuildDate": datetime(2026, 1, 1, 7, 59, 0, tzinfo=timezone.utc),
-                    },
-                    "SecondsTillShutdown": 0,
-                    "ShutdownReason": "",
-                }
-            ),
-            StatusCode=SimpleNamespace(name="Good", is_good=lambda: True, is_uncertain=lambda: False),
-            SourceTimestamp=datetime(2026, 1, 1, 9, 3, 47, tzinfo=timezone.utc),
-            ServerTimestamp=None,
+        return data_value_dto(
+            {
+                "StartTime": datetime(2026, 1, 1, 8, 11, 22, tzinfo=timezone.utc),
+                "CurrentTime": datetime(2026, 1, 1, 9, 3, 47, tzinfo=timezone.utc),
+                "State": "Running",
+                "BuildInfo": {
+                    "ProductUri": "urn:vendor:server",
+                    "ManufacturerName": "Vendor",
+                    "ProductName": "UA Server",
+                    "SoftwareVersion": "1.2.3",
+                    "BuildNumber": "20260613",
+                    "BuildDate": datetime(2026, 1, 1, 7, 59, 0, tzinfo=timezone.utc),
+                },
+                "SecondsTillShutdown": 0,
+                "ShutdownReason": "",
+            },
+            "Good",
+            datetime(2026, 1, 1, 9, 3, 47, tzinfo=timezone.utc),
         )
 
     def get_connection_snapshot(self) -> OpcUaConnectionSnapshot:
@@ -448,13 +420,22 @@ class FakeOpcUaClient:
         )
 
     async def create_datachange_subscription(self, publishing_interval_ms: float, handler: Any) -> Any:
+        del publishing_interval_ms, handler
         return SimpleNamespace(delete=self._noop_async)
 
     async def subscribe_data_changes(self, subscription: Any, node_ids: list[str]) -> list[int]:
+        del subscription
         return list(range(len(node_ids)))
+
+    async def unsubscribe_data_changes(self, subscription: Any, handles: list[int]) -> None:
+        del subscription, handles
 
     async def delete_subscription(self, subscription: Any) -> None:
         await self._noop_async()
+
+    def get_monitored_item_handles(self, subscription: Any, node_ids: list[str]) -> dict[str, int] | None:
+        del subscription, node_ids
+        return None
 
     def add_reconnect_listener(self, listener: Any) -> None:
         self._listeners.append(listener)
@@ -715,11 +696,10 @@ def test_v1_value_query_structured_null_body_normalized_to_goodnodata(client: Te
     async def read_data_values(node_ids: list[str]) -> list[Any]:
         assert node_ids == ["ns=2;s=Temperature"]
         return [
-            SimpleNamespace(
-                Value=SimpleNamespace(Value=FakeExtensionObject("ns=1;i=3001", None)),
-                StatusCode=SimpleNamespace(name="Good", is_good=lambda: True),
-                SourceTimestamp=datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc),
-                ServerTimestamp=None,
+            data_value_dto(
+                FakeExtensionObject("ns=1;i=3001", None),
+                "Good",
+                datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc),
             )
         ]
 
@@ -821,14 +801,7 @@ def test_v1_bulk_update_values_allows_noop_when_target_not_writable(
 
     async def read_data_values_same_value(node_ids: list[str]) -> list[Any]:
         assert node_ids == ["ns=2;s=Temperature"]
-        return [
-            SimpleNamespace(
-                Value=SimpleNamespace(Value=42.5),
-                StatusCode=SimpleNamespace(name="Good", is_good=lambda: True),
-                SourceTimestamp=datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc),
-                ServerTimestamp=None,
-            )
-        ]
+        return [data_value_dto(42.5, "Good", datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc))]
 
     app.state.opcua_client.read_data_values = read_data_values_same_value
 

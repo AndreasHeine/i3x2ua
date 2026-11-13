@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 from time import perf_counter
-from typing import Any
 
 from asyncua.ua.status_codes import StatusCodes
 from asyncua.ua.uaerrors import UaStatusCodeError
@@ -52,7 +51,7 @@ from i3x_server.api.v1.object_value_helpers import (
 )
 from i3x_server.api.v1.objecttype_helpers import _get_object_endpoint_context
 from i3x_server.api.v1.write_validation import WriteValidationError, WriteValueValidator
-from i3x_server.application.ports.opcua import OpcUaClientProtocol
+from i3x_server.application.ports.opcua import DataValueDTO, OpcUaClientProtocol
 from i3x_server.bootstrap.dependencies import get_opcua_client, get_or_build_model
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
@@ -251,7 +250,7 @@ async def query_last_known_values_v1(
         component_nodes_by_element_id[element_id] = component_nodes
         node_ids.extend(item.source_node_id for item in component_nodes)
 
-    values_by_node_id: dict[str, Any] = {}
+    values_by_node_id: dict[str, DataValueDTO] = {}
     if node_ids:
         # The same node can appear twice (repeated elementId, or a property that is also a
         # composition child of another requested element). Reading it twice doubles upstream
@@ -340,7 +339,7 @@ async def query_historical_values_v1(
         model, resolved_nodes, max_depth, max_levels=max_levels, max_nodes=max_nodes
     )
 
-    values_by_node_id: dict[str, list[Any]] = {}
+    values_by_node_id: dict[str, list[DataValueDTO]] = {}
     unique_node_ids: list[str] = []
     if node_ids:
         unique_node_ids = list(dict.fromkeys(node_ids))

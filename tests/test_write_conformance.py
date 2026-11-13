@@ -368,7 +368,7 @@ def test_history_timestamp_preserves_exact_precision(
     )
     assert response.json()["success"] is True
     records = fastapi_app(client).state.opcua_client.history_values["ns=2;s=Temperature"]
-    assert any(record.SourceTimestamp == payload.timestamp for record in records)
+    assert any(record.source_timestamp == payload.timestamp for record in records)
 
 
 @pytest.mark.parametrize(

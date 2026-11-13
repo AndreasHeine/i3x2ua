@@ -12,6 +12,7 @@ from i3x_server.application.services.object_value import VQT, ObjectValueService
 from i3x_server.domain.ports.opcua import OpcUaClientProtocol
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
+from tests.conftest import data_value_dto
 
 
 def test_argument_serialization_uses_null_dimensions() -> None:
@@ -204,14 +205,7 @@ async def test_get_history_wraps_unexpected_error(monkeypatch: pytest.MonkeyPatc
 async def test_read_current_value_uses_opcua_data_value_for_property() -> None:
     model = _model()
     client = _RealReadClient()
-    client.read_data_values_response = [
-        SimpleNamespace(
-            Value=SimpleNamespace(Value=42.5),
-            StatusCode=SimpleNamespace(name="Good", is_good=lambda: True),
-            SourceTimestamp=datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc),
-            ServerTimestamp=None,
-        )
-    ]
+    client.read_data_values_response = [data_value_dto(42.5, "Good", datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc))]
     service = ObjectValueService(cast(OpcUaClientProtocol, client), model)
 
     vqt = await service._read_current_value(model.nodes_by_id["prop-a"])
@@ -236,14 +230,7 @@ async def test_read_history_values_maps_data_values_and_binary() -> None:
     model = _model()
     client = _RealReadClient()
     client.read_history_values_response = {
-        "ns=2;s=Temperature": [
-            SimpleNamespace(
-                Value=SimpleNamespace(Value=b"\xff\x00"),
-                StatusCode=SimpleNamespace(name="Good", is_good=lambda: True),
-                SourceTimestamp=datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc),
-                ServerTimestamp=None,
-            )
-        ]
+        "ns=2;s=Temperature": [data_value_dto(b"\xff\x00", "Good", datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc))]
     }
     service = ObjectValueService(cast(OpcUaClientProtocol, client), model)
 

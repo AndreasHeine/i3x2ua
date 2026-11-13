@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import base64
 from datetime import datetime, timezone
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -18,6 +17,7 @@ from tests.conftest import (
     FakeMachineThresholds,
     add_composition_depth_chain,
     assert_documented_response,
+    data_value_dto,
     fastapi_app,
 )
 
@@ -185,15 +185,7 @@ def test_v1_value_query_dedups_repeated_element_ids(client: TestClient) -> None:
 
     async def read_data_values(node_ids: list[str]) -> list[Any]:
         requested.append(list(node_ids))
-        return [
-            SimpleNamespace(
-                Value=SimpleNamespace(Value=23.5),
-                StatusCode=SimpleNamespace(name="Good", is_good=lambda: True),
-                SourceTimestamp=datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc),
-                ServerTimestamp=None,
-            )
-            for _ in node_ids
-        ]
+        return [data_value_dto(23.5, "Good", datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)) for _ in node_ids]
 
     fastapi_app(client).state.opcua_client.read_data_values = read_data_values
 
@@ -217,12 +209,7 @@ def test_v1_value_query_dedups_nodes_shared_by_several_elements(client: TestClie
     async def read_data_values(node_ids: list[str]) -> list[Any]:
         requested.append(list(node_ids))
         return [
-            SimpleNamespace(
-                Value=SimpleNamespace(Value=float(len(node_ids))),
-                StatusCode=SimpleNamespace(name="Good", is_good=lambda: True),
-                SourceTimestamp=datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc),
-                ServerTimestamp=None,
-            )
+            data_value_dto(float(len(node_ids)), "Good", datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc))
             for _ in node_ids
         ]
 
@@ -323,14 +310,7 @@ def test_v1_value_query_serializes_structured_object_arrays(client: TestClient) 
                 ),
             ),
         ]
-        return [
-            SimpleNamespace(
-                Value=SimpleNamespace(Value=value),
-                StatusCode=SimpleNamespace(name="Good", is_good=lambda: True),
-                SourceTimestamp=datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc),
-                ServerTimestamp=None,
-            )
-        ]
+        return [data_value_dto(value, "Good", datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc))]
 
     fastapi_app(client).state.opcua_client.read_data_values = read_data_values
 
@@ -365,15 +345,7 @@ def test_v1_value_query_serializes_structured_object_arrays(client: TestClient) 
 
 def test_v1_value_query_propagates_source_quality_and_timestamp(client: TestClient) -> None:
     async def read_data_values(node_ids: list[str]) -> list[Any]:
-        return [
-            SimpleNamespace(
-                Value=SimpleNamespace(Value=99.5),
-                StatusCode=SimpleNamespace(name="Uncertain", is_good=lambda: False),
-                SourceTimestamp=datetime(2026, 3, 15, 8, 30, tzinfo=timezone.utc),
-                ServerTimestamp=None,
-            )
-            for _ in node_ids
-        ]
+        return [data_value_dto(99.5, "Uncertain", datetime(2026, 3, 15, 8, 30, tzinfo=timezone.utc)) for _ in node_ids]
 
     fastapi_app(client).state.opcua_client.read_data_values = read_data_values
 
@@ -391,15 +363,7 @@ def test_v1_value_query_propagates_source_quality_and_timestamp(client: TestClie
 
 def test_v1_value_query_bad_quality_null_value_is_allowed(client: TestClient) -> None:
     async def read_data_values(node_ids: list[str]) -> list[Any]:
-        return [
-            SimpleNamespace(
-                Value=SimpleNamespace(Value=None),
-                StatusCode=SimpleNamespace(name="Bad", is_good=lambda: False),
-                SourceTimestamp=datetime(2026, 3, 15, 8, 0, tzinfo=timezone.utc),
-                ServerTimestamp=None,
-            )
-            for _ in node_ids
-        ]
+        return [data_value_dto(None, "Bad", datetime(2026, 3, 15, 8, 0, tzinfo=timezone.utc)) for _ in node_ids]
 
     fastapi_app(client).state.opcua_client.read_data_values = read_data_values
 
@@ -416,15 +380,7 @@ def test_v1_value_query_bad_quality_null_value_is_allowed(client: TestClient) ->
 
 def test_v1_value_query_null_with_good_quality_normalized_to_goodnodata(client: TestClient) -> None:
     async def read_data_values(node_ids: list[str]) -> list[Any]:
-        return [
-            SimpleNamespace(
-                Value=SimpleNamespace(Value=None),
-                StatusCode=SimpleNamespace(name="Good", is_good=lambda: True),
-                SourceTimestamp=datetime(2026, 3, 15, 8, 0, tzinfo=timezone.utc),
-                ServerTimestamp=None,
-            )
-            for _ in node_ids
-        ]
+        return [data_value_dto(None, "Good", datetime(2026, 3, 15, 8, 0, tzinfo=timezone.utc)) for _ in node_ids]
 
     fastapi_app(client).state.opcua_client.read_data_values = read_data_values
 

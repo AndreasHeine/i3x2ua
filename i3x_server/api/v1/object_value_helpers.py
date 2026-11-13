@@ -43,7 +43,7 @@ from i3x_server.api.v1.contracts import (
 )
 from i3x_server.api.v1.object_helpers import _composition_children_for_node, _find_model_node
 from i3x_server.api.v1.write_validation import WriteValidationError, WriteValueValidator
-from i3x_server.application.ports.opcua import OpcUaClientProtocol
+from i3x_server.application.ports.opcua import DataValueDTO, OpcUaClientProtocol
 from i3x_server.config.settings import Settings, get_settings
 from i3x_server.domain.ports.opcua import (
     WRITE_METADATA_UNCERTAIN_MESSAGE,
@@ -52,7 +52,7 @@ from i3x_server.domain.ports.opcua import (
     OpcUaWriteMetadataVerificationError,
 )
 from i3x_server.schemas.i3x import ModelNode
-from i3x_server.schemas.opcua_value import quality_from_status_code
+from i3x_server.schemas.opcua_value import severity_quality
 from i3x_server.schemas.state import BuildResult
 
 
@@ -177,7 +177,7 @@ def _json_equivalent(left: Any, right: Any) -> bool:
 
 
 def _noop_write_matches(
-    data_value: Any, requested_value: Any, requested_quality: str, requested_timestamp: datetime
+    data_value: DataValueDTO | None, requested_value: Any, requested_quality: str, requested_timestamp: datetime
 ) -> bool:
     """Compare a request against a read data value; a failed/empty read is never a no-op."""
     if data_value is None:
@@ -186,7 +186,7 @@ def _noop_write_matches(
     return (
         _json_equivalent(current_vqt.value, requested_value)
         and current_vqt.quality == requested_quality
-        and getattr(data_value, "SourceTimestamp", None) == requested_timestamp.astimezone(timezone.utc)
+        and data_value.source_timestamp == requested_timestamp.astimezone(timezone.utc)
     )
 
 
@@ -245,7 +245,7 @@ async def _write_object_values_bulk(
     # mismatch means a programming error (mispaired bulk mapping), not a partial upstream answer.
     access_by_id: dict[str, Any] = dict(zip(target_ids, access_results, strict=True))
 
-    noop_data: dict[str, Any] = {}
+    noop_data: dict[str, DataValueDTO] = {}
     noop_ids = [
         target_id
         for target_id in target_ids
@@ -368,7 +368,7 @@ async def _write_object_values_bulk(
     # metadata preserved every write, and one that does not failed every per-write read in
     # the old sequential path - attributing the verdict to all items keeps outcomes equal.
     verified_ids = list(written_by_node)
-    read_back_by_id: dict[str, Any] = {}
+    read_back_by_id: dict[str, DataValueDTO] = {}
     read_failure: Exception | None = None
     if verified_ids:
         try:
@@ -386,8 +386,8 @@ async def _write_object_values_bulk(
             continue
         data_value = read_back_by_id.get(target_node_id)
         expected_quality, expected_timestamp = written_items[-1][2], written_items[-1][3]
-        actual_quality = quality_from_status_code(getattr(data_value, "StatusCode", None))
-        actual_timestamp = getattr(data_value, "SourceTimestamp", None)
+        actual_quality = data_value.quality if data_value is not None else None
+        actual_timestamp = data_value.source_timestamp if data_value is not None else None
         if actual_quality != expected_quality or actual_timestamp != expected_timestamp.astimezone(timezone.utc):
             for index, element_id, _quality, _timestamp in written_items:
                 outcomes[index] = (element_id, False, 501, WRITE_METADATA_UNSUPPORTED_MESSAGE)
@@ -468,7 +468,7 @@ def _build_historical_value_result(
     node: ModelNode,
     root_source_nodes: list[ModelNode],
     component_nodes: list[ModelNode],
-    values_by_node_id: dict[str, list[Any]],
+    values_by_node_id: dict[str, list[DataValueDTO]],
     end_time: datetime | None = None,
 ) -> HistoricalValueResult:
     """Build HistoricalValueResult from collected source nodes and values.
@@ -515,15 +515,10 @@ def _history_no_data_vqt(end_time: datetime | None) -> VQT:
     return VQT(value=None, quality="GoodNoData", timestamp=_format_utc_timestamp(timestamp))
 
 
-def _vqt_from_data_value(data_value: Any) -> VQT:
-    variant = getattr(data_value, "Value", None)
-    raw_value = getattr(variant, "Value", variant)
-    status_code = getattr(data_value, "StatusCode", None)
-    quality = _normalize_quality(status_code)
-    source_timestamp = getattr(data_value, "SourceTimestamp", None)
-    server_timestamp = getattr(data_value, "ServerTimestamp", None)
-    timestamp_dt = source_timestamp or server_timestamp
-    timestamp = _normalize_timestamp(timestamp_dt)
+def _vqt_from_data_value(data_value: DataValueDTO) -> VQT:
+    raw_value = data_value.value.value if data_value.value is not None else None
+    quality = severity_quality(data_value.status_code)
+    timestamp = _normalize_timestamp(data_value.source_timestamp or data_value.server_timestamp)
     safe_value = _to_json_safe_value(raw_value)
     if safe_value is None and quality not in ("Bad", "GoodNoData"):
         quality = "GoodNoData"
@@ -606,48 +601,16 @@ def _collect_value_component_nodes(
     return components, truncated
 
 
-def _normalize_quality(status_code: Any) -> str:
-    if status_code is None:
-        return "Good"
-    is_uncertain = getattr(status_code, "is_uncertain", None)
-    if callable(is_uncertain):
-        try:
-            if bool(is_uncertain()):
-                return "Uncertain"
-        except Exception:
-            pass
-    name = getattr(status_code, "name", "")
-    label = str(name) if name else ""
-    if "uncertain" in label.lower():
-        return "Uncertain"
-    is_good = getattr(status_code, "is_good", None)
-    if callable(is_good):
-        try:
-            return "Good" if bool(is_good()) else "Bad"
-        except Exception:
-            pass
-    if "good" in label.lower():
-        return "Good"
-    if label:
-        return "Bad"
-    return "Bad"
-
-
 def _normalize_timestamp(value: Any) -> str:
     if isinstance(value, datetime):
         return _format_utc_timestamp(value)
     return _format_utc_timestamp(datetime.now(timezone.utc))
 
 
-def _to_vqt_from_history_value(data_value: Any) -> VQT:
-    variant = getattr(data_value, "Value", None)
-    value = getattr(variant, "Value", variant)
-    timestamp = (
-        getattr(data_value, "SourceTimestamp", None)
-        or getattr(data_value, "ServerTimestamp", None)
-        or getattr(data_value, "timestamp", None)
-    )
-    quality = _normalize_quality(getattr(data_value, "StatusCode", None) or getattr(data_value, "status", None))
+def _to_vqt_from_history_value(data_value: DataValueDTO) -> VQT:
+    value = data_value.value.value if data_value.value is not None else None
+    timestamp = data_value.source_timestamp or data_value.server_timestamp
+    quality = severity_quality(data_value.status_code)
     safe_value = _to_json_safe_value(value)
     if safe_value is None and quality not in ("Bad", "GoodNoData"):
         quality = "GoodNoData"

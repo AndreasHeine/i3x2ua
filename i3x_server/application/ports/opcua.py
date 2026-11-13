@@ -5,8 +5,10 @@ presentation code can depend on application ports instead of domain ports.
 """
 
 from i3x_server.domain.ports.opcua import (
+    DataValueDTO,
     OpcUaClientProtocol,
     OpcUaConnectionSnapshot,
+    OpcUaDataChangeHandler,
     OpcUaNamespaceInfo,
     OpcUaNodeInfo,
     OpcUaObjectTypeInfo,
@@ -16,11 +18,15 @@ from i3x_server.domain.ports.opcua import (
     OpcUaRequestMetrics,
     OpcUaRuntimeMetrics,
     OpcUaSubscriptionCapabilities,
+    OpcUaSubscriptionHandle,
+    OpcUaValue,
 )
 
 __all__ = [
+    "DataValueDTO",
     "OpcUaClientProtocol",
     "OpcUaConnectionSnapshot",
+    "OpcUaDataChangeHandler",
     "OpcUaNamespaceInfo",
     "OpcUaNodeInfo",
     "OpcUaObjectTypeInfo",
@@ -30,4 +36,6 @@ __all__ = [
     "OpcUaRequestMetrics",
     "OpcUaRuntimeMetrics",
     "OpcUaSubscriptionCapabilities",
+    "OpcUaSubscriptionHandle",
+    "OpcUaValue",
 ]

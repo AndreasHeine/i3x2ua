@@ -24,6 +24,8 @@ from asyncua.ua.uaerrors import UaError, UaStatusCodeError
 from i3x_server.domain.ports.opcua import (
     WRITE_METADATA_UNCERTAIN_MESSAGE,
     WRITE_METADATA_UNSUPPORTED_MESSAGE,
+    DataValueDTO,
+    OpcUaValue,
     OpcUaWriteMetadataUnsupportedError,
     OpcUaWriteMetadataVerificationError,
 )
@@ -35,6 +37,38 @@ if TYPE_CHECKING:
     from i3x_server.infrastructure.opcua.client import OpcUaClient
 
 logger = logging.getLogger(__name__)
+
+
+def to_data_value_dto(data_value: Any) -> DataValueDTO:
+    """Convert an asyncua ``DataValue`` into the domain DTO at the adapter boundary.
+
+    Attribute access is structural so test doubles and partially populated server
+    answers convert without raising: a missing variant payload becomes ``None``, a
+    missing status code leaves ``status_code``/``quality`` ``None``. Non-datetime
+    timestamps are dropped (consumers fall back to their own clock).
+    """
+    variant = getattr(data_value, "Value", None)
+    payload = getattr(variant, "Value", variant) if variant is not None else None
+    variant_type = getattr(variant, "VariantType", None)
+    variant_name = getattr(variant_type, "name", None)
+    if variant_name is None and isinstance(variant_type, str):
+        variant_name = variant_type
+    # asyncua exposes the array flag as ``is_array``; the spec name ``IsArray`` is the
+    # fallback for older doubles. Neither is present on partial test doubles.
+    is_array = getattr(variant, "IsArray", None)
+    if is_array is None:
+        is_array = getattr(variant, "is_array", None)
+    status_code = getattr(data_value, "StatusCode", None)
+    numeric_code = getattr(status_code, "value", None)
+    source_timestamp = getattr(data_value, "SourceTimestamp", None)
+    server_timestamp = getattr(data_value, "ServerTimestamp", None)
+    return DataValueDTO(
+        value=OpcUaValue(value=payload, variant_type=variant_name, is_array=is_array),
+        status_code=int(numeric_code) if numeric_code is not None else None,
+        quality=quality_from_status_code(status_code),
+        source_timestamp=source_timestamp if isinstance(source_timestamp, datetime) else None,
+        server_timestamp=server_timestamp if isinstance(server_timestamp, datetime) else None,
+    )
 
 
 def _to_explicit_ua_variant(value: Any, variant_type: str | None) -> ua.Variant | None:
@@ -684,7 +718,7 @@ async def call_method(client: OpcUaClient, object_node_id: str, method_node_id: 
         raise
 
 
-async def read_server_status_data_value(client: OpcUaClient) -> ua.DataValue:
+async def read_server_status_data_value(client: OpcUaClient) -> DataValueDTO:
     values = await client.read_data_values(["i=2256"])
     if not values:
         client.record_failed_request()

@@ -17,10 +17,10 @@ from typing import Any
 from fastapi import HTTPException, Request
 from pydantic import BaseModel
 
-from i3x_server.domain.ports.opcua import OpcUaClientProtocol
+from i3x_server.domain.ports.opcua import DataValueDTO, OpcUaClientProtocol
 from i3x_server.errors import i3x_http_error
 from i3x_server.schemas.i3x import ModelNode
-from i3x_server.schemas.opcua_value import normalize_opcua_value
+from i3x_server.schemas.opcua_value import normalize_opcua_value, severity_quality
 from i3x_server.schemas.state import BuildResult
 
 logger = logging.getLogger(__name__)
@@ -367,31 +367,8 @@ class ObjectValueService:
         """Get current time as ISO 8601 string."""
         return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
-    def _normalize_quality(self, status_code: Any) -> str:
-        if status_code is None:
-            return "Good"
-        is_uncertain = getattr(status_code, "is_uncertain", None)
-        if callable(is_uncertain):
-            try:
-                if bool(is_uncertain()):
-                    return "Uncertain"
-            except Exception:
-                pass
-        name = getattr(status_code, "name", "")
-        label = str(name) if name else ""
-        if "uncertain" in label.lower():
-            return "Uncertain"
-        is_good = getattr(status_code, "is_good", None)
-        if callable(is_good):
-            try:
-                return "Good" if bool(is_good()) else "Bad"
-            except Exception:
-                pass
-        if "good" in label.lower():
-            return "Good"
-        if label:
-            return "Bad"
-        return "Bad"
+    def _normalize_quality(self, status_code: int | None) -> str:
+        return severity_quality(status_code)
 
     def _normalize_timestamp(self, value: Any) -> str:
         if isinstance(value, datetime):
@@ -434,18 +411,14 @@ class ObjectValueService:
             }
         return str(value)
 
-    def _vqt_from_data_value(self, data_value: Any) -> VQT:
-        variant = getattr(data_value, "Value", None)
-        raw_value = getattr(variant, "Value", variant)
-        status_code = getattr(data_value, "StatusCode", None)
-        quality = self._normalize_quality(status_code)
-        source_timestamp = getattr(data_value, "SourceTimestamp", None)
-        server_timestamp = getattr(data_value, "ServerTimestamp", None)
-        timestamp = self._normalize_timestamp(source_timestamp or server_timestamp)
+    def _vqt_from_data_value(self, data_value: DataValueDTO) -> VQT:
+        raw_value = data_value.value.value if data_value.value is not None else None
+        quality = self._normalize_quality(data_value.status_code)
+        timestamp = self._normalize_timestamp(data_value.source_timestamp or data_value.server_timestamp)
         safe_value = self._to_json_safe_value(raw_value)
         if safe_value is None and quality not in {"Bad", "GoodNoData"}:
             quality = "GoodNoData"
         return VQT(value=safe_value, quality=quality, timestamp=timestamp)
 
-    def _to_vqt_from_history_value(self, data_value: Any) -> VQT:
+    def _to_vqt_from_history_value(self, data_value: DataValueDTO) -> VQT:
         return self._vqt_from_data_value(data_value)

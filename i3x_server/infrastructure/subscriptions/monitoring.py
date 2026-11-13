@@ -14,14 +14,14 @@ from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from i3x_server.domain.ports.opcua import OpcUaSubscriptionCapabilities
+from i3x_server.domain.ports.opcua import DataValueDTO, OpcUaSubscriptionCapabilities
 from i3x_server.infrastructure.subscriptions.state import (
     _ManagedBin,
     _NodeMonitor,
     _signal_from_data_value,
     _ValueSignal,
 )
-from i3x_server.schemas.opcua_value import decode_data_value, notification_data_value
+from i3x_server.schemas.opcua_value import decode_data_value
 
 if TYPE_CHECKING:
     from i3x_server.infrastructure.subscriptions.service import SubscriptionService
@@ -62,17 +62,9 @@ class _NodeDataChangeHandler:
         self._service = service
         self._bin_id = bin_id
 
-    def datachange_notification(self, node: Any, val: Any, data: Any) -> None:
-        signal = _signal_from_data_value(notification_data_value(data))
-        try:
-            node_id = node.nodeid.to_string()
-        except Exception:
-            logger.warning(
-                "Unable to resolve node_id for datachange in bin_id=%s; dropping update",
-                self._bin_id,
-            )
-            return
-        self._service.schedule_node_datachange(node_id, val, signal)
+    def datachange_notification(self, node_id: str, value: Any, data_value: DataValueDTO | None) -> None:
+        signal = _signal_from_data_value(data_value)
+        self._service.schedule_node_datachange(node_id, value, signal)
 
     def event_notification(self, event: Any) -> None:
         return None

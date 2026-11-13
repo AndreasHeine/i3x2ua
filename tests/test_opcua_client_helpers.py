@@ -18,7 +18,7 @@ from asyncua.ua.status_codes import StatusCodes
 from asyncua.ua.uaerrors import UaStatusCodeError
 
 from i3x_server.application.services.model_query import ModelQueryService
-from i3x_server.domain.ports.opcua import OpcUaNodeInfo
+from i3x_server.domain.ports.opcua import DataValueDTO, OpcUaNodeInfo
 from i3x_server.infrastructure.opcua.browse import _chunked, _chunked_nodes, _gather_cancelled_on_failure
 from i3x_server.infrastructure.opcua.client import (
     OpcUaClient,
@@ -1731,8 +1731,9 @@ class _BatchReadClient:
         return [ua.DataValue(ua.Variant(f"batch:{node.nodeid}")) for node in nodes]
 
 
-def _variant_values(values: list[ua.DataValue]) -> list[Any]:
-    return [value.Value.Value if value.Value is not None else None for value in values]
+def _variant_values(values: list[DataValueDTO]) -> list[Any]:
+    """Payloads of the DTOs the client hands out at the port boundary."""
+    return [value.value.value if value.value is not None else None for value in values]
 
 
 def _batch_read_client(monkeypatch: pytest.MonkeyPatch, fake: _BatchReadClient) -> OpcUaClient:

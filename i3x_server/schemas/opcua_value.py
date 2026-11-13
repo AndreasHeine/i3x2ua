@@ -7,6 +7,8 @@ from typing import Any
 from asyncua.ua.status_codes import StatusCodes
 from asyncua.ua.uaprotocol_auto import Argument
 
+from i3x_server.domain.ports.opcua import DataValueDTO
+
 
 def normalize_opcua_value(value: Any) -> Any:
     """Canonicalize Argument dimensions without mutating upstream values."""
@@ -99,8 +101,27 @@ def quality_from_status_code(status_code: Any) -> str | None:
     return "Bad"
 
 
-def decode_data_value(data_value: Any) -> tuple[Any, str | None, str | None]:
-    """Split an OPC UA DataValue into payload, quality, and the server-provided timestamp.
+def severity_quality(status_code: int | None) -> str:
+    """Map a numeric status code onto ``Good``/``Uncertain``/``Bad`` by severity bits.
+
+    VQT consumers that treat every Good-severity code (including ``GoodNoData``) as
+    ``Good`` use this instead of :func:`quality_from_status_code`, which keeps the
+    ``GoodNoData`` distinction.
+    """
+    if status_code is None:
+        return "Good"
+    severity = int(status_code) & 0xC0000000
+    if severity == 0x40000000:
+        return "Uncertain"
+    if severity == 0x80000000:
+        return "Bad"
+    if severity == 0x00000000:
+        return "Good"
+    return "Bad"
+
+
+def decode_data_value(data_value: DataValueDTO | None) -> tuple[Any, str | None, str | None]:
+    """Split a data-value DTO into payload, quality, and the server-provided timestamp.
 
     ``quality``/``timestamp`` are ``None`` when the value carries no signal; the server
     timestamp prefers ``SourceTimestamp`` and falls back to ``ServerTimestamp``.
@@ -108,18 +129,8 @@ def decode_data_value(data_value: Any) -> tuple[Any, str | None, str | None]:
     if data_value is None:
         return None, None, None
 
-    variant = getattr(data_value, "Value", None)
-    value = getattr(variant, "Value", variant) if variant is not None else None
-    quality = quality_from_status_code(getattr(data_value, "StatusCode", None))
-    timestamp = getattr(data_value, "SourceTimestamp", None) or getattr(data_value, "ServerTimestamp", None)
+    payload = data_value.value.value if data_value.value is not None else None
+    timestamp = data_value.source_timestamp or data_value.server_timestamp
     if isinstance(timestamp, datetime):
-        return value, quality, format_utc_timestamp(timestamp)
-    return value, quality, None
-
-
-def notification_data_value(notification: Any) -> Any:
-    """The DataValue behind a native asyncua datachange notification, if it carries one."""
-    monitored_item = getattr(notification, "monitored_item", None)
-    if monitored_item is None:
-        return None
-    return getattr(monitored_item, "Value", None)
+        return payload, data_value.quality, format_utc_timestamp(timestamp)
+    return payload, data_value.quality, None

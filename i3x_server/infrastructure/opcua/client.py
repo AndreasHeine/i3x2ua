@@ -34,8 +34,10 @@ from asyncua.ua import NodeClass
 from asyncua.ua.attribute_ids import AttributeIds
 
 from i3x_server.domain.ports.opcua import (
+    DataValueDTO,
     OpcUaClientProtocol,
     OpcUaConnectionSnapshot,
+    OpcUaDataChangeHandler,
     OpcUaNamespaceInfo,
     OpcUaNodeInfo,
     OpcUaObjectTypeInfo,
@@ -45,6 +47,7 @@ from i3x_server.domain.ports.opcua import (
     OpcUaRequestMetrics,
     OpcUaRuntimeMetrics,
     OpcUaSubscriptionCapabilities,
+    OpcUaSubscriptionHandle,
     OpcUaTypeDefinitionInfo,
     OpcUaWriteMetadataUnsupportedError,
     OpcUaWriteMetadataVerificationError,
@@ -53,10 +56,12 @@ from i3x_server.infrastructure.opcua import browse, metadata, node_reading, obje
 from i3x_server.infrastructure.opcua.recovery import _SupervisedAsyncuaClient
 
 __all__ = [
+    "DataValueDTO",
     "OpcUaClient",
     "OpcUaClientProtocol",
     "model_refresh_budget",
     "OpcUaConnectionSnapshot",
+    "OpcUaDataChangeHandler",
     "OpcUaNamespaceInfo",
     "OpcUaNodeInfo",
     "OpcUaObjectTypeInfo",
@@ -66,6 +71,7 @@ __all__ = [
     "OpcUaRequestMetrics",
     "OpcUaRuntimeMetrics",
     "OpcUaSubscriptionCapabilities",
+    "OpcUaSubscriptionHandle",
     "OpcUaTypeDefinitionInfo",
     "OpcUaWriteMetadataUnsupportedError",
     "OpcUaWriteMetadataVerificationError",
@@ -104,6 +110,34 @@ async def model_refresh_budget(opcua_client: Any) -> AsyncIterator[None]:
         yield
     finally:
         _MODEL_REFRESH_BUDGET.reset(token)
+
+
+class _NotificationBridge:
+    """Adapts asyncua datachange notifications to the domain port callback.
+
+    asyncua hands raw ``Node`` objects and notification structs; the port expects
+    the node id as a string and a :class:`DataValueDTO`. A notification whose node
+    id cannot be resolved is dropped here (the port callback never sees raw
+    transport objects).
+    """
+
+    def __init__(self, handler: OpcUaDataChangeHandler) -> None:
+        self._handler = handler
+
+    def datachange_notification(self, node: Any, value: Any, data: Any) -> None:
+        try:
+            node_id = node.nodeid.to_string()
+        except Exception:
+            logger.warning("Unable to resolve node_id for datachange notification; dropping update")
+            return
+        monitored_item = getattr(data, "monitored_item", None)
+        raw_data_value = getattr(monitored_item, "Value", None)
+        self._handler.datachange_notification(
+            node_id, value, values.to_data_value_dto(raw_data_value) if raw_data_value is not None else None
+        )
+
+    def event_notification(self, event: Any) -> None:
+        self._handler.event_notification(event)
 
 
 class OpcUaClient:
@@ -784,8 +818,10 @@ class OpcUaClient:
     async def read_values(self, node_ids: list[str]) -> list[Any]:
         return await values.read_values(self, node_ids)
 
-    async def read_data_values(self, node_ids: list[str]) -> list[ua.DataValue]:
-        return await values.read_data_values(self, node_ids)
+    async def read_data_values(self, node_ids: list[str]) -> list[DataValueDTO]:
+        # Boundary conversion: the seam keeps asyncua DataValues (metrics recording and the
+        # per-node fallback need status codes structurally); callers get domain DTOs.
+        return [values.to_data_value_dto(value) for value in await values.read_data_values(self, node_ids)]
 
     async def read_data_values_per_node(self, node_ids: list[str]) -> list[ua.DataValue]:
         return await values.read_data_values_per_node(self, node_ids)
@@ -824,8 +860,12 @@ class OpcUaClient:
         node_ids: list[str],
         start_time: datetime | None,
         end_time: datetime | None,
-    ) -> dict[str, list[ua.DataValue]]:
-        return await values.read_history_values(self, node_ids, start_time, end_time)
+    ) -> dict[str, list[DataValueDTO]]:
+        history = await values.read_history_values(self, node_ids, start_time, end_time)
+        return {
+            node_id: [values.to_data_value_dto(value) for value in data_values]
+            for node_id, data_values in history.items()
+        }
 
     async def read_history_batch(
         self,
@@ -841,7 +881,7 @@ class OpcUaClient:
     async def call_method(self, object_node_id: str, method_node_id: str, args: list[Any]) -> Any:
         return await values.call_method(self, object_node_id, method_node_id, args)
 
-    async def read_server_status_data_value(self) -> ua.DataValue:
+    async def read_server_status_data_value(self) -> DataValueDTO:
         return await values.read_server_status_data_value(self)
 
     # ------------------------------------------------------------------
@@ -870,20 +910,26 @@ class OpcUaClient:
     # Subscription passthroughs
     # ------------------------------------------------------------------
 
-    async def create_datachange_subscription(self, publishing_interval_ms: float, handler: Any) -> Any:
-        return await self.raw_client.create_subscription(publishing_interval_ms, handler)
+    async def create_datachange_subscription(
+        self, publishing_interval_ms: float, handler: OpcUaDataChangeHandler
+    ) -> OpcUaSubscriptionHandle:
+        return await self.raw_client.create_subscription(publishing_interval_ms, _NotificationBridge(handler))
 
-    async def subscribe_data_changes(self, subscription: Any, node_ids: list[str]) -> Any:
+    async def subscribe_data_changes(self, subscription: OpcUaSubscriptionHandle, node_ids: list[str]) -> list[int]:
         nodes = [self.raw_node(node_id) for node_id in node_ids]
-        return await subscription.subscribe_data_change(nodes)
+        # The handle is opaque by contract; its asyncua shape is adapter-internal.
+        raw_handles = await cast(Any, subscription).subscribe_data_change(nodes)
+        return list(raw_handles)
 
-    async def unsubscribe_data_changes(self, subscription: Any, handles: list[int]) -> None:
-        await subscription.unsubscribe(handles)
+    async def unsubscribe_data_changes(self, subscription: OpcUaSubscriptionHandle, handles: list[int]) -> None:
+        await cast(Any, subscription).unsubscribe(handles)
 
-    async def delete_subscription(self, subscription: Any) -> None:
-        await subscription.delete()
+    async def delete_subscription(self, subscription: OpcUaSubscriptionHandle) -> None:
+        await cast(Any, subscription).delete()
 
-    def get_monitored_item_handles(self, subscription: Any, node_ids: list[str]) -> dict[str, int] | None:
+    def get_monitored_item_handles(
+        self, subscription: OpcUaSubscriptionHandle, node_ids: list[str]
+    ) -> dict[str, int] | None:
         """Return the current server handles of `node_ids` in an asyncua-restored subscription.
 
         asyncua recreates monitored items after a reconnect when the server lost the

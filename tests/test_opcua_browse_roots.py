@@ -18,6 +18,7 @@ from httpx2 import ASGITransport, AsyncClient
 
 from i3x_server.api.v1.object_routes import router
 from i3x_server.config.settings import Settings
+from i3x_server.domain.ports.opcua import DataValueDTO
 from i3x_server.infrastructure.opcua.client import OpcUaClient
 from i3x_server.model.builder import ModelBuilder
 
@@ -97,7 +98,8 @@ async def test_reconnect_restores_reads_and_native_subscription(
     reconnected = asyncio.Event()
 
     class Handler:
-        def datachange_notification(self, node: Node, value: Any, data: Any) -> None:
+        def datachange_notification(self, node_id: str, value: Any, data_value: DataValueDTO | None) -> None:
+            del node_id, data_value
             if value == 42.0:
                 initial_value.set()
             if value == 43.0:
@@ -114,7 +116,7 @@ async def test_reconnect_restores_reads_and_native_subscription(
     )
     client.add_reconnect_listener(on_reconnect)
     await client.connect()
-    reads: list[asyncio.Task[list[ua.DataValue]]] = []
+    reads: list[asyncio.Task[list[DataValueDTO]]] = []
     try:
         subscription = await client.create_datachange_subscription(50, Handler())
         await client.subscribe_data_changes(subscription, [temperature.nodeid.to_string()])
@@ -129,7 +131,7 @@ async def test_reconnect_restores_reads_and_native_subscription(
             reads = [asyncio.create_task(client.read_data_values([temperature.nodeid.to_string()])) for _ in range(20)]
             await states.wait_for_state(UaClientState.CONNECTED, timeout=5)
         results = await asyncio.wait_for(asyncio.gather(*reads), timeout=5)
-        assert all(result[0].Value is not None and result[0].Value.Value == 42.0 for result in results)
+        assert all(result[0].value.value == 42.0 for result in results)
         await asyncio.wait_for(reconnected.wait(), timeout=5)
         assert client.get_connection_snapshot().state == "Connected"
         await temperature.write_value(43.0)

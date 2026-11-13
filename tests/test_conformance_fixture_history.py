@@ -45,7 +45,7 @@ async def test_fixture_history_upserts_over_opcua(monkeypatch: pytest.MonkeyPatc
         endpoint = f"opc.tcp://127.0.0.1:{server.bserver.port}/freeopcua/server/"
         async with Client(endpoint) as wire_client:
             adapter = OpcUaClient(endpoint)
-            monkeypatch.setattr(adapter, "_client", wire_client)
+            monkeypatch.setattr(adapter, "raw_client", wire_client)
             node_id = signal.nodeid.to_string()
             current = await signal.read_value()
             write_timestamp = datetime(2026, 1, 1, 12, 30, tzinfo=timezone.utc)

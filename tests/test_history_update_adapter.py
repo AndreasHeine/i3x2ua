@@ -38,7 +38,7 @@ def _node() -> SimpleNamespace:
 async def test_adapter_submits_full_vqt(monkeypatch: pytest.MonkeyPatch) -> None:
     client = OpcUaClient("opc.tcp://localhost:4840")
     node = _node()
-    monkeypatch.setattr(client, "_client", SimpleNamespace(get_node=lambda _: node))
+    monkeypatch.setattr(client, "raw_client", SimpleNamespace(get_node=lambda _: node))
     await client.write_history_value("ns=2;s=Temperature", 19, "Uncertain", TIMESTAMP)
     details = node.history_update.call_args.args[0]
     assert details.NodeId == node.nodeid
@@ -64,7 +64,7 @@ async def test_adapter_remembers_service_wide_history_update_unsupported(
     with pytest.raises(UaStatusCodeError) as error:
         ua.StatusCode(ua.UInt32(StatusCodes.BadServiceUnsupported)).check()
     node.history_update = AsyncMock(side_effect=error.value)
-    monkeypatch.setattr(client, "_client", SimpleNamespace(get_node=lambda _: node))
+    monkeypatch.setattr(client, "raw_client", SimpleNamespace(get_node=lambda _: node))
 
     assert client.history_update_supported() is None
     with pytest.raises(UaStatusCodeError):
@@ -80,7 +80,7 @@ async def test_current_value_adapter_submits_and_verifies_vqt(monkeypatch: pytes
     node.read_data_value = AsyncMock(
         side_effect=lambda **_: node.write_value.call_args.args[0],
     )
-    monkeypatch.setattr(client, "_client", SimpleNamespace(get_node=lambda _: node))
+    monkeypatch.setattr(client, "raw_client", SimpleNamespace(get_node=lambda _: node))
 
     await client.write_value("ns=2;s=Temperature", 19.5, "Double", "Uncertain", TIMESTAMP)
 
@@ -109,7 +109,7 @@ async def test_current_value_adapter_rejects_server_that_drops_vqt_metadata(
             SourceTimestamp=ua.DateTime.fromisoformat(TIMESTAMP.replace(year=2025).isoformat()),
         )
     )
-    monkeypatch.setattr(client, "_client", SimpleNamespace(get_node=lambda _: node))
+    monkeypatch.setattr(client, "raw_client", SimpleNamespace(get_node=lambda _: node))
 
     with pytest.raises(OpcUaWriteMetadataUnsupportedError, match="did not preserve"):
         await client.write_value("ns=2;s=Temperature", 19.5, "Double", "Uncertain", TIMESTAMP)
@@ -124,7 +124,7 @@ async def test_actual_asyncua_server_rejection_is_not_reported_as_success(monkey
     for attribute in (AttributeIds.AccessLevel, AttributeIds.UserAccessLevel):
         await node.write_attribute(attribute, ua.DataValue(Value=ua.Variant(9, ua.VariantType.Byte)))
     client = OpcUaClient("opc.tcp://localhost:4840")
-    monkeypatch.setattr(client, "_client", server)
+    monkeypatch.setattr(client, "raw_client", server)
     node_id = node.nodeid.to_string()
     assert await client.read_history_write_access(node_id) == (True, True)
     with pytest.raises(BadNotWritable):
@@ -142,7 +142,7 @@ async def test_adapter_accepts_absent_optional_array_dimensions(monkeypatch: pyt
         _attribute(-1),
         ua.DataValue(StatusCode=ua.StatusCode(ua.UInt32(StatusCodes.BadAttributeIdInvalid))),
     ]
-    monkeypatch.setattr(client, "_client", SimpleNamespace(get_node=lambda _: node))
+    monkeypatch.setattr(client, "raw_client", SimpleNamespace(get_node=lambda _: node))
     await client.write_history_value("ns=2;s=Temperature", 19, "Good", TIMESTAMP)
     assert client.snapshot_request_metrics().history_write_count == 1
 
@@ -165,7 +165,7 @@ async def test_adapter_rejects_incomplete_metadata(
     else:
         attributes[0].StatusCode = ua.StatusCode(ua.UInt32(StatusCodes.BadUserAccessDenied))
     node.read_attributes.return_value = attributes
-    monkeypatch.setattr(client, "_client", SimpleNamespace(get_node=lambda _: node))
+    monkeypatch.setattr(client, "raw_client", SimpleNamespace(get_node=lambda _: node))
     with pytest.raises(UaError):
         if operation == "access":
             await client.read_history_write_access("ns=2;s=Temperature")
@@ -188,7 +188,7 @@ async def test_adapter_rejects_failed_results_without_retry(monkeypatch: pytest.
         node.history_update.return_value.OperationResults = []
     elif mode == "timeout":
         node.history_update.side_effect = TimeoutError("timed out")
-    monkeypatch.setattr(client, "_client", SimpleNamespace(get_node=lambda _: node))
+    monkeypatch.setattr(client, "raw_client", SimpleNamespace(get_node=lambda _: node))
     with pytest.raises((UaError, TimeoutError, ValueError)):
         await client.write_history_value("ns=2;s=Temperature", "bad" if mode == "invalid" else 19, "Good", TIMESTAMP)
     assert node.history_update.await_count == (0 if mode == "invalid" else 1)
@@ -206,7 +206,7 @@ async def test_history_access_uses_history_bit(
     client = OpcUaClient("opc.tcp://localhost:4840")
     node = _node()
     node.read_attributes.return_value = [_attribute(access), _attribute(user_access)]
-    monkeypatch.setattr(client, "_client", SimpleNamespace(get_node=lambda _: node))
+    monkeypatch.setattr(client, "raw_client", SimpleNamespace(get_node=lambda _: node))
     assert await client.read_history_write_access("ns=2;s=Temperature") == (bool(access & 8), bool(user_access & 8))
 
 

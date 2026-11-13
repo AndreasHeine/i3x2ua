@@ -61,8 +61,8 @@ async def test_type_hierarchies_batch_limits_shared_ancestors_and_warm_cache(
     async def limits() -> OpcUaOperationalLimits:
         return OpcUaOperationalLimits(max_nodes_per_read=limit, max_nodes_per_browse=limit)
 
-    monkeypatch.setattr(client, "_client", SimpleNamespace(get_node=get_node, read_attributes=read_attributes))
-    monkeypatch.setattr(client, "_browse_with_retry", browse)
+    monkeypatch.setattr(client, "raw_client", SimpleNamespace(get_node=get_node, read_attributes=read_attributes))
+    monkeypatch.setattr(client, "browse_with_retry", browse)
     monkeypatch.setattr(client, "get_operational_limits", limits)
 
     requested = ["ns=2;i=1", "ns=2;i=2", "ns=2;i=1"]
@@ -122,10 +122,12 @@ async def test_type_hierarchy_batch_cycle_is_bounded(monkeypatch: pytest.MonkeyP
         return OpcUaOperationalLimits(None, None)
 
     monkeypatch.setattr(
-        client, "_client", SimpleNamespace(get_node=lambda value: SimpleNamespace(nodeid=ua.NodeId.from_string(value)))
+        client,
+        "raw_client",
+        SimpleNamespace(get_node=lambda value: SimpleNamespace(nodeid=ua.NodeId.from_string(value))),
     )
-    monkeypatch.setattr(client, "_read_attribute_batch", read)
-    monkeypatch.setattr(client, "_browse_references_descriptions", browse)
+    monkeypatch.setattr(client, "read_attribute_batch", read)
+    monkeypatch.setattr(client, "browse_references_descriptions", browse)
     monkeypatch.setattr(client, "get_operational_limits", limits)
     result = await client.resolve_type_definition_hierarchies(["ns=2;i=1"])
     assert calls == ["ns=2;i=1"]
@@ -164,10 +166,12 @@ async def test_type_definition_hierarchy_cache_is_bounded(monkeypatch: pytest.Mo
         return OpcUaOperationalLimits(None, None)
 
     monkeypatch.setattr(
-        client, "_client", SimpleNamespace(get_node=lambda value: SimpleNamespace(nodeid=ua.NodeId.from_string(value)))
+        client,
+        "raw_client",
+        SimpleNamespace(get_node=lambda value: SimpleNamespace(nodeid=ua.NodeId.from_string(value))),
     )
-    monkeypatch.setattr(client, "_read_attribute_batch", read)
-    monkeypatch.setattr(client, "_browse_references_descriptions", browse)
+    monkeypatch.setattr(client, "read_attribute_batch", read)
+    monkeypatch.setattr(client, "browse_references_descriptions", browse)
     monkeypatch.setattr(client, "get_operational_limits", limits)
 
     for index in range(1, 6):
@@ -199,9 +203,11 @@ async def test_type_hierarchy_batch_read_failure_is_not_cached(monkeypatch: pyte
         return OpcUaOperationalLimits(None, None)
 
     monkeypatch.setattr(
-        client, "_client", SimpleNamespace(get_node=lambda value: SimpleNamespace(nodeid=ua.NodeId.from_string(value)))
+        client,
+        "raw_client",
+        SimpleNamespace(get_node=lambda value: SimpleNamespace(nodeid=ua.NodeId.from_string(value))),
     )
-    monkeypatch.setattr(client, "_read_attribute_batch", read)
+    monkeypatch.setattr(client, "read_attribute_batch", read)
     monkeypatch.setattr(client, "get_operational_limits", limits)
     assert await client.resolve_type_definition_hierarchies([]) == {}
     with pytest.raises(ValueError, match="Cannot resolve type BrowseName"):

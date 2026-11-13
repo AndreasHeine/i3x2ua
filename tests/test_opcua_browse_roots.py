@@ -58,7 +58,7 @@ async def test_browse_roots_model_and_api(browse_server: tuple[Server, str], mod
         ]
     )
     client = OpcUaClient(endpoint, browse_roots=settings.opcua_browse_roots)
-    async with client._client:
+    async with client.raw_client:
         builder = ModelBuilder(client)
         model = await builder.build()
         expected_nodes = {"Machine1", "Temperature", "Pressure"}
@@ -80,7 +80,7 @@ async def test_browse_roots_model_and_api(browse_server: tuple[Server, str], mod
 @pytest.mark.asyncio
 async def test_default_browse_root_is_objects() -> None:
     client = OpcUaClient("opc.tcp://localhost:4840")
-    roots = await client._resolve_browse_roots()
+    roots = await client.resolve_browse_roots()
     assert [root.nodeid for root in roots] == [ua.NodeId(ua.Int32(ObjectIds.ObjectsFolder))]
 
 
@@ -119,7 +119,7 @@ async def test_reconnect_restores_reads_and_native_subscription(
         subscription = await client.create_datachange_subscription(50, Handler())
         await client.subscribe_data_changes(subscription, [temperature.nodeid.to_string()])
         await asyncio.wait_for(initial_value.wait(), timeout=5)
-        transport = client._client.uaclient
+        transport = client.raw_client.uaclient
         protocol = transport.protocol
         assert protocol is not None
         assert protocol.transport is not None
@@ -156,11 +156,11 @@ async def test_browse_root_resolution_preserves_type_and_refreshes_namespace(
             ["http://opcfoundation.org/UA/", "urn:other", "urn:plant"],
         ]
     )
-    monkeypatch.setattr(client._client, "get_namespace_array", namespaces)
+    monkeypatch.setattr(client.raw_client, "get_namespace_array", namespaces)
     monkeypatch.setattr(Node, "read_node_class", AsyncMock(return_value=ua.NodeClass.Object))
     parsed = ua.NodeId.from_string(f"nsu=urn:plant;{identifier}")
     for index in (1, 2):
-        roots = await client._resolve_browse_roots()
+        roots = await client.resolve_browse_roots()
         assert len(roots) == 1
         assert type(roots[0].nodeid) is ua.NodeId
         assert roots[0].nodeid.NamespaceIndex == index
@@ -181,7 +181,7 @@ async def test_browse_root_resolution_preserves_type_and_refreshes_namespace(
 async def test_invalid_root_fails_entire_build(browse_server: tuple[Server, str], root: str, error: str) -> None:
     _, endpoint = browse_server
     client = OpcUaClient(endpoint, browse_roots=["nsu=urn:browse-roots;s=Machine1", root])
-    async with client._client:
+    async with client.raw_client:
         with pytest.raises(ValueError, match=error):
             await ModelBuilder(client).build()
     assert client.snapshot_runtime_metrics().browse_tree_nodes_last == 0
@@ -190,11 +190,11 @@ async def test_invalid_root_fails_entire_build(browse_server: tuple[Server, str]
 @pytest.mark.asyncio
 async def test_unreadable_root_is_not_skipped(monkeypatch: pytest.MonkeyPatch) -> None:
     client = OpcUaClient("opc.tcp://localhost:4840", browse_roots=["nsu=urn:plant;i=1"])
-    monkeypatch.setattr(client._client, "get_namespace_array", AsyncMock(return_value=["urn:plant"]))
+    monkeypatch.setattr(client.raw_client, "get_namespace_array", AsyncMock(return_value=["urn:plant"]))
     monkeypatch.setattr(
         Node,
         "read_node_class",
         AsyncMock(side_effect=BadUserAccessDenied()),  # type: ignore[no-untyped-call]
     )
     with pytest.raises(ValueError, match="BadUserAccessDenied"):
-        await client._resolve_browse_roots()
+        await client.resolve_browse_roots()

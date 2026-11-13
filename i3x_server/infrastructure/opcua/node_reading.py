@@ -69,7 +69,7 @@ def _coerce_access_level(value: Any) -> int | None:
         return None
 
 
-def _extract_attribute_value(value: ua.DataValue) -> Any | None:
+def extract_attribute_value(value: ua.DataValue) -> Any | None:
     status_code = value.StatusCode
     if status_code is not None and not status_code.is_good():
         return None
@@ -78,7 +78,7 @@ def _extract_attribute_value(value: ua.DataValue) -> Any | None:
     return value.Value.Value
 
 
-def _coerce_node_class(value: Any) -> NodeClass | None:
+def coerce_node_class(value: Any) -> NodeClass | None:
     if isinstance(value, NodeClass):
         return value
     if value is None:
@@ -89,7 +89,7 @@ def _coerce_node_class(value: Any) -> NodeClass | None:
         return None
 
 
-async def _read_reference_type_browse_names(
+async def read_reference_type_browse_names(
     client: OpcUaClient,
     refs: list[ua.ReferenceDescription],
     names: dict[str, str],
@@ -98,10 +98,10 @@ async def _read_reference_type_browse_names(
     type_ids = sorted({ref.ReferenceTypeId.to_string() for ref in refs} - names.keys())
     if not type_ids:
         return
-    nodes = [client._client.get_node(type_id) for type_id in type_ids]
-    values = await client._read_attribute_batch_limited(nodes, AttributeIds.BrowseName)
+    nodes = [client.raw_node(type_id) for type_id in type_ids]
+    values = await client.read_attribute_batch_limited(nodes, AttributeIds.BrowseName)
     for type_id, value in zip(type_ids, values, strict=True):
-        qualified_name = client._extract_attribute_value(value)
+        qualified_name = client.extract_attribute_value(value)
         browse_name = getattr(qualified_name, "Name", None)
         if not isinstance(browse_name, str) or not browse_name:
             raise ValueError(f"Cannot read BrowseName for reference type {type_id!r}")
@@ -112,24 +112,24 @@ async def _read_reference_type_browse_names(
     # (e.g. ``HasNotifier`` -> ``NotifierOf``). Servers may leave it unset or reject the read; the
     # model build must not fail on it - the builder then falls back to its per-pair derivation.
     try:
-        inverse_values = await client._read_attribute_batch_limited(nodes, AttributeIds.InverseName)
+        inverse_values = await client.read_attribute_batch_limited(nodes, AttributeIds.InverseName)
     except Exception:
         logger.warning(
             "OPC UA reference type inverse names unavailable endpoint=%s type_count=%d",
-            client._endpoint,
+            client.endpoint,
             len(type_ids),
             exc_info=True,
         )
         return
     for type_id, value in zip(type_ids, inverse_values, strict=True):
-        inverse_obj = client._extract_attribute_value(value)
+        inverse_obj = client.extract_attribute_value(value)
         # The attribute is ``LocalizedText`` (OPC UA Part 3); some servers publish a bare string.
         inverse_name = getattr(inverse_obj, "Text", inverse_obj)
         if isinstance(inverse_name, str) and inverse_name:
             inverse_names[type_id] = inverse_name
 
 
-def _to_reference_infos(
+def to_reference_infos(
     refs: list[ua.ReferenceDescription],
     reference_type_names: dict[str, str],
     reference_type_inverse_names: dict[str, str] | None = None,
@@ -151,23 +151,23 @@ def _to_reference_infos(
     return output
 
 
-async def _read_node_info(client: OpcUaClient, node: Any, parent_node_id: str | None) -> OpcUaNodeInfo:
+async def read_node_info(client: OpcUaClient, node: Any, parent_node_id: str | None) -> OpcUaNodeInfo:
     node_id = node.nodeid.to_string()
-    attribute_values = await client._read_attribute_pairs([(node, attr) for attr in _NODE_INFO_ATTRIBUTES])
+    attribute_values = await client.read_attribute_pairs([(node, attr) for attr in _NODE_INFO_ATTRIBUTES])
     values_by_attribute = dict(zip(_NODE_INFO_ATTRIBUTES, attribute_values, strict=True))
-    browse_name_obj = client._extract_attribute_value(values_by_attribute[AttributeIds.BrowseName])
-    display_name_obj = client._extract_attribute_value(values_by_attribute[AttributeIds.DisplayName])
-    node_class_value = client._extract_attribute_value(values_by_attribute[AttributeIds.NodeClass])
+    browse_name_obj = client.extract_attribute_value(values_by_attribute[AttributeIds.BrowseName])
+    display_name_obj = client.extract_attribute_value(values_by_attribute[AttributeIds.DisplayName])
+    node_class_value = client.extract_attribute_value(values_by_attribute[AttributeIds.NodeClass])
     if browse_name_obj is None or display_name_obj is None:
         raise ValueError(f"Cannot read required node names for OPC UA node {node_id}")
-    node_class_obj = client._coerce_node_class(node_class_value)
+    node_class_obj = client.coerce_node_class(node_class_value)
     if node_class_obj is None:
         raise ValueError(f"Cannot read node class for OPC UA node {node_id}")
-    description_value = client._extract_attribute_value(values_by_attribute[AttributeIds.Description])
+    description_value = client.extract_attribute_value(values_by_attribute[AttributeIds.Description])
     description_text = getattr(description_value, "Text", None)
     description = description_text if isinstance(description_text, str) and description_text.strip() else None
     class_values = {
-        attr: client._extract_class_node_info_attribute(
+        attr: client.extract_class_node_info_attribute(
             node_id,
             node_class_obj,
             attr,
@@ -194,7 +194,7 @@ async def _read_node_info(client: OpcUaClient, node: Any, parent_node_id: str | 
         except Exception:
             logger.warning(
                 "OPC UA type definition read failed endpoint=%s node_id=%s",
-                client._endpoint,
+                client.endpoint,
                 node_id,
                 exc_info=True,
             )
@@ -216,7 +216,7 @@ async def _read_node_info(client: OpcUaClient, node: Any, parent_node_id: str | 
     )
 
 
-async def _read_node_infos_limited(client: OpcUaClient, entries: list[tuple[Any, str | None]]) -> list[OpcUaNodeInfo]:
+async def read_node_infos_limited(client: OpcUaClient, entries: list[tuple[Any, str | None]]) -> list[OpcUaNodeInfo]:
     if not entries:
         return []
 
@@ -234,15 +234,15 @@ async def _read_node_infos_limited(client: OpcUaClient, entries: list[tuple[Any,
 
         try:
             node_attributes = [(node, attr) for node in nodes for attr in _NODE_INFO_ATTRIBUTES]
-            attribute_values = await client._read_attribute_pairs(node_attributes)
+            attribute_values = await client.read_attribute_pairs(node_attributes)
         except Exception:
             logger.warning(
                 "OPC UA batch node read failed endpoint=%s batch_size=%d; falling back to per-node reads",
-                client._endpoint,
+                client.endpoint,
                 len(entry_batch),
                 exc_info=True,
             )
-            for info in await client._read_node_infos_fallback(entry_batch):
+            for info in await client.read_node_infos_fallback(entry_batch):
                 slot_index = index_by_node_id.get(info.node_id)
                 if slot_index is not None and slots[slot_index] is None:
                     slots[slot_index] = info
@@ -258,15 +258,15 @@ async def _read_node_infos_limited(client: OpcUaClient, entries: list[tuple[Any,
             node_id = node.nodeid.to_string()
             start = index * len(_NODE_INFO_ATTRIBUTES)
             node_values = {attr: attribute_values[start + offset] for offset, attr in enumerate(_NODE_INFO_ATTRIBUTES)}
-            browse_name_value = client._extract_attribute_value(node_values[AttributeIds.BrowseName])
-            display_name_value = client._extract_attribute_value(node_values[AttributeIds.DisplayName])
-            node_class_value = client._extract_attribute_value(node_values[AttributeIds.NodeClass])
-            node_class = client._coerce_node_class(node_class_value)
+            browse_name_value = client.extract_attribute_value(node_values[AttributeIds.BrowseName])
+            display_name_value = client.extract_attribute_value(node_values[AttributeIds.DisplayName])
+            node_class_value = client.extract_attribute_value(node_values[AttributeIds.NodeClass])
+            node_class = client.coerce_node_class(node_class_value)
             if node_class is None:
                 fallback_entries.append((node, parent_by_node_id[node_id]))
                 continue
 
-            description_value = client._extract_attribute_value(node_values[AttributeIds.Description])
+            description_value = client.extract_attribute_value(node_values[AttributeIds.Description])
             description = getattr(description_value, "Text", None)
             if isinstance(description, str) and description.strip():
                 descriptions_by_node_id[node_id] = description
@@ -284,13 +284,13 @@ async def _read_node_infos_limited(client: OpcUaClient, entries: list[tuple[Any,
             mandatory_by_node_id[node_id] = (browse_name, display_name, node_class)
             applicable_attributes = _NODE_INFO_CLASS_ATTRIBUTES.get(node_class, ())
             class_attributes_by_node_id[node_id] = {
-                attr: client._extract_class_node_info_attribute(node_id, node_class, attr, node_values[attr])
+                attr: client.extract_class_node_info_attribute(node_id, node_class, attr, node_values[attr])
                 for attr in applicable_attributes
             }
             if node_class in {NodeClass.Object, NodeClass.Variable}:
                 object_or_variable_nodes.append(node)
 
-        type_definitions_by_node_id = await client._read_type_definitions(object_or_variable_nodes)
+        type_definitions_by_node_id = await client.read_type_definitions(object_or_variable_nodes)
 
         for node in nodes:
             node_id = node.nodeid.to_string()
@@ -328,7 +328,7 @@ async def _read_node_infos_limited(client: OpcUaClient, entries: list[tuple[Any,
             )
 
         if fallback_entries:
-            for info in await client._read_node_infos_fallback(fallback_entries):
+            for info in await client.read_node_infos_fallback(fallback_entries):
                 slot_index = index_by_node_id.get(info.node_id)
                 if slot_index is not None and slots[slot_index] is None:
                     slots[slot_index] = info
@@ -336,7 +336,7 @@ async def _read_node_infos_limited(client: OpcUaClient, entries: list[tuple[Any,
     return [item for item in slots if item is not None]
 
 
-def _extract_class_node_info_attribute(
+def extract_class_node_info_attribute(
     client: OpcUaClient,
     node_id: str,
     node_class: NodeClass,
@@ -349,7 +349,7 @@ def _extract_class_node_info_attribute(
     if status_code is not None and not status_code.is_good():
         logger.debug(
             "OPC UA node attribute unavailable endpoint=%s node_id=%s node_class=%s attribute=%s status=%s",
-            client._endpoint,
+            client.endpoint,
             node_id,
             node_class.name,
             attribute.name,
@@ -361,17 +361,17 @@ def _extract_class_node_info_attribute(
     return data_value.Value.Value
 
 
-async def _read_node_infos_fallback(client: OpcUaClient, entries: list[tuple[Any, str | None]]) -> list[OpcUaNodeInfo]:
-    semaphore = client._read_slot()
+async def read_node_infos_fallback(client: OpcUaClient, entries: list[tuple[Any, str | None]]) -> list[OpcUaNodeInfo]:
+    semaphore = client.read_slot()
 
     async def worker(node: Any, parent_node_id: str | None) -> OpcUaNodeInfo | None:
         async with semaphore:
             try:
-                return await client._read_node_info(node=node, parent_node_id=parent_node_id)
+                return await client.read_node_info(node=node, parent_node_id=parent_node_id)
             except Exception:
                 logger.warning(
                     "OPC UA node read failed endpoint=%s node_id=%s; skipping node",
-                    client._endpoint,
+                    client.endpoint,
                     node.nodeid.to_string(),
                     exc_info=True,
                 )
@@ -381,34 +381,34 @@ async def _read_node_infos_fallback(client: OpcUaClient, entries: list[tuple[Any
     return [item for item in raw if item is not None]
 
 
-async def _read_attribute_batch(client: OpcUaClient, nodes: list[Any], attr: AttributeIds) -> list[ua.DataValue]:
+async def read_attribute_batch(client: OpcUaClient, nodes: list[Any], attr: AttributeIds) -> list[ua.DataValue]:
     if not nodes:
         return []
 
-    client._runtime_metrics.read_calls += 1
-    client._runtime_metrics.read_nodes += len(nodes)
+    client.runtime_metrics.read_calls += 1
+    client.runtime_metrics.read_nodes += len(nodes)
     try:
-        values = await client._client.read_attributes(nodes, attr=attr)
-        client._record_read_data_values(values)
+        values = await client.raw_client.read_attributes(nodes, attr=attr)
+        client.record_read_data_values(values)
         return values
     except Exception as exc:
-        if not client._should_retry_after_disconnect(exc):
-            client._record_failed_request()
+        if not client.should_retry_after_disconnect(exc):
+            client.record_failed_request()
             raise
         logger.warning(
             "OPC UA batch attribute read retry after reconnect endpoint=%s attr=%s batch_size=%d",
-            client._endpoint,
+            client.endpoint,
             int(attr),
             len(nodes),
         )
-        await client._wait_for_reconnect(exc)
-        retry_nodes = [client._client.get_node(node.nodeid) for node in nodes]
-        values = await client._retry_call(client._client.read_attributes(retry_nodes, attr=attr))
-        client._record_read_data_values(values)
+        await client.wait_for_reconnect(exc)
+        retry_nodes = [client.raw_node(node.nodeid) for node in nodes]
+        values = await client.retry_call(client.raw_client.read_attributes(retry_nodes, attr=attr))
+        client.record_read_data_values(values)
         return values
 
 
-async def _read_attribute_pairs(
+async def read_attribute_pairs(
     client: OpcUaClient,
     node_attributes: list[tuple[Any, AttributeIds]],
     batch_size: int | None = None,
@@ -421,17 +421,17 @@ async def _read_attribute_pairs(
         batch_size = limits.max_nodes_per_read or len(node_attributes)
 
     batches = _chunked_nodes(node_attributes, max(1, batch_size))
-    semaphore = client._read_slot()
+    semaphore = client.read_slot()
 
     async def read_batch(batch: list[tuple[Any, AttributeIds]]) -> list[ua.DataValue]:
         async with semaphore:
-            return await client._read_attribute_pairs_batch(batch)
+            return await client.read_attribute_pairs_batch(batch)
 
     batch_values = await _gather_cancelled_on_failure([read_batch(batch) for batch in batches])
     return [value for values in batch_values for value in values]
 
 
-async def _read_attribute_pairs_batch(
+async def read_attribute_pairs_batch(
     client: OpcUaClient,
     node_attributes: list[tuple[Any, AttributeIds]],
 ) -> list[ua.DataValue]:
@@ -440,44 +440,44 @@ async def _read_attribute_pairs_batch(
     params.TimestampsToReturn = ua.TimestampsToReturn.Both
     params.NodesToRead = [ua.ReadValueId(NodeId=node.nodeid, AttributeId=int(attr)) for node, attr in node_attributes]
 
-    client._runtime_metrics.read_calls += 1
-    client._runtime_metrics.read_nodes += len(node_attributes)
+    client.runtime_metrics.read_calls += 1
+    client.runtime_metrics.read_nodes += len(node_attributes)
     try:
-        values = await client._client.uaclient.read(params)
+        values = await client.raw_client.uaclient.read(params)
     except Exception as exc:
-        if client._should_retry_after_disconnect(exc):
+        if client.should_retry_after_disconnect(exc):
             logger.warning(
                 "OPC UA multi-attribute read retry after reconnect endpoint=%s batch_size=%d",
-                client._endpoint,
+                client.endpoint,
                 len(node_attributes),
             )
-            await client._wait_for_reconnect(exc)
-            values = await client._retry_call(client._client.uaclient.read(params))
-        elif client._is_too_many_operations_error(exc) and len(node_attributes) > 1:
+            await client.wait_for_reconnect(exc)
+            values = await client.retry_call(client.raw_client.uaclient.read(params))
+        elif client.is_too_many_operations_error(exc) and len(node_attributes) > 1:
             split_at = max(1, len(node_attributes) // 2)
             logger.warning(
                 "OPC UA multi-attribute read split retry endpoint=%s batch_size=%d split_at=%d",
-                client._endpoint,
+                client.endpoint,
                 len(node_attributes),
                 split_at,
             )
             left, right = await asyncio.gather(
-                client._read_attribute_pairs_batch(node_attributes[:split_at]),
-                client._read_attribute_pairs_batch(node_attributes[split_at:]),
+                client.read_attribute_pairs_batch(node_attributes[:split_at]),
+                client.read_attribute_pairs_batch(node_attributes[split_at:]),
             )
             return left + right
         else:
-            client._record_failed_request()
+            client.record_failed_request()
             raise
 
     if len(values) != len(node_attributes):
-        client._record_failed_request()
+        client.record_failed_request()
         raise RuntimeError(f"Read returned {len(values)} results for {len(node_attributes)} attributes")
-    client._record_read_data_values(values)
+    client.record_read_data_values(values)
     return values
 
 
-async def _read_attribute_batch_limited(
+async def read_attribute_batch_limited(
     client: OpcUaClient,
     nodes: list[Any],
     attr: AttributeIds,
@@ -493,25 +493,25 @@ async def _read_attribute_batch_limited(
         effective_batch_size = max(1, min(max_nodes, len(nodes)))
 
     batches = _chunked_nodes(nodes, max(1, effective_batch_size))
-    semaphore = client._read_slot()
+    semaphore = client.read_slot()
 
     async def read_batch(node_batch: list[Any]) -> list[ua.DataValue]:
         async with semaphore:
             try:
-                return await client._read_attribute_batch(node_batch, attr)
+                return await client.read_attribute_batch(node_batch, attr)
             except Exception as exc:
-                if not client._is_too_many_operations_error(exc) or len(node_batch) <= 1:
+                if not client.is_too_many_operations_error(exc) or len(node_batch) <= 1:
                     raise
 
                 reduced_batch_size = max(1, len(node_batch) // 2)
                 logger.warning(
                     "OPC UA attribute read split retry endpoint=%s attr=%s batch_size=%d reduced_batch_size=%d",
-                    client._endpoint,
+                    client.endpoint,
                     int(attr),
                     len(node_batch),
                     reduced_batch_size,
                 )
-                return await client._read_attribute_batch_limited(
+                return await client.read_attribute_batch_limited(
                     node_batch,
                     attr,
                     batch_size=reduced_batch_size,
@@ -530,12 +530,12 @@ async def _read_optional_node_ids(
     if not nodes:
         return {}
 
-    values = await client._read_attribute_batch(nodes, attr)
+    values = await client.read_attribute_batch(nodes, attr)
     output: dict[str, str | None] = {}
     fallback_nodes: list[Any] = []
 
     for node, value in zip(nodes, values, strict=True):
-        attribute_value = client._extract_attribute_value(value)
+        attribute_value = client.extract_attribute_value(value)
         node_id = node.nodeid.to_string()
         if attribute_value is None:
             if fallback_attr is not None:
@@ -548,9 +548,9 @@ async def _read_optional_node_ids(
             output[node_id] = str(attribute_value)
 
     if fallback_attr is not None and fallback_nodes:
-        fallback_values = await client._read_attribute_batch(fallback_nodes, fallback_attr)
+        fallback_values = await client.read_attribute_batch(fallback_nodes, fallback_attr)
         for node, value in zip(fallback_nodes, fallback_values, strict=True):
-            attribute_value = client._extract_attribute_value(value)
+            attribute_value = client.extract_attribute_value(value)
             if attribute_value is None:
                 continue
             if hasattr(attribute_value, "to_string"):
@@ -565,23 +565,23 @@ async def _read_optional_scalars(client: OpcUaClient, nodes: list[Any], attr: At
     if not nodes:
         return {}
 
-    values = await client._read_attribute_batch(nodes, attr)
+    values = await client.read_attribute_batch(nodes, attr)
     output: dict[str, Any] = {}
     for node, value in zip(nodes, values, strict=True):
-        attribute_value = client._extract_attribute_value(value)
+        attribute_value = client.extract_attribute_value(value)
         if attribute_value is None:
             continue
         output[node.nodeid.to_string()] = attribute_value
     return output
 
 
-async def _read_type_definitions(client: OpcUaClient, nodes: list[Any]) -> dict[str, str | None]:
+async def read_type_definitions(client: OpcUaClient, nodes: list[Any]) -> dict[str, str | None]:
     if not nodes:
         return {}
 
     limits = await client.get_operational_limits()
     max_nodes_per_browse = limits.max_nodes_per_browse or len(nodes)
-    browsed = await client._browse_references_descriptions(
+    browsed = await client.browse_references_descriptions(
         nodes,
         max_nodes_per_browse=max_nodes_per_browse,
         reference_type_id=ObjectIds.HasTypeDefinition,

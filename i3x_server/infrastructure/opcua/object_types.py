@@ -132,7 +132,7 @@ def _variant_metadata(data_value: Any) -> tuple[str | None, bool | None, list[in
 async def resolve_reference_type_supertype_browse_names(client: OpcUaClient, reference_type_id: str) -> list[str]:
     if not isinstance(reference_type_id, str) or not reference_type_id:
         return []
-    return await client._resolve_reference_type_chain(reference_type_id, set())
+    return await client.resolve_reference_type_chain(reference_type_id, set())
 
 
 async def resolve_type_definition_hierarchy(
@@ -165,7 +165,7 @@ async def resolve_type_definition_hierarchies(
         for type_id in dict.fromkeys(pending):
             if type_id in parents_by_id or type_id in cached_chains:
                 continue
-            cached_chain = client._cached_type_definition_hierarchy(type_id)
+            cached_chain = client.cached_type_definition_hierarchy(type_id)
             if cached_chain is not None:
                 cached_chains[type_id] = list(cached_chain)
                 cache_hits += 1
@@ -175,16 +175,16 @@ async def resolve_type_definition_hierarchies(
             break
         if limits is None:
             limits = await client.get_operational_limits()
-        nodes = [client._client.get_node(type_id) for type_id in unresolved]
+        nodes = [client.raw_node(type_id) for type_id in unresolved]
         for node_batch in _chunked_nodes(nodes, limits.max_nodes_per_read or 128):
-            values = await client._read_attribute_batch(node_batch, AttributeIds.BrowseName)
+            values = await client.read_attribute_batch(node_batch, AttributeIds.BrowseName)
             for node, value in zip(node_batch, values, strict=True):
                 type_id = node.nodeid.to_string()
-                qualified_name = client._extract_attribute_value(value)
+                qualified_name = client.extract_attribute_value(value)
                 if not isinstance(qualified_name, ua.QualifiedName) or not qualified_name.Name:
                     raise ValueError(f"Cannot resolve type BrowseName for {type_id}: {value.StatusCode}")
                 type_infos[type_id] = OpcUaTypeDefinitionInfo(type_id, qualified_name.Name)
-        browsed = await client._browse_references_descriptions(
+        browsed = await client.browse_references_descriptions(
             nodes,
             max_nodes_per_browse=limits.max_nodes_per_browse or 128,
             reference_type_id=ObjectIds.HasSubtype,
@@ -216,10 +216,10 @@ async def resolve_type_definition_hierarchies(
                 hierarchy.append(type_infos[type_id])
                 stack.extend(reversed(parents_by_id[type_id]))
         hierarchies[root_id] = hierarchy
-        client._store_type_definition_hierarchy(root_id, list(hierarchy))
+        client.store_type_definition_hierarchy(root_id, list(hierarchy))
     logger.info(
         "OPC UA type hierarchy resolution endpoint=%s requested=%d cache_hits=%d resolved_types=%d duration_s=%.3f",
-        client._endpoint,
+        client.endpoint,
         len(requested_ids),
         cache_hits,
         len(type_infos),
@@ -228,13 +228,13 @@ async def resolve_type_definition_hierarchies(
     return {type_id: list(hierarchies[type_id]) for type_id in requested_ids}
 
 
-async def _resolve_reference_type_chain(client: OpcUaClient, type_id: str, in_progress: set[str]) -> list[str]:
+async def resolve_reference_type_chain(client: OpcUaClient, type_id: str, in_progress: set[str]) -> list[str]:
     """Browse names of ``type_id`` followed by its supertypes, nearest ancestor first.
 
     Every node reached is cached in its own right, so sibling reference types that
     converge on shared ancestors resolve those ancestors only once.
     """
-    cached_names = client._cached_reference_type_supertypes(type_id)
+    cached_names = client.cached_reference_type_supertypes(type_id)
     if cached_names is not None:
         return list(cached_names)
 
@@ -244,7 +244,7 @@ async def _resolve_reference_type_chain(client: OpcUaClient, type_id: str, in_pr
 
     discovered_names: list[str] = []
     seen_names: set[str] = set()
-    type_node = client._client.get_node(type_id)
+    type_node = client.raw_node(type_id)
 
     try:
         browse_name_obj = await type_node.read_browse_name()
@@ -255,13 +255,13 @@ async def _resolve_reference_type_chain(client: OpcUaClient, type_id: str, in_pr
     except Exception:
         logger.debug(
             "OPC UA browse name read failed for reference type endpoint=%s reference_type_id=%s",
-            client._endpoint,
+            client.endpoint,
             type_id,
             exc_info=True,
         )
 
     try:
-        supertype_refs_by_node = await client._browse_references_descriptions(
+        supertype_refs_by_node = await client.browse_references_descriptions(
             [type_node],
             max_nodes_per_browse=1,
             reference_type_id=ObjectIds.HasSubtype,
@@ -271,7 +271,7 @@ async def _resolve_reference_type_chain(client: OpcUaClient, type_id: str, in_pr
     except Exception:
         logger.debug(
             "OPC UA supertype browse failed endpoint=%s reference_type_id=%s",
-            client._endpoint,
+            client.endpoint,
             type_id,
             exc_info=True,
         )
@@ -282,24 +282,24 @@ async def _resolve_reference_type_chain(client: OpcUaClient, type_id: str, in_pr
             supertype_id = ref.NodeId.to_string()
             if not isinstance(supertype_id, str) or not supertype_id:
                 continue
-            for name in await client._resolve_reference_type_chain(supertype_id, in_progress):
+            for name in await client.resolve_reference_type_chain(supertype_id, in_progress):
                 if name not in seen_names:
                     seen_names.add(name)
                     discovered_names.append(name)
 
     in_progress.discard(type_id)
-    client._store_reference_type_supertypes(type_id, list(discovered_names))
+    client.store_reference_type_supertypes(type_id, list(discovered_names))
     return list(discovered_names)
 
 
 async def _load_object_types(client: OpcUaClient) -> list[OpcUaObjectTypeInfo]:
     now = perf_counter()
-    if client._object_types_cache is not None:
-        cached_at, cached_value = client._object_types_cache
-        if client._is_metadata_cache_entry_fresh(cached_at):
+    if client.object_type_cache is not None:
+        cached_at, cached_value = client.object_type_cache
+        if client.is_metadata_cache_entry_fresh(cached_at):
             logger.debug(
                 "OPC UA object types cache hit endpoint=%s age_s=%.3f",
-                client._endpoint,
+                client.endpoint,
                 now - cached_at,
             )
             return cached_value
@@ -308,7 +308,7 @@ async def _load_object_types(client: OpcUaClient) -> list[OpcUaObjectTypeInfo]:
     limits = await client.get_operational_limits()
     max_nodes_per_browse = limits.max_nodes_per_browse or 128
 
-    root = client._client.nodes.object_types
+    root = client.raw_client.nodes.object_types
     root_node_id = root.nodeid.to_string()
     discovered: dict[str, tuple[str | None, str, str, Any]] = {}
     properties_by_type: dict[str, dict[str, str | None]] = {}
@@ -324,7 +324,7 @@ async def _load_object_types(client: OpcUaClient) -> list[OpcUaObjectTypeInfo]:
             nodes = [node for node, _ in batch_entries]
             member_candidates: list[tuple[str, str, str, str, NodeClass, Any, str | None, str | None, int | None]] = []
 
-            browsed = await client._browse_children_descriptions(nodes, max_nodes_per_browse)
+            browsed = await client.browse_children_descriptions(nodes, max_nodes_per_browse)
             for parent_node, refs in browsed:
                 parent_node_id = parent_node.nodeid.to_string()
                 for ref_index, ref in enumerate(refs):
@@ -333,7 +333,7 @@ async def _load_object_types(client: OpcUaClient) -> list[OpcUaObjectTypeInfo]:
                         continue
                     if ref.NodeClass == NodeClass.ObjectType:
                         visited.add(child_node_id)
-                        child_node = client._client.get_node(ref.NodeId)
+                        child_node = client.raw_node(ref.NodeId)
                         stack.append((child_node, parent_node_id))
 
                         browse_name = ref.BrowseName.Name
@@ -343,7 +343,7 @@ async def _load_object_types(client: OpcUaClient) -> list[OpcUaObjectTypeInfo]:
 
                     # Collect direct declarations from ObjectTypes for generic schema projection.
                     if parent_node_id != root_node_id and ref.NodeClass in {NodeClass.Variable, NodeClass.Object}:
-                        child_node = client._client.get_node(ref.NodeId)
+                        child_node = client.raw_node(ref.NodeId)
                         property_name = ref.BrowseName.Name or child_node_id
                         display_name = ref.DisplayName.Text or property_name
                         reference_type_id = ref.ReferenceTypeId.to_string()
@@ -363,7 +363,7 @@ async def _load_object_types(client: OpcUaClient) -> list[OpcUaObjectTypeInfo]:
                         )
 
             if member_candidates:
-                member_infos = await client._read_object_type_members_limited(member_candidates)
+                member_infos = await client.read_object_type_members_limited(member_candidates)
                 for parent_id, member_info in member_infos:
                     if member_info.node_class.lower() == "variable":
                         properties = properties_by_type.setdefault(parent_id, {})
@@ -377,7 +377,7 @@ async def _load_object_types(client: OpcUaClient) -> list[OpcUaObjectTypeInfo]:
             unique_by_name = {member.browse_name: member for member in members}
             members_by_type[type_node_id] = list(unique_by_name.values())
 
-        metadata_by_node_id = await client._read_object_type_metadata([node for _, _, _, node in discovered.values()])
+        metadata_by_node_id = await client.read_object_type_metadata([node for _, _, _, node in discovered.values()])
 
         output = [
             OpcUaObjectTypeInfo(
@@ -395,24 +395,24 @@ async def _load_object_types(client: OpcUaClient) -> list[OpcUaObjectTypeInfo]:
 
         logger.debug(
             "OPC UA object types read ok endpoint=%s count=%d duration_s=%.3f",
-            client._endpoint,
+            client.endpoint,
             len(output),
             perf_counter() - started,
         )
-        client._object_types_cache = (perf_counter(), output)
-        client._runtime_metrics.object_type_reads += 1
-        client._runtime_metrics.object_type_count_last = len(output)
+        client.object_type_cache = (perf_counter(), output)
+        client.runtime_metrics.object_type_reads += 1
+        client.runtime_metrics.object_type_count_last = len(output)
         return output
     except Exception:
         logger.exception(
             "OPC UA object types read failed endpoint=%s duration_s=%.3f",
-            client._endpoint,
+            client.endpoint,
             perf_counter() - started,
         )
         raise
 
 
-async def _read_data_type_or_none(client: OpcUaClient, node: Any) -> str | None:
+async def read_data_type_or_none(client: OpcUaClient, node: Any) -> str | None:
     try:
         data_type_obj = await node.read_data_type()
         data_type = data_type_obj.to_string()
@@ -422,14 +422,14 @@ async def _read_data_type_or_none(client: OpcUaClient, node: Any) -> str | None:
     except Exception:
         logger.debug(
             "OPC UA variable datatype read failed endpoint=%s node_id=%s",
-            client._endpoint,
+            client.endpoint,
             node.nodeid.to_string(),
             exc_info=True,
         )
         return None
 
 
-async def _read_object_type_members_limited(
+async def read_object_type_members_limited(
     client: OpcUaClient,
     entries: list[tuple[str, str, str, str, NodeClass, Any, str | None, str | None, int | None]],
 ) -> list[tuple[str, OpcUaObjectTypeMemberInfo]]:
@@ -458,7 +458,7 @@ async def _read_object_type_members_limited(
     member_attributes.extend((node, AttributeIds.ValueRank) for node in variable_nodes)
     member_attributes.extend((node, AttributeIds.Value) for node in variable_nodes)
     try:
-        member_values = await client._read_attribute_pairs(member_attributes)
+        member_values = await client.read_attribute_pairs(member_attributes)
     except Exception:
         descriptions_batch_ok = False
         data_type_batch_ok = False
@@ -466,14 +466,14 @@ async def _read_object_type_members_limited(
         value_batch_ok = False
         logger.debug(
             "OPC UA member metadata batch read failed endpoint=%s",
-            client._endpoint,
+            client.endpoint,
             exc_info=True,
         )
     else:
         offset = 0
         description_values = member_values[offset : offset + len(all_nodes)]
         for node_id, description_value in zip(all_node_ids, description_values, strict=True):
-            description_raw = client._extract_attribute_value(description_value)
+            description_raw = client.extract_attribute_value(description_value)
             text_value = getattr(description_raw, "Text", None)
             description_by_node_id[node_id] = text_value if isinstance(text_value, str) and text_value.strip() else None
         offset += len(all_nodes)
@@ -481,7 +481,7 @@ async def _read_object_type_members_limited(
         data_type_values = member_values[offset : offset + len(variable_nodes)]
         offset += len(variable_nodes)
         for node_id, data_type_value in zip(variable_node_ids, data_type_values, strict=True):
-            data_type_raw = client._extract_attribute_value(data_type_value)
+            data_type_raw = client.extract_attribute_value(data_type_value)
             if data_type_raw is not None:
                 data_type_by_node_id[node_id] = (
                     data_type_raw.to_string() if hasattr(data_type_raw, "to_string") else str(data_type_raw)
@@ -489,7 +489,7 @@ async def _read_object_type_members_limited(
 
         value_rank_values = member_values[offset : offset + len(variable_nodes)]
         for node_id, value_rank_value in zip(variable_node_ids, value_rank_values, strict=True):
-            value_rank_raw = client._extract_attribute_value(value_rank_value)
+            value_rank_raw = client.extract_attribute_value(value_rank_value)
             if value_rank_raw is None:
                 continue
             if isinstance(value_rank_raw, int):
@@ -513,7 +513,7 @@ async def _read_object_type_members_limited(
     modelling_rule_by_node_id: dict[str, str | None] = {}
     modelling_rules_batch_ok = True
     try:
-        browsed_rules = await client._browse_references_descriptions(
+        browsed_rules = await client.browse_references_descriptions(
             all_nodes,
             max_nodes_per_browse=max_nodes_per_browse,
             reference_type_id=ObjectIds.HasModellingRule,
@@ -526,7 +526,7 @@ async def _read_object_type_members_limited(
         modelling_rules_batch_ok = False
         logger.debug(
             "OPC UA member modelling rule batch browse failed endpoint=%s",
-            client._endpoint,
+            client.endpoint,
             exc_info=True,
         )
 
@@ -534,7 +534,7 @@ async def _read_object_type_members_limited(
     type_definitions_batch_ok = True
     if object_nodes:
         try:
-            browsed_definitions = await client._browse_references_descriptions(
+            browsed_definitions = await client.browse_references_descriptions(
                 object_nodes,
                 max_nodes_per_browse=max_nodes_per_browse,
                 reference_type_id=ObjectIds.HasTypeDefinition,
@@ -548,11 +548,11 @@ async def _read_object_type_members_limited(
             type_definitions_batch_ok = False
             logger.debug(
                 "OPC UA member type definition batch browse failed endpoint=%s",
-                client._endpoint,
+                client.endpoint,
                 exc_info=True,
             )
 
-    semaphore = client._read_slot()
+    semaphore = client.read_slot()
 
     async def worker(
         parent_id: str,
@@ -571,19 +571,19 @@ async def _read_object_type_members_limited(
                 if data_type_batch_ok:
                     data_type = data_type_by_node_id.get(node_id)
                 else:
-                    data_type = await client._read_data_type_or_none(node)
+                    data_type = await client.read_data_type_or_none(node)
                 type_definition_id = None
             else:
                 if type_definitions_batch_ok:
                     type_definition_id = type_definition_by_node_id.get(node_id)
                 else:
-                    type_definition_id = await client._read_type_definition_id_or_none(node)
+                    type_definition_id = await client.read_type_definition_id_or_none(node)
 
             if node_class == NodeClass.Variable:
                 if value_batch_ok:
                     data_value = value_data_by_node_id.get(node_id)
                 else:
-                    data_value = await client._read_data_value_or_none(node)
+                    data_value = await client.read_data_value_or_none(node)
             else:
                 data_value = None
             value = _variant_value_or_self(data_value)
@@ -592,7 +592,7 @@ async def _read_object_type_members_limited(
                 if value_rank_batch_ok:
                     value_rank = value_rank_by_node_id.get(node_id)
                 else:
-                    value_rank = await client._read_value_rank_or_none(node)
+                    value_rank = await client.read_value_rank_or_none(node)
             else:
                 value_rank = None
             if value_rank is not None and value_rank >= 1:
@@ -600,11 +600,11 @@ async def _read_object_type_members_limited(
             if modelling_rules_batch_ok:
                 modelling_rule = modelling_rule_by_node_id.get(node_id)
             else:
-                modelling_rule = await client._read_modelling_rule_or_none(node)
+                modelling_rule = await client.read_modelling_rule_or_none(node)
             if descriptions_batch_ok:
                 description = description_by_node_id.get(node_id)
             else:
-                description = await client._read_description_or_none(node)
+                description = await client.read_description_or_none(node)
             return (
                 parent_id,
                 OpcUaObjectTypeMemberInfo(
@@ -657,7 +657,7 @@ async def _read_object_type_members_limited(
     )
 
 
-async def _read_type_definition_id_or_none(client: OpcUaClient, node: Any) -> str | None:
+async def read_type_definition_id_or_none(client: OpcUaClient, node: Any) -> str | None:
     try:
         refs = await node.get_references(refs=ObjectIds.HasTypeDefinition, direction=ua.BrowseDirection.Forward)
         if not refs:
@@ -666,16 +666,16 @@ async def _read_type_definition_id_or_none(client: OpcUaClient, node: Any) -> st
     except Exception:
         logger.debug(
             "OPC UA type definition read failed endpoint=%s node_id=%s",
-            client._endpoint,
+            client.endpoint,
             node.nodeid.to_string(),
             exc_info=True,
         )
         return None
 
 
-async def _read_modelling_rule_or_none(client: OpcUaClient, node: Any) -> str | None:
+async def read_modelling_rule_or_none(client: OpcUaClient, node: Any) -> str | None:
     try:
-        browsed = await client._browse_references_descriptions(
+        browsed = await client.browse_references_descriptions(
             [node],
             max_nodes_per_browse=1,
             reference_type_id=ObjectIds.HasModellingRule,
@@ -694,14 +694,14 @@ async def _read_modelling_rule_or_none(client: OpcUaClient, node: Any) -> str | 
     except Exception:
         logger.debug(
             "OPC UA modelling rule read failed endpoint=%s node_id=%s",
-            client._endpoint,
+            client.endpoint,
             node.nodeid.to_string(),
             exc_info=True,
         )
         return None
 
 
-async def _read_description_or_none(client: OpcUaClient, node: Any) -> str | None:
+async def read_description_or_none(client: OpcUaClient, node: Any) -> str | None:
     try:
         localized = await node.read_description()
         text = getattr(localized, "Text", None)
@@ -711,27 +711,27 @@ async def _read_description_or_none(client: OpcUaClient, node: Any) -> str | Non
     except Exception:
         logger.debug(
             "OPC UA description read failed endpoint=%s node_id=%s",
-            client._endpoint,
+            client.endpoint,
             node.nodeid.to_string(),
             exc_info=True,
         )
         return None
 
 
-async def _read_data_value_or_none(client: OpcUaClient, node: Any) -> Any:
+async def read_data_value_or_none(client: OpcUaClient, node: Any) -> Any:
     try:
         return await node.read_data_value()
     except Exception:
         logger.debug(
             "OPC UA data value read failed endpoint=%s node_id=%s",
-            client._endpoint,
+            client.endpoint,
             node.nodeid.to_string(),
             exc_info=True,
         )
         return None
 
 
-async def _read_value_rank_or_none(client: OpcUaClient, node: Any) -> int | None:
+async def read_value_rank_or_none(client: OpcUaClient, node: Any) -> int | None:
     try:
         value_rank = await node.read_value_rank()
         if isinstance(value_rank, int):
@@ -740,25 +740,25 @@ async def _read_value_rank_or_none(client: OpcUaClient, node: Any) -> int | None
     except Exception:
         logger.debug(
             "OPC UA value rank read failed endpoint=%s node_id=%s",
-            client._endpoint,
+            client.endpoint,
             node.nodeid.to_string(),
             exc_info=True,
         )
         return None
 
 
-async def _read_object_type_metadata(client: OpcUaClient, nodes: list[Any]) -> dict[str, dict[str, Any]]:
+async def read_object_type_metadata(client: OpcUaClient, nodes: list[Any]) -> dict[str, dict[str, Any]]:
     if not nodes:
         return {}
 
     attributes = [(node, attr) for node in nodes for attr in (AttributeIds.Description, AttributeIds.IsAbstract)]
-    values = await client._read_attribute_pairs(attributes)
+    values = await client.read_attribute_pairs(attributes)
 
     output: dict[str, dict[str, Any]] = {}
     for index, node in enumerate(nodes):
         node_id = node.nodeid.to_string()
-        description_raw = client._extract_attribute_value(values[index * 2])
-        abstract_raw = client._extract_attribute_value(values[index * 2 + 1])
+        description_raw = client.extract_attribute_value(values[index * 2])
+        abstract_raw = client.extract_attribute_value(values[index * 2 + 1])
 
         description: str | None = None
         text_value = getattr(description_raw, "Text", None)

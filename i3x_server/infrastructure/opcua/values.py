@@ -84,38 +84,38 @@ def _is_write_access_allowed(value: Any) -> bool:
 
 async def read_value(client: OpcUaClient, node_id: str) -> Any:
     started = perf_counter()
-    client._runtime_metrics.read_calls += 1
-    client._runtime_metrics.read_nodes += 1
-    node = client._client.get_node(node_id)
+    client.runtime_metrics.read_calls += 1
+    client.runtime_metrics.read_nodes += 1
+    node = client.raw_node(node_id)
     try:
         value = await node.read_value()
-        client._record_read_success()
+        client.record_read_success()
         logger.debug("OPC UA read ok node_id=%s duration_s=%.3f", node_id, perf_counter() - started)
         return value
     except Exception as exc:
-        if client._should_retry_after_disconnect(exc):
+        if client.should_retry_after_disconnect(exc):
             logger.warning(
                 "OPC UA read retry after reconnect node_id=%s endpoint=%s",
                 node_id,
-                client._endpoint,
+                client.endpoint,
             )
-            await client._wait_for_reconnect(exc)
-            value = await client._retry_call(client._client.get_node(node_id).read_value())
-            client._record_read_success()
+            await client.wait_for_reconnect(exc)
+            value = await client.retry_call(client.raw_node(node_id).read_value())
+            client.record_read_success()
             logger.debug(
                 "OPC UA read ok after reconnect node_id=%s duration_s=%.3f",
                 node_id,
                 perf_counter() - started,
             )
             return value
-        client._record_failed_request()
+        client.record_failed_request()
         logger.exception("OPC UA read failed node_id=%s duration_s=%.3f", node_id, perf_counter() - started)
         raise
 
 
 async def read_browse_name(client: OpcUaClient, node_id: str) -> str | None:
     started = perf_counter()
-    node = client._client.get_node(node_id)
+    node = client.raw_node(node_id)
     try:
         browse_name = await node.read_browse_name()
         resolved = getattr(browse_name, "Name", None)
@@ -123,14 +123,14 @@ async def read_browse_name(client: OpcUaClient, node_id: str) -> str | None:
             return resolved
         return str(browse_name) if browse_name is not None else None
     except Exception as exc:
-        if client._should_retry_after_disconnect(exc):
+        if client.should_retry_after_disconnect(exc):
             logger.warning(
                 "OPC UA browse-name retry after reconnect node_id=%s endpoint=%s",
                 node_id,
-                client._endpoint,
+                client.endpoint,
             )
-            await client._wait_for_reconnect(exc)
-            retry_name = await client._retry_call(client._client.get_node(node_id).read_browse_name())
+            await client.wait_for_reconnect(exc)
+            retry_name = await client.retry_call(client.raw_node(node_id).read_browse_name())
             resolved_retry = getattr(retry_name, "Name", None)
             if isinstance(resolved_retry, str) and resolved_retry:
                 return resolved_retry
@@ -154,18 +154,18 @@ async def read_values(client: OpcUaClient, node_ids: list[str]) -> list[Any]:
     batch_size = max(1, min(max_nodes, len(node_ids)))
 
     batches = _chunked(node_ids, batch_size)
-    semaphore = client._read_slot()
+    semaphore = client.read_slot()
 
     async def read_batch(batch: list[str]) -> list[Any]:
         async with semaphore:
-            return await client._read_values_batch_with_fallback(batch)
+            return await client.read_values_batch_with_fallback(batch)
 
     batch_values = await _gather_cancelled_on_failure([read_batch(batch) for batch in batches])
     values = [value for values_batch in batch_values for value in values_batch]
 
     logger.debug(
         "OPC UA batch read ok endpoint=%s requested=%d batch_size=%d duration_s=%.3f",
-        client._endpoint,
+        client.endpoint,
         len(node_ids),
         batch_size,
         perf_counter() - started,
@@ -184,73 +184,73 @@ async def read_data_values(client: OpcUaClient, node_ids: list[str]) -> list[ua.
 
     started = perf_counter()
     try:
-        nodes = [client._client.get_node(node_id) for node_id in node_ids]
-        values = await client._read_attribute_batch_limited(nodes, AttributeIds.Value)
+        nodes = [client.raw_node(node_id) for node_id in node_ids]
+        values = await client.read_attribute_batch_limited(nodes, AttributeIds.Value)
         if len(values) != len(node_ids):
             raise RuntimeError(f"Read returned {len(values)} results for {len(node_ids)} nodes")
     except Exception as exc:
-        if client._is_transport_read_failure(exc):
+        if client.is_transport_read_failure(exc):
             logger.warning(
                 "OPC UA batched data-value read unavailable endpoint=%s requested=%d; "
                 "not falling back to per-node reads",
-                client._endpoint,
+                client.endpoint,
                 len(node_ids),
                 exc_info=True,
             )
             raise
         logger.warning(
             "OPC UA batched data-value read failed endpoint=%s requested=%d; falling back to per-node reads",
-            client._endpoint,
+            client.endpoint,
             len(node_ids),
             exc_info=True,
         )
-        return await client._read_data_values_per_node(node_ids)
+        return await client.read_data_values_per_node(node_ids)
 
     logger.debug(
         "OPC UA batch data-value read ok endpoint=%s requested=%d duration_s=%.3f",
-        client._endpoint,
+        client.endpoint,
         len(node_ids),
         perf_counter() - started,
     )
     return values
 
 
-async def _read_data_values_per_node(client: OpcUaClient, node_ids: list[str]) -> list[ua.DataValue]:
+async def read_data_values_per_node(client: OpcUaClient, node_ids: list[str]) -> list[ua.DataValue]:
     started = perf_counter()
     limits = await client.get_operational_limits()
     max_nodes = limits.max_nodes_per_read or len(node_ids)
     batch_size = max(1, min(max_nodes, len(node_ids)))
-    semaphore = client._read_slot()
+    semaphore = client.read_slot()
 
     async def _read_one(node_id: str) -> ua.DataValue:
         async with semaphore:
-            node = client._client.get_node(node_id)
+            node = client.raw_node(node_id)
             try:
                 value = await node.read_data_value()
-                client._record_read_data_values([value])
+                client.record_read_data_values([value])
                 return value
             except Exception as exc:
-                if client._should_retry_after_disconnect(exc):
+                if client.should_retry_after_disconnect(exc):
                     logger.warning(
                         "OPC UA data-value read retry after reconnect node_id=%s endpoint=%s",
                         node_id,
-                        client._endpoint,
+                        client.endpoint,
                     )
-                    await client._wait_for_reconnect(exc)
+                    await client.wait_for_reconnect(exc)
                     try:
-                        retry_value = await client._retry_call(client._client.get_node(node_id).read_data_value())
-                        client._record_read_data_values([retry_value])
+                        retry_value = await client.retry_call(client.raw_node(node_id).read_data_value())
+                        client.record_read_data_values([retry_value])
                         return retry_value
                     except Exception as retry_exc:
-                        if client._is_transport_read_failure(retry_exc):
+                        if client.is_transport_read_failure(retry_exc):
                             logger.warning(
                                 "OPC UA data-value retry unavailable node_id=%s; aborting remaining reads",
                                 node_id,
                                 exc_info=True,
                             )
                             raise
-                elif client._is_transport_read_failure(exc):
-                    client._record_failed_request()
+                elif client.is_transport_read_failure(exc):
+                    client.record_failed_request()
                     logger.warning(
                         "OPC UA data-value read unavailable node_id=%s; aborting remaining reads",
                         node_id,
@@ -264,7 +264,7 @@ async def _read_data_values_per_node(client: OpcUaClient, node_ids: list[str]) -
                 )
                 dv = ua.DataValue()
                 dv.StatusCode = ua.StatusCode(ua.UInt32(0x80010000))
-                client._record_read_data_values([dv])
+                client.record_read_data_values([dv])
                 return dv
 
     results: list[ua.DataValue] = []
@@ -279,50 +279,50 @@ async def _read_data_values_per_node(client: OpcUaClient, node_ids: list[str]) -
             raise
         results.extend(chunk_results)
 
-    client._runtime_metrics.read_calls += 1
-    client._runtime_metrics.read_nodes += len(node_ids)
+    client.runtime_metrics.read_calls += 1
+    client.runtime_metrics.read_nodes += len(node_ids)
     logger.debug(
         "OPC UA batch data-value read ok endpoint=%s requested=%d duration_s=%.3f",
-        client._endpoint,
+        client.endpoint,
         len(node_ids),
         perf_counter() - started,
     )
     return results
 
 
-async def _read_values_batch_with_fallback(client: OpcUaClient, node_ids: list[str]) -> list[Any]:
+async def read_values_batch_with_fallback(client: OpcUaClient, node_ids: list[str]) -> list[Any]:
     if not node_ids:
         return []
 
-    client._runtime_metrics.read_calls += 1
-    client._runtime_metrics.read_nodes += len(node_ids)
-    nodes = [client._client.get_node(node_id) for node_id in node_ids]
+    client.runtime_metrics.read_calls += 1
+    client.runtime_metrics.read_nodes += len(node_ids)
+    nodes = [client.raw_node(node_id) for node_id in node_ids]
     try:
-        values = list(await client._client.read_values(nodes))
-        client._record_read_success()
+        values = list(await client.raw_client.read_values(nodes))
+        client.record_read_success()
         return values
     except Exception as exc:
         candidate_error = exc
-        if client._should_retry_after_disconnect(exc):
+        if client.should_retry_after_disconnect(exc):
             logger.warning(
                 "OPC UA batch read retry after reconnect endpoint=%s batch_size=%d",
-                client._endpoint,
+                client.endpoint,
                 len(node_ids),
             )
-            await client._wait_for_reconnect(exc)
-            retry_nodes = [client._client.get_node(node_id) for node_id in node_ids]
+            await client.wait_for_reconnect(exc)
+            retry_nodes = [client.raw_node(node_id) for node_id in node_ids]
             try:
-                values = list(await client._client.read_values(retry_nodes))
-                client._record_read_success()
+                values = list(await client.raw_client.read_values(retry_nodes))
+                client.record_read_success()
                 return values
             except Exception as retry_exc:
                 candidate_error = retry_exc
 
         if len(node_ids) <= 1:
-            client._record_failed_request()
+            client.record_failed_request()
             logger.warning(
                 "OPC UA single-node read failed endpoint=%s node_id=%s error=%s; returning null value",
-                client._endpoint,
+                client.endpoint,
                 node_ids[0],
                 candidate_error,
             )
@@ -331,46 +331,46 @@ async def _read_values_batch_with_fallback(client: OpcUaClient, node_ids: list[s
         split_at = max(1, len(node_ids) // 2)
         logger.warning(
             "OPC UA batch read split fallback endpoint=%s batch_size=%d split_at=%d error=%s",
-            client._endpoint,
+            client.endpoint,
             len(node_ids),
             split_at,
             candidate_error,
         )
         left, right = await asyncio.gather(
-            client._read_values_batch_with_fallback(node_ids[:split_at]),
-            client._read_values_batch_with_fallback(node_ids[split_at:]),
+            client.read_values_batch_with_fallback(node_ids[:split_at]),
+            client.read_values_batch_with_fallback(node_ids[split_at:]),
         )
         return left + right
 
 
 async def read_write_access(client: OpcUaClient, node_id: str) -> tuple[bool, bool]:
-    node = client._client.get_node(node_id)
+    node = client.raw_node(node_id)
     try:
         values = await node.read_attributes([AttributeIds.AccessLevel, AttributeIds.UserAccessLevel])
         access_level = _attribute_scalar_value(values[0]) if len(values) > 0 else None
         user_access_level = _attribute_scalar_value(values[1]) if len(values) > 1 else None
         return _is_write_access_allowed(access_level), _is_write_access_allowed(user_access_level)
     except Exception as exc:
-        if client._should_retry_after_disconnect(exc):
+        if client.should_retry_after_disconnect(exc):
             logger.warning(
                 "OPC UA write access read retry after reconnect node_id=%s endpoint=%s",
                 node_id,
-                client._endpoint,
+                client.endpoint,
             )
-            await client._wait_for_reconnect(exc)
-            retry_node = client._client.get_node(node_id)
-            retry_values = await client._retry_call(
+            await client.wait_for_reconnect(exc)
+            retry_node = client.raw_node(node_id)
+            retry_values = await client.retry_call(
                 retry_node.read_attributes([AttributeIds.AccessLevel, AttributeIds.UserAccessLevel])
             )
             access_level = _attribute_scalar_value(retry_values[0]) if len(retry_values) > 0 else None
             user_access_level = _attribute_scalar_value(retry_values[1]) if len(retry_values) > 1 else None
             return _is_write_access_allowed(access_level), _is_write_access_allowed(user_access_level)
-        client._record_failed_request()
+        client.record_failed_request()
         raise
 
 
 async def read_history_write_access(client: OpcUaClient, node_id: str) -> tuple[bool, bool]:
-    node = client._client.get_node(node_id)
+    node = client.raw_node(node_id)
     try:
         values = await node.read_attributes([AttributeIds.AccessLevel, AttributeIds.UserAccessLevel])
         if len(values) != 2:
@@ -385,12 +385,12 @@ async def read_history_write_access(client: OpcUaClient, node_id: str) -> tuple[
             bool(int(_attribute_scalar_value(values[1])) & mask),
         )
     except Exception:
-        client._record_failed_request()
+        client.record_failed_request()
         raise
 
 
 async def write_history_value(client: OpcUaClient, node_id: str, value: Any, quality: str, timestamp: datetime) -> None:
-    node = client._client.get_node(node_id)
+    node = client.raw_node(node_id)
     try:
         variant_type = await node.read_data_type_as_variant_type()
         attributes = await node.read_attributes([AttributeIds.ValueRank, AttributeIds.ArrayDimensions])
@@ -428,29 +428,29 @@ async def write_history_value(client: OpcUaClient, node_id: str, value: Any, qua
         result.OperationResults[0].check()
     except Exception as exc:
         if isinstance(exc, UaStatusCodeError) and exc.code == StatusCodes.BadServiceUnsupported:
-            client._history_update_supported = False
-        client._record_failed_request()
+            client.history_update_support = False
+        client.record_failed_request()
         raise
-    client._history_update_supported = True
-    client._request_metrics.history_write_count += 1
+    client.history_update_support = True
+    client.request_metrics.history_write_count += 1
     logger.info("OPC UA history update ok node_id=%s timestamp=%s", node_id, timestamp.isoformat())
 
 
 async def read_variant_type(client: OpcUaClient, node_id: str) -> str | None:
-    node = client._client.get_node(node_id)
+    node = client.raw_node(node_id)
     try:
         variant_type = await node.read_data_type_as_variant_type()
         return str(getattr(variant_type, "name", variant_type)) if variant_type is not None else None
     except Exception as exc:
-        if client._should_retry_after_disconnect(exc):
+        if client.should_retry_after_disconnect(exc):
             logger.warning(
                 "OPC UA variant type read retry after reconnect node_id=%s endpoint=%s",
                 node_id,
-                client._endpoint,
+                client.endpoint,
             )
-            await client._wait_for_reconnect(exc)
-            retry_node = client._client.get_node(node_id)
-            retry_variant_type = await client._retry_call(retry_node.read_data_type_as_variant_type())
+            await client.wait_for_reconnect(exc)
+            retry_node = client.raw_node(node_id)
+            retry_variant_type = await client.retry_call(retry_node.read_data_type_as_variant_type())
             return (
                 str(getattr(retry_variant_type, "name", retry_variant_type)) if retry_variant_type is not None else None
             )
@@ -470,7 +470,7 @@ async def write_value(
         # A naive timestamp would be reinterpreted in the host timezone by the read-back
         # comparison below; the historical write path rejects it the same way (`history.py`).
         raise ValueError("Current-value timestamp must include a timezone")
-    node = client._client.get_node(node_id)
+    node = client.raw_node(node_id)
     explicit_variant = _to_explicit_ua_variant(value, variant_type)
     payload = ua.DataValue(
         Value=explicit_variant if explicit_variant is not None else ua.Variant(value),
@@ -480,9 +480,9 @@ async def write_value(
     try:
         # Do not replay a write after a connection loss: the server may already have applied it.
         await node.write_value(payload)
-        client._request_metrics.write_count += 1
+        client.request_metrics.write_count += 1
     except Exception:
-        client._record_failed_request()
+        client.record_failed_request()
         raise
 
     if not verify_metadata:
@@ -493,13 +493,13 @@ async def write_value(
     try:
         written_data_value = await node.read_data_value(raise_on_bad_status=False)
     except Exception as exc:
-        client._record_failed_request()
+        client.record_failed_request()
         raise OpcUaWriteMetadataVerificationError(WRITE_METADATA_UNCERTAIN_MESSAGE) from exc
     actual_quality = _quality_from_status_code(written_data_value.StatusCode)
     actual_timestamp = written_data_value.SourceTimestamp
     expected_timestamp = timestamp.astimezone(timezone.utc)
     if actual_quality != quality or actual_timestamp != expected_timestamp:
-        client._record_failed_request()
+        client.record_failed_request()
         raise OpcUaWriteMetadataUnsupportedError(WRITE_METADATA_UNSUPPORTED_MESSAGE)
 
 
@@ -513,7 +513,7 @@ async def read_history_values(
         return {}
 
     started = perf_counter()
-    client._runtime_metrics.history_read_nodes += len(node_ids)
+    client.runtime_metrics.history_read_nodes += len(node_ids)
     limits = await client.get_operational_limits()
     batch_size = limits.max_nodes_per_history_read_data or len(node_ids)
     details = ua.ReadRawModifiedDetails(
@@ -525,11 +525,11 @@ async def read_history_values(
     )
     values_by_node_id: dict[str, list[ua.DataValue]] = {}
     history_batches = _chunked(node_ids, max(1, batch_size))
-    semaphore = client._read_slot()
+    semaphore = client.read_slot()
 
     async def read_history_batch(node_batch: list[str]) -> dict[str, list[ua.DataValue]]:
         async with semaphore:
-            batch_values = await client._read_history_batch(details, node_batch)
+            batch_values = await client.read_history_batch(details, node_batch)
             batch_values_by_node_id: dict[str, list[ua.DataValue]] = {node_id: [] for node_id in node_batch}
             active_node_ids = list(node_batch)
             active_results = batch_values
@@ -541,10 +541,10 @@ async def read_history_values(
                     try:
                         result.StatusCode.check()
                     except Exception as exc:
-                        if client._is_history_missing_or_unsupported(exc):
+                        if client.is_history_missing_or_unsupported(exc):
                             logger.info(
                                 "OPC UA history read returned no data or unsupported history endpoint=%s node_id=%s",
-                                client._endpoint,
+                                client.endpoint,
                                 node_id,
                             )
                             batch_values_by_node_id[node_id] = []
@@ -563,7 +563,7 @@ async def read_history_values(
 
                 if not next_node_ids:
                     break
-                active_results = await client._read_history_batch(
+                active_results = await client.read_history_batch(
                     details,
                     next_node_ids,
                     [next_continuations[node_id] for node_id in next_node_ids],
@@ -576,15 +576,15 @@ async def read_history_values(
         for batch_values in batch_results:
             values_by_node_id.update(batch_values)
     except Exception:
-        client._record_failed_request()
+        client.record_failed_request()
         raise
 
     for _ in range(len(values_by_node_id)):
-        client._record_history_read_success()
+        client.record_history_read_success()
 
     logger.debug(
         "OPC UA history read ok endpoint=%s nodes=%d values=%d duration_s=%.3f",
-        client._endpoint,
+        client.endpoint,
         len(node_ids),
         sum(len(item) for item in values_by_node_id.values()),
         perf_counter() - started,
@@ -592,7 +592,7 @@ async def read_history_values(
     return values_by_node_id
 
 
-async def _read_history_batch(
+async def read_history_batch(
     client: OpcUaClient,
     details: ua.ReadRawModifiedDetails,
     node_ids: list[str],
@@ -604,35 +604,35 @@ async def _read_history_batch(
     params.TimestampsToReturn = ua.TimestampsToReturn.Both
     params.ReleaseContinuationPoints = False
     params.NodesToRead = [
-        ua.HistoryReadValueId(NodeId=client._client.get_node(node_id).nodeid, ContinuationPoint=point)
+        ua.HistoryReadValueId(NodeId=client.raw_node(node_id).nodeid, ContinuationPoint=point)
         for node_id, point in zip(node_ids, points, strict=True)
     ]
 
-    client._runtime_metrics.history_read_calls += 1
+    client.runtime_metrics.history_read_calls += 1
     try:
-        results = await client._client.uaclient.history_read(params)
+        results = await client.raw_client.uaclient.history_read(params)
     except Exception as exc:
-        if client._should_retry_after_disconnect(exc):
+        if client.should_retry_after_disconnect(exc):
             logger.warning(
                 "OPC UA batched history read retry after reconnect endpoint=%s node_count=%d",
-                client._endpoint,
+                client.endpoint,
                 len(node_ids),
             )
-            await client._wait_for_reconnect(exc)
-            results = await client._retry_call(client._client.uaclient.history_read(params))
-        elif client._is_too_many_operations_error(exc) and len(node_ids) > 1:
+            await client.wait_for_reconnect(exc)
+            results = await client.retry_call(client.raw_client.uaclient.history_read(params))
+        elif client.is_too_many_operations_error(exc) and len(node_ids) > 1:
             split_at = max(1, len(node_ids) // 2)
             logger.warning(
                 "OPC UA history read split retry endpoint=%s batch_size=%d split_at=%d",
-                client._endpoint,
+                client.endpoint,
                 len(node_ids),
                 split_at,
             )
-            left = await client._read_history_batch(details, node_ids[:split_at], points[:split_at])
-            right = await client._read_history_batch(details, node_ids[split_at:], points[split_at:])
+            left = await client.read_history_batch(details, node_ids[:split_at], points[:split_at])
+            right = await client.read_history_batch(details, node_ids[split_at:], points[split_at:])
             return left + right
         else:
-            client._record_failed_request()
+            client.record_failed_request()
             raise
 
     if len(results) != len(node_ids):
@@ -640,7 +640,7 @@ async def _read_history_batch(
     return results
 
 
-def _is_history_missing_or_unsupported(exc: Exception) -> bool:
+def is_history_missing_or_unsupported(exc: Exception) -> bool:
     lowered = str(exc).lower()
     return any(
         token in lowered
@@ -658,12 +658,12 @@ def _is_history_missing_or_unsupported(exc: Exception) -> bool:
 
 async def call_method(client: OpcUaClient, object_node_id: str, method_node_id: str, args: list[Any]) -> Any:
     started = perf_counter()
-    client._runtime_metrics.method_calls += 1
-    object_node = client._client.get_node(object_node_id)
+    client.runtime_metrics.method_calls += 1
+    object_node = client.raw_node(object_node_id)
     try:
         # Do not replay a method call after a connection loss: it may already have run.
         result = await object_node.call_method(method_node_id, *args)
-        client._record_method_success()
+        client.record_method_success()
         logger.info(
             "OPC UA method ok object_node_id=%s method_node_id=%s arg_count=%d duration_s=%.3f",
             object_node_id,
@@ -673,7 +673,7 @@ async def call_method(client: OpcUaClient, object_node_id: str, method_node_id: 
         )
         return result
     except Exception:
-        client._record_failed_request()
+        client.record_failed_request()
         logger.exception(
             "OPC UA method failed object_node_id=%s method_node_id=%s arg_count=%d duration_s=%.3f",
             object_node_id,
@@ -687,6 +687,6 @@ async def call_method(client: OpcUaClient, object_node_id: str, method_node_id: 
 async def read_server_status_data_value(client: OpcUaClient) -> ua.DataValue:
     values = await client.read_data_values(["i=2256"])
     if not values:
-        client._record_failed_request()
+        client.record_failed_request()
         raise RuntimeError("OPC UA ServerStatus read returned no data value")
     return values[0]

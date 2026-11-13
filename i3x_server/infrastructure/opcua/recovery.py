@@ -167,13 +167,13 @@ class _SupervisedAsyncuaClient(Client):
             callback(reused)
 
 
-async def _wait_for_reconnect(client: OpcUaClient, exc: Exception) -> None:
+async def wait_for_reconnect(client: OpcUaClient, exc: Exception) -> None:
     """Wait until asyncua's supervisor has re-established the session after `exc`.
 
     Raises ConnectionError if the client is not connected again within the reconnect
     request timeout, so callers fail fast instead of piling up behind a dead connection.
     """
-    uaclient = client._client.uaclient
+    uaclient = client.raw_client.uaclient
     if (
         uaclient.state is UaClientState.CONNECTED
         and isinstance(exc, UaStatusCodeError)
@@ -183,11 +183,11 @@ async def _wait_for_reconnect(client: OpcUaClient, exc: Exception) -> None:
         # watchdog would only notice on its next tick, so hand the loss over right away.
         logger.warning(
             "OPC UA session lost endpoint=%s status=%s; triggering asyncua reconnect",
-            client._endpoint,
+            client.endpoint,
             exc,
         )
         uaclient.notify_transport_lost()
-    timeout = client._reconnect_request_timeout_seconds
+    timeout = client.reconnect_request_timeout_seconds
     async with uaclient.subscribe_state() as states:
         try:
             await states.wait_for_state(UaClientState.CONNECTED, timeout=timeout)
@@ -197,7 +197,7 @@ async def _wait_for_reconnect(client: OpcUaClient, exc: Exception) -> None:
             ) from exc
 
 
-def _should_retry_after_disconnect(exc: Exception) -> bool:
+def should_retry_after_disconnect(exc: Exception) -> bool:
     """True for errors caused by a lost connection or session, never for request timeouts."""
     if isinstance(exc, UaStatusCodeError):
         return exc.code in _CONNECTION_LOST_STATUS_CODES
@@ -212,10 +212,10 @@ def _should_retry_after_disconnect(exc: Exception) -> bool:
     return any(marker in text for marker in _CONNECTION_LOST_MARKERS)
 
 
-def _is_transport_read_failure(exc: Exception) -> bool:
+def is_transport_read_failure(exc: Exception) -> bool:
     return (
         isinstance(exc, (TimeoutError, ConnectionError))
-        or _should_retry_after_disconnect(exc)
+        or should_retry_after_disconnect(exc)
         or (
             isinstance(exc, UaStatusCodeError)
             and exc.code in {StatusCodes.BadTimeout, StatusCodes.BadRequestTimeout, StatusCodes.BadServerTooBusy}
@@ -223,19 +223,19 @@ def _is_transport_read_failure(exc: Exception) -> bool:
     )
 
 
-def _is_too_many_operations_error(exc: Exception) -> bool:
+def is_too_many_operations_error(exc: Exception) -> bool:
     text = str(exc).lower()
     return "badtoomanyoperations" in text or "too many operations" in text
 
 
-def _is_continuation_point_invalid(exc: Exception) -> bool:
+def is_continuation_point_invalid(exc: Exception) -> bool:
     """BrowseNext points dropped by session recreation report this status (L10)."""
     if isinstance(exc, UaStatusCodeError):
         return bool(exc.code == StatusCodes.BadContinuationPointInvalid)
     return "badcontinuationpointinvalid" in str(exc).lower()
 
 
-async def _retry_call(client: OpcUaClient, awaitable: Awaitable[_T]) -> _T:
+async def retry_call(client: OpcUaClient, awaitable: Awaitable[_T]) -> _T:
     """Await a post-reconnect retry; a failing retry counts as a failed request (L10).
 
     Only the first attempt used to be recorded, so retries after a reconnect
@@ -244,5 +244,5 @@ async def _retry_call(client: OpcUaClient, awaitable: Awaitable[_T]) -> _T:
     try:
         return await awaitable
     except Exception:
-        client._record_failed_request()
+        client.record_failed_request()
         raise

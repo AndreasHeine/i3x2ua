@@ -37,9 +37,9 @@ async def _load_operational_limits(client: OpcUaClient) -> OpcUaOperationalLimit
     max_nodes_per_history_read_data: int | None = None
 
     try:
-        operational_limits_node = client._client.get_node("i=11704")
+        operational_limits_node = client.raw_node("i=11704")
         children = await operational_limits_node.get_children()
-        browse_names = await client._read_attribute_batch_limited(
+        browse_names = await client.read_attribute_batch_limited(
             children,
             AttributeIds.BrowseName,
             batch_size=max(1, len(children)),
@@ -51,15 +51,15 @@ async def _load_operational_limits(client: OpcUaClient) -> OpcUaOperationalLimit
             "MaxNodesPerHistoryReadData",
         }
         for child, browse_name_value in zip(children, browse_names, strict=True):
-            browse_name = getattr(client._extract_attribute_value(browse_name_value), "Name", None)
+            browse_name = getattr(client.extract_attribute_value(browse_name_value), "Name", None)
             if browse_name in supported_limits:
                 limit_nodes.append((child, browse_name))
-        limit_values = await client._read_attribute_pairs(
+        limit_values = await client.read_attribute_pairs(
             [(node, AttributeIds.Value) for node, _ in limit_nodes],
             batch_size=max(1, len(limit_nodes)),
         )
         for (_, browse_name), value_data in zip(limit_nodes, limit_values, strict=True):
-            value = client._extract_attribute_value(value_data)
+            value = client.extract_attribute_value(value_data)
             if not isinstance(value, int) or value <= 0:
                 continue
             if browse_name == "MaxNodesPerBrowse":
@@ -71,7 +71,7 @@ async def _load_operational_limits(client: OpcUaClient) -> OpcUaOperationalLimit
     except Exception:
         logger.warning(
             "OPC UA operational limits read failed endpoint=%s; using internal defaults",
-            client._endpoint,
+            client.endpoint,
             exc_info=True,
         )
 
@@ -80,11 +80,11 @@ async def _load_operational_limits(client: OpcUaClient) -> OpcUaOperationalLimit
         max_nodes_per_read=max_nodes_per_read,
         max_nodes_per_history_read_data=max_nodes_per_history_read_data,
     )
-    client._limits_cache = limits
+    client.limits_cache = limits
     logger.info(
         "OPC UA operational limits resolved endpoint=%s "
         "max_nodes_per_browse=%s max_nodes_per_read=%s max_nodes_per_history_read_data=%s duration_s=%.3f",
-        client._endpoint,
+        client.endpoint,
         limits.max_nodes_per_browse,
         limits.max_nodes_per_read,
         limits.max_nodes_per_history_read_data,
@@ -97,19 +97,19 @@ async def _load_subscription_capabilities(client: OpcUaClient) -> OpcUaSubscript
     started = perf_counter()
 
     node_ids = ["i=11714", "i=24096", "i=24097", "i=24098", "i=24104"]
-    nodes = [client._client.get_node(node_id) for node_id in node_ids]
+    nodes = [client.raw_node(node_id) for node_id in node_ids]
     try:
-        capability_values = await client._read_attribute_pairs([(node, AttributeIds.Value) for node in nodes])
+        capability_values = await client.read_attribute_pairs([(node, AttributeIds.Value) for node in nodes])
     except Exception:
-        logger.debug("OPC UA subscription capability batch read failed endpoint=%s", client._endpoint, exc_info=True)
+        logger.debug("OPC UA subscription capability batch read failed endpoint=%s", client.endpoint, exc_info=True)
         fallback_values = await _gather_cancelled_on_failure(
-            [client._read_positive_int(node_id) for node_id in node_ids]
+            [client.read_positive_int(node_id) for node_id in node_ids]
         )
         values_by_node_id = dict(zip(node_ids, fallback_values, strict=True))
     else:
         values_by_node_id = {}
         for node, data_value in zip(nodes, capability_values, strict=True):
-            value = client._extract_attribute_value(data_value)
+            value = client.extract_attribute_value(data_value)
             node_id = node.nodeid.to_string()
             values_by_node_id[node_id] = value if isinstance(value, int) and value > 0 else None
 
@@ -121,12 +121,12 @@ async def _load_subscription_capabilities(client: OpcUaClient) -> OpcUaSubscript
         max_monitored_items_per_subscription=values_by_node_id.get("i=24104"),
     )
 
-    client._subscription_caps_cache = capabilities
+    client.subscription_caps_cache = capabilities
     logger.info(
         "OPC UA subscription capabilities resolved endpoint=%s max_items_per_call=%s "
         "max_subscriptions=%s max_monitored_items=%s max_subscriptions_per_session=%s "
         "max_items_per_subscription=%s duration_s=%.3f",
-        client._endpoint,
+        client.endpoint,
         capabilities.max_monitored_items_per_call,
         capabilities.max_subscriptions,
         capabilities.max_monitored_items,
@@ -137,9 +137,9 @@ async def _load_subscription_capabilities(client: OpcUaClient) -> OpcUaSubscript
     return capabilities
 
 
-async def _read_positive_int(client: OpcUaClient, node_id: str) -> int | None:
+async def read_positive_int(client: OpcUaClient, node_id: str) -> int | None:
     try:
-        value = await client._client.get_node(node_id).read_value()
+        value = await client.raw_node(node_id).read_value()
     except Exception:
         logger.debug("OPC UA subscription capability read failed node_id=%s", node_id, exc_info=True)
         return None
@@ -151,14 +151,14 @@ async def _read_positive_int(client: OpcUaClient, node_id: str) -> int | None:
 
 async def _get_namespaces(client: OpcUaClient) -> list[str]:
     started = perf_counter()
-    client._runtime_metrics.namespace_reads += 1
+    client.runtime_metrics.namespace_reads += 1
     try:
-        raw = await client._client.nodes.namespace_array.read_value()
+        raw = await client.raw_client.nodes.namespace_array.read_value()
         namespaces = [str(item) for item in raw] if isinstance(raw, list) else []
-        client._runtime_metrics.namespace_count_last = len(namespaces)
+        client.runtime_metrics.namespace_count_last = len(namespaces)
         logger.debug(
             "OPC UA namespaces read ok endpoint=%s count=%d duration_s=%.3f",
-            client._endpoint,
+            client.endpoint,
             len(namespaces),
             perf_counter() - started,
         )
@@ -166,7 +166,7 @@ async def _get_namespaces(client: OpcUaClient) -> list[str]:
     except Exception:
         logger.exception(
             "OPC UA namespaces read failed endpoint=%s duration_s=%.3f",
-            client._endpoint,
+            client.endpoint,
             perf_counter() - started,
         )
         raise
@@ -174,22 +174,22 @@ async def _get_namespaces(client: OpcUaClient) -> list[str]:
 
 async def _load_namespace_infos(client: OpcUaClient) -> list[OpcUaNamespaceInfo]:
     now = perf_counter()
-    if client._namespace_infos_cache is not None:
-        cached_at, cached_value = client._namespace_infos_cache
-        if client._is_metadata_cache_entry_fresh(cached_at):
+    if client.namespace_infos_cache is not None:
+        cached_at, cached_value = client.namespace_infos_cache
+        if client.is_metadata_cache_entry_fresh(cached_at):
             logger.debug(
                 "OPC UA namespace info cache hit endpoint=%s age_s=%.3f",
-                client._endpoint,
+                client.endpoint,
                 now - cached_at,
             )
             return cached_value
 
     started = perf_counter()
-    cold_build = client._runtime_metrics.namespace_info_builds == 0
+    cold_build = client.runtime_metrics.namespace_info_builds == 0
     uris = await client.get_namespaces()
     server_uri: str | None = None
     try:
-        server_array_node = client._client.get_node(f"i={ObjectIds.Server_ServerArray}")
+        server_array_node = client.raw_node(f"i={ObjectIds.Server_ServerArray}")
         server_array = await server_array_node.read_value()
         if isinstance(server_array, (list, tuple)) and server_array:
             candidate = server_array[0]
@@ -198,7 +198,7 @@ async def _load_namespace_infos(client: OpcUaClient) -> list[OpcUaNamespaceInfo]
     except Exception:
         logger.warning(
             "OPC UA ServerArray read failed endpoint=%s; server URI unavailable",
-            client._endpoint,
+            client.endpoint,
             exc_info=True,
         )
 
@@ -209,17 +209,15 @@ async def _load_namespace_infos(client: OpcUaClient) -> list[OpcUaNamespaceInfo]
     try:
         limits = await client.get_operational_limits()
         max_nodes_per_browse = limits.max_nodes_per_browse or 128
-        namespaces_node = client._client.get_node("i=11715")
-        namespace_components_browse = await client._browse_children_descriptions(
+        namespaces_node = client.raw_node("i=11715")
+        namespace_components_browse = await client.browse_children_descriptions(
             [namespaces_node],
             max_nodes_per_browse,
         )
-        namespace_components = [
-            client._client.get_node(ref.NodeId) for _, refs in namespace_components_browse for ref in refs
-        ]
+        namespace_components = [client.raw_node(ref.NodeId) for _, refs in namespace_components_browse for ref in refs]
         logger.debug(
             "OPC UA namespace metadata components endpoint=%s count=%d",
-            client._endpoint,
+            client.endpoint,
             len(namespace_components),
         )
 
@@ -232,7 +230,7 @@ async def _load_namespace_infos(client: OpcUaClient) -> list[OpcUaNamespaceInfo]
             if isinstance(display_name, BaseException):
                 logger.debug(
                     "OPC UA namespace metadata display name read failed endpoint=%s node_id=%s",
-                    client._endpoint,
+                    client.endpoint,
                     component.nodeid.to_string(),
                     exc_info=display_name,
                 )
@@ -242,7 +240,7 @@ async def _load_namespace_infos(client: OpcUaClient) -> list[OpcUaNamespaceInfo]
                 display_text if isinstance(display_text, str) else ""
             )
 
-        component_children_browse = await client._browse_children_descriptions(
+        component_children_browse = await client.browse_children_descriptions(
             namespace_components,
             max_nodes_per_browse,
         )
@@ -253,7 +251,7 @@ async def _load_namespace_infos(client: OpcUaClient) -> list[OpcUaNamespaceInfo]
             component_display = component_display_by_id.get(component.nodeid.to_string(), "")
             logger.debug(
                 "OPC UA namespace metadata component endpoint=%s node_id=%s children=%d",
-                client._endpoint,
+                client.endpoint,
                 component.nodeid.to_string(),
                 len(refs),
             )
@@ -261,7 +259,7 @@ async def _load_namespace_infos(client: OpcUaClient) -> list[OpcUaNamespaceInfo]
                 if ref.BrowseName.Name in {"NamespaceUri", "NamespaceVersion"}:
                     child_entries.append(
                         (
-                            client._client.get_node(ref.NodeId),
+                            client.raw_node(ref.NodeId),
                             component.nodeid.to_string(),
                             ref.BrowseName.Name,
                             component_display,
@@ -278,7 +276,7 @@ async def _load_namespace_infos(client: OpcUaClient) -> list[OpcUaNamespaceInfo]
                 metadata_failures += 1
                 logger.debug(
                     "OPC UA namespace metadata NamespaceUri read failed endpoint=%s node_id=%s",
-                    client._endpoint,
+                    client.endpoint,
                     child_node.nodeid.to_string(),
                 )
                 return
@@ -293,20 +291,20 @@ async def _load_namespace_infos(client: OpcUaClient) -> list[OpcUaNamespaceInfo]
         batch_values: list[Any] | None = None
         if child_entries:
             try:
-                batch_values = await client._read_attribute_pairs(
+                batch_values = await client.read_attribute_pairs(
                     [(child, AttributeIds.Value) for child, _component_id, _name, _display in child_entries]
                 )
             except Exception:
                 logger.debug(
                     "OPC UA namespace metadata value batch read failed endpoint=%s; falling back to per-node reads",
-                    client._endpoint,
+                    client.endpoint,
                     exc_info=True,
                 )
                 batch_values = None
 
         if batch_values is not None:
             for index, (child, component_id, browse_name, component_display) in enumerate(child_entries):
-                extracted = client._extract_attribute_value(batch_values[index])
+                extracted = client.extract_attribute_value(batch_values[index])
                 record_child_value(child, component_id, browse_name, component_display, extracted)
         else:
             for child, component_id, browse_name, component_display in child_entries:
@@ -316,7 +314,7 @@ async def _load_namespace_infos(client: OpcUaClient) -> list[OpcUaNamespaceInfo]
                     metadata_failures += 1
                     logger.debug(
                         "OPC UA namespace metadata NamespaceUri read failed endpoint=%s node_id=%s",
-                        client._endpoint,
+                        client.endpoint,
                         child.nodeid.to_string(),
                         exc_info=exc,
                     )
@@ -326,13 +324,13 @@ async def _load_namespace_infos(client: OpcUaClient) -> list[OpcUaNamespaceInfo]
             logger.warning(
                 "OPC UA namespace metadata partially read endpoint=%s failures=%d; "
                 "using fallback names for missing entries",
-                client._endpoint,
+                client.endpoint,
                 metadata_failures,
             )
     except Exception:
         logger.warning(
             "OPC UA namespace metadata read from i=11715 failed endpoint=%s; using fallback names",
-            client._endpoint,
+            client.endpoint,
             exc_info=True,
         )
 
@@ -351,12 +349,12 @@ async def _load_namespace_infos(client: OpcUaClient) -> list[OpcUaNamespaceInfo]
         )
         for uri in uris
     ]
-    client._namespace_infos_cache = (perf_counter(), infos)
-    client._runtime_metrics.namespace_info_builds += 1
-    client._runtime_metrics.namespace_info_count_last = len(infos)
+    client.namespace_infos_cache = (perf_counter(), infos)
+    client.runtime_metrics.namespace_info_builds += 1
+    client.runtime_metrics.namespace_info_count_last = len(infos)
     logger.info(
         "OPC UA namespace infos built endpoint=%s count=%d duration_s=%.3f cold_build=%s",
-        client._endpoint,
+        client.endpoint,
         len(infos),
         perf_counter() - started,
         cold_build,

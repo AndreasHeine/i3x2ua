@@ -30,25 +30,23 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-async def _resolve_browse_roots(client: OpcUaClient) -> list[Node]:
-    if client._browse_roots is None:
-        return [client._client.nodes.objects]
-    if not client._browse_roots:
+async def resolve_browse_roots(client: OpcUaClient) -> list[Node]:
+    if client.browse_roots is None:
+        return [client.raw_client.nodes.objects]
+    if not client.browse_roots:
         raise ValueError("Configured OPC UA browse roots must not be empty")
-    namespace_array = await client._client.get_namespace_array()
+    namespace_array = await client.raw_client.get_namespace_array()
     roots: dict[str, Node] = {}
-    for configured_id in client._browse_roots:
+    for configured_id in client.browse_roots:
         expanded = ua.NodeId.from_string(configured_id)
         if not isinstance(expanded, ua.ExpandedNodeId) or not expanded.NamespaceUri or expanded.ServerIndex:
             raise ValueError(f"Browse root must be a local URI-based ExpandedNodeId: {configured_id!r}")
         try:
             namespace_index = namespace_array.index(expanded.NamespaceUri)
         except ValueError as exc:
-            raise ValueError(
-                f"Browse root namespace is not available on {client._endpoint}: {configured_id!r}"
-            ) from exc
+            raise ValueError(f"Browse root namespace is not available on {client.endpoint}: {configured_id!r}") from exc
         node_id = ua.NodeId(expanded.Identifier, ua.Int16(namespace_index), expanded.NodeIdType)
-        node = client._client.get_node(node_id)
+        node = client.raw_node(node_id)
         try:
             node_class = await node.read_node_class()
         except UaStatusCodeError as exc:
@@ -58,8 +56,8 @@ async def _resolve_browse_roots(client: OpcUaClient) -> list[Node]:
         roots[node_id.to_string()] = node
     logger.info(
         "OPC UA browse roots resolved endpoint=%s configured=%s resolved=%s",
-        client._endpoint,
-        client._browse_roots,
+        client.endpoint,
+        client.browse_roots,
         list(roots),
     )
     return list(roots.values())
@@ -67,16 +65,16 @@ async def _resolve_browse_roots(client: OpcUaClient) -> list[Node]:
 
 async def browse_tree(client: OpcUaClient) -> list[OpcUaNodeInfo]:
     started = perf_counter()
-    client._runtime_metrics.browse_tree_calls += 1
+    client.runtime_metrics.browse_tree_calls += 1
     limits = await client.get_operational_limits()
     max_nodes_per_browse = limits.max_nodes_per_browse or 128
     logger.info(
         "OPC UA browse started endpoint=%s browse_concurrency=%d max_nodes_per_browse=%d",
-        client._endpoint,
-        client._browse_concurrency,
+        client.endpoint,
+        client.browse_concurrency,
         max_nodes_per_browse,
     )
-    roots = await client._resolve_browse_roots()
+    roots = await client.resolve_browse_roots()
     output: list[OpcUaNodeInfo] = []
     visited: set[str] = set()
     reference_type_names: dict[str, str] = {}
@@ -101,18 +99,18 @@ async def browse_tree(client: OpcUaClient) -> list[OpcUaNodeInfo]:
         nodes = [node for node, _ in filtered_entries]
         node_infos, all_refs, browsed = await _gather_cancelled_on_failure(
             [
-                client._read_node_infos_limited(filtered_entries),
-                client._browse_references_descriptions(
+                client.read_node_infos_limited(filtered_entries),
+                client.browse_references_descriptions(
                     nodes,
                     max_nodes_per_browse=max_nodes_per_browse,
                     reference_type_id=ObjectIds.References,
                 ),
-                client._browse_children_descriptions(nodes, max_nodes_per_browse),
+                client.browse_children_descriptions(nodes, max_nodes_per_browse),
             ]
         )
         output.extend(node_infos)
 
-        await client._read_reference_type_browse_names(
+        await client.read_reference_type_browse_names(
             [ref for _, refs in all_refs for ref in refs],
             reference_type_names,
             reference_type_inverse_names,
@@ -122,37 +120,37 @@ async def browse_tree(client: OpcUaClient) -> list[OpcUaNodeInfo]:
             info = node_info_by_id.get(parent_node.nodeid.to_string())
             if info is None:
                 continue
-            info.outgoing_references = client._to_reference_infos(
+            info.outgoing_references = client.to_reference_infos(
                 refs, reference_type_names, reference_type_inverse_names
             )
         for parent_node, refs in browsed:
             parent_node_id = parent_node.nodeid.to_string()
             for ref in refs:
-                stack.append((client._client.get_node(ref.NodeId), parent_node_id))
+                stack.append((client.raw_node(ref.NodeId), parent_node_id))
 
     logger.info(
         "OPC UA browse finished endpoint=%s node_count=%d duration_s=%.3f",
-        client._endpoint,
+        client.endpoint,
         len(output),
         perf_counter() - started,
     )
-    client._runtime_metrics.browse_tree_nodes_last = len(output)
+    client.runtime_metrics.browse_tree_nodes_last = len(output)
     return output
 
 
-async def _browse_children_descriptions(
+async def browse_children_descriptions(
     client: OpcUaClient,
     nodes: list[Any],
     max_nodes_per_browse: int,
 ) -> list[tuple[Any, list[ua.ReferenceDescription]]]:
-    return await client._browse_references_descriptions(
+    return await client.browse_references_descriptions(
         nodes,
         max_nodes_per_browse=max_nodes_per_browse,
         reference_type_id=ObjectIds.HierarchicalReferences,
     )
 
 
-async def _browse_references_descriptions(
+async def browse_references_descriptions(
     client: OpcUaClient,
     nodes: list[Any],
     max_nodes_per_browse: int,
@@ -181,19 +179,19 @@ async def _browse_references_descriptions(
         params.RequestedMaxReferencesPerNode = 0
         params.NodesToBrowse = browse_descriptions
 
-        client._runtime_metrics.browse_calls += 1
-        client._runtime_metrics.browse_nodes += len(node_batch)
+        client.runtime_metrics.browse_calls += 1
+        client.runtime_metrics.browse_nodes += len(node_batch)
         logger.debug(
             "OPC UA browse batch endpoint=%s nodes_to_browse=%d",
-            client._endpoint,
+            client.endpoint,
             len(node_batch),
         )
-        browse_results = await client._browse_with_retry(params=params, batch_size=len(node_batch))
+        browse_results = await client.browse_with_retry(params=params, batch_size=len(node_batch))
         initial_references_total = sum(len(result.References) for result in browse_results)
-        client._runtime_metrics.browse_initial_references += initial_references_total
+        client.runtime_metrics.browse_initial_references += initial_references_total
         logger.debug(
             "OPC UA browse batch result endpoint=%s nodes=%d initial_references=%d",
-            client._endpoint,
+            client.endpoint,
             len(node_batch),
             initial_references_total,
         )
@@ -212,19 +210,19 @@ async def _browse_references_descriptions(
             next_params.ReleaseContinuationPoints = False
             next_params.ContinuationPoints = [continuation_point for _, continuation_point, _ in continuation_entries]
             try:
-                next_results = await client._browse_next_with_retry(
+                next_results = await client.browse_next_with_retry(
                     next_params=next_params,
                     node_ids=[node.nodeid.to_string() for node, _, _ in continuation_entries],
                 )
             except UaStatusCodeError as exc:
-                if not client._is_continuation_point_invalid(exc):
+                if not client.is_continuation_point_invalid(exc):
                     raise
                 # Session recreation invalidated the continuation points: re-browse the
                 # affected nodes against the live session and continue from the fresh
                 # points instead of aborting the whole tree read (L10).
                 logger.warning(
                     "OPC UA browse-next continuation points stale endpoint=%s node_count=%d; re-browsing nodes",
-                    client._endpoint,
+                    client.endpoint,
                     len(continuation_entries),
                     exc_info=True,
                 )
@@ -242,7 +240,7 @@ async def _browse_references_descriptions(
                 recovery_params.View = ua.ViewDescription()
                 recovery_params.RequestedMaxReferencesPerNode = 0
                 recovery_params.NodesToBrowse = recovery_descriptions
-                recovery_results = await client._browse_with_retry(
+                recovery_results = await client.browse_with_retry(
                     params=recovery_params,
                     batch_size=len(recovery_descriptions),
                 )
@@ -265,7 +263,7 @@ async def _browse_references_descriptions(
                         continuation_entries.append((node, recovery_result.ContinuationPoint, refs))
                     continue
 
-            client._runtime_metrics.browse_next_calls += 1
+            client.runtime_metrics.browse_next_calls += 1
             if len(next_results) != len(continuation_entries):
                 raise RuntimeError(
                     f"BrowseNext returned {len(next_results)} results for {len(continuation_entries)} points"
@@ -275,7 +273,7 @@ async def _browse_references_descriptions(
             for (node, _, refs), next_result in zip(continuation_entries, next_results, strict=True):
                 refs.extend(next_result.References)
                 browse_next_references_total += len(next_result.References)
-                client._runtime_metrics.browse_next_references += len(next_result.References)
+                client.runtime_metrics.browse_next_references += len(next_result.References)
                 if next_result.ContinuationPoint:
                     next_entries.append((node, next_result.ContinuationPoint, refs))
             continuation_entries = next_entries
@@ -283,7 +281,7 @@ async def _browse_references_descriptions(
         if browse_next_references_total:
             logger.debug(
                 "OPC UA browse-next endpoint=%s nodes=%d additional_references=%d",
-                client._endpoint,
+                client.endpoint,
                 len(browse_results),
                 browse_next_references_total,
             )
@@ -291,49 +289,47 @@ async def _browse_references_descriptions(
     return results
 
 
-async def _browse_with_retry(
-    client: OpcUaClient, params: ua.BrowseParameters, batch_size: int
-) -> list[ua.BrowseResult]:
+async def browse_with_retry(client: OpcUaClient, params: ua.BrowseParameters, batch_size: int) -> list[ua.BrowseResult]:
     try:
-        results = await client._client.uaclient.browse(params)
-        client._record_browse_results(results)
+        results = await client.browse_raw(params)
+        client.record_browse_results(results)
         return results
     except Exception as exc:
-        if not client._should_retry_after_disconnect(exc):
-            client._record_failed_request()
+        if not client.should_retry_after_disconnect(exc):
+            client.record_failed_request()
             raise
         logger.warning(
             "OPC UA browse retry after reconnect endpoint=%s batch_size=%d",
-            client._endpoint,
+            client.endpoint,
             batch_size,
         )
-        await client._wait_for_reconnect(exc)
-        results = await client._retry_call(client._client.uaclient.browse(params))
-        client._record_browse_results(results)
+        await client.wait_for_reconnect(exc)
+        results = await client.retry_call(client.browse_raw(params))
+        client.record_browse_results(results)
         return results
 
 
-async def _browse_next_with_retry(
+async def browse_next_with_retry(
     client: OpcUaClient,
     next_params: ua.BrowseNextParameters,
     node_ids: list[str],
 ) -> list[ua.BrowseResult]:
     try:
-        results = await client._client.uaclient.browse_next(next_params)
-        client._record_browse_results(results)
+        results = await client.browse_next_raw(next_params)
+        client.record_browse_results(results)
         return results
     except Exception as exc:
-        if not client._should_retry_after_disconnect(exc):
-            client._record_failed_request()
+        if not client.should_retry_after_disconnect(exc):
+            client.record_failed_request()
             raise
         logger.warning(
             "OPC UA browse-next retry after reconnect endpoint=%s node_count=%d",
-            client._endpoint,
+            client.endpoint,
             len(node_ids),
         )
-        await client._wait_for_reconnect(exc)
-        results = await client._retry_call(client._client.uaclient.browse_next(next_params))
-        client._record_browse_results(results)
+        await client.wait_for_reconnect(exc)
+        results = await client.retry_call(client.browse_next_raw(next_params))
+        client.record_browse_results(results)
         return results
 
 
@@ -352,7 +348,7 @@ async def _gather_cancelled_on_failure(awaitables: Sequence[Awaitable[Any]]) -> 
     issuing requests against a session that a browse or read error may already be tearing down,
     and an aborted model build can therefore still mutate connection state. Cancelling and
     awaiting the siblings before re-raising keeps the failure path deterministic (the same pattern
-    ``_read_data_values_per_node`` already uses for its batches).
+    ``read_data_values_per_node`` already uses for its batches).
     """
     tasks: list[asyncio.Task[Any]] = [asyncio.ensure_future(awaitable) for awaitable in awaitables]
     try:

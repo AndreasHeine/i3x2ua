@@ -6,9 +6,12 @@ The transport internals are split into seam modules that each own one concern:
 (node-info attribute batches), ``metadata.py`` (operational limits, subscription
 capabilities, namespaces), ``object_types.py`` (object-type graph and type
 hierarchies) and ``values.py`` (reads, writes, history, method calls). Seam
-functions take the owning client and call back through its entry points, so
-monkeypatching a client method still intercepts the seam. Private internals are
-tested in the source module that now owns them (docs/architecture.md).
+functions take the owning client and call back through its public entry points,
+so monkeypatching a client method still intercepts the seam; direct asyncua
+bypasses go through the adapter-owned escape hatches (``raw_client``,
+``browse_raw``, ``browse_next_raw``, ``raw_node``) instead of private
+attributes. Internals are tested in the source module that now owns them
+(docs/architecture.md).
 """
 
 from __future__ import annotations
@@ -124,7 +127,7 @@ class OpcUaClient:
         reconnect_max_delay_seconds: float = 30.0,
         browse_roots: list[str] | None = None,
     ) -> None:
-        self._endpoint = endpoint
+        self.endpoint = endpoint
         self._username = username.strip() if isinstance(username, str) and username.strip() else None
         self._password = password if isinstance(password, str) and password != "" else None
         self._security_mode = security_mode.strip() if security_mode.strip() else "None"
@@ -141,7 +144,7 @@ class OpcUaClient:
         self._server_cert_path = (
             server_cert_path.strip() if isinstance(server_cert_path, str) and server_cert_path.strip() else None
         )
-        self._browse_concurrency = max(1, browse_concurrency)
+        self.browse_concurrency = max(1, browse_concurrency)
         # Separate budgets: request handlers fan attribute reads out under the read budget,
         # background refreshes use the smaller refresh budget, and writes keep the
         # transport-level application gate (``application_request_limit`` below).
@@ -149,52 +152,52 @@ class OpcUaClient:
         self._refresh_concurrency = max(1, refresh_concurrency)
         self._read_semaphore = asyncio.Semaphore(self._read_concurrency)
         self._refresh_semaphore = asyncio.Semaphore(self._refresh_concurrency)
-        self._browse_roots = tuple(browse_roots) if browse_roots is not None else None
+        self.browse_roots = tuple(browse_roots) if browse_roots is not None else None
         self._metadata_cache_ttl_seconds = max(0, metadata_cache_ttl_seconds)
         self._connection_monitor_interval_seconds = max(1, connection_monitor_interval_seconds)
-        self._reconnect_request_timeout_seconds = max(0.1, float(reconnect_request_timeout_seconds))
+        self.reconnect_request_timeout_seconds = max(0.1, float(reconnect_request_timeout_seconds))
         self._reconnect_max_delay_seconds = max(1.0, float(reconnect_max_delay_seconds))
         # asyncua's connection supervisor is the single owner of reconnects: it probes the
         # server every watchdog interval, re-activates or recreates the session with backoff,
         # gates new requests while reconnecting, and restores its tracked subscriptions.
-        self._client = _SupervisedAsyncuaClient(
+        self.raw_client = _SupervisedAsyncuaClient(
             url=endpoint,
             watchdog_intervall=float(self._connection_monitor_interval_seconds),
             reconnect_max_delay=self._reconnect_max_delay_seconds,
-            reconnect_request_timeout=self._reconnect_request_timeout_seconds,
-            application_request_limit=self._browse_concurrency,
+            reconnect_request_timeout=self.reconnect_request_timeout_seconds,
+            application_request_limit=self.browse_concurrency,
         )
-        self._client.reconnected_callback = self._on_asyncua_reconnected
-        self._client.application_uri = "urn:i3x2ua:opcua_client"
-        self._client.name = "i3x2ua-opcua-client"
-        self._client.description = "The i3X API Gateway for OPC UA"
-        self._client.product_uri = "urn:github.com/AndreasHeine/i3x2ua.git"
+        self.raw_client.reconnected_callback = self._on_asyncua_reconnected
+        self.raw_client.application_uri = "urn:i3x2ua:opcua_client"
+        self.raw_client.name = "i3x2ua-opcua-client"
+        self.raw_client.description = "The i3X API Gateway for OPC UA"
+        self.raw_client.product_uri = "urn:github.com/AndreasHeine/i3x2ua.git"
         self._using_user_auth = False
         self._using_security = False
         if self._username is not None and self._password is not None:
-            self._client.set_user(self._username)
-            self._client.set_password(self._password)
+            self.raw_client.set_user(self._username)
+            self.raw_client.set_password(self._password)
             self._using_user_auth = True
         elif self._username is not None or self._password is not None:
             logger.warning(
                 "OPC UA auth config incomplete endpoint=%s; both username and password are "
                 "required. Falling back to anonymous session.",
-                self._endpoint,
+                self.endpoint,
             )
         self._reconnect_listeners: list[Callable[[], Awaitable[None]]] = []
-        self._reconnected_event = asyncio.Event()
+        self.reconnected_event = asyncio.Event()
         self._reconnect_session_recreated = False
-        self._limits_cache: OpcUaOperationalLimits | None = None
-        self._subscription_caps_cache: OpcUaSubscriptionCapabilities | None = None
-        self._namespace_infos_cache: tuple[float, list[OpcUaNamespaceInfo]] | None = None
-        self._object_types_cache: tuple[float, list[OpcUaObjectTypeInfo]] | None = None
-        self._metadata_load_tasks: dict[str, asyncio.Future[Any]] = {}
-        self._stale_metadata_incidents: dict[str, tuple[float, int]] = {}
+        self.limits_cache: OpcUaOperationalLimits | None = None
+        self.subscription_caps_cache: OpcUaSubscriptionCapabilities | None = None
+        self.namespace_infos_cache: tuple[float, list[OpcUaNamespaceInfo]] | None = None
+        self.object_type_cache: tuple[float, list[OpcUaObjectTypeInfo]] | None = None
+        self.metadata_load_tasks: dict[str, asyncio.Future[Any]] = {}
+        self.stale_metadata_incidents: dict[str, tuple[float, int]] = {}
         self._reference_type_supertypes_cache: dict[str, tuple[float, list[str]]] = {}
         self._type_definition_hierarchy_cache: dict[str, tuple[float, list[OpcUaTypeDefinitionInfo]]] = {}
-        self._runtime_metrics = OpcUaRuntimeMetrics()
-        self._history_update_supported: bool | None = None
-        self._request_metrics = OpcUaRequestMetrics()
+        self.runtime_metrics = OpcUaRuntimeMetrics()
+        self.history_update_support: bool | None = None
+        self.request_metrics = OpcUaRequestMetrics()
         self._goodish_quality_labels = {"good", "uncertain"}
         self._connection_state = "Disconnected"
         self._connection_state_since = datetime.now(tz=timezone.utc)
@@ -202,23 +205,23 @@ class OpcUaClient:
         self._reconnect_handler_task: asyncio.Task[None] | None = None
 
     def reset_runtime_metrics(self) -> None:
-        self._runtime_metrics = OpcUaRuntimeMetrics()
-        self._request_metrics = OpcUaRequestMetrics()
+        self.runtime_metrics = OpcUaRuntimeMetrics()
+        self.request_metrics = OpcUaRequestMetrics()
 
     def snapshot_runtime_metrics(self) -> OpcUaRuntimeMetrics:
-        return OpcUaRuntimeMetrics(**asdict(self._runtime_metrics))
+        return OpcUaRuntimeMetrics(**asdict(self.runtime_metrics))
 
     def snapshot_request_metrics(self) -> OpcUaRequestMetrics:
-        return OpcUaRequestMetrics(**asdict(self._request_metrics))
+        return OpcUaRequestMetrics(**asdict(self.request_metrics))
 
     def get_connection_snapshot(self) -> OpcUaConnectionSnapshot:
         return OpcUaConnectionSnapshot(
             state=self._connection_state,
-            endpoint=self._endpoint,
+            endpoint=self.endpoint,
             since=self._connection_state_since,
         )
 
-    def _read_slot(self) -> asyncio.Semaphore:
+    def read_slot(self) -> asyncio.Semaphore:
         """Budget for concurrent read round-trips on the current task.
 
         Request handlers share ``opcua_read_concurrency``; background model refreshes run
@@ -229,7 +232,7 @@ class OpcUaClient:
         budget = _MODEL_REFRESH_BUDGET.get()
         return self._read_semaphore if budget is None else budget
 
-    def _is_metadata_cache_entry_fresh(self, cached_at: float) -> bool:
+    def is_metadata_cache_entry_fresh(self, cached_at: float) -> bool:
         """TTL of 0 means entries never expire, unless explicitly invalidated."""
         if cached_at == _METADATA_INVALIDATED_AT:
             return False
@@ -238,7 +241,7 @@ class OpcUaClient:
         return perf_counter() - cached_at <= self._metadata_cache_ttl_seconds
 
     @staticmethod
-    def _invalidate_metadata_entry(cached: tuple[float, _T] | None) -> tuple[float, _T] | None:
+    def invalidate_metadata_entry(cached: tuple[float, _T] | None) -> tuple[float, _T] | None:
         """Keep the value servable as stale, but force the next access to refresh it."""
         if cached is None:
             return None
@@ -253,7 +256,7 @@ class OpcUaClient:
         entry = cache.get(key)
         if entry is None:
             return None
-        if not self._is_metadata_cache_entry_fresh(entry[0]):
+        if not self.is_metadata_cache_entry_fresh(entry[0]):
             del cache[key]
             return None
         cache[key] = cache.pop(key)
@@ -267,10 +270,10 @@ class OpcUaClient:
         while len(cache) > max_entries:
             del cache[next(iter(cache))]
 
-    def _cached_type_definition_hierarchy(self, type_id: str) -> list[OpcUaTypeDefinitionInfo] | None:
+    def cached_type_definition_hierarchy(self, type_id: str) -> list[OpcUaTypeDefinitionInfo] | None:
         return self._metadata_dict_cache_read(self._type_definition_hierarchy_cache, type_id)
 
-    def _store_type_definition_hierarchy(self, type_id: str, hierarchy: list[OpcUaTypeDefinitionInfo]) -> None:
+    def store_type_definition_hierarchy(self, type_id: str, hierarchy: list[OpcUaTypeDefinitionInfo]) -> None:
         self._metadata_dict_cache_write(
             self._type_definition_hierarchy_cache,
             type_id,
@@ -278,10 +281,10 @@ class OpcUaClient:
             _TYPE_DEFINITION_HIERARCHY_CACHE_MAX_ENTRIES,
         )
 
-    def _cached_reference_type_supertypes(self, type_id: str) -> list[str] | None:
+    def cached_reference_type_supertypes(self, type_id: str) -> list[str] | None:
         return self._metadata_dict_cache_read(self._reference_type_supertypes_cache, type_id)
 
-    def _store_reference_type_supertypes(self, type_id: str, names: list[str]) -> None:
+    def store_reference_type_supertypes(self, type_id: str, names: list[str]) -> None:
         self._metadata_dict_cache_write(
             self._reference_type_supertypes_cache,
             type_id,
@@ -290,10 +293,10 @@ class OpcUaClient:
         )
 
     def _start_metadata_load(self, key: str, loader: Callable[[], Awaitable[_T]]) -> asyncio.Future[_T]:
-        task = self._metadata_load_tasks.get(key)
+        task = self.metadata_load_tasks.get(key)
         if task is None:
             task = asyncio.ensure_future(loader())
-            self._metadata_load_tasks[key] = task
+            self.metadata_load_tasks[key] = task
             task.add_done_callback(lambda done: self._finish_metadata_load(key, done))
         return cast("asyncio.Future[_T]", task)
 
@@ -318,35 +321,35 @@ class OpcUaClient:
         if cached is None:
             return await self._coalesce_metadata_load(key, loader)
         cached_at, cached_value = cached
-        if not self._is_metadata_cache_entry_fresh(cached_at):
-            incident = self._stale_metadata_incidents.get(key)
+        if not self.is_metadata_cache_entry_fresh(cached_at):
+            incident = self.stale_metadata_incidents.get(key)
             if incident is None:
-                self._stale_metadata_incidents[key] = (perf_counter(), 0)
+                self.stale_metadata_incidents[key] = (perf_counter(), 0)
                 logger.warning(
                     "OPC UA serving stale metadata while refreshing endpoint=%s key=%s age_s=%s ttl_s=%s",
-                    self._endpoint,
+                    self.endpoint,
                     key,
                     "invalidated" if cached_at == _METADATA_INVALIDATED_AT else f"{perf_counter() - cached_at:.3f}",
                     self._metadata_cache_ttl_seconds,
                 )
             else:
                 started_at, suppressed_events = incident
-                self._stale_metadata_incidents[key] = (started_at, suppressed_events + 1)
+                self.stale_metadata_incidents[key] = (started_at, suppressed_events + 1)
             self._start_metadata_load(key, loader)
         return cached_value
 
     def _finish_metadata_load(self, key: str, task: asyncio.Future[Any]) -> None:
-        if self._metadata_load_tasks.get(key) is task:
-            del self._metadata_load_tasks[key]
+        if self.metadata_load_tasks.get(key) is task:
+            del self.metadata_load_tasks[key]
         if task.cancelled() or task.exception() is not None:
             return
 
-        incident = self._stale_metadata_incidents.pop(key, None)
+        incident = self.stale_metadata_incidents.pop(key, None)
         if incident is not None:
             started_at, suppressed_events = incident
             logger.info(
                 "OPC UA metadata refresh recovered endpoint=%s key=%s stale_duration_s=%.3f suppressed_events=%d",
-                self._endpoint,
+                self.endpoint,
                 key,
                 perf_counter() - started_at,
                 suppressed_events,
@@ -359,17 +362,17 @@ class OpcUaClient:
         security_duration_s = perf_counter() - security_started
         logger.info(
             "OPC UA connect started endpoint=%s auth_mode=%s security_mode=%s",
-            self._endpoint,
+            self.endpoint,
             "userpass" if self._using_user_auth else "anonymous",
             self._security_mode,
         )
         session_started = perf_counter()
         # Client.disconnect() clears asyncua's request gate and never restores it on connect().
-        self._client.uaclient.pre_request_hook = self._client._wait_until_ready
-        await self._client.connect(
+        self.raw_client.uaclient.pre_request_hook = self.raw_client._wait_until_ready
+        await self.raw_client.connect(
             auto_reconnect=True,
             reconnect_max_delay=self._reconnect_max_delay_seconds,
-            reconnect_request_timeout=self._reconnect_request_timeout_seconds,
+            reconnect_request_timeout=self.reconnect_request_timeout_seconds,
         )
         self._set_connection_state("Connected")
         self._start_connection_tasks()
@@ -378,20 +381,20 @@ class OpcUaClient:
         await self.load_additional_typedefinitions()
         typedef_duration_s = perf_counter() - typedef_started
         limits_started = perf_counter()
-        self._limits_cache = await self.get_operational_limits()
+        self.limits_cache = await self.get_operational_limits()
         limits_duration_s = perf_counter() - limits_started
         logger.info(
             "OPC UA limits endpoint=%s max_nodes_per_browse=%s max_nodes_per_read=%s",
-            self._endpoint,
-            self._limits_cache.max_nodes_per_browse,
-            self._limits_cache.max_nodes_per_read,
+            self.endpoint,
+            self.limits_cache.max_nodes_per_browse,
+            self.limits_cache.max_nodes_per_read,
         )
         logger.info(
             (
                 "OPC UA connect phases endpoint=%s security_s=%.3f session_s=%.3f "
                 "typedef_s=%.3f limits_s=%.3f total_s=%.3f"
             ),
-            self._endpoint,
+            self.endpoint,
             security_duration_s,
             session_duration_s,
             typedef_duration_s,
@@ -401,49 +404,49 @@ class OpcUaClient:
 
     async def load_additional_typedefinitions(self) -> None:
         started = perf_counter()
-        logger.info("OPC UA additional type definitions load started endpoint=%s", self._endpoint)
+        logger.info("OPC UA additional type definitions load started endpoint=%s", self.endpoint)
         try:
-            await self._client.load_data_type_definitions()
+            await self.raw_client.load_data_type_definitions()
         except Exception as e:
             logger.warning(
-                "OPC UA additional v1.04 data type definitions load failed endpoint=%s error=%s", self._endpoint, e
+                "OPC UA additional v1.04 data type definitions load failed endpoint=%s error=%s", self.endpoint, e
             )
             try:
-                await self._client.load_type_definitions()
+                await self.raw_client.load_type_definitions()
             except Exception as e:
                 logger.warning(
-                    "OPC UA additional v1.03 data type definitions load failed endpoint=%s error=%s", self._endpoint, e
+                    "OPC UA additional v1.03 data type definitions load failed endpoint=%s error=%s", self.endpoint, e
                 )
             else:
                 logger.info(
                     "OPC UA additional type definitions v1.03 load finished endpoint=%s duration_s=%.3f",
-                    self._endpoint,
+                    self.endpoint,
                     perf_counter() - started,
                 )
         else:
             logger.info(
                 "OPC UA additional type definitions load finished endpoint=%s duration_s=%.3f",
-                self._endpoint,
+                self.endpoint,
                 perf_counter() - started,
             )
 
     async def disconnect(self) -> None:
         started = perf_counter()
-        logger.info("OPC UA disconnect started endpoint=%s", self._endpoint)
+        logger.info("OPC UA disconnect started endpoint=%s", self.endpoint)
         await self._stop_connection_tasks()
         # Drop reconnect bookkeeping: a later `connect()` must not run the reconnect
         # handler for a stale event or re-fire listeners with a recreated-session flag (L10).
-        self._reconnected_event.clear()
+        self.reconnected_event.clear()
         self._reconnect_session_recreated = False
-        await self._client.disconnect()
+        await self.raw_client.disconnect()
         self._set_connection_state("Disconnected")
-        self._limits_cache = None
-        self._namespace_infos_cache = None
-        self._object_types_cache = None
-        self._subscription_caps_cache = None
+        self.limits_cache = None
+        self.namespace_infos_cache = None
+        self.object_type_cache = None
+        self.subscription_caps_cache = None
         self._reference_type_supertypes_cache = {}
         self._type_definition_hierarchy_cache = {}
-        logger.info("OPC UA disconnect finished endpoint=%s duration_s=%.3f", self._endpoint, perf_counter() - started)
+        logger.info("OPC UA disconnect finished endpoint=%s duration_s=%.3f", self.endpoint, perf_counter() - started)
 
     def _start_connection_tasks(self) -> None:
         if self._connection_state_task is None or self._connection_state_task.done():
@@ -464,7 +467,7 @@ class OpcUaClient:
 
     async def _watch_connection_state(self) -> None:
         """Mirror asyncua's transport state into the connection snapshot."""
-        uaclient = self._client.uaclient
+        uaclient = self.raw_client.uaclient
         async with uaclient.subscribe_state() as states:
             self._apply_client_state(uaclient.state)
             while True:
@@ -474,13 +477,13 @@ class OpcUaClient:
         if state is UaClientState.CONNECTED:
             self._set_connection_state("Connected")
             return
-        if self._client.uaclient.is_disconnect_requested:
+        if self.raw_client.uaclient.is_disconnect_requested:
             self._set_connection_state("Disconnected")
             return
         if self._connection_state == "Connected":
             logger.warning(
                 "OPC UA connection lost endpoint=%s client_state=%s; waiting for asyncua reconnect",
-                self._endpoint,
+                self.endpoint,
                 state.value,
             )
         self._set_connection_state("Reconnecting")
@@ -488,28 +491,28 @@ class OpcUaClient:
     def _on_asyncua_reconnected(self, session_reused: bool) -> None:
         """Called by the asyncua supervisor once the session and its subscriptions are restored."""
         self._set_connection_state("Connected")
-        self._limits_cache = None
-        self._subscription_caps_cache = None
+        self.limits_cache = None
+        self.subscription_caps_cache = None
         # Keep the expensive browse results servable as stale so API requests do not
         # block on a cold rebuild while the server is recovering from the reconnect.
-        self._namespace_infos_cache = self._invalidate_metadata_entry(self._namespace_infos_cache)
-        self._object_types_cache = self._invalidate_metadata_entry(self._object_types_cache)
+        self.namespace_infos_cache = self.invalidate_metadata_entry(self.namespace_infos_cache)
+        self.object_type_cache = self.invalidate_metadata_entry(self.object_type_cache)
         self._reference_type_supertypes_cache = {}
         self._type_definition_hierarchy_cache = {}
         self._reconnect_session_recreated = self._reconnect_session_recreated or not session_reused
         logger.info(
             "OPC UA reconnect finished endpoint=%s session=%s",
-            self._endpoint,
+            self.endpoint,
             "reused" if session_reused else "recreated",
         )
         # The follow-up work runs in our own task: the supervisor must not block on it, and
         # requests issued from the supervisor's context would bypass asyncua's request gate.
-        self._reconnected_event.set()
+        self.reconnected_event.set()
 
     async def _reconnect_handler_loop(self) -> None:
         while True:
-            await self._reconnected_event.wait()
-            self._reconnected_event.clear()
+            await self.reconnected_event.wait()
+            self.reconnected_event.clear()
             await self._handle_reconnected()
 
     async def _handle_reconnected(self) -> None:
@@ -520,7 +523,7 @@ class OpcUaClient:
             try:
                 await listener()
             except Exception:
-                logger.exception("OPC UA reconnect listener failed endpoint=%s", self._endpoint)
+                logger.exception("OPC UA reconnect listener failed endpoint=%s", self.endpoint)
 
     def add_reconnect_listener(self, listener: Callable[[], Awaitable[None]]) -> None:
         self._reconnect_listeners.append(listener)
@@ -536,17 +539,17 @@ class OpcUaClient:
     async def browse_tree(self) -> list[OpcUaNodeInfo]:
         return await browse.browse_tree(self)
 
-    async def _resolve_browse_roots(self) -> list[Node]:
-        return await browse._resolve_browse_roots(self)
+    async def resolve_browse_roots(self) -> list[Node]:
+        return await browse.resolve_browse_roots(self)
 
-    async def _browse_children_descriptions(
+    async def browse_children_descriptions(
         self,
         nodes: list[Any],
         max_nodes_per_browse: int,
     ) -> list[tuple[Any, list[ua.ReferenceDescription]]]:
-        return await browse._browse_children_descriptions(self, nodes, max_nodes_per_browse)
+        return await browse.browse_children_descriptions(self, nodes, max_nodes_per_browse)
 
-    async def _browse_references_descriptions(
+    async def browse_references_descriptions(
         self,
         nodes: list[Any],
         max_nodes_per_browse: int,
@@ -554,7 +557,7 @@ class OpcUaClient:
         browse_direction: ua.BrowseDirection = ua.BrowseDirection.Forward,
         include_subtypes: bool = True,
     ) -> list[tuple[Any, list[ua.ReferenceDescription]]]:
-        return await browse._browse_references_descriptions(
+        return await browse.browse_references_descriptions(
             self,
             nodes,
             max_nodes_per_browse,
@@ -563,77 +566,101 @@ class OpcUaClient:
             include_subtypes=include_subtypes,
         )
 
-    async def _browse_with_retry(self, params: ua.BrowseParameters, batch_size: int) -> list[ua.BrowseResult]:
-        return await browse._browse_with_retry(self, params, batch_size)
+    async def browse_with_retry(self, params: ua.BrowseParameters, batch_size: int) -> list[ua.BrowseResult]:
+        return await browse.browse_with_retry(self, params, batch_size)
 
-    async def _browse_next_with_retry(
+    async def browse_next_with_retry(
         self,
         next_params: ua.BrowseNextParameters,
         node_ids: list[str],
     ) -> list[ua.BrowseResult]:
-        return await browse._browse_next_with_retry(self, next_params, node_ids)
+        return await browse.browse_next_with_retry(self, next_params, node_ids)
+
+    # ------------------------------------------------------------------
+    # Explicit asyncua escape hatches (adapter-owned transport plumbing)
+    # ------------------------------------------------------------------
+
+    async def browse_raw(self, params: ua.BrowseParameters) -> list[ua.BrowseResult]:
+        """One Browse service call on the raw transport, without retry or metrics.
+
+        The single escape hatch for Browse/BrowseNext plumbing: retry, reconnect
+        hand-off and metrics recording stay on the client's ``*_with_retry`` seams.
+        """
+        return await self.raw_client.uaclient.browse(params)
+
+    async def browse_next_raw(self, params: ua.BrowseNextParameters) -> list[ua.BrowseResult]:
+        """One BrowseNext service call on the raw transport (see ``browse_raw``)."""
+        return await self.raw_client.uaclient.browse_next(params)
+
+    def raw_node(self, node_id: str | ua.NodeId) -> Node:
+        """An asyncua ``Node`` for the adapter's transport plumbing.
+
+        Escape hatch for direct attribute/service reads on nodes; API-level access
+        goes through the typed read seams instead.
+        """
+        return self.raw_client.get_node(node_id)
 
     # ------------------------------------------------------------------
     # Node-reading seam entry points (node_reading.py)
     # ------------------------------------------------------------------
 
-    async def _read_reference_type_browse_names(
+    async def read_reference_type_browse_names(
         self,
         refs: list[ua.ReferenceDescription],
         names: dict[str, str],
         inverse_names: dict[str, str] | None = None,
     ) -> None:
-        await node_reading._read_reference_type_browse_names(self, refs, names, inverse_names)
+        await node_reading.read_reference_type_browse_names(self, refs, names, inverse_names)
 
-    def _to_reference_infos(
+    def to_reference_infos(
         self,
         refs: list[ua.ReferenceDescription],
         reference_type_names: dict[str, str],
         reference_type_inverse_names: dict[str, str] | None = None,
     ) -> list[OpcUaReferenceInfo]:
-        return node_reading._to_reference_infos(refs, reference_type_names, reference_type_inverse_names)
+        return node_reading.to_reference_infos(refs, reference_type_names, reference_type_inverse_names)
 
-    async def _read_node_info(self, node: Any, parent_node_id: str | None) -> OpcUaNodeInfo:
-        return await node_reading._read_node_info(self, node, parent_node_id)
+    async def read_node_info(self, node: Any, parent_node_id: str | None) -> OpcUaNodeInfo:
+        return await node_reading.read_node_info(self, node, parent_node_id)
 
-    async def _read_node_infos_limited(self, entries: list[tuple[Any, str | None]]) -> list[OpcUaNodeInfo]:
-        return await node_reading._read_node_infos_limited(self, entries)
+    async def read_node_infos_limited(self, entries: list[tuple[Any, str | None]]) -> list[OpcUaNodeInfo]:
+        return await node_reading.read_node_infos_limited(self, entries)
 
-    def _extract_class_node_info_attribute(
+    def extract_class_node_info_attribute(
         self,
         node_id: str,
         node_class: NodeClass,
         attribute: AttributeIds,
         data_value: ua.DataValue,
     ) -> Any | None:
-        return node_reading._extract_class_node_info_attribute(self, node_id, node_class, attribute, data_value)
+        return node_reading.extract_class_node_info_attribute(self, node_id, node_class, attribute, data_value)
 
-    async def _read_node_infos_fallback(self, entries: list[tuple[Any, str | None]]) -> list[OpcUaNodeInfo]:
-        return await node_reading._read_node_infos_fallback(self, entries)
+    async def read_node_infos_fallback(self, entries: list[tuple[Any, str | None]]) -> list[OpcUaNodeInfo]:
+        return await node_reading.read_node_infos_fallback(self, entries)
 
-    async def _read_attribute_batch(self, nodes: list[Any], attr: AttributeIds) -> list[ua.DataValue]:
-        return await node_reading._read_attribute_batch(self, nodes, attr)
+    async def read_attribute_batch(self, nodes: list[Any], attr: AttributeIds) -> list[ua.DataValue]:
+        return await node_reading.read_attribute_batch(self, nodes, attr)
 
-    async def _read_attribute_pairs(
+    async def read_attribute_pairs(
         self,
         node_attributes: list[tuple[Any, AttributeIds]],
         batch_size: int | None = None,
     ) -> list[ua.DataValue]:
-        return await node_reading._read_attribute_pairs(self, node_attributes, batch_size=batch_size)
+        return await node_reading.read_attribute_pairs(self, node_attributes, batch_size=batch_size)
 
-    async def _read_attribute_pairs_batch(
+    async def read_attribute_pairs_batch(
         self,
         node_attributes: list[tuple[Any, AttributeIds]],
     ) -> list[ua.DataValue]:
-        return await node_reading._read_attribute_pairs_batch(self, node_attributes)
+        return await node_reading.read_attribute_pairs_batch(self, node_attributes)
 
-    async def _read_attribute_batch_limited(
+    async def read_attribute_batch_limited(
         self,
         nodes: list[Any],
         attr: AttributeIds,
         batch_size: int | None = None,
     ) -> list[ua.DataValue]:
-        return await node_reading._read_attribute_batch_limited(self, nodes, attr, batch_size=batch_size)
+        return await node_reading.read_attribute_batch_limited(self, nodes, attr, batch_size=batch_size)
 
     async def _read_optional_node_ids(
         self,
@@ -646,44 +673,44 @@ class OpcUaClient:
     async def _read_optional_scalars(self, nodes: list[Any], attr: AttributeIds) -> dict[str, Any]:
         return await node_reading._read_optional_scalars(self, nodes, attr)
 
-    async def _read_type_definitions(self, nodes: list[Any]) -> dict[str, str | None]:
-        return await node_reading._read_type_definitions(self, nodes)
+    async def read_type_definitions(self, nodes: list[Any]) -> dict[str, str | None]:
+        return await node_reading.read_type_definitions(self, nodes)
 
-    def _extract_attribute_value(self, value: ua.DataValue) -> Any | None:
-        return node_reading._extract_attribute_value(value)
+    def extract_attribute_value(self, value: ua.DataValue) -> Any | None:
+        return node_reading.extract_attribute_value(value)
 
-    def _coerce_node_class(self, value: Any) -> NodeClass | None:
-        return node_reading._coerce_node_class(value)
+    def coerce_node_class(self, value: Any) -> NodeClass | None:
+        return node_reading.coerce_node_class(value)
 
     # ------------------------------------------------------------------
     # Server-metadata seam entry points (metadata.py)
     # ------------------------------------------------------------------
 
     async def get_operational_limits(self) -> OpcUaOperationalLimits:
-        if self._limits_cache is not None:
-            return self._limits_cache
+        if self.limits_cache is not None:
+            return self.limits_cache
         return await self._coalesce_metadata_load("operational_limits", self._load_operational_limits)
 
     async def _load_operational_limits(self) -> OpcUaOperationalLimits:
         return await metadata._load_operational_limits(self)
 
     async def get_subscription_capabilities(self) -> OpcUaSubscriptionCapabilities:
-        if self._subscription_caps_cache is not None:
-            return self._subscription_caps_cache
+        if self.subscription_caps_cache is not None:
+            return self.subscription_caps_cache
         return await self._coalesce_metadata_load("subscription_capabilities", self._load_subscription_capabilities)
 
     async def _load_subscription_capabilities(self) -> OpcUaSubscriptionCapabilities:
         return await metadata._load_subscription_capabilities(self)
 
-    async def _read_positive_int(self, node_id: str) -> int | None:
-        return await metadata._read_positive_int(self, node_id)
+    async def read_positive_int(self, node_id: str) -> int | None:
+        return await metadata.read_positive_int(self, node_id)
 
     async def get_namespaces(self) -> list[str]:
         return await metadata._get_namespaces(self)
 
     async def get_namespace_infos(self) -> list[OpcUaNamespaceInfo]:
         return await self._get_cached_metadata(
-            "namespace_infos", self._namespace_infos_cache, self._load_namespace_infos
+            "namespace_infos", self.namespace_infos_cache, self._load_namespace_infos
         )
 
     async def _load_namespace_infos(self) -> list[OpcUaNamespaceInfo]:
@@ -694,37 +721,37 @@ class OpcUaClient:
     # ------------------------------------------------------------------
 
     async def get_object_types(self) -> list[OpcUaObjectTypeInfo]:
-        return await self._get_cached_metadata("object_types", self._object_types_cache, self._load_object_types)
+        return await self._get_cached_metadata("object_types", self.object_type_cache, self._load_object_types)
 
     async def _load_object_types(self) -> list[OpcUaObjectTypeInfo]:
         return await object_types._load_object_types(self)
 
-    async def _read_object_type_members_limited(
+    async def read_object_type_members_limited(
         self,
         entries: list[tuple[str, str, str, str, NodeClass, Any, str | None, str | None, int | None]],
     ) -> list[tuple[str, OpcUaObjectTypeMemberInfo]]:
-        return await object_types._read_object_type_members_limited(self, entries)
+        return await object_types.read_object_type_members_limited(self, entries)
 
-    async def _read_data_type_or_none(self, node: Any) -> str | None:
-        return await object_types._read_data_type_or_none(self, node)
+    async def read_data_type_or_none(self, node: Any) -> str | None:
+        return await object_types.read_data_type_or_none(self, node)
 
-    async def _read_type_definition_id_or_none(self, node: Any) -> str | None:
-        return await object_types._read_type_definition_id_or_none(self, node)
+    async def read_type_definition_id_or_none(self, node: Any) -> str | None:
+        return await object_types.read_type_definition_id_or_none(self, node)
 
-    async def _read_modelling_rule_or_none(self, node: Any) -> str | None:
-        return await object_types._read_modelling_rule_or_none(self, node)
+    async def read_modelling_rule_or_none(self, node: Any) -> str | None:
+        return await object_types.read_modelling_rule_or_none(self, node)
 
-    async def _read_description_or_none(self, node: Any) -> str | None:
-        return await object_types._read_description_or_none(self, node)
+    async def read_description_or_none(self, node: Any) -> str | None:
+        return await object_types.read_description_or_none(self, node)
 
-    async def _read_data_value_or_none(self, node: Any) -> Any:
-        return await object_types._read_data_value_or_none(self, node)
+    async def read_data_value_or_none(self, node: Any) -> Any:
+        return await object_types.read_data_value_or_none(self, node)
 
-    async def _read_value_rank_or_none(self, node: Any) -> int | None:
-        return await object_types._read_value_rank_or_none(self, node)
+    async def read_value_rank_or_none(self, node: Any) -> int | None:
+        return await object_types.read_value_rank_or_none(self, node)
 
-    async def _read_object_type_metadata(self, nodes: list[Any]) -> dict[str, dict[str, Any]]:
-        return await object_types._read_object_type_metadata(self, nodes)
+    async def read_object_type_metadata(self, nodes: list[Any]) -> dict[str, dict[str, Any]]:
+        return await object_types.read_object_type_metadata(self, nodes)
 
     async def resolve_reference_type_supertype_browse_names(self, reference_type_id: str) -> list[str]:
         return await object_types.resolve_reference_type_supertype_browse_names(self, reference_type_id)
@@ -741,8 +768,8 @@ class OpcUaClient:
     ) -> dict[str, list[OpcUaTypeDefinitionInfo]]:
         return await object_types.resolve_type_definition_hierarchies(self, type_definition_ids)
 
-    async def _resolve_reference_type_chain(self, type_id: str, in_progress: set[str]) -> list[str]:
-        return await object_types._resolve_reference_type_chain(self, type_id, in_progress)
+    async def resolve_reference_type_chain(self, type_id: str, in_progress: set[str]) -> list[str]:
+        return await object_types.resolve_reference_type_chain(self, type_id, in_progress)
 
     # ------------------------------------------------------------------
     # Value, history and method seam entry points (values.py)
@@ -760,11 +787,11 @@ class OpcUaClient:
     async def read_data_values(self, node_ids: list[str]) -> list[ua.DataValue]:
         return await values.read_data_values(self, node_ids)
 
-    async def _read_data_values_per_node(self, node_ids: list[str]) -> list[ua.DataValue]:
-        return await values._read_data_values_per_node(self, node_ids)
+    async def read_data_values_per_node(self, node_ids: list[str]) -> list[ua.DataValue]:
+        return await values.read_data_values_per_node(self, node_ids)
 
-    async def _read_values_batch_with_fallback(self, node_ids: list[str]) -> list[Any]:
-        return await values._read_values_batch_with_fallback(self, node_ids)
+    async def read_values_batch_with_fallback(self, node_ids: list[str]) -> list[Any]:
+        return await values.read_values_batch_with_fallback(self, node_ids)
 
     async def read_write_access(self, node_id: str) -> tuple[bool, bool]:
         return await values.read_write_access(self, node_id)
@@ -773,7 +800,7 @@ class OpcUaClient:
         return await values.read_history_write_access(self, node_id)
 
     def history_update_supported(self) -> bool | None:
-        return self._history_update_supported
+        return self.history_update_support
 
     async def write_history_value(self, node_id: str, value: Any, quality: str, timestamp: datetime) -> None:
         await values.write_history_value(self, node_id, value, quality, timestamp)
@@ -800,16 +827,16 @@ class OpcUaClient:
     ) -> dict[str, list[ua.DataValue]]:
         return await values.read_history_values(self, node_ids, start_time, end_time)
 
-    async def _read_history_batch(
+    async def read_history_batch(
         self,
         details: ua.ReadRawModifiedDetails,
         node_ids: list[str],
         continuation_points: list[bytes | None] | None = None,
     ) -> list[ua.HistoryReadResult]:
-        return await values._read_history_batch(self, details, node_ids, continuation_points=continuation_points)
+        return await values.read_history_batch(self, details, node_ids, continuation_points=continuation_points)
 
-    def _is_history_missing_or_unsupported(self, exc: Exception) -> bool:
-        return values._is_history_missing_or_unsupported(exc)
+    def is_history_missing_or_unsupported(self, exc: Exception) -> bool:
+        return values.is_history_missing_or_unsupported(exc)
 
     async def call_method(self, object_node_id: str, method_node_id: str, args: list[Any]) -> Any:
         return await values.call_method(self, object_node_id, method_node_id, args)
@@ -821,33 +848,33 @@ class OpcUaClient:
     # Recovery seam entry points (recovery.py)
     # ------------------------------------------------------------------
 
-    async def _wait_for_reconnect(self, exc: Exception) -> None:
-        await recovery._wait_for_reconnect(self, exc)
+    async def wait_for_reconnect(self, exc: Exception) -> None:
+        await recovery.wait_for_reconnect(self, exc)
 
-    def _should_retry_after_disconnect(self, exc: Exception) -> bool:
-        return recovery._should_retry_after_disconnect(exc)
+    def should_retry_after_disconnect(self, exc: Exception) -> bool:
+        return recovery.should_retry_after_disconnect(exc)
 
-    def _is_transport_read_failure(self, exc: Exception) -> bool:
-        return recovery._is_transport_read_failure(exc)
+    def is_transport_read_failure(self, exc: Exception) -> bool:
+        return recovery.is_transport_read_failure(exc)
 
-    def _is_too_many_operations_error(self, exc: Exception) -> bool:
-        return recovery._is_too_many_operations_error(exc)
+    def is_too_many_operations_error(self, exc: Exception) -> bool:
+        return recovery.is_too_many_operations_error(exc)
 
-    def _is_continuation_point_invalid(self, exc: Exception) -> bool:
-        return recovery._is_continuation_point_invalid(exc)
+    def is_continuation_point_invalid(self, exc: Exception) -> bool:
+        return recovery.is_continuation_point_invalid(exc)
 
-    async def _retry_call(self, awaitable: Awaitable[_T]) -> _T:
-        return await recovery._retry_call(self, awaitable)
+    async def retry_call(self, awaitable: Awaitable[_T]) -> _T:
+        return await recovery.retry_call(self, awaitable)
 
     # ------------------------------------------------------------------
     # Subscription passthroughs
     # ------------------------------------------------------------------
 
     async def create_datachange_subscription(self, publishing_interval_ms: float, handler: Any) -> Any:
-        return await self._client.create_subscription(publishing_interval_ms, handler)
+        return await self.raw_client.create_subscription(publishing_interval_ms, handler)
 
     async def subscribe_data_changes(self, subscription: Any, node_ids: list[str]) -> Any:
-        nodes = [self._client.get_node(node_id) for node_id in node_ids]
+        nodes = [self.raw_node(node_id) for node_id in node_ids]
         return await subscription.subscribe_data_change(nodes)
 
     async def unsubscribe_data_changes(self, subscription: Any, handles: list[int]) -> None:
@@ -873,7 +900,7 @@ class OpcUaClient:
                 handles_by_node_id[node.nodeid] = server_handle
         result: dict[str, int] = {}
         for node_id in node_ids:
-            handle = handles_by_node_id.get(self._client.get_node(node_id).nodeid)
+            handle = handles_by_node_id.get(self.raw_node(node_id).nodeid)
             if handle is not None:
                 result[node_id] = handle
         return result
@@ -925,7 +952,7 @@ class OpcUaClient:
             security_items.append(str(server_cert))
 
         security_string = ",".join(security_items)
-        await self._client.set_security_string(security_string)
+        await self.raw_client.set_security_string(security_string)
         self._using_security = True
 
     # ------------------------------------------------------------------
@@ -964,35 +991,35 @@ class OpcUaClient:
             return "good" in self._goodish_quality_labels
         return name in self._goodish_quality_labels
 
-    def _record_read_success(self) -> None:
-        self._request_metrics.read_count += 1
+    def record_read_success(self) -> None:
+        self.request_metrics.read_count += 1
 
-    def _record_history_read_success(self) -> None:
-        self._request_metrics.history_read_count += 1
+    def record_history_read_success(self) -> None:
+        self.request_metrics.history_read_count += 1
 
-    def _record_method_success(self) -> None:
-        self._request_metrics.method_call_count += 1
+    def record_method_success(self) -> None:
+        self.request_metrics.method_call_count += 1
 
-    def _record_failed_request(self) -> None:
-        self._request_metrics.failed_request_count += 1
+    def record_failed_request(self) -> None:
+        self.request_metrics.failed_request_count += 1
 
-    def _record_browse_results(self, results: list[ua.BrowseResult]) -> None:
+    def record_browse_results(self, results: list[ua.BrowseResult]) -> None:
         if not results:
-            self._record_failed_request()
+            self.record_failed_request()
             return
         if all(self._is_goodish_status(getattr(result, "StatusCode", None)) for result in results):
-            self._request_metrics.browse_count += 1
+            self.request_metrics.browse_count += 1
             return
-        self._record_failed_request()
+        self.record_failed_request()
 
-    def _record_read_data_values(self, values: list[ua.DataValue]) -> None:
+    def record_read_data_values(self, values: list[ua.DataValue]) -> None:
         if not values:
-            self._record_failed_request()
+            self.record_failed_request()
             return
         if all(self._is_goodish_status(value.StatusCode) for value in values):
-            self._record_read_success()
+            self.record_read_success()
             return
-        self._record_failed_request()
+        self.record_failed_request()
 
 
 def _assert_file_exists(path: Path, label: str) -> None:

@@ -262,7 +262,7 @@ async def test_browse_roots_are_wired_at_startup(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setenv("I3X_ENABLE_MCP", "0")
     app = FastAPI()
     async with app_factory.lifespan(app):
-        assert app.state.opcua_client._browse_roots == tuple(roots)
+        assert app.state.opcua_client.browse_roots == tuple(roots)
 
 
 @pytest.mark.asyncio

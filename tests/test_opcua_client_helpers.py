@@ -67,18 +67,18 @@ async def test_reference_names_come_from_reference_types_not_targets(monkeypatch
         names = {"i=36": "HasEventSource", "ns=2;i=5001": "Monitors"}
         return [ua.DataValue(ua.Variant(ua.QualifiedName(names[node_id]))) for node_id in node_ids]
 
-    monkeypatch.setattr(client, "_read_attribute_batch_limited", read_names)
+    monkeypatch.setattr(client, "read_attribute_batch_limited", read_names)
     cache: dict[str, str] = {}
     inverse: dict[str, str] = {}
-    await client._read_reference_type_browse_names(refs, cache, inverse)
-    converted = client._to_reference_infos(refs, cache, inverse)
+    await client.read_reference_type_browse_names(refs, cache, inverse)
+    converted = client.to_reference_infos(refs, cache, inverse)
     assert [ref.reference_browse_name for ref in converted] == ["HasEventSource", "HasEventSource", "Monitors"]
     assert [ref.reference_inverse_name for ref in converted] == ["EventSourceOf", "EventSourceOf", "MonitoredBy"]
     assert [ref.target_node_id for ref in converted] == [ref.NodeId.to_string() for ref in refs]
     assert [ref.reference_type_id for ref in converted] == [ref.ReferenceTypeId.to_string() for ref in refs]
     assert reads == ["i=36", "ns=2;i=5001"]
     assert inverse_reads == ["i=36", "ns=2;i=5001"]
-    await client._read_reference_type_browse_names(refs, cache, inverse)
+    await client.read_reference_type_browse_names(refs, cache, inverse)
     assert reads == ["i=36", "ns=2;i=5001"]
     assert inverse_reads == ["i=36", "ns=2;i=5001"]
 
@@ -103,11 +103,11 @@ async def test_reference_type_inverse_name_read_failure_degrades(
             raise RuntimeError("server rejects attribute read")
         return [ua.DataValue(ua.Variant(ua.QualifiedName("HasEventSource"))) for _ in nodes]
 
-    monkeypatch.setattr(client, "_read_attribute_batch_limited", read_names)
+    monkeypatch.setattr(client, "read_attribute_batch_limited", read_names)
     caplog.set_level("WARNING", logger="i3x_server.infrastructure.opcua.node_reading")
     names: dict[str, str] = {}
     inverse: dict[str, str] = {}
-    await client._read_reference_type_browse_names(refs, names, inverse)
+    await client.read_reference_type_browse_names(refs, names, inverse)
     assert names == {"i=36": "HasEventSource"}
     assert inverse == {}
     assert "inverse names unavailable" in caplog.text
@@ -131,15 +131,15 @@ async def test_reference_type_name_failure_does_not_use_target_name(
         del nodes, attr, batch_size
         return [ua.DataValue(ua.Variant(invalid_name))]
 
-    monkeypatch.setattr(client, "_read_attribute_batch_limited", read_names)
+    monkeypatch.setattr(client, "read_attribute_batch_limited", read_names)
     with pytest.raises(ValueError, match="Cannot read BrowseName for reference type"):
-        await client._read_reference_type_browse_names(refs, {})
+        await client.read_reference_type_browse_names(refs, {})
 
 
 @pytest.mark.asyncio
 async def test_browse_tree_to_relationship_types_uses_type_names(monkeypatch: pytest.MonkeyPatch) -> None:
     client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
-    client._limits_cache = OpcUaOperationalLimits(max_nodes_per_browse=1, max_nodes_per_read=1)
+    client.limits_cache = OpcUaOperationalLimits(max_nodes_per_browse=1, max_nodes_per_read=1)
     reads: list[str] = []
 
     async def read_infos(entries: list[tuple[Any, str | None]]) -> list[OpcUaNodeInfo]:
@@ -196,10 +196,10 @@ async def test_browse_tree_to_relationship_types_uses_type_names(monkeypatch: py
         assert reference_type_id == "i=36"
         return ["HasEventSource", "NonHierarchicalReferences"]
 
-    monkeypatch.setattr(client, "_read_node_infos_limited", read_infos)
-    monkeypatch.setattr(client, "_browse_references_descriptions", browse_refs)
-    monkeypatch.setattr(client, "_browse_children_descriptions", browse_refs)
-    monkeypatch.setattr(client, "_read_attribute_batch_limited", read_names)
+    monkeypatch.setattr(client, "read_node_infos_limited", read_infos)
+    monkeypatch.setattr(client, "browse_references_descriptions", browse_refs)
+    monkeypatch.setattr(client, "browse_children_descriptions", browse_refs)
+    monkeypatch.setattr(client, "read_attribute_batch_limited", read_names)
     monkeypatch.setattr(client, "get_namespace_infos", namespaces)
     monkeypatch.setattr(client, "resolve_reference_type_supertype_browse_names", supertypes)
     model = await ModelBuilder(client).build()
@@ -423,31 +423,31 @@ def test_assert_file_exists(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_read_positive_int_and_retry_detection() -> None:
     client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
-    cast(Any, client)._client = SimpleNamespace(get_node=lambda _id: _FakeNode(7))
-    assert await client._read_positive_int("ns=0;i=1") == 7
+    cast(Any, client).raw_client = SimpleNamespace(get_node=lambda _id: _FakeNode(7))
+    assert await client.read_positive_int("ns=0;i=1") == 7
 
-    cast(Any, client)._client = SimpleNamespace(get_node=lambda _id: _FakeNode(0))
-    assert await client._read_positive_int("ns=0;i=1") is None
+    cast(Any, client).raw_client = SimpleNamespace(get_node=lambda _id: _FakeNode(0))
+    assert await client.read_positive_int("ns=0;i=1") is None
 
-    cast(Any, client)._client = SimpleNamespace(get_node=lambda _id: _FakeNode(error=RuntimeError("boom")))
-    assert await client._read_positive_int("ns=0;i=1") is None
+    cast(Any, client).raw_client = SimpleNamespace(get_node=lambda _id: _FakeNode(error=RuntimeError("boom")))
+    assert await client.read_positive_int("ns=0;i=1") is None
 
-    assert client._should_retry_after_disconnect(RuntimeError("connection is closed")) is True
-    assert client._should_retry_after_disconnect(RuntimeError("Connection reset by peer")) is True
-    assert client._should_retry_after_disconnect(RuntimeError("BadSessionClosed")) is True
-    assert client._should_retry_after_disconnect(RuntimeError("different error")) is False
+    assert client.should_retry_after_disconnect(RuntimeError("connection is closed")) is True
+    assert client.should_retry_after_disconnect(RuntimeError("Connection reset by peer")) is True
+    assert client.should_retry_after_disconnect(RuntimeError("BadSessionClosed")) is True
+    assert client.should_retry_after_disconnect(RuntimeError("different error")) is False
 
 
 def test_retry_detection_distinguishes_connection_loss_from_timeouts() -> None:
     client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
 
-    assert client._should_retry_after_disconnect(_status_error(StatusCodes.BadSessionClosed)) is True
-    assert client._should_retry_after_disconnect(_status_error(StatusCodes.BadNodeIdUnknown)) is False
-    assert client._should_retry_after_disconnect(ConnectionError("client is disconnected")) is True
-    assert client._should_retry_after_disconnect(TimeoutError()) is False
-    assert client._should_retry_after_disconnect(asyncio.TimeoutError()) is False
+    assert client.should_retry_after_disconnect(_status_error(StatusCodes.BadSessionClosed)) is True
+    assert client.should_retry_after_disconnect(_status_error(StatusCodes.BadNodeIdUnknown)) is False
+    assert client.should_retry_after_disconnect(ConnectionError("client is disconnected")) is True
+    assert client.should_retry_after_disconnect(TimeoutError()) is False
+    assert client.should_retry_after_disconnect(asyncio.TimeoutError()) is False
     assert (
-        client._should_retry_after_disconnect(ConnectionError("Timed out waiting for client to reconnect after 10s"))
+        client.should_retry_after_disconnect(ConnectionError("Timed out waiting for client to reconnect after 10s"))
         is False
     )
 
@@ -455,7 +455,7 @@ def test_retry_detection_distinguishes_connection_loss_from_timeouts() -> None:
 def _client_with_real_uaclient() -> tuple[OpcUaClient, UaClient]:
     client = OpcUaClient(endpoint="opc.tcp://localhost:4840", reconnect_request_timeout_seconds=0.2)
     uaclient = UaClient()
-    cast(Any, client)._client = SimpleNamespace(uaclient=uaclient)
+    cast(Any, client).raw_client = SimpleNamespace(uaclient=uaclient)
     return client, uaclient
 
 
@@ -478,7 +478,7 @@ async def test_wait_for_reconnect_returns_once_connected() -> None:
     client, uaclient = _client_with_real_uaclient()
     uaclient._set_state(UaClientState.RECONNECTING)
 
-    waiter = asyncio.create_task(client._wait_for_reconnect(RuntimeError("connection is closed")))
+    waiter = asyncio.create_task(client.wait_for_reconnect(RuntimeError("connection is closed")))
     await asyncio.sleep(0.01)
     assert not waiter.done()
     uaclient._set_state(UaClientState.CONNECTED)
@@ -492,7 +492,7 @@ async def test_wait_for_reconnect_raises_connection_error_on_timeout() -> None:
     uaclient._set_state(UaClientState.RECONNECTING)
 
     with pytest.raises(ConnectionError, match="did not reconnect"):
-        await client._wait_for_reconnect(RuntimeError("connection is closed"))
+        await client.wait_for_reconnect(RuntimeError("connection is closed"))
 
 
 @pytest.mark.asyncio
@@ -502,8 +502,8 @@ async def test_wait_for_reconnect_reports_lost_session_to_asyncua(monkeypatch: p
     notified: list[bool] = []
     monkeypatch.setattr(uaclient, "notify_transport_lost", lambda: notified.append(True))
 
-    await client._wait_for_reconnect(_status_error(StatusCodes.BadSessionIdInvalid))
-    await client._wait_for_reconnect(RuntimeError("connection is closed"))
+    await client.wait_for_reconnect(_status_error(StatusCodes.BadSessionIdInvalid))
+    await client.wait_for_reconnect(RuntimeError("connection is closed"))
 
     assert notified == [True]
 
@@ -524,11 +524,11 @@ async def test_read_history_values_treats_unsupported_history_as_empty() -> None
             return results
 
     client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
-    cast(Any, client)._client = SimpleNamespace(
+    cast(Any, client).raw_client = SimpleNamespace(
         get_node=lambda node_id: SimpleNamespace(nodeid=ua.NodeId.from_string(node_id)),
         uaclient=_HistoryUaClient(),
     )
-    client._limits_cache = OpcUaOperationalLimits(None, None, 10)
+    client.limits_cache = OpcUaOperationalLimits(None, None, 10)
 
     values = await client.read_history_values(["ns=2;s=good", "ns=2;s=bad"], None, None)
 
@@ -562,11 +562,11 @@ async def test_read_history_values_batches_nodes_and_continuation_points() -> No
 
     client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
     fake_uaclient = _HistoryUaClient()
-    cast(Any, client)._client = SimpleNamespace(
+    cast(Any, client).raw_client = SimpleNamespace(
         get_node=lambda node_id: SimpleNamespace(nodeid=ua.NodeId.from_string(node_id)),
         uaclient=fake_uaclient,
     )
-    client._limits_cache = OpcUaOperationalLimits(None, None, 10)
+    client.limits_cache = OpcUaOperationalLimits(None, None, 10)
 
     values = await client.read_history_values(["ns=2;s=first", "ns=2;s=second"], None, None)
 
@@ -593,13 +593,13 @@ async def test_multi_attribute_read_batches_different_attributes() -> None:
 
     client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
     fake_uaclient = _ReadUaClient()
-    cast(Any, client)._client = SimpleNamespace(uaclient=fake_uaclient)
+    cast(Any, client).raw_client = SimpleNamespace(uaclient=fake_uaclient)
     nodes = [
         SimpleNamespace(nodeid=ua.NodeId.from_string("ns=2;s=first")),
         SimpleNamespace(nodeid=ua.NodeId.from_string("ns=2;s=second")),
     ]
 
-    values = await client._read_attribute_pairs(
+    values = await client.read_attribute_pairs(
         [
             (nodes[0], AttributeIds.BrowseName),
             (nodes[0], AttributeIds.DisplayName),
@@ -617,7 +617,7 @@ async def test_multi_attribute_read_batches_different_attributes() -> None:
 @pytest.mark.asyncio
 async def test_node_description_is_read_with_required_node_attributes(monkeypatch: pytest.MonkeyPatch) -> None:
     client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
-    client._limits_cache = OpcUaOperationalLimits(
+    client.limits_cache = OpcUaOperationalLimits(
         max_nodes_per_browse=10,
         max_nodes_per_read=10,
         max_nodes_per_history_read_data=None,
@@ -648,10 +648,10 @@ async def test_node_description_is_read_with_required_node_attributes(monkeypatc
         del nodes
         return {}
 
-    monkeypatch.setattr(client, "_read_attribute_pairs", read_attributes)
-    monkeypatch.setattr(client, "_read_type_definitions", read_type_definitions)
+    monkeypatch.setattr(client, "read_attribute_pairs", read_attributes)
+    monkeypatch.setattr(client, "read_type_definitions", read_type_definitions)
 
-    result = await client._read_node_infos_limited([(node, None)])
+    result = await client.read_node_infos_limited([(node, None)])
 
     assert attribute_batches == [
         [
@@ -694,9 +694,9 @@ async def test_fallback_node_description_is_read_with_node_names(monkeypatch: py
             for _, attribute in node_attributes
         ]
 
-    monkeypatch.setattr(client, "_read_attribute_pairs", read_attributes)
+    monkeypatch.setattr(client, "read_attribute_pairs", read_attributes)
 
-    result = await client._read_node_info(node, None)
+    result = await client.read_node_info(node, None)
 
     assert requested_attributes == [
         AttributeIds.BrowseName,
@@ -743,10 +743,10 @@ async def test_fallback_variable_access_levels_are_read(monkeypatch: pytest.Monk
     async def read_type_definition() -> ua.NodeId:
         return ua.NodeId(ua.Int32(63))
 
-    monkeypatch.setattr(client, "_read_attribute_pairs", read_attributes)
+    monkeypatch.setattr(client, "read_attribute_pairs", read_attributes)
     monkeypatch.setattr(node, "read_type_definition", read_type_definition, raising=False)
 
-    result = await client._read_node_info(node, None)
+    result = await client.read_node_info(node, None)
 
     assert requested_attributes == [
         AttributeIds.BrowseName,
@@ -790,9 +790,9 @@ async def test_fallback_method_executable_attributes_are_class_specific(monkeypa
             for _, attribute in node_attributes
         ]
 
-    monkeypatch.setattr(client, "_read_attribute_pairs", read_attributes)
+    monkeypatch.setattr(client, "read_attribute_pairs", read_attributes)
 
-    result = await client._read_node_info(node, None)
+    result = await client.read_node_info(node, None)
 
     assert requested_attributes == [
         AttributeIds.BrowseName,
@@ -813,7 +813,7 @@ async def test_fallback_method_executable_attributes_are_class_specific(monkeypa
 @pytest.mark.asyncio
 async def test_batch_variable_access_levels_are_included_in_node_info(monkeypatch: pytest.MonkeyPatch) -> None:
     client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
-    client._limits_cache = OpcUaOperationalLimits(max_nodes_per_browse=None, max_nodes_per_read=10)
+    client.limits_cache = OpcUaOperationalLimits(max_nodes_per_browse=None, max_nodes_per_read=10)
     node = SimpleNamespace(nodeid=ua.NodeId.from_string("ns=2;s=Temperature"))
     requested_attributes: list[AttributeIds] = []
     values_by_attribute = {
@@ -842,10 +842,10 @@ async def test_batch_variable_access_levels_are_included_in_node_info(monkeypatc
         del nodes
         return {}
 
-    monkeypatch.setattr(client, "_read_attribute_pairs", read_attributes)
-    monkeypatch.setattr(client, "_read_type_definitions", read_type_definitions)
+    monkeypatch.setattr(client, "read_attribute_pairs", read_attributes)
+    monkeypatch.setattr(client, "read_type_definitions", read_type_definitions)
 
-    result = await client._read_node_infos_limited([(node, None)])
+    result = await client.read_node_infos_limited([(node, None)])
 
     assert requested_attributes == [
         AttributeIds.BrowseName,
@@ -868,7 +868,7 @@ async def test_node_info_candidate_attributes_are_read_once_for_mixed_node_class
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
-    client._limits_cache = OpcUaOperationalLimits(max_nodes_per_browse=None, max_nodes_per_read=20)
+    client.limits_cache = OpcUaOperationalLimits(max_nodes_per_browse=None, max_nodes_per_read=20)
     object_node = SimpleNamespace(nodeid=ua.NodeId.from_string("ns=2;s=Device"))
     variable_node = SimpleNamespace(nodeid=ua.NodeId.from_string("ns=2;s=Temperature"))
     entries = [(object_node, None), (variable_node, "ns=2;s=Device")]
@@ -918,10 +918,10 @@ async def test_node_info_candidate_attributes_are_read_once_for_mixed_node_class
         assert nodes == [object_node, variable_node]
         return {}
 
-    monkeypatch.setattr(client, "_read_attribute_pairs", read_attributes)
-    monkeypatch.setattr(client, "_read_type_definitions", read_type_definitions)
+    monkeypatch.setattr(client, "read_attribute_pairs", read_attributes)
+    monkeypatch.setattr(client, "read_type_definitions", read_type_definitions)
 
-    result = await client._read_node_infos_limited(entries)
+    result = await client.read_node_infos_limited(entries)
 
     assert len(attribute_batches) == 1
     assert len(attribute_batches[0]) == 20
@@ -941,11 +941,11 @@ async def test_subscription_capabilities_read_as_one_batch() -> None:
 
     client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
     fake_uaclient = _ReadUaClient()
-    cast(Any, client)._client = SimpleNamespace(
+    cast(Any, client).raw_client = SimpleNamespace(
         get_node=lambda node_id: SimpleNamespace(nodeid=ua.NodeId.from_string(node_id)),
         uaclient=fake_uaclient,
     )
-    client._limits_cache = OpcUaOperationalLimits(None, 10)
+    client.limits_cache = OpcUaOperationalLimits(None, 10)
 
     capabilities = await client.get_subscription_capabilities()
 
@@ -961,7 +961,7 @@ async def test_subscription_capabilities_read_as_one_batch() -> None:
 async def test_subscription_wrapper_methods() -> None:
     client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
     fake = _FakeClient()
-    cast(Any, client)._client = fake
+    cast(Any, client).raw_client = fake
 
     created = await client.create_datachange_subscription(500.0, handler=object())
     assert created.interval == 500.0
@@ -1000,13 +1000,13 @@ def test_get_monitored_item_handles_maps_node_ids_to_current_server_handles() ->
 @pytest.mark.asyncio
 async def test_configure_security_none_and_missing_config(tmp_path: Path) -> None:
     client = OpcUaClient(endpoint="opc.tcp://localhost:4840", security_mode="None")
-    cast(Any, client)._client = _FakeClient()
+    cast(Any, client).raw_client = _FakeClient()
     await client._configure_security_if_needed()
     assert client._using_security is False
 
     with pytest.raises(ValueError):
         bad = OpcUaClient(endpoint="opc.tcp://localhost:4840", security_mode="Sign")
-        cast(Any, bad)._client = _FakeClient()
+        cast(Any, bad).raw_client = _FakeClient()
         await bad._configure_security_if_needed()
 
     cert = tmp_path / "client-cert.pem"
@@ -1023,7 +1023,7 @@ async def test_configure_security_none_and_missing_config(tmp_path: Path) -> Non
         client_key_password="pw",
     )
     secure_fake = _FakeClient()
-    cast(Any, secure)._client = secure_fake
+    cast(Any, secure).raw_client = secure_fake
     await secure._configure_security_if_needed()
     assert secure._using_security is True
     assert secure_fake.security_string is not None
@@ -1087,7 +1087,7 @@ async def test_reconnect_handler_loop_runs_follow_up_work_outside_supervisor() -
 
 def test_supervised_client_reports_finished_reconnect(monkeypatch: pytest.MonkeyPatch) -> None:
     client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
-    asyncua_client = cast(Any, client)._client
+    asyncua_client = cast(Any, client).raw_client
     assert asyncua_client.reconnected_callback == client._on_asyncua_reconnected
 
     async def _base_finalize(self: Any, reused: bool) -> None:
@@ -1099,28 +1099,28 @@ def test_supervised_client_reports_finished_reconnect(monkeypatch: pytest.Monkey
     asyncio.run(asyncua_client._finalize_reconnect(False))
 
     assert client.get_connection_snapshot().state == "Connected"
-    assert client._reconnected_event.is_set()
+    assert client.reconnected_event.is_set()
 
 
 def test_reconnect_keeps_browse_metadata_as_stale_and_clears_limits() -> None:
     client = OpcUaClient(endpoint="opc.tcp://localhost:4840", metadata_cache_ttl_seconds=0)
 
-    cast(Any, client)._limits_cache = object()
-    cast(Any, client)._subscription_caps_cache = object()
-    cast(Any, client)._namespace_infos_cache = (1.0, ["old-ns"])
-    cast(Any, client)._object_types_cache = (1.0, ["old-type"])
+    cast(Any, client).limits_cache = object()
+    cast(Any, client).subscription_caps_cache = object()
+    cast(Any, client).namespace_infos_cache = (1.0, ["old-ns"])
+    cast(Any, client).object_type_cache = (1.0, ["old-type"])
 
     client._on_asyncua_reconnected(True)
 
-    assert cast(Any, client)._limits_cache is None
-    assert cast(Any, client)._subscription_caps_cache is None
-    ns_cached_at, ns_value = cast(Any, client)._namespace_infos_cache
-    types_cached_at, types_value = cast(Any, client)._object_types_cache
+    assert cast(Any, client).limits_cache is None
+    assert cast(Any, client).subscription_caps_cache is None
+    ns_cached_at, ns_value = cast(Any, client).namespace_infos_cache
+    types_cached_at, types_value = cast(Any, client).object_type_cache
     assert ns_value == ["old-ns"]
     assert types_value == ["old-type"]
     # Even with TTL 0 (never expire) the reconnect must force a refresh.
-    assert not client._is_metadata_cache_entry_fresh(ns_cached_at)
-    assert not client._is_metadata_cache_entry_fresh(types_cached_at)
+    assert not client.is_metadata_cache_entry_fresh(ns_cached_at)
+    assert not client.is_metadata_cache_entry_fresh(types_cached_at)
 
 
 @pytest.mark.asyncio
@@ -1128,7 +1128,7 @@ async def test_metadata_invalidated_by_reconnect_is_served_stale_without_blockin
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
-    cast(Any, client)._object_types_cache = client._invalidate_metadata_entry((time.perf_counter(), ["stale"]))
+    cast(Any, client).object_type_cache = client.invalidate_metadata_entry((time.perf_counter(), ["stale"]))
     release = asyncio.Event()
     calls = 0
 
@@ -1137,7 +1137,7 @@ async def test_metadata_invalidated_by_reconnect_is_served_stale_without_blockin
         calls += 1
         await release.wait()
         fresh: list[Any] = ["fresh"]
-        cast(Any, client)._object_types_cache = (time.perf_counter(), fresh)
+        cast(Any, client).object_type_cache = (time.perf_counter(), fresh)
         return fresh
 
     monkeypatch.setattr(client, "_load_object_types", _slow_load)
@@ -1147,7 +1147,7 @@ async def test_metadata_invalidated_by_reconnect_is_served_stale_without_blockin
     assert all(cast(list[Any], result) == ["stale"] for result in results)
     assert calls == 1
     release.set()
-    await cast(Any, client)._metadata_load_tasks["object_types"]
+    await cast(Any, client).metadata_load_tasks["object_types"]
     assert cast(list[Any], await client.get_object_types()) == ["fresh"]
 
 
@@ -1164,13 +1164,13 @@ async def test_operational_limits_and_subscription_caps_are_loaded_once_for_conc
     async def _slow_limits() -> OpcUaOperationalLimits:
         calls["limits"] += 1
         await release.wait()
-        cast(Any, client)._limits_cache = limits
+        cast(Any, client).limits_cache = limits
         return limits
 
     async def _slow_caps() -> Any:
         calls["caps"] += 1
         await release.wait()
-        cast(Any, client)._subscription_caps_cache = caps
+        cast(Any, client).subscription_caps_cache = caps
         return caps
 
     monkeypatch.setattr(client, "_load_operational_limits", _slow_limits)
@@ -1192,7 +1192,7 @@ async def test_expired_metadata_cache_serves_stale_while_one_background_reload_r
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
-    cast(Any, client)._object_types_cache = (-1e9, ["stale"])
+    cast(Any, client).object_type_cache = (-1e9, ["stale"])
     calls = 0
     release = asyncio.Event()
 
@@ -1201,7 +1201,7 @@ async def test_expired_metadata_cache_serves_stale_while_one_background_reload_r
         calls += 1
         await release.wait()
         fresh: list[Any] = ["fresh"]
-        cast(Any, client)._object_types_cache = (time.perf_counter(), fresh)
+        cast(Any, client).object_type_cache = (time.perf_counter(), fresh)
         return fresh
 
     monkeypatch.setattr(client, "_load_object_types", _slow_load)
@@ -1215,19 +1215,19 @@ async def test_expired_metadata_cache_serves_stale_while_one_background_reload_r
     assert all(cast(list[Any], result) == ["stale"] for result in results)
     assert calls == 1
     release.set()
-    await cast(Any, client)._metadata_load_tasks["object_types"]
+    await cast(Any, client).metadata_load_tasks["object_types"]
     await asyncio.sleep(0)
     assert cast(list[Any], await client.get_object_types()) == ["fresh"]
     assert calls == 1
-    assert cast(Any, client)._metadata_load_tasks == {}
+    assert cast(Any, client).metadata_load_tasks == {}
     recovered_logs = [r for r in caplog.records if "metadata refresh recovered" in r.getMessage()]
     assert len(recovered_logs) == 1
     assert "suppressed_events=19" in recovered_logs[0].getMessage()
-    assert cast(Any, client)._stale_metadata_incidents == {}
+    assert cast(Any, client).stale_metadata_incidents == {}
 
-    cast(Any, client)._object_types_cache = (-1e9, ["stale-again"])
+    cast(Any, client).object_type_cache = (-1e9, ["stale-again"])
     assert cast(list[Any], await client.get_object_types()) == ["stale-again"]
-    await cast(Any, client)._metadata_load_tasks["object_types"]
+    await cast(Any, client).metadata_load_tasks["object_types"]
     await asyncio.sleep(0)
     assert len([r for r in caplog.records if "serving stale metadata" in r.getMessage()]) == 2
     assert len([r for r in caplog.records if "metadata refresh recovered" in r.getMessage()]) == 2
@@ -1239,7 +1239,7 @@ async def test_failed_background_metadata_reload_keeps_serving_stale_value(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
-    cast(Any, client)._namespace_infos_cache = (-1e9, ["stale"])
+    cast(Any, client).namespace_infos_cache = (-1e9, ["stale"])
 
     async def _failing_load() -> list[Any]:
         raise RuntimeError("browse failed")
@@ -1249,14 +1249,14 @@ async def test_failed_background_metadata_reload_keeps_serving_stale_value(
     caplog.set_level("INFO", logger="i3x_server.infrastructure.opcua.client")
     assert cast(list[Any], await client.get_namespace_infos()) == ["stale"]
     with pytest.raises(RuntimeError):
-        await cast(Any, client)._metadata_load_tasks["namespace_infos"]
+        await cast(Any, client).metadata_load_tasks["namespace_infos"]
     assert cast(list[Any], await client.get_namespace_infos()) == ["stale"]
     with pytest.raises(RuntimeError):
-        await cast(Any, client)._metadata_load_tasks["namespace_infos"]
+        await cast(Any, client).metadata_load_tasks["namespace_infos"]
 
     stale_logs = [r for r in caplog.records if "serving stale metadata" in r.getMessage()]
     assert len(stale_logs) == 1
-    assert cast(Any, client)._stale_metadata_incidents["namespace_infos"][1] == 1
+    assert cast(Any, client).stale_metadata_incidents["namespace_infos"][1] == 1
     assert not [r for r in caplog.records if "metadata refresh recovered" in r.getMessage()]
 
 
@@ -1284,7 +1284,7 @@ async def test_cold_metadata_cache_is_loaded_once_for_concurrent_callers(
 
     assert calls == 1
     assert all(cast(list[Any], result) == ["fresh"] for result in results)
-    assert cast(Any, client)._metadata_load_tasks == {}
+    assert cast(Any, client).metadata_load_tasks == {}
 
 
 @pytest.mark.asyncio
@@ -1336,7 +1336,7 @@ async def test_browse_retry_after_disconnect(monkeypatch: pytest.MonkeyPatch) ->
     client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
     fake_uaclient = _FakeUaClient()
     fake_uaclient.fail_browse_once = True
-    cast(Any, client)._client = SimpleNamespace(uaclient=fake_uaclient)
+    cast(Any, client).raw_client = SimpleNamespace(uaclient=fake_uaclient)
 
     reconnect_calls = 0
 
@@ -1345,10 +1345,10 @@ async def test_browse_retry_after_disconnect(monkeypatch: pytest.MonkeyPatch) ->
         nonlocal reconnect_calls
         reconnect_calls += 1
 
-    monkeypatch.setattr(client, "_wait_for_reconnect", _fake_wait_for_reconnect)
+    monkeypatch.setattr(client, "wait_for_reconnect", _fake_wait_for_reconnect)
 
     fake_node = _FakeBrowseNode("ns=1;i=100")
-    out = await client._browse_references_descriptions(
+    out = await client.browse_references_descriptions(
         [fake_node],
         max_nodes_per_browse=10,
         reference_type_id=33,
@@ -1365,7 +1365,7 @@ async def test_browse_next_retry_after_disconnect(monkeypatch: pytest.MonkeyPatc
     fake_uaclient = _FakeUaClient()
     fake_uaclient.fail_browse_next_once = True
     fake_uaclient.browse_continuation_point = b"cp1"
-    cast(Any, client)._client = SimpleNamespace(uaclient=fake_uaclient)
+    cast(Any, client).raw_client = SimpleNamespace(uaclient=fake_uaclient)
 
     reconnect_calls = 0
 
@@ -1374,10 +1374,10 @@ async def test_browse_next_retry_after_disconnect(monkeypatch: pytest.MonkeyPatc
         nonlocal reconnect_calls
         reconnect_calls += 1
 
-    monkeypatch.setattr(client, "_wait_for_reconnect", _fake_wait_for_reconnect)
+    monkeypatch.setattr(client, "wait_for_reconnect", _fake_wait_for_reconnect)
 
     fake_node = _FakeBrowseNode("ns=1;i=200")
-    out = await client._browse_references_descriptions(
+    out = await client.browse_references_descriptions(
         [fake_node],
         max_nodes_per_browse=10,
         reference_type_id=33,
@@ -1393,9 +1393,9 @@ async def test_browse_next_batches_continuation_points() -> None:
     client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
     fake_uaclient = _FakeUaClient()
     fake_uaclient.browse_continuation_point = b"next"
-    cast(Any, client)._client = SimpleNamespace(uaclient=fake_uaclient)
+    cast(Any, client).raw_client = SimpleNamespace(uaclient=fake_uaclient)
 
-    out = await client._browse_references_descriptions(
+    out = await client.browse_references_descriptions(
         [_FakeBrowseNode("ns=1;i=1"), _FakeBrowseNode("ns=1;i=2")],
         max_nodes_per_browse=10,
         reference_type_id=33,
@@ -1417,7 +1417,7 @@ async def test_read_values_splits_batches_on_errors(monkeypatch: pytest.MonkeyPa
             return [f"value-{nodes[0].node_id}"]
 
     client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
-    cast(Any, client)._client = _BatchLimitedClient()
+    cast(Any, client).raw_client = _BatchLimitedClient()
 
     async def _limits() -> OpcUaOperationalLimits:
         return OpcUaOperationalLimits(max_nodes_per_browse=None, max_nodes_per_read=10)
@@ -1439,7 +1439,7 @@ async def test_read_values_returns_none_for_failing_single_node(monkeypatch: pyt
             raise RuntimeError("read failed")
 
     client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
-    cast(Any, client)._client = _AlwaysFailingClient()
+    cast(Any, client).raw_client = _AlwaysFailingClient()
 
     async def _limits() -> OpcUaOperationalLimits:
         return OpcUaOperationalLimits(max_nodes_per_browse=None, max_nodes_per_read=10)
@@ -1497,7 +1497,7 @@ async def test_get_namespace_infos_tolerates_partial_metadata_failures(monkeypat
             return self._nodes[key]
 
     client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
-    cast(Any, client)._client = _NamespaceMetaClient()
+    cast(Any, client).raw_client = _NamespaceMetaClient()
 
     async def _namespaces() -> list[str]:
         return ["urn:ok", "urn:fail"]
@@ -1505,7 +1505,7 @@ async def test_get_namespace_infos_tolerates_partial_metadata_failures(monkeypat
     async def _limits() -> OpcUaOperationalLimits:
         return OpcUaOperationalLimits(max_nodes_per_browse=16, max_nodes_per_read=16)
 
-    async def _browse_children_descriptions(nodes: list[Any], max_nodes_per_browse: int) -> list[tuple[Any, list[Any]]]:
+    async def browse_children_descriptions(nodes: list[Any], max_nodes_per_browse: int) -> list[tuple[Any, list[Any]]]:
         del max_nodes_per_browse
         if len(nodes) == 1 and nodes[0].nodeid.to_string() == "i=11715":
             return [
@@ -1533,7 +1533,7 @@ async def test_get_namespace_infos_tolerates_partial_metadata_failures(monkeypat
 
     monkeypatch.setattr(client, "get_namespaces", _namespaces)
     monkeypatch.setattr(client, "get_operational_limits", _limits)
-    monkeypatch.setattr(client, "_browse_children_descriptions", _browse_children_descriptions)
+    monkeypatch.setattr(client, "browse_children_descriptions", browse_children_descriptions)
 
     infos = await client.get_namespace_infos()
 
@@ -1578,7 +1578,7 @@ class _RefTypeClient:
 
 
 def _ref_type_browse_stub(fake_client: _RefTypeClient) -> Any:
-    async def _browse_references_descriptions(
+    async def browse_references_descriptions(
         nodes: list[Any],
         max_nodes_per_browse: int,
         reference_type_id: int,
@@ -1594,7 +1594,7 @@ def _ref_type_browse_stub(fake_client: _RefTypeClient) -> Any:
             return [(node, [])]
         return [(node, [SimpleNamespace(NodeId=SimpleNamespace(to_string=lambda s=supertype: s))])]
 
-    return _browse_references_descriptions
+    return browse_references_descriptions
 
 
 @pytest.mark.asyncio
@@ -1602,9 +1602,9 @@ async def test_reference_type_supertypes_cache_is_bounded(monkeypatch: pytest.Mo
     """The node-id keyed chain cache must not accumulate every reference type ever browsed."""
     fake_client = _RefTypeClient()
     client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
-    cast(Any, client)._client = fake_client
+    cast(Any, client).raw_client = fake_client
     monkeypatch.setattr("i3x_server.infrastructure.opcua.client._REFERENCE_TYPE_SUPERTYPES_CACHE_MAX_ENTRIES", 2)
-    monkeypatch.setattr(client, "_browse_references_descriptions", _ref_type_browse_stub(fake_client))
+    monkeypatch.setattr(client, "browse_references_descriptions", _ref_type_browse_stub(fake_client))
 
     assert await client.resolve_reference_type_supertype_browse_names("HasComponent") == [
         "HasComponent",
@@ -1669,8 +1669,8 @@ async def test_resolve_reference_type_supertypes_caches_every_ancestor(
 ) -> None:
     fake_client = _RefTypeClient()
     client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
-    cast(Any, client)._client = fake_client
-    monkeypatch.setattr(client, "_browse_references_descriptions", _ref_type_browse_stub(fake_client))
+    cast(Any, client).raw_client = fake_client
+    monkeypatch.setattr(client, "browse_references_descriptions", _ref_type_browse_stub(fake_client))
 
     assert await client.resolve_reference_type_supertype_browse_names("HasComponent") == [
         "HasComponent",
@@ -1737,7 +1737,7 @@ def _variant_values(values: list[ua.DataValue]) -> list[Any]:
 
 def _batch_read_client(monkeypatch: pytest.MonkeyPatch, fake: _BatchReadClient) -> OpcUaClient:
     client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
-    cast(Any, client)._client = fake
+    cast(Any, client).raw_client = fake
 
     async def _limits() -> OpcUaOperationalLimits:
         return OpcUaOperationalLimits(max_nodes_per_browse=None, max_nodes_per_read=3)
@@ -1793,8 +1793,8 @@ async def test_read_data_values_does_not_fan_out_transport_failures(
     async def unexpected_fallback(node_ids: list[str]) -> list[ua.DataValue]:
         pytest.fail("A transport failure must not launch per-node reads")
 
-    monkeypatch.setattr(client, "_read_attribute_batch_limited", fail_batch)
-    monkeypatch.setattr(client, "_read_data_values_per_node", unexpected_fallback)
+    monkeypatch.setattr(client, "read_attribute_batch_limited", fail_batch)
+    monkeypatch.setattr(client, "read_data_values_per_node", unexpected_fallback)
     with pytest.raises(type(error)):
         await client.read_data_values(["i=2256", "i=2259"])
 
@@ -1802,7 +1802,7 @@ async def test_read_data_values_does_not_fan_out_transport_failures(
 @pytest.mark.asyncio
 async def test_reconnect_activation_precedes_queued_application_reads(monkeypatch: pytest.MonkeyPatch) -> None:
     client = OpcUaClient(endpoint="opc.tcp://localhost:4840", browse_concurrency=2)
-    supervised = client._client
+    supervised = client.raw_client
     transport = supervised.uaclient
     protocol = transport._make_protocol()
     sent: list[str] = []
@@ -1840,7 +1840,7 @@ async def test_reconnect_activation_precedes_queued_application_reads(monkeypatc
         assert await asyncio.wait_for(supervised._reconnect_with_backoff(), timeout=1)
         await asyncio.wait_for(asyncio.gather(*reads), timeout=1)
         assert sent == ["ActivateSessionRequest"] + ["ReadRequest"] * 8
-        assert client._reconnected_event.is_set()
+        assert client.reconnected_event.is_set()
         assert client.get_connection_snapshot().state == "Connected"
         assert supervised.nodes.server_state.session is transport.session
     finally:
@@ -1856,7 +1856,7 @@ async def test_application_requests_wait_for_session_during_reconnect(
     monkeypatch: pytest.MonkeyPatch, state: UaClientState
 ) -> None:
     client = OpcUaClient(endpoint="opc.tcp://localhost:4840", reconnect_request_timeout_seconds=0.01)
-    supervised = client._client
+    supervised = client.raw_client
     transport = supervised.uaclient
     protocol = transport._make_protocol()
     supervised._supervisor_task = asyncio.current_task()
@@ -1881,7 +1881,7 @@ async def test_application_requests_wait_for_session_during_reconnect(
 @pytest.mark.asyncio
 async def test_application_request_concurrency_is_shared(monkeypatch: pytest.MonkeyPatch) -> None:
     client = OpcUaClient(endpoint="opc.tcp://localhost:4840", browse_concurrency=2)
-    transport = client._client.uaclient
+    transport = client.raw_client.uaclient
     transport._set_state(UaClientState.CONNECTED)
     protocol = transport._make_protocol()
     release = asyncio.Event()
@@ -1917,8 +1917,8 @@ async def test_application_request_concurrency_is_shared(monkeypatch: pytest.Mon
 @pytest.mark.asyncio
 async def test_reconnect_handshake_has_an_overall_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
     client = OpcUaClient(endpoint="opc.tcp://localhost:4840", reconnect_request_timeout_seconds=0.1)
-    client._client.uaclient._make_protocol()
-    client._client.uaclient._set_state(UaClientState.CHANNEL_OPEN)
+    client.raw_client.uaclient._make_protocol()
+    client.raw_client.uaclient._set_state(UaClientState.CHANNEL_OPEN)
 
     async def stalled_activation(self: Client) -> bool:
         await asyncio.Event().wait()
@@ -1927,18 +1927,18 @@ async def test_reconnect_handshake_has_an_overall_deadline(monkeypatch: pytest.M
     monkeypatch.setattr(Client, "_try_reactivate_existing_session", stalled_activation)
     started = time.monotonic()
     with pytest.raises(TimeoutError):
-        await asyncio.wait_for(client._client._try_reactivate_existing_session(), timeout=1)
+        await asyncio.wait_for(client.raw_client._try_reactivate_existing_session(), timeout=1)
     # The client's own handshake deadline (0.1s) must fire before the outer 1s safety net;
     # 0.9 keeps that ordering discriminating while tolerating scheduler jitter.
     assert time.monotonic() - started < 0.9
-    assert client._client.uaclient.state is UaClientState.DISCONNECTED
-    assert client._client.uaclient.protocol is None
+    assert client.raw_client.uaclient.state is UaClientState.DISCONNECTED
+    assert client.raw_client.uaclient.protocol is None
 
 
 @pytest.mark.asyncio
 async def test_request_deadline_includes_waiting_for_shared_budget(monkeypatch: pytest.MonkeyPatch) -> None:
     client = OpcUaClient(endpoint="opc.tcp://localhost:4840", browse_concurrency=1)
-    transport = client._client.uaclient
+    transport = client.raw_client.uaclient
     transport._set_state(UaClientState.CONNECTED)
     protocol = transport._make_protocol()
     occupied = asyncio.Event()
@@ -1971,7 +1971,7 @@ async def test_request_deadline_includes_waiting_for_shared_budget(monkeypatch: 
 @pytest.mark.asyncio
 async def test_publish_does_not_occupy_application_request_budget(monkeypatch: pytest.MonkeyPatch) -> None:
     client = OpcUaClient(endpoint="opc.tcp://localhost:4840", browse_concurrency=1)
-    transport = client._client.uaclient
+    transport = client.raw_client.uaclient
     transport._set_state(UaClientState.CONNECTED)
     protocol = transport._make_protocol()
     publishing = asyncio.Event()
@@ -2022,10 +2022,10 @@ async def test_per_node_transport_failure_cancels_pending_reads(monkeypatch: pyt
     async def limits() -> OpcUaOperationalLimits:
         return OpcUaOperationalLimits(max_nodes_per_browse=None, max_nodes_per_read=2)
 
-    monkeypatch.setattr(client._client, "get_node", FailingNode)
+    monkeypatch.setattr(client.raw_client, "get_node", FailingNode)
     monkeypatch.setattr(client, "get_operational_limits", limits)
     with pytest.raises(TimeoutError):
-        await client._read_data_values_per_node(["i=1", "i=2", "i=3"])
+        await client.read_data_values_per_node(["i=1", "i=2", "i=3"])
     assert started == ["i=1", "i=2"]
     assert cancelled.is_set()
 
@@ -2036,7 +2036,7 @@ async def test_stalled_subscription_restore_does_not_block_reconnect_completion(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, recreation_fails: bool
 ) -> None:
     client = OpcUaClient(endpoint="opc.tcp://localhost:4840", reconnect_request_timeout_seconds=0.1)
-    supervised = client._client
+    supervised = client.raw_client
     subscription = Subscription(supervised.uaclient.session, ua.CreateSubscriptionParameters())
     subscription.subscription_id = 1
     supervised._subscriptions = [subscription]
@@ -2061,7 +2061,7 @@ async def test_stalled_subscription_restore_does_not_block_reconnect_completion(
     await asyncio.wait_for(supervised._finalize_reconnect(True), timeout=1)
     assert cancelled
     assert recreated
-    assert client._reconnected_event.is_set()
+    assert client.reconnected_event.is_set()
     assert "subscription restore timed out" in caplog.text
     if recreation_fails:
         assert "subscription recovery failed" in caplog.text
@@ -2093,18 +2093,18 @@ async def test_model_refresh_budget_overrides_read_budget(monkeypatch: pytest.Mo
         finally:
             counters["active"] -= 1
 
-    monkeypatch.setattr(client, "_read_values_batch_with_fallback", read_batch)
+    monkeypatch.setattr(client, "read_values_batch_with_fallback", read_batch)
 
     async def read_under_refresh_budget() -> list[Any]:
         async with model_refresh_budget(client):
             return await client.read_values(node_ids)
 
-    assert client._read_slot() is client._read_semaphore
+    assert client.read_slot() is client._read_semaphore
 
     refresh_read = asyncio.create_task(read_under_refresh_budget())
     await asyncio.wait_for(at_capacity.wait(), timeout=1)
     # Tasks created inside the scope inherit the budget through their copied context.
-    assert client._read_slot() is client._read_semaphore
+    assert client.read_slot() is client._read_semaphore
     release.set()
     assert await refresh_read == [f"value-{node_id}" for node_id in node_ids]
     assert counters["peak"] == 2
@@ -2116,11 +2116,11 @@ async def test_model_refresh_budget_overrides_read_budget(monkeypatch: pytest.Mo
     release.set()
     assert await outside == [f"value-{node_id}" for node_id in node_ids]
     assert counters["peak"] == 8
-    assert client._read_slot() is client._read_semaphore
+    assert client.read_slot() is client._read_semaphore
 
 
 @pytest.mark.asyncio
 async def test_model_refresh_budget_is_a_noop_without_a_refresh_semaphore() -> None:
     client = OpcUaClient(endpoint="opc.tcp://localhost:4840", refresh_concurrency=2)
     async with model_refresh_budget(SimpleNamespace()):
-        assert client._read_slot() is client._read_semaphore
+        assert client.read_slot() is client._read_semaphore

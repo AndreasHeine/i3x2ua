@@ -1,4 +1,4 @@
-![i3x2ua Logo](static/logo-small.png)
+![i3x2ua Logo](img/logo-small.png)
 
 # The i3X API Gateway for OPC UA — REST, MCP & Real-Time Streaming
 

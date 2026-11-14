@@ -56,8 +56,4 @@ tests/features/.tmp_pytest_out.txt
 # Review/working notes (not part of the project)
 notes/
 notes_*.txt
-REPORT.md
-fixme.md
-original_review.md
-review.md
-fix_plan.md
+notes_*.md

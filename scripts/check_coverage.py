@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Gate the coverage report written by ``pytest --cov-report=xml``.
 
-Both CI (``.github/workflows/quality.yml``) and the local runner (``run_tests.py``) call this
+Both CI (``.github/workflows/quality.yml``) and the local runner (``scripts/run_tests.py``) call this
 script so the thresholds cannot drift apart. The report is parsed from ``coverage.xml``;
 line and branch rates are gated separately because a combined ``--cov-fail-under`` would hide
 uncovered error branches behind high line counts.
@@ -20,7 +20,7 @@ import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-# Line gate matches run_tests.py's historical target; branch gate sits below the measured
+# Line gate matches scripts/run_tests.py's historical target; branch gate sits below the measured
 # baseline (76.74 %) so it locks progress without blocking feature work on legacy gaps.
 TARGET_LINE_PERCENT = 85.0
 TARGET_BRANCH_PERCENT = 75.0

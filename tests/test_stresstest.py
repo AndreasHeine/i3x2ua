@@ -10,11 +10,11 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-import run_stresstest
+import scripts.run_stresstest as run_stresstest
 
 
 def make_supervisor(monkeypatch: pytest.MonkeyPatch, *options: str) -> run_stresstest.Supervisor:
-    monkeypatch.setattr(sys, "argv", ["run_stresstest.py", *options])
+    monkeypatch.setattr(sys, "argv", ["scripts/run_stresstest.py", *options])
     return run_stresstest.Supervisor(run_stresstest._parse_args())
 
 
@@ -129,7 +129,7 @@ def test_subscription_worker_failure_without_stderr_has_no_blank_error_key(
 
 
 def test_element_ids_reject_empty_values(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(sys, "argv", ["run_stresstest.py", "--element-ids", " "])
+    monkeypatch.setattr(sys, "argv", ["scripts/run_stresstest.py", "--element-ids", " "])
     with pytest.raises(SystemExit) as exc:
         run_stresstest._parse_args()
     assert exc.value.code == 2
@@ -149,7 +149,7 @@ def test_probe_uses_tls_and_auth_options(
         *credentials,
         *(["--insecure"] if insecure else []),
     )
-    with patch("run_stresstest.urllib.request.urlopen") as urlopen:
+    with patch("scripts.run_stresstest.urllib.request.urlopen") as urlopen:
         urlopen.return_value.__enter__.return_value.read.side_effect = supervisor.stop_event.set
         supervisor.probe_worker()
 
@@ -177,7 +177,7 @@ def test_probe_records_authentication_failure(monkeypatch: pytest.MonkeyPatch) -
         supervisor.stop_event.set()
         raise urllib.error.HTTPError("http://127.0.0.1:8000/v1/info", 401, "Unauthorized", Message(), None)
 
-    with patch("run_stresstest.urllib.request.urlopen", side_effect=fail_request):
+    with patch("scripts.run_stresstest.urllib.request.urlopen", side_effect=fail_request):
         supervisor.probe_worker()
     assert supervisor.probe.samples == 1
     assert supervisor.probe.errors == 1

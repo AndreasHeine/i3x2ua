@@ -131,12 +131,12 @@ python .\samples\subscription_client.py --help
 
 ## Performance benchmark
 
-Run [run_benchmark.py](../run_benchmark.py) from the repository root to measure
+Run [run_benchmark.py](../scripts/run_benchmark.py) from the repository root to measure
 the sample clients rather than repeatedly launching their command-line programs:
 
 ```powershell
-python .\run_benchmark.py --duration 30 --warmup 5 --output benchmark.json
-python .\run_benchmark.py --discovery 4 --subscriptions 4 --element-ids "property-dd1a9a05d251425f" --duration 60 --output benchmark-mixed.json
+python .\scripts\run_benchmark.py --duration 30 --warmup 5 --output benchmark.json
+python .\scripts\run_benchmark.py --discovery 4 --subscriptions 4 --element-ids "property-dd1a9a05d251425f" --duration 60 --output benchmark-mixed.json
 ```
 
 Use IDs discovered on your own server for subscriptions. The default workload is

@@ -11,7 +11,7 @@ Press Ctrl+C to stop all three processes.
 
 Run it through the project environment so the children inherit the installed
 dependencies, e.g.:
-    uv run python run_conformancetest.py
+    uv run python scripts/run_conformancetest.py
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ import time
 from pathlib import Path
 from typing import IO, Any
 
-REPO_ROOT = Path(__file__).resolve().parent
+REPO_ROOT = Path(__file__).resolve().parents[1]
 CONFORMANCE_TESTS_DIR = REPO_ROOT / "i3X" / "conformance-tests"
 CONFORMANCE_TESTS_ENTRY = CONFORMANCE_TESTS_DIR / "bin" / "i3x-test.js"
 
@@ -120,7 +120,7 @@ def _python_command(*args: str) -> list[str]:
     A bare ``uv`` is not guaranteed to resolve on Windows (PATH entry may be ``uv.exe``),
     and ``uv run`` wraps the child in a second process whose termination does not reach the
     server on Windows. ``sys.executable`` is the project interpreter when started via
-    ``uv run python run_conformancetest.py``.
+    ``uv run python scripts/run_conformancetest.py``.
     """
     return [sys.executable, *args]
 

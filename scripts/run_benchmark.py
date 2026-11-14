@@ -1,6 +1,6 @@
 """Measure the sample clients' REST performance without subprocess or printing overhead.
 
-Run ``python run_benchmark.py --help`` for workload and connection options.
+Run ``python scripts/run_benchmark.py --help`` for workload and connection options.
 """
 
 from __future__ import annotations
@@ -20,8 +20,13 @@ from typing import Any
 from urllib.parse import urlsplit
 from uuid import uuid4
 
-from samples.client import I3XRequestError
-from samples.subscription_client import I3XSubscriptionClient, _check_bulk_result
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+# Resolve repository-local modules after enabling direct script execution from any directory.
+from samples.client import I3XRequestError  # noqa: E402
+from samples.subscription_client import I3XSubscriptionClient, _check_bulk_result  # noqa: E402
 
 
 @dataclass

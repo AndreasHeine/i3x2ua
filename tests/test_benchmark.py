@@ -12,7 +12,7 @@ from unittest.mock import Mock
 
 import pytest
 
-import run_benchmark as benchmark
+import scripts.run_benchmark as benchmark
 from samples.client import I3XRequestError
 
 
@@ -128,11 +128,11 @@ def test_metric_percentiles_rates_and_empty_samples() -> None:
 def test_measurement_window_excludes_warmup_and_inflight_requests(monkeypatch: pytest.MonkeyPatch) -> None:
     measurements = benchmark.Measurements()
     measurements.start, measurements.end = 10, 20
-    monkeypatch.setattr("run_benchmark.time.perf_counter", lambda: 15)
+    monkeypatch.setattr("scripts.run_benchmark.time.perf_counter", lambda: 15)
     measurements.record("warmup", 9)
     measurements.record("valid", 12, updates=3)
     measurements.record("failed", 12, error="HTTP 500")
-    monkeypatch.setattr("run_benchmark.time.perf_counter", lambda: 21)
+    monkeypatch.setattr("scripts.run_benchmark.time.perf_counter", lambda: 21)
     measurements.record("drained", 19)
     measurements.record("outside error", 19, error="timeout")
     assert set(measurements.metrics) == {"valid", "failed"}
@@ -176,7 +176,7 @@ def test_client_preserves_tls_auth_and_records_invalid_json(monkeypatch: pytest.
     client = benchmark.BenchmarkClient(args, "probe", measurements)
     send = Mock(return_value=(200, b"invalid json"))
     monkeypatch.setattr(client, "_send", send)
-    monkeypatch.setattr("run_benchmark.time.perf_counter", lambda: 10)
+    monkeypatch.setattr("scripts.run_benchmark.time.perf_counter", lambda: 10)
     with pytest.raises(I3XRequestError):
         client.get_info()
     assert send.call_args.args[3]["Authorization"] == "Basic dXNlcjpzZWNyZXQ="
@@ -219,7 +219,7 @@ def test_end_to_end_discovery_polling_and_json_report(
         sys,
         "argv",
         [
-            "run_benchmark.py",
+            "scripts/run_benchmark.py",
             "--base-url",
             base_url,
             "--duration",

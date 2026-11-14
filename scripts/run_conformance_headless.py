@@ -1,6 +1,6 @@
 """Headless i3X conformance gate: OPC UA fixture + gateway + i3X test suite.
 
-``run_conformancetest.py`` starts an interactive web UI and requires a human to run the
+``scripts/run_conformancetest.py`` starts an interactive web UI and requires a human to run the
 suite. This variant is the CI/local gate: it starts the fixture and the gateway, waits for
 both to be actually ready (no fixed sleeps), runs ``i3x-test run`` headlessly, writes the
 report as JSON, and exits with the suite's exit code (0 == compliant).
@@ -33,16 +33,15 @@ REQUIRED_VERDICT = "Full 1.0 Compliance"
 
 
 def _load_orchestrator() -> Any:
-    """Import the root orchestrator, which reuses the conformance env and process helpers.
+    """Import the interactive runner, which reuses the conformance env and process helpers.
 
     ``scripts/`` is ``sys.path[0]`` when this file is executed directly, so the repository
-    root has to be added before the import. Doing it here keeps the module-level imports
-    resolvable for the linter.
+    root has to be added before the import.
     """
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    import run_conformancetest
+    import scripts.run_conformancetest
 
-    return run_conformancetest
+    return scripts.run_conformancetest
 
 
 def _reconfigure_output_streams() -> None:

@@ -16,8 +16,10 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from pathlib import Path
 
 BASE_COMMAND = ["uv", "run", "--group", "dev"]
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 COMMANDS: list[list[str]] = [
     [*BASE_COMMAND, "ruff", "check", "."],
@@ -33,7 +35,7 @@ COMMANDS: list[list[str]] = [
 def main() -> int:
     for command in COMMANDS:
         print(f"\n>>> Running: {' '.join(command)}")
-        completed = subprocess.run(command, check=False)
+        completed = subprocess.run(command, check=False, cwd=REPO_ROOT)
         if completed.returncode != 0:
             print(f"\nCommand failed with exit code {completed.returncode}: {' '.join(command)}")
             return completed.returncode

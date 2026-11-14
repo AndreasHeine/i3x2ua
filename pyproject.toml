@@ -78,7 +78,7 @@ python_version = "3.14"
 strict = true
 ignore_missing_imports = true
 explicit_package_bases = true
-files = ["i3x_server", "tests", "run.py", "run_tests.py"]
+files = ["i3x_server", "tests", "run.py", "scripts/run_tests.py"]
 exclude = "(^|[\\/])i3X[\\/]demo[\\/]"
 
 [dependency-groups]

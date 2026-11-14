@@ -10,10 +10,10 @@ children get a stop signal mapped to KeyboardInterrupt so they can delete their 
 force-killed after --shutdown-grace seconds.
 
 Usage:
-    python run_stresstest.py
-    python run_stresstest.py --discovery 20 --subscriptions 50 --duration 600
-    python run_stresstest.py --base-url https://127.0.0.1:8443/v1 --insecure --username admin --password PASSWORD
-    python run_stresstest.py --subscriptions 50 --element-ids property-0123456789abcdef
+    python scripts/run_stresstest.py
+    python scripts/run_stresstest.py --discovery 20 --subscriptions 50 --duration 600
+    python scripts/run_stresstest.py --base-url https://server/v1 --insecure
+    python scripts/run_stresstest.py --subscriptions 50 --element-ids property-0123456789abcdef
 
 TLS verification and HTTP Basic Auth options apply to all clients and the latency probe.
 Use --insecure only for trusted test endpoints with self-signed certificates.
@@ -39,7 +39,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, Any
 
-REPO_ROOT = Path(__file__).resolve().parent
+REPO_ROOT = Path(__file__).resolve().parents[1]
 BASE_URL = "http://127.0.0.1:8000/v1"
 
 DISCOVERY_COMMAND = [

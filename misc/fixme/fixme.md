@@ -36,7 +36,7 @@ Use the required checks in [.github/workflows/quality.yml](../../.github/workflo
 
 - [x] Batch application-layer reads for current values and history to eliminate per-component OPC UA round trips.
 - [x] Add build-time indexes for model-node lookup and object-type lookup instead of repeated linear scans.
-- [ ] Produce a stable content token during model construction and use it instead of serializing the full context on cache misses.
+- [x] Produce a stable content token during model construction and use it instead of serializing the full context on cache misses.
 - [ ] Coordinate lazy builds and refreshes through one in-flight build pipeline; prevent stale results from replacing newer revisions and use one cache-invalidation policy.
 - [ ] Represent read failures distinctly from missing values; do not turn transport failures into `GoodNoData`.
 - [ ] Record an observable sequence gap when subscription notifications are dropped.

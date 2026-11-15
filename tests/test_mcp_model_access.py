@@ -138,7 +138,6 @@ def context() -> _ObjectTypeContext:
             for index, (info, element_id) in enumerate(zip(infos, ids, strict=True), 1)
         ],
         source_type_to_element_id={},
-        revision="type-context-v1",
     )
 
 
@@ -259,13 +258,13 @@ def test_type_instance_pagination_rejects_changed_context(model: BuildResult, co
     first_page = invoke_model_access_tool(
         model, "getInstancesOfType", {"typeElementId": "type-base", "limit": 1}, context
     )
+    # The revision is derived from the served content, so a changed context is a content change.
     replacement = _ObjectTypeContext(
         namespace_infos=context.namespace_infos,
-        object_types=context.object_types,
+        object_types=[],
         element_ids_by_node_id=context.element_ids_by_node_id,
         items=context.items,
         source_type_to_element_id=context.source_type_to_element_id,
-        revision="type-context-v2",
     )
     with pytest.raises(HTTPException) as exc:
         invoke_model_access_tool(

@@ -11,6 +11,7 @@ model reference scanning in ``objecttype_reference_scan``, and feature flags in
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from dataclasses import dataclass, field
 from time import perf_counter
@@ -71,8 +72,12 @@ class _ObjectTypeContext:
     element_ids_by_node_id: dict[str, str]
     items: list[ObjectTypeResponse]
     source_type_to_element_id: dict[str, str]
-    # Revision of the served content, so equal tags always mean equal representations.
-    revision: str = ""
+    # Token of the type definitions the context was built from, taken from the request path's
+    # memo so hashing the context does not hash every definition a second time.
+    object_types_token: str = ""
+    # Content token of the served representation, derived once; the builder warms it during the
+    # build. dataclasses.replace() resets it.
+    _revision_token: str | None = field(default=None, init=False, repr=False, compare=False)
     # Element id -> item, derived once per context. Write validation resolves one type per item,
     # and a scan over every type per write item is O(items * types) for a bulk write.
     _items_by_element_id: dict[str, ObjectTypeResponse] | None = field(
@@ -88,6 +93,52 @@ class _ObjectTypeContext:
                 index.setdefault(item.elementId, item)
             self._items_by_element_id = index
         return index.get(element_id)
+
+    @property
+    def revision(self) -> str:
+        """Revision of the served content, so equal tags always mean equal representations.
+
+        Content-derived instead of caller-assigned: a stale context carries the revision of the
+        content it actually serves, and an equivalent rebuild serves the same token.
+        """
+        token = self._revision_token
+        if token is None:
+            token = _object_type_content_token(self)
+            self._revision_token = token
+        return token
+
+
+def _object_type_content_token(context: _ObjectTypeContext) -> str:
+    """Content token of a context: the representation it serves, hashed once.
+
+    Item bodies are serialised because that is the cheapest way to cover their schema content
+    (measured against repr and ``json.dumps`` variants), and they are hashed as bytes rather than
+    through ``content_revision`` so the serialised body is not escaped a second time. The hash
+    runs once per build, off the event loop, and reuses the request path's memoized token for the
+    type definitions instead of hashing every definition again.
+    """
+    object_types_token = context.object_types_token or _object_types_token(context.object_types)
+    body_digest = hashlib.sha256()
+    for item in context.items:
+        body_digest.update(item.model_dump_json().encode())
+        body_digest.update(b"\n")
+    return content_revision(
+        (
+            tuple(
+                (info.uri, info.display_name, info.namespace_version, info.server_uri)
+                for info in context.namespace_infos
+            ),
+            object_types_token,
+            body_digest.hexdigest()[:32],
+            tuple(sorted(context.element_ids_by_node_id.items())),
+            tuple(sorted(context.source_type_to_element_id.items())),
+        )
+    )
+
+
+def _object_type_context_revision(context: _ObjectTypeContext) -> str:
+    """Content token of a context, as ``_ObjectTypeContext.revision`` derives it."""
+    return _object_type_content_token(context)
 
 
 _OBJECT_TYPE_KEY_FIELDS = ("node_id", "parent_node_id", "browse_name", "display_name", "description", "is_abstract")
@@ -140,26 +191,12 @@ def _memoized_object_types_token(request: Any, object_types: list[OpcUaObjectTyp
     return token
 
 
-def _object_type_context_revision(context: _ObjectTypeContext) -> str:
-    return content_revision(
-        (
-            tuple(
-                (info.uri, info.display_name, info.namespace_version, info.server_uri)
-                for info in context.namespace_infos
-            ),
-            _object_types_token(context.object_types),
-            tuple(item.model_dump_json() for item in context.items),
-            tuple(sorted(context.element_ids_by_node_id.items())),
-            tuple(sorted(context.source_type_to_element_id.items())),
-        )
-    )
-
-
 async def _build_object_type_context(
     model: BuildResult,
     namespace_infos: list[OpcUaNamespaceInfo],
     opcua_client: OpcUaClientProtocol,
     object_types: list[OpcUaObjectTypeInfo],
+    object_types_token: str = "",
 ) -> _ObjectTypeContext:
     started = perf_counter()
     object_types_by_node_id = {item.node_id: item for item in object_types}
@@ -305,20 +342,27 @@ async def _build_object_type_context(
     for item, schema in zip(canonical_items, schemas, strict=True):
         item.schema_ = schema
     source_type_to_element_id = {key: item.elementId for key, item in by_source_type_id.items()}
-    logger.debug(
-        "Object type context built model_nodes=%d object_types=%d items=%d duration_s=%.3f",
-        len(model.nodes_by_id),
-        len(object_types),
-        len(canonical_items),
-        perf_counter() - started,
-    )
-    return _ObjectTypeContext(
+    context = _ObjectTypeContext(
         namespace_infos=namespace_infos,
         object_types=object_types,
         element_ids_by_node_id=element_ids_by_node_id,
         items=canonical_items,
         source_type_to_element_id=source_type_to_element_id,
+        object_types_token=object_types_token,
     )
+    # Produce the content token during the build rather than on the request path: hashing the
+    # served representation is CPU work (it also covers the live browse-name lookups that are
+    # not build inputs), so it runs off the loop and every later cache hit reuses the token.
+    await asyncio.to_thread(_object_type_context_revision, context)
+    logger.debug(
+        "Object type context built model_nodes=%d object_types=%d items=%d revision=%s duration_s=%.3f",
+        len(model.nodes_by_id),
+        len(object_types),
+        len(canonical_items),
+        context.revision,
+        perf_counter() - started,
+    )
+    return context
 
 
 # Contexts are heavyweight (schema items per object type), but requests can alternate
@@ -474,9 +518,8 @@ async def _resolve_object_type_context(
             namespace_infos=resolved_namespace_infos,
             opcua_client=opcua_client,
             object_types=object_types,
+            object_types_token=object_types_token,
         )
-        # Hash the built output: it also covers live browse-name lookups that are not inputs.
-        context.revision = _object_type_context_revision(context)
         _store_object_type_context(request, model_token, namespace_token, object_types_token, context)
         logger.info(
             "Object type context cache miss rebuilt model_nodes=%d object_types=%d items=%d duration_s=%.3f",

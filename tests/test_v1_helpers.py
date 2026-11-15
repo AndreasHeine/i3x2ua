@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import gc
 import json
+import threading
 import weakref
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -918,6 +919,153 @@ def test_object_types_token_is_stable_for_unrepresentable_member_values() -> Non
     assert objecttype_helpers._object_types_token(_types(None)) != objecttype_helpers._object_types_token(
         _types(None, display_name="Pump v2")
     )
+
+
+def _revision_context(
+    schemas: list[dict[str, Any]],
+    object_types_token: str = "types-token",
+) -> objecttype_helpers._ObjectTypeContext:
+    """Context whose served items differ only in the schema content given."""
+    items = [
+        ObjectTypeResponse(
+            elementId=f"type-{index}",
+            displayName=f"Type {index}",
+            namespaceUri="urn:types",
+            sourceTypeId=f"nsu=urn:types;i={index}",
+            schema=schema,
+        )
+        for index, schema in enumerate(schemas, 1)
+    ]
+    object_types: list[Any] = [
+        SimpleNamespace(
+            node_id=f"ns=2;i={index}",
+            parent_node_id=None,
+            browse_name=f"Type {index}",
+            display_name=f"Type {index}",
+            properties={},
+            members=[],
+        )
+        for index in range(1, len(schemas) + 1)
+    ]
+    return objecttype_helpers._ObjectTypeContext(
+        [
+            OpcUaNamespaceInfo(
+                uri="urn:types", display_name="Types", namespace_version="2", server_uri="opc.tcp://s:4840"
+            )
+        ],
+        object_types,
+        {},
+        items,
+        {},
+        object_types_token=object_types_token,
+    )
+
+
+def test_object_type_context_revision_covers_schema_and_related_content() -> None:
+    """Equal tags must mean equal representations: every served field belongs to the token."""
+    number = _revision_context([{"type": "number"}])
+    same = _revision_context([{"type": "number"}])
+    integer = _revision_context([{"type": "integer"}])
+    nested = _revision_context([{"type": "object", "properties": {"a": {"type": "string"}}}])
+
+    assert number.revision == same.revision
+    assert number.revision != integer.revision
+    assert integer.revision != nested.revision
+
+    # Schema-key order is part of the representation the body serialises.
+    reordered = _revision_context([{"properties": {"a": {"type": "string"}}, "type": "object"}])
+    assert nested.revision != reordered.revision
+
+    related = _revision_context([{"type": "number"}])
+    related.items[0].related = {"subtypes": ["type-2"]}
+    assert related.revision != number.revision
+
+    versioned = _revision_context([{"type": "number"}])
+    versioned.items[0].version = "2"
+    assert versioned.revision != number.revision
+
+    # The token of the type definitions is part of the content, too.
+    other_types = _revision_context([{"type": "number"}], object_types_token="other-types-token")
+    assert other_types.revision != number.revision
+
+
+def test_object_type_context_revision_reuses_the_memoized_object_types_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hashing a context must not hash every type definition a second time."""
+    calls = 0
+    original = objecttype_helpers._object_types_token
+
+    def _counting(object_types: list[Any]) -> str:
+        nonlocal calls
+        calls += 1
+        return original(object_types)
+
+    monkeypatch.setattr(objecttype_helpers, "_object_types_token", _counting)
+
+    memoized = _revision_context([{"type": "number"}], object_types_token="types-token")
+    assert memoized.revision
+    assert calls == 0
+
+    # A context built outside the request path has no memoized token and derives one.
+    unmemorized = _revision_context([{"type": "number"}], object_types_token="")
+    assert unmemorized.revision
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_build_object_type_context_warms_the_revision_off_the_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The content token is produced during the build, and hashing it does not block the loop."""
+    main_thread = threading.current_thread()
+    hashed_in_thread: list[bool] = []
+    original = objecttype_helpers._object_type_context_revision
+
+    def _recording(context: Any) -> str:
+        hashed_in_thread.append(threading.current_thread() is not main_thread)
+        return original(context)
+
+    monkeypatch.setattr(objecttype_helpers, "_object_type_context_revision", _recording)
+    types = [
+        OpcUaObjectTypeInfo(f"i={index}", None, f"Type{index}", f"Type{index}", {"Name": "i=12"})
+        for index in (10001, 10002)
+    ]
+    context = await objecttype_helpers._build_object_type_context(
+        _context_model(), [], cast(OpcUaClientProtocol, _EmptyOpcUaClient()), types, object_types_token="types-token"
+    )
+
+    assert context.revision
+    assert hashed_in_thread == [True]
+    # The token is cached on the context: reading it again hashes nothing.
+    assert context.revision == context.revision
+    assert hashed_in_thread == [True]
+
+
+@pytest.mark.asyncio
+async def test_object_type_context_revision_hashed_once_per_cache_miss(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cache hits serve the stored token; only a rebuild hashes the context."""
+    hashes = 0
+    original = objecttype_helpers._object_type_context_revision
+
+    def _counting(context: Any) -> str:
+        nonlocal hashes
+        hashes += 1
+        return original(context)
+
+    monkeypatch.setattr(objecttype_helpers, "_object_type_context_revision", _counting)
+    request = SimpleNamespace(app=SimpleNamespace(state=GatewayState(object_type_lock=asyncio.Lock())))
+    client = cast(OpcUaClientProtocol, _EmptyOpcUaClient())
+    model = _context_model()
+
+    first = await objecttype_helpers._get_object_type_context(request, model, client)
+    second = await objecttype_helpers._get_object_type_context(request, model, client)
+
+    assert second is first
+    assert first.revision
+    assert hashes == 1
 
 
 def test_parent_id_for_node_uses_reverse_index_with_original_precedence() -> None:

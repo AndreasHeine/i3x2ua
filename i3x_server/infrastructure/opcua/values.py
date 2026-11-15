@@ -704,9 +704,12 @@ async def call_method(client: OpcUaClient, object_node_id: str, method_node_id: 
     started = perf_counter()
     client.runtime_metrics.method_calls += 1
     object_node = client.raw_node(object_node_id)
+    method_node = client.raw_node(method_node_id)
     try:
         # Do not replay a method call after a connection loss: it may already have run.
-        result = await object_node.call_method(method_node_id, *args)
+        # asyncua resolves a string method id as a relative browse path, so the call
+        # must carry the parsed NodeId (real-server contract, L15).
+        result = await object_node.call_method(method_node.nodeid, *args)
         client.record_method_success()
         logger.info(
             "OPC UA method ok object_node_id=%s method_node_id=%s arg_count=%d duration_s=%.3f",

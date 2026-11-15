@@ -245,3 +245,120 @@ jobs:
         with:
           name: i3x-conformance-report
           path: i3x-conformance-report-ci.json
+
+  # The plain run above exercises the i3X contract on the gateway's own HTTP port. TLS, Basic Auth
+  # and the HTTP->HTTPS redirect belong to the proxy stack (nginx/entrypoint.sh), and nothing in
+  # CI crosses them today: a broken auth or TLS config would ship unnoticed. This job brings the
+  # repository's own proxy image up and runs the same suite through it.
+  conformance-secured:
+    name: i3X Conformance (secured HTTPS + Basic Auth)
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        # The proxy image and the i3X conformance tool both come from this checkout.
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Set up Node.js
+        # The test tool ships dependency-free (Node builtins only, engines >= 18.17), and 26 is the
+        # Node the proxy image builds its frontend stage with (node:26-alpine), so CI and image agree.
+        uses: actions/setup-node@v7
+        with:
+          node-version: "26"
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.15"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10.3.3
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Generate development HTTPS certificate
+        # TLS needs key material, and none of it may be committed: the same generator the local
+        # deployment guide uses, writing into a git-ignored certificate directory.
+        run: uv run python scripts/generate_https_dev_cert.py --out-dir certs/https-ci --ip 127.0.0.1
+
+      - name: Build the nginx image
+        # The stack CI exercises must be the stack operators deploy, so the image's entrypoint and
+        # proxy config are the ones under test rather than CI-written variants.
+        run: docker build -f nginx/Dockerfile -t i3x2ua-proxy-ci .
+
+      - name: Start the proxy with TLS and Basic Auth
+        # host.docker.internal maps the runner host, where the gateway listens on 8000. The edge
+        # limit stays configured but with a wide burst: the suite issues faster than a deployment's
+        # 20r/s, and shedding its requests would fail the contract check rather than the stack.
+        # The credentials are throwaway values for a container that never leaves the runner.
+        run: |
+          docker run -d --name i3x2ua-proxy-ci \
+            --add-host host.docker.internal:host-gateway \
+            -p 8080:80 -p 8443:443 \
+            -v "$PWD/certs/https-ci:/etc/nginx/certs:ro" \
+            -e NGINX_UPSTREAM_HOST=host.docker.internal \
+            -e NGINX_UPSTREAM_PORT=8000 \
+            -e NGINX_SSL_CERTIFICATE=/etc/nginx/certs/fullchain.pem \
+            -e NGINX_SSL_CERTIFICATE_KEY=/etc/nginx/certs/privkey.pem \
+            -e NGINX_HTTPS_ENABLED=1 \
+            -e NGINX_HTTP_PORT=80 \
+            -e NGINX_HTTPS_REDIRECT_PORT=8443 \
+            -e NGINX_BASIC_AUTH_ENABLED=1 \
+            -e NGINX_BASIC_AUTH_USER=ci-user \
+            -e NGINX_BASIC_AUTH_PASSWORD=ci-runner-local \
+            -e NGINX_RATE_LIMIT_ENABLED=1 \
+            -e NGINX_RATE_LIMIT_BURST=200 \
+            -e NGINX_RATE_LIMIT_CONN_PER_CLIENT=64 \
+            i3x2ua-proxy-ci
+
+      - name: Assert HTTP redirects to HTTPS
+        # nginx answers the redirect itself, so this holds before the gateway is even running.
+        run: |
+          outcome="$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' http://127.0.0.1:8080/v1/model)"
+          echo "HTTP entrypoint answered: $outcome"
+          code="${outcome%% *}"
+          target="${outcome#* }"
+          if [ "$code" != "301" ]; then
+            echo "expected 301, got $code"
+            exit 1
+          fi
+          case "$target" in
+            https:*8443*) ;;
+            *) echo "redirect target is not the HTTPS entrypoint: $target"; exit 1 ;;
+          esac
+
+      - name: Assert unauthenticated API access is refused
+        # /v1/info stays public because i3X requires it; every other route must answer 401.
+        run: |
+          code="$(curl -s -o /dev/null -w '%{http_code}' --insecure https://127.0.0.1:8443/v1/model)"
+          echo "unauthenticated /v1/model answered: $code"
+          if [ "$code" != "401" ]; then
+            echo "expected 401, got $code"
+            exit 1
+          fi
+
+      - name: Run conformance suite through the proxy
+        # Fixture and gateway on the runner host; the suite is pointed at the TLS endpoint with
+        # credentials for the auth layer and --insecure for the self-signed development certificate.
+        run: |
+          uv run python scripts/run_conformance_headless.py \
+            --scheme https --public-host 127.0.0.1 --public-port 8443 \
+            --basic ci-user:ci-runner-local --insecure \
+            --json i3x-conformance-report-ci-secured.json
+
+      - name: Stop the proxy
+        # The container holds published ports; a failing suite must not leave it behind.
+        if: always()
+        run: docker rm -f i3x2ua-proxy-ci
+
+      - name: Upload secured conformance report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: i3x-conformance-report-secured
+          path: i3x-conformance-report-ci-secured.json

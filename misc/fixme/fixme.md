@@ -45,7 +45,7 @@ Use the required checks in [.github/workflows/quality.yml](../../.github/workflo
 - [x] Unify the divergent OPC UA test fakes and add assertions that validate response bodies and behavior, not only status codes or method presence.
 - [x] Replace wall-clock sleeps/deadlines in flake-prone tests with injected clocks or deterministic synchronization.
 - [x] Add a parity test between `.env-example` and `Settings`; document supported log-format configuration and align template/compose values with actual defaults.
-- [ ] Exercise the HTTPS/auth deployment stack in CI and run conformance against that secured stack, in addition to the current fixture-server check.
+- [x] Exercise the HTTPS/auth deployment stack in CI and run conformance against that secured stack, in addition to the current fixture-server check.
 - [ ] Remove the duplicate CodeQL workflow while retaining the required language coverage.
 - [ ] Pin GitHub Actions to immutable SHAs; narrow workflow permissions, scope `id-token` to the job that needs it, and add concurrency control to the quality workflow.
 - [ ] Add package build and metadata validation (`uv build` plus metadata checks).

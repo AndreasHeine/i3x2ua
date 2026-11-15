@@ -134,8 +134,12 @@ services:
       NGINX_SSL_CERTIFICATE: /etc/nginx/certs/https-sample/fullchain.pem  # TLS certificate file in container.
       NGINX_SSL_CERTIFICATE_KEY: /etc/nginx/certs/https-sample/privkey.pem  # TLS private key file in container.
       NGINX_BASIC_AUTH_ENABLED: 1  # Enable Basic Auth at reverse proxy.
-      NGINX_BASIC_AUTH_USER: "admin"  # Basic Auth username.
-      NGINX_BASIC_AUTH_PASSWORD: "pw1"  # Basic Auth password.
+      # Credentials are read from the host .env, never committed here: the gateway authenticates
+      # nothing itself, so a committed password would hand anyone with this checkout write access
+      # (I3X_ENABLE_WRITES and I3X_ENABLE_MCP are on). nginx refuses to start when auth is enabled
+      # and either value is empty, so an unset .env fails the deployment instead of serving open.
+      NGINX_BASIC_AUTH_USER: ${NGINX_BASIC_AUTH_USER:-}  # Set in .env.
+      NGINX_BASIC_AUTH_PASSWORD: ${NGINX_BASIC_AUTH_PASSWORD:-}  # Set in .env.
       NGINX_BASIC_AUTH_REALM: i3x2ua  # Basic Auth realm text.
       # Edge admission control (zones in nginx/nginx.conf). Requests beyond the rate answer 429;
       # set NGINX_RATE_LIMIT_ENABLED=0 to disable it at the proxy.

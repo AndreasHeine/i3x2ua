@@ -23,7 +23,7 @@ Use the required checks in [.github/workflows/quality.yml](../../.github/workflo
 - [x] Add request IDs to nginx access logs, including the incoming request ID; ensure the proxy logs remain useful when application INFO and uvicorn access logs are disabled.
 - [x] Add a readiness endpoint based on model-built and upstream-connected state while keeping liveness static.
 - [x] Configure a graceful-shutdown budget in the container and server that accommodates the existing task, MCP, and SSE cleanup.
-- [ ] Remove working default credentials from the shipped compose configuration or fail safely when defaults are used with writes/MCP enabled.
+- [x] Remove working default credentials from the shipped compose configuration or fail safely when defaults are used with writes/MCP enabled.
 - [ ] Remove tracked private sample keys, replace them with safe setup-time generation, and rotate/revoke any credentials or certificates that must no longer be trusted.
 - [ ] Mark the proxy-less README quickstart as development-only and make the production security boundary and TLS/auth requirements explicit.
 - [ ] Restrict forwarded-header trust to the known proxy; update rate-limit documentation to use a trusted remote-address key rather than caller-controlled `X-Forwarded-For`.

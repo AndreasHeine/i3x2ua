@@ -112,14 +112,17 @@ Abrupt process termination cannot perform cleanup.
 | `--password PASSWORD` | HTTP Basic Auth password | Not set |
 | `--insecure` | Disable TLS certificate verification for development certificates | Verification enabled |
 
-For HTTPS behind a Basic Auth proxy:
+For HTTPS behind a Basic Auth proxy, pass the credentials you set in `.env`
+(`NGINX_BASIC_AUTH_USER` / `NGINX_BASIC_AUTH_PASSWORD`):
 
 ```powershell
-python .\samples\client.py --base-url https://127.0.0.1:8443/v1 --username admin --password pw1 --insecure
-python .\samples\subscription_client.py --base-url https://127.0.0.1:8443/v1 --username admin --password pw1 --insecure --mode sse --element-ids "property-dd1a9a05d251425f"
+python .\samples\client.py --base-url https://127.0.0.1:8443/v1 --username $env:NGINX_BASIC_AUTH_USER --password $env:NGINX_BASIC_AUTH_PASSWORD --insecure
+python .\samples\subscription_client.py --base-url https://127.0.0.1:8443/v1 --username $env:NGINX_BASIC_AUTH_USER --password $env:NGINX_BASIC_AUTH_PASSWORD --insecure --mode sse --element-ids "property-dd1a9a05d251425f"
 ```
 
-Use your actual proxy credentials. Omit `--insecure` when the server certificate
+The shipped compose file does not carry credentials: nginx refuses to start when
+`NGINX_BASIC_AUTH_ENABLED=1` and either value is empty. Use your actual proxy
+credentials. Omit `--insecure` when the server certificate
 is trusted; do not disable certificate verification in production.
 
 Display all command-line options:

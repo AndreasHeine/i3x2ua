@@ -18,7 +18,7 @@ Usage:
 
     # HTTPS with a self-signed cert behind an nginx basic-auth proxy:
     python client.py --base-url https://127.0.0.1:8443 --insecure \\
-        --username admin --password pw1
+        --username "$NGINX_BASIC_AUTH_USER" --password "$NGINX_BASIC_AUTH_PASSWORD"
 
 Options:
     --base-url URL          i3X server base URL (default: http://127.0.0.1:8000/v1)

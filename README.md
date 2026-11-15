@@ -618,10 +618,17 @@ Optional environment variables:
 - `I3X_LOG_FORMAT=json` to render log lines as JSON objects; plain text is the default
 - `NGINX_HTTPS_ENABLED=1` to enable TLS termination
 - `NGINX_SSL_CERTS_DIR=./certs` with `fullchain.pem` and `privkey.pem`
-- `NGINX_BASIC_AUTH_ENABLED=1` with `NGINX_BASIC_AUTH_USER` and `NGINX_BASIC_AUTH_PASSWORD`
+- `NGINX_BASIC_AUTH_ENABLED=1` with `NGINX_BASIC_AUTH_USER` and `NGINX_BASIC_AUTH_PASSWORD`, taken from the host `.env`
 - `NGINX_SERVER_NAME` for the public host name
 - `NGINX_FRONTEND_DIST` to serve SPA assets from a different dist directory (`/srv/frontend/dist` by default)
 - `NGINX_RATE_LIMIT_ENABLED=0` to drop the edge rate and connection limits, `NGINX_RATE_LIMIT_BURST` and `NGINX_RATE_LIMIT_CONN_PER_CLIENT` to tune them (`40` and `64` by default)
+
+Basic Auth credentials are not part of the repository. Compose reads `NGINX_BASIC_AUTH_USER`
+and `NGINX_BASIC_AUTH_PASSWORD` from the host `.env`, and nginx refuses to start when auth is
+enabled and either value is empty. That matters because the gateway authenticates nothing
+itself while the default compose setup enables writes (`I3X_ENABLE_WRITES=1`) and MCP
+(`I3X_ENABLE_MCP=1`): a committed password would be write access to the plant for anyone with
+the checkout. Set both values in `.env` before `docker compose up -d`.
 
 If you enable HTTPS, mount or place the certificate files in the configured cert directory before starting Compose.
 

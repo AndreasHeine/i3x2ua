@@ -74,13 +74,23 @@ To reduce software supply chain risks:
 
 ## Authentication and Authorization
 
+The gateway itself does not enforce an HTTP authentication scheme: TLS termination and
+authentication belong to the reverse proxy, which is the security boundary. Running the app
+without a proxy (`uv run uvicorn ...`, or `docker run -p 8080:8000`) therefore exposes the API in
+plaintext, including the write endpoints when `I3X_ENABLE_WRITES=1`. Keep such runs on loopback.
+
 Production deployments should:
 
+- Run behind a reverse proxy that terminates TLS and enforces authentication; the shipped Compose
+  stack enables nginx Basic Auth and refuses to start when `NGINX_BASIC_AUTH_USER` or
+  `NGINX_BASIC_AUTH_PASSWORD` is missing
 - Use HTTPS/TLS exclusively
 - Enforce authentication for protected endpoints
 - Implement role-based access control where applicable
 - Store credentials securely
 - Rotate secrets periodically
+- Keep `/v1/info` public, as i3X requires it; `clientId` on subscriptions is a scope identifier,
+  not a credential
 
 ## Infrastructure Security
 

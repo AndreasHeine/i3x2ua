@@ -207,6 +207,14 @@ sequenceDiagram
 
 ## Quick Start
 
+**Development only.** The commands below run the gateway without a reverse proxy. The application
+enforces no HTTP authentication scheme and serves plaintext on the port it binds, so anything that
+can reach that port can read the address space and - with `I3X_ENABLE_WRITES=1` - write industrial
+values. Keep these on loopback (`127.0.0.1`) while developing. For a real deployment run the nginx
+proxy from `docker compose up -d`: it terminates TLS and enforces Basic Auth, and it refuses to
+start when credentials or certificates are missing. `/v1/info` stays public by design; everything
+else sits behind that proxy.
+
 Requirements:
 
 - Python 3.14 to 3.15
@@ -540,6 +548,12 @@ MCP write policy: `PUT` routes are intentionally excluded from MCP tool generati
 ## Docker
 
 Quickstart (Docker image):
+
+**Development only.** `-p 8080:8000` publishes the app container directly, so this form has no
+TLS and no authentication: the gateway enforces neither itself. Use it for a local smoke test, and
+use Compose (`docker compose up -d`) wherever the endpoint is reachable by others - nginx
+terminates TLS and enforces Basic Auth from `NGINX_BASIC_AUTH_USER` and `NGINX_BASIC_AUTH_PASSWORD`
+in `.env`, and refuses to start when either is empty.
 
 ```bash
 docker run -d --name i3x2ua-master -p 8080:8000 -e I3X_ENABLE_MCP=1 -e I3X_OPCUA_ENDPOINT=opc.tcp://opcua.umati.app:4843 ghcr.io/andreasheine/i3x2ua:master

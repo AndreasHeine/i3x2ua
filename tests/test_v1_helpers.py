@@ -1294,8 +1294,10 @@ class _BulkWriteFake:
         try:
             if self._write_gate is not None and self._arrivals >= self._gate_arrivals:
                 self._write_gate.set()
-            # Hold the round-trip long enough for concurrent admissions to overlap.
-            await asyncio.sleep(0.02)
+            # Cooperative yield so concurrent admissions overlap deterministically; the gate
+            # then holds them until every arrival is in flight (a serialized regression
+            # never reaches the gate and the outer guard fails instead of a timing guess).
+            await asyncio.sleep(0)
             if self._write_gate is not None:
                 await self._write_gate.wait()
             failure = self._write_failures.get(node_id)

@@ -595,8 +595,10 @@ async def test_v1_objecttypes_lookup_timeout_falls_back_to_inferred_name(
 
     async def slow_browse_name(node_id: str) -> str | None:
         del node_id
-        await asyncio.sleep(0.5)
-        return "CustomNetworkAddressType"
+        # Park indefinitely: the request timeout must fire while the lookup is still
+        # pending, so the fallback does not depend on the fake finishing after a fixed sleep.
+        await asyncio.Event().wait()
+        return "CustomNetworkAddressType"  # pragma: no cover - unreachable while parked
 
     app.state.opcua_client.read_browse_name = slow_browse_name
     _add_unresolved_custom_object_type(app, "asset-custom-900001", "CustomAsset", "ns=2;s=CustomAsset", 900001)

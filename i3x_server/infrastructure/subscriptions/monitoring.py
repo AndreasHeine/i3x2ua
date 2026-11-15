@@ -579,51 +579,64 @@ async def _stop_node_monitor_runtime(service: SubscriptionService, monitor: _Nod
             )
 
 
+async def _polling_tick(service: SubscriptionService) -> None:
+    """One batched read-and-fan-out pass over every node currently in polling mode.
+
+    Kept separate from the scheduling loop so tests can drive a tick deterministically
+    instead of racing a wall-clock sleep against the background task.
+    """
+    # Only acquire the lock when there are monitored nodes; an idle service
+    # must not serialise admissions behind a tick that reads nothing.
+    node_ids: list[str] = []
+    if service._node_monitors:
+        async with service._lock:
+            node_ids = sorted(
+                node_id for node_id, monitor in service._node_monitors.items() if monitor.mode == "polling"
+            )
+
+    if node_ids:
+        try:
+            data_values = await service._opcua_client.read_data_values(node_ids)
+            if len(data_values) != len(node_ids):
+                raise RuntimeError(f"Read returned {len(data_values)} values for {len(node_ids)} monitored nodes")
+        except Exception:
+            logger.exception("Shared polling read failed node_count=%d", len(node_ids))
+        else:
+            fanouts = []
+            for node_id, data_value in zip(node_ids, data_values, strict=True):
+                payload, quality, timestamp = decode_data_value(data_value)
+                fanouts.append(service._fanout_node_value(node_id, payload, _ValueSignal(quality, timestamp)))
+            await asyncio.gather(*fanouts)
+
+
+def _next_tick_deadline(now: float, next_deadline: float, interval: float) -> tuple[float, float]:
+    """Sleep duration before the next tick and the deadline that tick is scheduled against.
+
+    A tick that finished early shortens the sleep to the remaining budget; a tick that
+    overshot its deadline realigns to ``now + interval`` instead of catching up in a burst.
+    """
+    delay = next_deadline - now
+    if delay > 0:
+        return delay, next_deadline + interval
+    return 0.0, now + interval
+
+
 async def _shared_polling_loop(service: SubscriptionService) -> None:
     """Single batched read loop covering every node currently in polling mode.
 
-    Ticks are scheduled against an absolute deadline: the read itself contributes
-    no drift, so a slow tick shortens the following sleep instead of pushing the
-    whole schedule backwards. Fan-out for one tick runs concurrently rather than
-    sequentially, so N nodes do not serialize N lock round-trips per tick.
+    Ticks are scheduled against an absolute deadline on the service clock seam: the read
+    itself contributes no drift, so a slow tick shortens the following sleep instead of
+    pushing the whole schedule backwards. Fan-out for one tick runs concurrently rather
+    than sequentially, so N nodes do not serialize N lock round-trips per tick.
     """
-    loop = asyncio.get_running_loop()
     interval = service._interval_seconds
-    next_deadline = loop.time() + interval
+    next_deadline = service._now_monotonic() + interval
     try:
         while True:
-            # Only acquire the lock when there are monitored nodes; an idle service
-            # must not serialise admissions behind a tick that reads nothing.
-            node_ids: list[str] = []
-            if service._node_monitors:
-                async with service._lock:
-                    node_ids = sorted(
-                        node_id for node_id, monitor in service._node_monitors.items() if monitor.mode == "polling"
-                    )
-
-            if node_ids:
-                try:
-                    data_values = await service._opcua_client.read_data_values(node_ids)
-                    if len(data_values) != len(node_ids):
-                        raise RuntimeError(
-                            f"Read returned {len(data_values)} values for {len(node_ids)} monitored nodes"
-                        )
-                except Exception:
-                    logger.exception("Shared polling read failed node_count=%d", len(node_ids))
-                else:
-                    fanouts = []
-                    for node_id, data_value in zip(node_ids, data_values, strict=True):
-                        payload, quality, timestamp = decode_data_value(data_value)
-                        fanouts.append(service._fanout_node_value(node_id, payload, _ValueSignal(quality, timestamp)))
-                    await asyncio.gather(*fanouts)
-
-            delay = next_deadline - loop.time()
+            await _polling_tick(service)
+            delay, next_deadline = _next_tick_deadline(service._now_monotonic(), next_deadline, interval)
             if delay > 0:
                 await asyncio.sleep(delay)
-                next_deadline += interval
-            else:
-                # The tick overshot its deadline; realign instead of catching up in a burst.
-                next_deadline = loop.time() + interval
     except asyncio.CancelledError:
         return
 

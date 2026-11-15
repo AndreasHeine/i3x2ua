@@ -59,6 +59,9 @@ class _FakeSubscriptionPort:
         self.active_sequence: list[bool] = [False]
         self.wait_returns: list[list[SubscriptionUpdate] | None] = []
         self.deactivated: list[tuple[str, int]] = []
+        # Set when a stream deactivation completes, so cancellation tests can await it
+        # deterministically instead of polling for the shielded task to land.
+        self.deactivated_event = asyncio.Event()
         self.delete_results: list[SubscriptionDeleteResult] = []
         self.list_results: list[SubscriptionDetail] = []
         self.create_error: Exception | None = None
@@ -158,6 +161,7 @@ class _FakeSubscriptionPort:
 
     async def deactivate_stream(self, subscription_id: str, stream_generation: int) -> None:
         self.deactivated.append((subscription_id, stream_generation))
+        self.deactivated_event.set()
 
 
 @pytest.mark.asyncio
@@ -597,6 +601,7 @@ async def test_iter_stream_events_deactivates_stream_when_cancelled() -> None:
     port = _FakeSubscriptionPort()
     port.active_sequence = [True]
     never_returns = asyncio.Event()
+    entered = asyncio.Event()
 
     async def blocking_wait_for_updates(
         client_id: str | None,
@@ -605,6 +610,7 @@ async def test_iter_stream_events_deactivates_stream_when_cancelled() -> None:
         timeout_seconds: float,
     ) -> list[SubscriptionUpdate] | None:
         del client_id, subscription_id, after_sequence, timeout_seconds
+        entered.set()
         await never_returns.wait()
         return None
 
@@ -627,14 +633,12 @@ async def test_iter_stream_events_deactivates_stream_when_cancelled() -> None:
             pass
 
     task = asyncio.create_task(consume())
-    await asyncio.sleep(0.05)
+    # Deterministic: cancel only once the generator has actually parked in wait_for_updates.
+    await asyncio.wait_for(entered.wait(), timeout=1)
     task.cancel()
     with suppress(asyncio.CancelledError):
         await task
 
     # The shielded deactivation runs to completion even though the generator was cancelled.
-    for _ in range(20):
-        if port.deactivated:
-            break
-        await asyncio.sleep(0.01)
+    await asyncio.wait_for(port.deactivated_event.wait(), timeout=1)
     assert port.deactivated == [("sub-1", 5)]

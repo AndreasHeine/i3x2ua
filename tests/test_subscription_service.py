@@ -21,7 +21,7 @@ from i3x_server.infrastructure.opcua.client import (
     OpcUaClientProtocol,
     OpcUaSubscriptionCapabilities,
 )
-from i3x_server.infrastructure.subscriptions import mapping
+from i3x_server.infrastructure.subscriptions import mapping, monitoring
 from i3x_server.infrastructure.subscriptions.monitoring import (
     _add_node_to_bin,
     _capped_limit,
@@ -507,11 +507,11 @@ async def test_shared_polling_loop_collects_updates() -> None:
         monitor.subscriber_ids.add(subscription_id)
         service._node_monitors[node_id] = monitor
 
-    task = asyncio.create_task(service._shared_polling_loop())
-    await asyncio.sleep(0.05)
-    task.cancel()
-    await task
+    # Drive one tick directly instead of racing a fixed sleep against the background loop.
+    reads_before = client.read_data_values_calls
+    await service._polling_tick()
 
+    assert client.read_data_values_calls == reads_before + 1
     synced = await service.sync("c1", subscription_id, acknowledge_sequence=0)
     assert synced is not None
     assert len(synced.updates) >= 1
@@ -553,19 +553,57 @@ async def test_shared_queue_overflow_marks_dropped_sequence_range() -> None:
     await service.close()
 
 
-class _SlowReadOpcUaClient(FakeOpcUaClient):
-    """Reads that take time must not push the whole polling schedule backwards."""
+def test_polling_tick_deadline_schedule_absorbs_slow_reads() -> None:
+    """Ticks are scheduled against an absolute deadline: a slow read shortens the next
+    sleep instead of pushing the whole schedule backwards, so ticks never drift."""
+    interval = 0.05
+    now = 0.0
+    next_deadline = now + interval
+    tick_starts: list[float] = []
+    delays: list[float] = []
+    for _ in range(6):
+        tick_starts.append(now)
+        now += 0.03  # a tick that burns 30ms of service-clock time
+        delay, next_deadline = monitoring._next_tick_deadline(now, next_deadline, interval)
+        delays.append(delay)
+        now += delay
 
-    async def read_data_values(self, node_ids: list[str]) -> list[DataValueDTO]:
-        self.read_data_values_calls += 1
-        await asyncio.sleep(0.03)
-        return await super().read_data_values(node_ids)
+    assert tick_starts == pytest.approx([0.0, 0.05, 0.10, 0.15, 0.20, 0.25])
+    assert delays == pytest.approx([0.02] * 6)
+    assert now == pytest.approx(0.30)
+
+
+def test_polling_tick_deadline_realigns_after_overshoot() -> None:
+    """A tick that overshot its deadline realigns instead of catching up in a burst."""
+    delay, deadline = monitoring._next_tick_deadline(now=1.0, next_deadline=0.6, interval=0.05)
+    assert delay == 0.0
+    assert deadline == pytest.approx(1.05)
 
 
 @pytest.mark.asyncio
-async def test_shared_polling_loop_uses_absolute_deadline_schedule() -> None:
-    """Ticks are scheduled against a deadline: a slow read shortens the next sleep instead of drifting."""
-    client = _SlowReadOpcUaClient()
+async def test_shared_polling_loop_ticks_on_the_service_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The loop sleeps on the service clock seam, so a fake clock drives ticks deterministically."""
+    clock = {"now": 0.0}
+    ticks = 0
+    six_ticks = asyncio.Event()
+
+    class ClockDrivenReadClient(FakeOpcUaClient):
+        """Each read burns exactly one interval of service clock, so the loop never sleeps."""
+
+        async def read_data_values(self, node_ids: list[str]) -> list[DataValueDTO]:
+            nonlocal ticks
+            if ticks >= 6:
+                # Hold any further tick until the test cancels the loop, so the tick count
+                # cannot overshoot the observed boundary.
+                await asyncio.Event().wait()
+            ticks += 1
+            clock["now"] += 0.05
+            await asyncio.sleep(0)  # yield so the loop cannot spin without scheduling
+            if ticks >= 6:
+                six_ticks.set()
+            return await super().read_data_values(node_ids)
+
+    client = ClockDrivenReadClient()
     service = SubscriptionService(cast(OpcUaClientProtocol, client), interval_seconds=0.05)
     created = await service.create_subscription(client_id="c1", display_name="poll")
     subscription_id = created.subscription_id
@@ -579,21 +617,18 @@ async def test_shared_polling_loop_uses_absolute_deadline_schedule() -> None:
         monitor.subscriber_ids.add(subscription_id)
         service._node_monitors[node_id] = monitor
 
-    task = asyncio.create_task(service._shared_polling_loop())
-    started = time.monotonic()
-    while client.read_data_values_calls < 6:
-        if time.monotonic() - started > 1.5:
-            pytest.fail("shared polling loop did not produce 6 ticks within 1.5s")
-        await asyncio.sleep(0.01)
-    elapsed = time.monotonic() - started
-    task.cancel()
-    await task
+    monkeypatch.setattr(service, "_now_monotonic", lambda: clock["now"])
 
-    # Absolute-deadline ticks fire every 0.05s regardless of read duration, so six ticks
-    # land around 0.25s; sleep-after-read drift needs ~0.40s. The bound discriminates the
-    # drift while tolerating scheduler jitter on loaded runners.
-    assert elapsed < 0.42
-    assert client.read_data_values_calls >= 6
+    task = asyncio.create_task(service._shared_polling_loop())
+    try:
+        await asyncio.wait_for(six_ticks.wait(), timeout=2)
+    finally:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+
+    assert ticks == 6
+    assert clock["now"] == pytest.approx(0.30)
     await service.close()
 
 
@@ -614,12 +649,23 @@ async def test_shared_polling_loop_fans_out_all_nodes_per_tick() -> None:
             monitor.subscriber_ids.add(subscription_id)
             service._node_monitors[node_id] = monitor
 
-    task = asyncio.create_task(service._shared_polling_loop())
-    await asyncio.sleep(0.12)
-    task.cancel()
-    await task
+    # One tick batches the read and fans out both monitored nodes; driving it directly
+    # keeps the test deterministic instead of sleeping against the background loop.
+    batches: list[list[str]] = []
+    original_read = client.read_data_values
 
-    assert client.read_data_values_calls >= 1
+    async def recording_read(node_ids: list[str]) -> list[DataValueDTO]:
+        batches.append(list(node_ids))
+        return await original_read(node_ids)
+
+    client.read_data_values = recording_read  # type: ignore[method-assign]
+
+    reads_before = client.read_data_values_calls
+
+    await service._polling_tick()
+
+    assert client.read_data_values_calls == reads_before + 1
+    assert batches == [["ns=2;s=Pressure", "ns=2;s=Temperature"]]
     synced = await service.sync("c1", subscription_id, acknowledge_sequence=0)
     assert synced is not None
     assert {item.element_id for item in synced.updates} == {"prop-a", "prop-b"}
@@ -1012,12 +1058,14 @@ async def test_register_items_with_composition_cycle_keeps_the_event_loop_respon
     model = _cyclic_model()
 
     ticks = 0
+    first_tick = asyncio.Event()
 
     async def heartbeat() -> None:
         nonlocal ticks
         while True:
             ticks += 1
-            await asyncio.sleep(0.01)
+            first_tick.set()
+            await asyncio.sleep(0)
 
     async def concurrent_reader() -> int:
         observed = 0
@@ -1033,6 +1081,8 @@ async def test_register_items_with_composition_cycle_keeps_the_event_loop_respon
             await service.register_items("c1", created.subscription_id, ["cycle-a"], max_depth=0, model=model) is True
         )
         assert await reader_task == 3
+        # Deterministic: the heartbeat signals its first tick instead of a wall-clock guess.
+        await asyncio.wait_for(first_tick.wait(), timeout=1)
         assert ticks >= 1
 
         state_obj = service._subscriptions[created.subscription_id]
@@ -1474,9 +1524,11 @@ async def test_stale_monitored_item_cleanup_does_not_hold_the_lock() -> None:
     """A failed/stale admission cleanup must not block fan-out or sync for a full round-trip (M9)."""
     client = FakeOpcUaClient()
     gate = asyncio.Event()
+    reached = asyncio.Event()
 
     async def slow_unsubscribe_data_changes(subscription: Any, handles: list[int]) -> None:
         client.unsubscribed_calls.append((subscription, list(handles)))
+        reached.set()
         await gate.wait()
 
     client.unsubscribe_data_changes = slow_unsubscribe_data_changes  # type: ignore[method-assign]
@@ -1490,7 +1542,7 @@ async def test_stale_monitored_item_cleanup_does_not_hold_the_lock() -> None:
     # A monitor that no longer exists: the item has to be unsubscribed, but outside the lock.
     monitor = _NodeMonitor(node_id="ns=2;s=Pressure")
     add_task = asyncio.create_task(service._add_node_to_bin(monitor, target_bin))
-    await asyncio.sleep(0.05)
+    await asyncio.wait_for(reached.wait(), timeout=1)
 
     synced = await asyncio.wait_for(service.sync("c1", created.subscription_id, acknowledge_sequence=None), timeout=0.5)
     assert synced is not None
@@ -2201,11 +2253,21 @@ async def test_wait_for_updates_cancels_its_futures_on_client_disconnect() -> No
     created = await service.create_subscription(client_id="c1", display_name=None)
     assert await service.register_items("c1", created.subscription_id, ["prop-a"], max_depth=0, model=model) is True
 
+    # Park the waiter deterministically: entering the race clears the subscription's update
+    # event, so watching the pre-set event drop proves the futures are pending before cancel.
+    subscription_state = service._subscriptions[created.subscription_id]
+    subscription_state.update_event.set()
+
     baseline = len(asyncio.all_tasks())
     wait_task = asyncio.create_task(
         service.wait_for_updates("c1", created.subscription_id, after_sequence=0, timeout_seconds=30)
     )
-    await asyncio.sleep(0.05)
+
+    async def parked_until_cancelled() -> None:
+        while subscription_state.update_event.is_set():  # noqa: ASYNC110
+            await asyncio.sleep(0)
+
+    await asyncio.wait_for(parked_until_cancelled(), timeout=1)
     wait_task.cancel()
     with suppress(asyncio.CancelledError):
         await wait_task

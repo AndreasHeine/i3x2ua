@@ -5,7 +5,7 @@ import os
 import signal
 import subprocess
 import sys
-import time
+from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock
@@ -719,6 +719,25 @@ async def test_lifespan_hard_fails_on_opcua_connect_error_by_default(monkeypatch
             pass
 
 
+async def _await_transition(predicate: Callable[[], bool], what: str, timeout: float = 5.0) -> None:
+    """Cooperatively wait for a state transition.
+
+    Yields control until the condition holds instead of polling a wall-clock deadline;
+    the timeout is only a safety guard against a hung background task.
+    """
+
+    async def drain() -> None:
+        # Cooperative yield until an externally-owned transition lands; there is no
+        # event the test can await, so ASYNC110's event suggestion does not apply.
+        while not predicate():  # noqa: ASYNC110
+            await asyncio.sleep(0)
+
+    try:
+        await asyncio.wait_for(drain(), timeout=timeout)
+    except TimeoutError:
+        pytest.fail(f"{what}: condition not reached within {timeout}s")
+
+
 @pytest.mark.asyncio
 async def test_degraded_startup_serves_empty_model_and_supervisor_rebuilds_after_reconnect(
     monkeypatch: pytest.MonkeyPatch,
@@ -732,12 +751,14 @@ async def test_degraded_startup_serves_empty_model_and_supervisor_rebuilds_after
     monkeypatch.setenv("I3X_MODEL_REFRESH_INTERVAL_SECONDS", "0")
 
     attempts = 0
+    reconnected = asyncio.Event()
 
     async def flaky_connect(self: Any) -> None:
         nonlocal attempts
         attempts += 1
         if attempts < 3:
             raise ConnectionError("upstream unreachable")
+        reconnected.set()
 
     disconnects = AsyncMock()
     monkeypatch.setattr("i3x_server.infrastructure.opcua.client.OpcUaClient.connect", flaky_connect)
@@ -766,18 +787,13 @@ async def test_degraded_startup_serves_empty_model_and_supervisor_rebuilds_after
         assert app.state.ua_startup_mode == "degraded"
         assert app.state.model_cache.nodes_by_id == {}
 
-        deadline = time.monotonic() + 2.0
-        while app.state.ua_startup_mode != "connected":
-            if time.monotonic() > deadline:
-                pytest.fail("startup supervisor did not reconnect within 2s")
-            await asyncio.sleep(0.01)
+        # Deterministic sync: the fake signals the attempt that succeeds; the supervisor's
+        # state transitions then need only cooperative yields, not a wall-clock deadline poll.
+        await asyncio.wait_for(reconnected.wait(), timeout=5)
+        await _await_transition(lambda: app.state.ua_startup_mode == "connected", "startup supervisor reconnect")
         assert attempts == 3
 
-        deadline = time.monotonic() + 2.0
-        while not app.state.model_cache.nodes_by_id:
-            if time.monotonic() > deadline:
-                pytest.fail("startup supervisor did not build the model after reconnect")
-            await asyncio.sleep(0.01)
+        await _await_transition(lambda: bool(app.state.model_cache.nodes_by_id), "model build after reconnect")
         assert app.state.model_cache is built
 
     # A connected client must be disconnected on shutdown.

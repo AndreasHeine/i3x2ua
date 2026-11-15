@@ -374,13 +374,15 @@ async def test_gather_cancelled_on_failure_cancels_and_awaits_siblings() -> None
     baseline = len(asyncio.all_tasks())
 
     async def failing() -> None:
-        await asyncio.sleep(0.05)
+        # Deterministic ordering: fail only after the sibling is parked, never after a fixed sleep.
+        await started.wait()
         raise RuntimeError("browse failed")
 
     async def slow() -> str:
         started.set()
         try:
-            await asyncio.sleep(1.0)
+            # Park indefinitely; the failure path must cancel it.
+            await asyncio.Event().wait()
         except asyncio.CancelledError:
             cancelled.set()
             raise
@@ -397,8 +399,20 @@ async def test_gather_cancelled_on_failure_cancels_and_awaits_siblings() -> None
 
 @pytest.mark.asyncio
 async def test_gather_cancelled_on_failure_returns_results_in_order() -> None:
+    others_done = asyncio.Event()
+    remaining = 2  # the non-zero siblings that must complete before value(0) resumes
+
     async def value(index: int) -> int:
-        await asyncio.sleep(0.02 if index == 0 else 0.01)
+        nonlocal remaining
+        if index == 0:
+            # Park until the siblings have completed, so completion order differs from
+            # input order without relying on wall-clock sleeps.
+            await others_done.wait()
+        else:
+            remaining -= 1
+            if remaining == 0:
+                others_done.set()
+            await asyncio.sleep(0)
         return index
 
     assert await _gather_cancelled_on_failure([value(index) for index in range(3)]) == [0, 1, 2]
@@ -491,7 +505,14 @@ async def test_wait_for_reconnect_returns_once_connected() -> None:
     uaclient._set_state(UaClientState.RECONNECTING)
 
     waiter = asyncio.create_task(client.wait_for_reconnect(RuntimeError("connection is closed")))
-    await asyncio.sleep(0.01)
+
+    # Deterministic: the waiter parks once it has registered its state listener; yield
+    # cooperatively until that registration happens instead of guessing a wall-clock delay.
+    async def listener_registered() -> None:
+        while not uaclient._state_listeners:  # noqa: ASYNC110
+            await asyncio.sleep(0)
+
+    await asyncio.wait_for(listener_registered(), timeout=1)
     assert not waiter.done()
     uaclient._set_state(UaClientState.CONNECTED)
 
@@ -1982,12 +2003,11 @@ async def test_reconnect_handshake_has_an_overall_deadline(monkeypatch: pytest.M
         return True
 
     monkeypatch.setattr(Client, "_try_reactivate_existing_session", stalled_activation)
-    started = time.monotonic()
+    # The client's own handshake deadline (0.1s) must fire before the outer safety net:
+    # only the inner TimeoutError runs the disconnect handler below (disconnect_socket),
+    # so the state assertions discriminate without comparing wall-clock elapsed time.
     with pytest.raises(TimeoutError):
         await asyncio.wait_for(client.raw_client._try_reactivate_existing_session(), timeout=1)
-    # The client's own handshake deadline (0.1s) must fire before the outer 1s safety net;
-    # 0.9 keeps that ordering discriminating while tolerating scheduler jitter.
-    assert time.monotonic() - started < 0.9
     assert client.raw_client.uaclient.state is UaClientState.DISCONNECTED
     assert client.raw_client.uaclient.protocol is None
 
@@ -2047,7 +2067,9 @@ async def test_publish_does_not_occupy_application_request_budget(monkeypatch: p
     publish = asyncio.create_task(transport._send_request(ua.PublishRequest(), timeout=0))
     try:
         await asyncio.wait_for(publishing.wait(), timeout=1)
-        await asyncio.wait_for(transport._send_request(ua.ReadRequest()), timeout=0.2)
+        # A publish must not consume the application budget: the read completes on its own,
+        # so no wall-clock timeout is needed to prove it was not queued behind the publish.
+        await transport._send_request(ua.ReadRequest())
     finally:
         release.set()
         await publish
@@ -2137,6 +2159,7 @@ async def test_model_refresh_budget_overrides_read_budget(monkeypatch: pytest.Mo
     counters = {"active": 0, "peak": 0}
     release = asyncio.Event()
     at_capacity = asyncio.Event()
+    at_full_read_budget = asyncio.Event()
     node_ids = [f"i={index}" for index in range(12)]
 
     async def read_batch(batch: list[str]) -> list[Any]:
@@ -2144,6 +2167,8 @@ async def test_model_refresh_budget_overrides_read_budget(monkeypatch: pytest.Mo
         counters["peak"] = max(counters["peak"], counters["active"])
         if counters["active"] >= 2:
             at_capacity.set()
+        if counters["active"] >= 8:
+            at_full_read_budget.set()
         try:
             await release.wait()
             return [f"value-{node_id}" for node_id in batch]
@@ -2169,7 +2194,8 @@ async def test_model_refresh_budget_overrides_read_budget(monkeypatch: pytest.Mo
     counters["peak"] = 0
     release.clear()
     outside = asyncio.create_task(client.read_values(node_ids))
-    await asyncio.sleep(0.05)
+    # Deterministic: proceed once the full read budget is occupied, not after a fixed sleep.
+    await asyncio.wait_for(at_full_read_budget.wait(), timeout=1)
     release.set()
     assert await outside == [f"value-{node_id}" for node_id in node_ids]
     assert counters["peak"] == 8

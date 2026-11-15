@@ -261,6 +261,10 @@ class SubscriptionService:
         # Kept as the service-facing entry point; the batched read loop lives in ``monitoring``.
         await monitoring._shared_polling_loop(self)
 
+    async def _polling_tick(self) -> None:
+        # One scheduling-free tick: tests drive this directly instead of sleeping against the loop.
+        await monitoring._polling_tick(self)
+
     async def _seed_initial_updates(self, subscription_id: str) -> None:
         await monitored_nodes._seed_initial_updates(self, subscription_id)
 

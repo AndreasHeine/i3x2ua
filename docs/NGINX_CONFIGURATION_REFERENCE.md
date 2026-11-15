@@ -158,8 +158,14 @@ proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 proxy_set_header X-Forwarded-Proto $scheme;
 proxy_set_header X-Forwarded-Host $host;
 proxy_set_header X-Forwarded-Port $server_port;
+proxy_set_header X-Request-ID $i3x_request_id;
 proxy_set_header Connection "";
 ```
+
+`$i3x_request_id` is derived by the `map` in the shipped `nginx.conf`: a client-supplied
+`X-Request-ID` is passed through only when it matches the gateway's safe token pattern
+(`[A-Za-z0-9._-]{1,128}`), otherwise nginx's own `$request_id` is used. Forwarding it keeps the
+proxy log line and the gateway's log line about the same request correlated.
 
 ### Timeouts
 ```nginx
@@ -488,6 +494,7 @@ location / {
   proxy_set_header X-Forwarded-Proto $scheme;
   proxy_set_header X-Forwarded-Host $host;
   proxy_set_header X-Forwarded-Port $server_port;
+  proxy_set_header X-Request-ID $i3x_request_id;
   proxy_set_header Connection "";
   proxy_connect_timeout 5s;
   proxy_send_timeout 60s;
@@ -520,16 +527,24 @@ http {
   include /etc/nginx/mime.types;
   default_type application/octet-stream;
 
+  # Correlation id: an incoming X-Request-ID is reused only if it matches the gateway's
+  # safe token pattern; everything else (including an absent header) uses nginx's $request_id.
+  map $http_x_request_id $i3x_request_id {
+    default                     $request_id;
+    "~^[A-Za-z0-9._-]{1,128}$"  $http_x_request_id;
+  }
+
   log_format upstream_timing
     '$remote_addr - $remote_user [$time_local] "$request" '
-    '$status $body_bytes_sent rt=$request_time '
+    '$status $body_bytes_sent rt=$request_time rid=$i3x_request_id '
     'ua="$upstream_addr" us="$upstream_status" '
     'uct="$upstream_connect_time" uht="$upstream_header_time" '
     'urt="$upstream_response_time" conn=$connection '
     'conn_reqs=$connection_requests';
 
   # Every request is logged, successful ones included: the proxy is the audit trail, because the
-  # gateway logs its own request lines at INFO and the compose default is WARN.
+  # gateway logs its own request lines at INFO and the compose default is WARN. The request id
+  # makes that record traceable against gateway and client evidence for the same request.
   access_log /dev/stdout upstream_timing;
   sendfile on;
   tcp_nopush on;

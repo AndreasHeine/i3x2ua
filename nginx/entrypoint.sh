@@ -87,6 +87,10 @@ proxy_block=$(cat <<EOF
       proxy_set_header X-Forwarded-Proto \$scheme;
       proxy_set_header X-Forwarded-Host \$host;
       proxy_set_header X-Forwarded-Port \$server_port;
+      # The id the proxy logged for this request. nginx derives it (a safe incoming id, else its
+      # own \$request_id), so the gateway reuses it instead of generating a second id and the two
+      # log records agree.
+      proxy_set_header X-Request-ID \$i3x_request_id;
       proxy_set_header Connection "";
       proxy_connect_timeout 5s;
       proxy_send_timeout 60s;
@@ -103,6 +107,10 @@ sse_proxy_block=$(cat <<EOF
       proxy_set_header X-Forwarded-Proto \$scheme;
       proxy_set_header X-Forwarded-Host \$host;
       proxy_set_header X-Forwarded-Port \$server_port;
+      # The id the proxy logged for this request. nginx derives it (a safe incoming id, else its
+      # own \$request_id), so the gateway reuses it instead of generating a second id and the two
+      # log records agree.
+      proxy_set_header X-Request-ID \$i3x_request_id;
       proxy_set_header Connection "";
       proxy_buffering off;
       proxy_cache off;
@@ -123,6 +131,10 @@ mcp_proxy_block=$(cat <<EOF
       proxy_set_header X-Forwarded-Proto \$scheme;
       proxy_set_header X-Forwarded-Host \$host;
       proxy_set_header X-Forwarded-Port \$server_port;
+      # The id the proxy logged for this request. nginx derives it (a safe incoming id, else its
+      # own \$request_id), so the gateway reuses it instead of generating a second id and the two
+      # log records agree.
+      proxy_set_header X-Request-ID \$i3x_request_id;
       proxy_set_header Connection "";
       proxy_buffering off;
       proxy_cache off;

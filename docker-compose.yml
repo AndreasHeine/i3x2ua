@@ -26,7 +26,7 @@ services:
       - "1"  # Single worker on purpose: subscription state and MCP sessions are process-local.
       - "--limit-concurrency"
       - "200" # Shed load spikes with 503 instead of piling requests onto the event loop.
-      - "--no-access-log"
+      - "--no-access-log"  # uvicorn's access log is redundant: nginx logs every request with its rid=.
       - "--timeout-keep-alive"
       - "75" # Raise keep-alive timeout above Nginx's 60s
     environment:

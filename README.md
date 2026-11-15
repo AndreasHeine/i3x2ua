@@ -397,7 +397,10 @@ Gateway observability sits outside `/v1` and is not part of the i3X contract:
 
 - **Request correlation** - every request carries an `X-Request-ID`. A client-supplied id is
   reused when it is a safe token (`[A-Za-z0-9._-]{1,128}`), anything else is replaced by a
-  generated one. The id is echoed on the response and included in the request's log line.
+  generated one. The id is echoed on the response and included in the request's log line. The
+  reverse proxy derives the same id (`$request_id` in `nginx/nginx.conf`, logged as `rid=`) and
+  forwards it upstream, so proxy and gateway records of one request match even when the gateway's
+  per-request INFO lines and uvicorn access logs are switched off.
 - **Structured logs** - `I3X_LOG_FORMAT=json` renders one JSON object per line
   (`timestamp`, `level`, `logger`, `message`, plus `request_id` and `exception` when the record
   carries them). Plain text remains the default, and appends `request_id=<id>` to request lines.

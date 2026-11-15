@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from time import perf_counter
 from types import SimpleNamespace
 from typing import Any
@@ -73,6 +73,21 @@ class _ObjectTypeContext:
     source_type_to_element_id: dict[str, str]
     # Revision of the served content, so equal tags always mean equal representations.
     revision: str = ""
+    # Element id -> item, derived once per context. Write validation resolves one type per item,
+    # and a scan over every type per write item is O(items * types) for a bulk write.
+    _items_by_element_id: dict[str, ObjectTypeResponse] | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
+
+    def object_type_for_element_id(self, element_id: str) -> ObjectTypeResponse | None:
+        """Object type item for an element id; the first item with that id wins."""
+        index = self._items_by_element_id
+        if index is None:
+            index = {}
+            for item in self.items:
+                index.setdefault(item.elementId, item)
+            self._items_by_element_id = index
+        return index.get(element_id)
 
 
 _OBJECT_TYPE_KEY_FIELDS = ("node_id", "parent_node_id", "browse_name", "display_name", "description", "is_abstract")

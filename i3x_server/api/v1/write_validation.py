@@ -86,7 +86,7 @@ class WriteValueValidator:
             context.element_ids_by_node_id,
             context.source_type_to_element_id,
         )
-        object_type = next((item for item in context.items if item.elementId == type_id), None)
+        object_type = context.object_type_for_element_id(type_id)
         if object_type is None:
             logger.warning("Write schema missing element_id=%s type_element_id=%s", node.id, type_id)
             raise WriteValidationError(502, f"ObjectType schema unavailable: {type_id}")

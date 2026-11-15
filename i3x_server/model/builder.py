@@ -110,6 +110,9 @@ class ModelBuilder:
         )
         # Hash off the event loop; large models take noticeable CPU time to serialize.
         result.revision = await asyncio.to_thread(compute_model_revision, result)
+        # Warm the element-id lookup indexes while the revision is fresh, so the first request
+        # against a newly built model does not pay for the derivation.
+        result.element_id_index()
         logger.info(
             "Model build phases browse_s=%.3f map_s=%.3f total_s=%.3f source_nodes=%d model_nodes=%d",
             browse_duration_s,

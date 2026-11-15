@@ -20,10 +20,16 @@ from i3x_server.api.v1 import (
     objecttype_schema_utils,
     objecttype_type_resolution,
     objecttype_ua_names,
+    write_validation,
 )
 from i3x_server.api.v1.common_helpers import _namespace_index_from_node_id, _not_implemented
-from i3x_server.api.v1.contracts import GetObjectHistoryRequest, ValueUpdateItemRequest, WriteVQTRequest
-from i3x_server.api.v1.write_validation import WriteValueValidator
+from i3x_server.api.v1.contracts import (
+    GetObjectHistoryRequest,
+    ObjectTypeResponse,
+    ValueUpdateItemRequest,
+    WriteVQTRequest,
+)
+from i3x_server.api.v1.write_validation import WriteValidationError, WriteValueValidator
 from i3x_server.application.services.model_query import _relationship_type_items
 from i3x_server.application.state import GatewayState
 from i3x_server.domain.ports.opcua import DataValueDTO
@@ -38,7 +44,7 @@ from i3x_server.model.revision import model_revision
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.opcua_value import normalize_timestamp, severity_quality
 from i3x_server.schemas.state import BuildResult
-from tests.conftest import data_value_dto
+from tests.conftest import CountingNodeMap, data_value_dto
 
 
 def _rfc3339(timestamp: str) -> AwareDatetime:
@@ -1273,3 +1279,132 @@ async def test_bulk_write_read_back_failure_reports_uncertain_outcome() -> None:
     assert outcomes[1][1] is False
     assert outcomes[1][2] == 502
     assert "could not be verified" in outcomes[1][3]
+
+
+def test_find_model_node_uses_an_index_instead_of_scanning_every_node() -> None:
+    """Bulk payloads that address elements by name/type/node id must not pay a model scan per id."""
+    model = _sample_model()
+    nodes = CountingNodeMap(model.nodes_by_id)
+    model.nodes_by_id = nodes
+
+    assert object_helpers._find_model_node(model, "prop-a") is not None
+    assert object_helpers._find_model_node(model, "Temperature") is not None
+    derived_passes = nodes.passes
+    assert derived_passes == 1
+
+    for query in ("Pressure", "ns=1;i=11", "ns=2;s=TEMPERATURE", "ns=2;s=Pressure", "asset-child"):
+        assert object_helpers._find_model_node(model, query) is not None
+    assert object_helpers._find_model_node(model, "missing-id") is None
+
+    # The lookup index is derived once; resolving a query must not pass over the nodes again.
+    assert nodes.passes == derived_passes
+
+
+def test_find_model_node_matches_source_node_id_regardless_of_case() -> None:
+    model = _sample_model()
+    node = object_helpers._find_model_node(model, "NS=2;S=TEMPERATURE")
+    assert node is not None
+    assert node.id == "prop-a"
+
+
+def test_find_model_node_prefers_an_exact_spelling_over_a_case_folded_one() -> None:
+    """An exact name/type/node-id match wins over a case-folded source id match."""
+    earlier = ModelNode(
+        id="prop-earlier",
+        name="Earlier",
+        kind="property",
+        type="Double",
+        children=[],
+        source_node_id="ns=2;s=shared-id",
+    )
+    later = ModelNode(
+        id="prop-later",
+        name="ns=2;S=SHARED-ID",
+        kind="property",
+        type="Double",
+        children=[],
+        source_node_id="ns=2;s=Other",
+    )
+    model = BuildResult(
+        nodes_by_id={"prop-earlier": earlier, "prop-later": later},
+        root_ids=["prop-earlier"],
+        children_by_id={"prop-earlier": [], "prop-later": []},
+        instances_by_type_id={},
+        property_to_node={},
+        action_to_method={},
+    )
+
+    node = object_helpers._find_model_node(model, "ns=2;S=SHARED-ID")
+    assert node is not None
+    assert node.id == "prop-later"
+
+    # The folded source id still resolves when no exact spelling matches.
+    assert object_helpers._find_model_node(model, "NS=2;S=shared-id") == earlier
+
+
+class _CountingItems(list[ObjectTypeResponse]):
+    """Item list that records iteration, so object-type lookup must resolve through an index."""
+
+    def __init__(self, items: list[ObjectTypeResponse]) -> None:
+        super().__init__(items)
+        self.passes = 0
+
+    def __iter__(self) -> Any:
+        self.passes += 1
+        return super().__iter__()
+
+
+def _context_items(element_ids: list[str], schema: dict[str, Any]) -> _CountingItems:
+    return _CountingItems(
+        [
+            ObjectTypeResponse(
+                elementId=element_id,
+                displayName=element_id,
+                namespaceUri="urn:types",
+                sourceTypeId=f"nsu=urn:types;i={index}",
+                schema=schema,
+            )
+            for index, element_id in enumerate(element_ids, 1)
+        ]
+    )
+
+
+def _write_context(items: list[ObjectTypeResponse]) -> objecttype_helpers._ObjectTypeContext:
+    return objecttype_helpers._ObjectTypeContext([], [], {}, items, {})
+
+
+def test_object_type_context_lookup_is_indexed_once() -> None:
+    items = _context_items(["type-1", "type-2", "type-3"], {"type": "number"})
+    context = _write_context(items)
+
+    assert context.object_type_for_element_id("type-2") is items[1]
+    assert context.object_type_for_element_id("type-2") is items[1]
+    assert context.object_type_for_element_id("missing") is None
+    assert items.passes == 1
+
+
+@pytest.mark.asyncio
+async def test_write_validator_resolves_each_item_through_the_index(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A bulk write must not scan every object type for every item."""
+    items = _context_items(["machine-type"], {"type": "number"})
+    context = _write_context(items)
+
+    async def _context(*_args: Any, **_kwargs: Any) -> objecttype_helpers._ObjectTypeContext:
+        return context
+
+    monkeypatch.setattr(write_validation, "_get_object_type_context", _context)
+
+    node = ModelNode(id="prop-a", name="Temperature", kind="property", type="machine-type", source_node_id="ns=2;s=T")
+    validator = WriteValueValidator(
+        cast(Any, SimpleNamespace()),
+        _sample_model(),
+        cast(OpcUaClientProtocol, SimpleNamespace()),
+    )
+
+    await validator.validate(node, 42.5)
+    await validator.validate(node, 1.0)
+    with pytest.raises(WriteValidationError) as exc_info:
+        await validator.validate(node, "not a number")
+
+    assert exc_info.value.status_code == 400
+    assert items.passes == 1

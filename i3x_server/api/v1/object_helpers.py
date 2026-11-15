@@ -161,39 +161,19 @@ def _relationship_type_items(model: BuildResult | None = None) -> list[Relations
 def _find_model_node(model: BuildResult, element_id: str) -> ModelNode | None:
     """Model node for an element id.
 
-    The id is looked up directly, then through the name and type indexes, then by name, type, and
-    source node id (case-insensitive last) - clients may address an element by any of those.
+    The id is looked up directly, then through the element-id index built with the model (name,
+    type, source node id, case-folded source node id) - clients may address an element by any of
+    those. The index keeps a lookup O(1); a bulk payload of unknown ids no longer scans the model
+    once per id.
     """
     node = model.nodes_by_id.get(element_id)
     if node is not None:
         return node
 
-    raw_node_id_by_name = getattr(model, "node_id_by_name", None)
-    if isinstance(raw_node_id_by_name, dict):
-        indexed_name_id = raw_node_id_by_name.get(element_id)
-        if isinstance(indexed_name_id, str):
-            indexed_name_node = model.nodes_by_id.get(indexed_name_id)
-            if indexed_name_node is not None:
-                return indexed_name_node
-
-    raw_node_id_by_type = getattr(model, "node_id_by_type", None)
-    if isinstance(raw_node_id_by_type, dict):
-        indexed_type_id = raw_node_id_by_type.get(element_id)
-        if isinstance(indexed_type_id, str):
-            indexed_type_node = model.nodes_by_id.get(indexed_type_id)
-            if indexed_type_node is not None:
-                return indexed_type_node
-
-    for candidate in model.nodes_by_id.values():
-        if candidate.name == element_id:
-            return candidate
-        if candidate.type == element_id:
-            return candidate
-        if candidate.source_node_id == element_id:
-            return candidate
-        if candidate.source_node_id.lower() == element_id.lower():
-            return candidate
-    return None
+    node_id = model.element_id_index().get(element_id) or model.folded_source_id_index().get(element_id.lower())
+    if node_id is None:
+        return None
+    return model.nodes_by_id.get(node_id)
 
 
 def _parent_id_for_node(model: BuildResult, node_id: str) -> str | None:

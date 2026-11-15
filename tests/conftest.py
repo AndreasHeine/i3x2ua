@@ -63,6 +63,26 @@ def data_value_dto(value: Any, quality: str = "Good", timestamp: datetime | None
     )
 
 
+class CountingNodeMap(dict[str, ModelNode]):
+    """Node map that records every full pass over the nodes.
+
+    Element lookups must resolve through an index: deriving the index records one pass, and
+    resolving a query afterwards must record none.
+    """
+
+    def __init__(self, nodes: dict[str, ModelNode]) -> None:
+        super().__init__(nodes)
+        self.passes = 0
+
+    def values(self) -> Any:
+        self.passes += 1
+        return super().values()
+
+    def items(self) -> Any:
+        self.passes += 1
+        return super().items()
+
+
 @dataclass(slots=True)
 class FakeMachineThresholds:
     min: float

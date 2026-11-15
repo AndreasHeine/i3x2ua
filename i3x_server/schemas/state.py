@@ -82,6 +82,45 @@ class BuildResult:
     )
     # Response for /model/metrics, computed once per snapshot; dataclasses.replace() resets it.
     _model_metrics_cache: Any = field(default=None, init=False, repr=False, compare=False)
+    # Element-id lookup indexes (query -> element id), derived once per model revision and warmed
+    # by the builder; dataclasses.replace() resets them.
+    _element_lookup_cache: tuple[tuple[str, int], dict[str, str], dict[str, str]] | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
+
+    def _element_lookups(self) -> tuple[dict[str, str], dict[str, str]]:
+        """Build the exact and case-folded lookup indexes once per model revision."""
+        fingerprint = (self.revision, len(self.nodes_by_id))
+        cached = self._element_lookup_cache
+        if cached is not None and cached[0] == fingerprint:
+            return cached[1], cached[2]
+
+        exact: dict[str, str] = {}
+        folded: dict[str, str] = {}
+        for node_id, node in self.nodes_by_id.items():
+            if node.name:
+                exact.setdefault(node.name, node_id)
+            if node.type:
+                exact.setdefault(node.type, node_id)
+            if node.source_node_id:
+                exact.setdefault(node.source_node_id, node_id)
+                folded.setdefault(node.source_node_id.lower(), node_id)
+
+        self._element_lookup_cache = (fingerprint, exact, folded)
+        return exact, folded
+
+    def element_id_index(self) -> dict[str, str]:
+        """Exact element-id spellings - display name, type, source node id - mapped to element ids.
+
+        Entries are recorded in node order and the first occurrence wins, which is exactly the
+        priority a scan over the nodes applied, without paying that scan per lookup. The builder
+        warms this during construction; a partially populated model derives it on first use.
+        """
+        return self._element_lookups()[0]
+
+    def folded_source_id_index(self) -> dict[str, str]:
+        """Case-folded source node ids mapped to element ids (the case-insensitive last resort)."""
+        return self._element_lookups()[1]
 
     def composition_child_ids(self, node_id: str) -> list[str]:
         """Composition (``HasComponent``) children of a node.

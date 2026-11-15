@@ -10,6 +10,7 @@ from i3x_server.infrastructure.opcua.client import OpcUaClientProtocol, OpcUaNod
 from i3x_server.model.builder import ModelBuilder
 from i3x_server.model.mapper import infer_kind, map_type, stable_i3x_id
 from i3x_server.schemas.state import BuildResult
+from tests.conftest import CountingNodeMap
 
 
 class FakeOpcuaForBuilder:
@@ -158,6 +159,26 @@ async def test_model_builder_indexes_node_id_and_expanded_node_id() -> None:
     assert model.element_id_by_node_id["ns=2;i=1001"] == node.id
     assert model.element_id_by_expanded_node_id[expanded_node_id] == node.id
     assert model.namespace_uri_by_index[2] == "urn:vendor:plant"
+
+
+@pytest.mark.asyncio
+async def test_model_builder_indexes_every_element_id_spelling() -> None:
+    """The build indexes name, type, source node id, and the case-folded source node id."""
+    model = await ModelBuilder(cast(OpcUaClientProtocol, FakeOpcuaForBuilder())).build()
+
+    temperature_id = model.element_id_by_node_id["ns=2;s=Temperature"]
+    machine_id = model.element_id_by_node_id["ns=2;s=Machine"]
+    index = model.element_id_index()
+    assert index["ns=2;s=Temperature"] == temperature_id
+    assert index["Temperature"] == temperature_id
+    assert index["Machine"] == machine_id
+    assert model.folded_source_id_index()["ns=2;s=machine"] == machine_id
+
+    # Warming the index during the build keeps request-time lookups off the derivation path.
+    nodes = CountingNodeMap(model.nodes_by_id)
+    model.nodes_by_id = nodes
+    assert model.element_id_index()["ns=2;s=Temperature"] == temperature_id
+    assert nodes.passes == 0
 
 
 @pytest.mark.asyncio

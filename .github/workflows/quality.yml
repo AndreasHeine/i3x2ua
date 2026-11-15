@@ -84,7 +84,8 @@ jobs:
         run: uv run ruff check .
 
       - name: Check formatting
-        # docs/architecture.md promises "ruff check and format pass"; only the lint ran.
+        # docs/architecture.md requires "ruff check and format pass", so both the lint and the
+        # format check are gated here.
         run: uv run ruff format --check .
 
   mypy:
@@ -213,8 +214,8 @@ jobs:
           submodules: recursive
 
       - name: Set up Node.js
-        # The test tool ships dependency-free (Node builtins only, engines >= 18.17);
-        # 24 matches the builder stage of the Dockerfile.
+        # The test tool ships dependency-free (Node builtins only, engines >= 18.17), and 26 is the
+        # Node the image builds the frontend with (node:26-alpine), so CI and the image agree.
         uses: actions/setup-node@v7
         with:
           node-version: "26"

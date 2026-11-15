@@ -20,8 +20,10 @@ import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-# Line gate matches scripts/run_tests.py's historical target; branch gate sits below the measured
-# baseline (76.74 %) so it locks progress without blocking feature work on legacy gaps.
+# These two gates are the project's only thresholds: CI and scripts/run_tests.py both call this
+# script, so the local gate and the CI gate cannot drift apart. Both sit below the rates printed on
+# every run, which locks progress without blocking feature work on legacy gaps. Raise a gate when the
+# measured rate rises; never set one above the measured rate, or CI fails on a target nobody meets.
 TARGET_LINE_PERCENT = 85.0
 TARGET_BRANCH_PERCENT = 75.0
 

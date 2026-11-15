@@ -415,7 +415,7 @@ class ShutdownSignalHandlers:
         """Deregister the handlers the lifespan installed.
 
         Without this, a later shutdown in the same process (tests, repeated ``create_app()``)
-        fires ``_early_shutdown`` on a closed event loop (``RuntimeError: Event loop is
+        fires ``_close_streams`` on a closed event loop (``RuntimeError: Event loop is
         closed``) and chained handlers accumulate onto the previous app's handler.
         """
         for sig in self.signals:
@@ -432,36 +432,47 @@ def install_shutdown_signal_handlers(app: FastAPI, subscription_service: Subscri
     """Install a chained termination-signal handler and return it for shutdown.
 
     Active SSE streaming connections must be closed *before* Uvicorn's "Waiting for connections
-    to close" phase. On Windows (and as a fallback on Unix), Uvicorn uses ``signal.signal()``, so
-    the existing handler is saved and wrapped; on Unix, asyncio's ``add_signal_handler`` is tried
-    first so the callback already runs on the event loop thread.
+    to close" phase. Both registration paths displace Uvicorn's own exit handler - ``signal.signal()``
+    on Windows, ``loop.add_signal_handler()`` on Unix - so the displaced handler is captured first and
+    run after the early close; without that, ``should_exit`` is never set and the
+    ``--timeout-graceful-shutdown`` bound never applies. On Unix, asyncio's ``add_signal_handler`` is
+    tried first so the callback already runs on the event loop thread.
     """
     loop = asyncio.get_event_loop()
 
-    def _early_shutdown() -> None:
+    def _close_streams() -> None:
         """Called from the asyncio event loop when a termination signal fires."""
         subscription_service.initiate_shutdown()
         shutdown_mcp_transport(app)
 
+    def _async_handler(sig: int) -> None:
+        """Asyncio-path callback: close the streams, then chain the handler this replaced."""
+        _close_streams()
+        previous = handlers.originals.get(sig)
+        if callable(previous):
+            previous(sig, None)
+
     def _make_chained(handlers: ShutdownSignalHandlers, sig: int) -> None:
-        old = signal.getsignal(sig)
+        old = handlers.originals.get(sig)
 
         def _handler(signum: int, frame: types.FrameType | None) -> None:
-            handlers.loop.call_soon_threadsafe(_early_shutdown)
+            handlers.loop.call_soon_threadsafe(_close_streams)
             if callable(old):
                 old(signum, frame)
 
         signal.signal(sig, _handler)
-        handlers.originals[sig] = old
 
     signals = [signal.SIGINT]
     if hasattr(signal, "SIGTERM"):
         signals.append(signal.SIGTERM)
     handlers = ShutdownSignalHandlers(loop=loop, signals=signals)
     for sig in signals:
+        # Whatever is installed right now is Uvicorn's exit handler, and both registrations below
+        # replace it, so it has to be saved before either runs.
+        handlers.originals[sig] = signal.getsignal(sig)
         try:
             # On Unix, prefer asyncio's loop handler so we stay on the event loop thread.
-            loop.add_signal_handler(sig, _early_shutdown)
+            loop.add_signal_handler(sig, _async_handler, sig)
             handlers.async_signums.add(sig)
         except (NotImplementedError, OSError, RuntimeError):
             # Windows: asyncio does not support add_signal_handler; chain with signal.signal.

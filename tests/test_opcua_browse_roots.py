@@ -109,6 +109,10 @@ async def test_reconnect_restores_reads_and_native_subscription(
             # The port requires both callbacks; this test only monitors data changes.
             del event
 
+        def notification_gap(self) -> None:
+            # The port requires the gap callback too; this test never drops a notification.
+            return None
+
     async def on_reconnect() -> None:
         reconnected.set()
 

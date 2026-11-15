@@ -126,12 +126,16 @@ class _RecordingHandler:
     def __init__(self) -> None:
         self.updates: list[tuple[str, Any, DataValueDTO | None]] = []
         self.events: list[Any] = []
+        self.gaps = 0
 
     def datachange_notification(self, node_id: str, value: Any, data_value: DataValueDTO | None) -> None:
         self.updates.append((node_id, value, data_value))
 
     def event_notification(self, event: Any) -> None:
         self.events.append(event)
+
+    def notification_gap(self) -> None:
+        self.gaps += 1
 
 
 def test_notification_bridge_maps_node_id_and_dto() -> None:
@@ -172,6 +176,8 @@ def test_notification_bridge_drops_notifications_with_unresolvable_node_id(caplo
 
     assert handler.updates == []
     assert "dropping update" in caplog.text
+    # A dropped notification must be observable: the handler records a sequence gap.
+    assert handler.gaps == 1
 
 
 def test_notification_bridge_passes_none_when_notification_has_no_value() -> None:

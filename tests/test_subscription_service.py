@@ -2358,6 +2358,114 @@ async def test_native_handler_maps_status_code_and_source_timestamp() -> None:
     await service.close()
 
 
+@pytest.mark.asyncio
+async def test_notification_gap_advances_sequence_and_reports_dropped_range() -> None:
+    """A dropped notification must leave an observable gap, not a silent hole (L13)."""
+    client = FakeOpcUaClient()
+    service = SubscriptionService(cast(OpcUaClientProtocol, client), interval_seconds=1, seed_initial_values=False)
+    created = await service.create_subscription(client_id="c1", display_name="s1")
+    assert (
+        await service.register_items("c1", created.subscription_id, ["asset-root"], max_depth=1, model=_model()) is True
+    )
+    assert client.handlers
+
+    # The notification is lost (unresolvable node id in the adapter bridge); the bin handler
+    # records the gap, then a later notification for the same bin delivers normally.
+    client.handlers[0].notification_gap()
+    client.handlers[0].datachange_notification(
+        "ns=2;s=Temperature", 2.0, _signed_dto(2.0, 0x00000000, datetime(2026, 4, 5, 6, 7, tzinfo=timezone.utc))
+    )
+
+    updates = await service.wait_for_updates("c1", created.subscription_id, after_sequence=0, timeout_seconds=2)
+    assert updates is not None
+    # The gap consumed sequence 1, so the delivered update starts the visible jump at 2.
+    assert [item.sequence_number for item in updates] == [2]
+
+    async with service._lock:
+        state = service._subscriptions[created.subscription_id]
+    assert state.dropped_from_sequence == 1
+    assert state.dropped_to_sequence == 1
+
+    synced = await service.sync("c1", created.subscription_id)
+    assert synced is not None
+    assert synced.queue_overflow is True
+    assert synced.dropped_from_sequence == 1
+    assert synced.dropped_to_sequence == 1
+
+    # Sync consumes the markers once they have been reported.
+    synced_again = await service.sync("c1", created.subscription_id)
+    assert synced_again is not None
+    assert synced_again.queue_overflow is False
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_notification_gap_for_a_reclaimed_bin_records_nothing() -> None:
+    """A lost notification from a bin that no longer exists belongs to no subscription."""
+    client = FakeOpcUaClient()
+    service = SubscriptionService(cast(OpcUaClientProtocol, client), interval_seconds=1, seed_initial_values=False)
+    created = await service.create_subscription(client_id="c1", display_name="s1")
+    assert (
+        await service.register_items("c1", created.subscription_id, ["asset-root"], max_depth=1, model=_model()) is True
+    )
+    assert client.handlers
+
+    async with service._lock:
+        bin_id = next(iter(service._bins))
+        del service._bins[bin_id]
+
+    client.handlers[0].notification_gap()
+
+    updates = await service.wait_for_updates("c1", created.subscription_id, after_sequence=0, timeout_seconds=0.2)
+    assert updates == []
+    async with service._lock:
+        state = service._subscriptions[created.subscription_id]
+    assert state.sequence_number == 0
+    assert state.dropped_from_sequence is None
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_notification_gap_collapsed_by_queue_overflow_still_counts() -> None:
+    """Queue overflow must not lose a gap: an evicted gap entry is counted into its bin."""
+    client = FakeOpcUaClient()
+    service = SubscriptionService(
+        cast(OpcUaClientProtocol, client),
+        interval_seconds=1,
+        seed_initial_values=False,
+        max_updates_per_subscription=1,
+    )
+    created = await service.create_subscription(client_id="c1", display_name="s1")
+    assert (
+        await service.register_items("c1", created.subscription_id, ["asset-root"], max_depth=1, model=_model()) is True
+    )
+
+    async with service._lock:
+        bin_id = next(iter(service._bins))
+        state_obj = service._subscriptions[created.subscription_id]
+
+    # Stop the fan-out loop so the queue stays full for the enqueues below.
+    fanout = service._node_datachange_task
+    if fanout is not None:
+        fanout.cancel()
+        with suppress(asyncio.CancelledError):
+            await fanout
+    service._node_datachange_queue = asyncio.Queue(maxsize=1)
+
+    service._enqueue_node_datachange("ns=2;s=Temperature", 1.0)
+    service._enqueue_notification_gap(bin_id)  # evicts the datachange entry
+    service._enqueue_notification_gap(bin_id)  # evicts the first gap entry
+    assert service._dropped_node_datachanges == {"ns=2;s=Temperature": 1}
+    assert service._dropped_notification_gaps == {bin_id: 1}
+
+    await service._record_notification_gap(bin_id)
+    # The queued gap plus the collapsed one: two lost notifications, one visible range.
+    assert state_obj.sequence_number == 2
+    assert state_obj.dropped_from_sequence == 1
+    assert state_obj.dropped_to_sequence == 2
+    await service.close()
+
+
 def test_quality_change_emits_an_update_even_with_an_unchanged_value() -> None:
     service = SubscriptionService(cast(OpcUaClientProtocol, FakeOpcUaClient()), interval_seconds=1.0)
     state = _SubscriptionState(

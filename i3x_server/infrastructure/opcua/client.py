@@ -120,7 +120,8 @@ class _NotificationBridge:
     asyncua hands raw ``Node`` objects and notification structs; the port expects
     the node id as a string and a :class:`DataValueDTO`. A notification whose node
     id cannot be resolved is dropped here (the port callback never sees raw
-    transport objects).
+    transport objects) and reported through ``notification_gap``, so the loss stays
+    observable as a sequence gap instead of a silent hole.
     """
 
     def __init__(self, handler: OpcUaDataChangeHandler) -> None:
@@ -131,6 +132,7 @@ class _NotificationBridge:
             node_id = node.nodeid.to_string()
         except Exception:
             logger.warning("Unable to resolve node_id for datachange notification; dropping update")
+            self._handler.notification_gap()
             return
         monitored_item = getattr(data, "monitored_item", None)
         raw_data_value = getattr(monitored_item, "Value", None)
@@ -140,6 +142,9 @@ class _NotificationBridge:
 
     def event_notification(self, event: Any) -> None:
         self._handler.event_notification(event)
+
+    def notification_gap(self) -> None:
+        self._handler.notification_gap()
 
 
 class OpcUaClient:

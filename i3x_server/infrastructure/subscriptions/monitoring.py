@@ -56,6 +56,12 @@ class _NodeDataChangeHandler:
         signal = _signal_from_data_value(data_value)
         self._service.schedule_node_datachange(node_id, value, signal)
 
+    def notification_gap(self) -> None:
+        # The adapter dropped a notification from this bin (its node id could not be
+        # resolved). The node is unknown, so the loss is attributed to the bin: every
+        # subscription monitoring one of its nodes gets a visible sequence gap.
+        self._service.schedule_notification_gap(self._bin_id)
+
     def event_notification(self, event: Any) -> None:
         return None
 

@@ -116,6 +116,9 @@ class SubscriptionService:
         # Per-node counts of updates dropped from the shared queue before fan-out; consumed
         # by ``_fanout_node_value`` as a sequence-gap marker on each affected subscription.
         self._dropped_node_datachanges: dict[str, int] = {}
+        # Per-bin counts of notification gaps collapsed by queue overflow (a gap entry evicted
+        # from the shared queue); consumed by ``_record_notification_gap`` with its own gap.
+        self._dropped_notification_gaps: dict[str, int] = {}
         self._event_loop: asyncio.AbstractEventLoop | None = None
         self._shutdown_event: asyncio.Event = asyncio.Event()
         # Set by ``close()``: background tasks must never be resurrected afterwards, otherwise a
@@ -335,6 +338,15 @@ class SubscriptionService:
         signal: state._ValueSignal = state._NO_SIGNAL,
     ) -> None:
         updates._enqueue_node_datachange(self, node_id, value, signal)
+
+    def schedule_notification_gap(self, bin_id: str) -> None:
+        updates.schedule_notification_gap(self, bin_id)
+
+    def _enqueue_notification_gap(self, bin_id: str) -> None:
+        updates._enqueue_notification_gap(self, bin_id)
+
+    async def _record_notification_gap(self, bin_id: str) -> None:
+        await updates.record_notification_gap(self, bin_id)
 
     async def _node_datachange_loop(self) -> None:
         await updates._node_datachange_loop(self)

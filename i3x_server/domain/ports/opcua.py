@@ -230,11 +230,17 @@ class OpcUaDataChangeHandler(Protocol):
     ``node_id`` is the monitored node as a string, ``value`` the notification
     payload, and ``data_value`` the notification's VQT (``None`` when the
     notification carries no monitored-item value).
+
+    ``notification_gap`` is called instead when a notification was dropped at the
+    adapter boundary (its node id could not be resolved). Consumers must record an
+    observable sequence gap so a lost notification is not mistaken for no change.
     """
 
     def datachange_notification(self, node_id: str, value: Any, data_value: DataValueDTO | None) -> None: ...
 
     def event_notification(self, event: Any) -> None: ...
+
+    def notification_gap(self) -> None: ...
 
 
 @runtime_checkable

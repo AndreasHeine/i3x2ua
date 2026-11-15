@@ -120,8 +120,8 @@ def register_exception_handlers(app: FastAPI) -> None:
         exc: ApplicationServiceError,
     ) -> JSONResponse:
         del request
-        # `ApplicationServiceError.details` (e.g. {"cause": ...}) must reach the client;
-        # it used to be stored but never rendered.
+        # Gateway-owned diagnostics (e.g. the offending field/value pair) must reach the client;
+        # they used to be stored but never rendered. Upstream failure text stays in the log.
         detail = exc.message
         diagnostics = format_error_details(exc.details)
         if diagnostics is not None:

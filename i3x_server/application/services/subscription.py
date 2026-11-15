@@ -38,6 +38,7 @@ from i3x_server.application.services.subscription_mapper import (
 from i3x_server.domain.errors import AdmissionLimitError
 from i3x_server.domain.ports.opcua import OpcUaClientProtocol
 from i3x_server.errors import i3x_http_error
+from i3x_server.logging_format import log_upstream_failure
 from i3x_server.schemas.state import BuildResult
 
 logger = logging.getLogger(__name__)
@@ -88,12 +89,8 @@ def _raise_or_wrap_subscription_error(message: str, exc: Exception) -> NoReturn:
         # A violated gateway admission rule is not an upstream failure: the intended status and
         # code must survive instead of being wrapped into the generic 502.
         raise i3x_http_error(exc.status_code, exc.error_code, exc.message, exc.details) from exc
-    raise i3x_http_error(
-        502,
-        "SubscriptionError",
-        message,
-        {"cause": str(exc)},
-    ) from exc
+    log_upstream_failure("SubscriptionError", message, exc)
+    raise i3x_http_error(502, "SubscriptionError", message) from exc
 
 
 def _normalize_client_id(client_id: str | None) -> str | None:

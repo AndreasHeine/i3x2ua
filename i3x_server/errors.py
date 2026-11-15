@@ -9,10 +9,10 @@ from fastapi import HTTPException
 def format_error_details(details: dict[str, object] | None) -> str | None:
     """Render optional diagnostic details as a compact `key=value` suffix.
 
-    Producers (``_raise_invalid_argument``, ``_raise_opcua_error``, service
-    errors) pass field/value pairs that used to be dropped; the i3X envelope
-    carries them in ``responseDetail.detail`` so callers can see *which* field
-    failed instead of guessing.
+    Producers (``_raise_invalid_argument``, admission-limit and gateway-owned service errors)
+    pass field/value pairs that used to be dropped; the i3X envelope carries them in
+    ``responseDetail.detail`` so callers can see *which* field failed instead of guessing.
+    Upstream failure text is never passed here - it stays in the server-side log.
     """
     if not details:
         return None

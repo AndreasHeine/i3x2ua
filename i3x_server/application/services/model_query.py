@@ -21,6 +21,7 @@ from i3x_server.domain.utils import (
     namespace_uri_for_node_id,
     normalize_namespace_uri,
 )
+from i3x_server.logging_format import log_upstream_failure
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
 from i3x_server.version import get_server_version
@@ -314,12 +315,9 @@ class ModelQueryService:
                 self._local_namespace_infos = await self.opcua_client.get_namespace_infos()
             return [_to_namespace(item) for item in self._local_namespace_infos]
         except Exception as exc:
-            raise ApplicationServiceError(
-                502,
-                "OpcUaNamespaceError",
-                "Failed to read OPC UA namespaces",
-                {"cause": str(exc)},
-            ) from exc
+            message = "Failed to read OPC UA namespaces"
+            log_upstream_failure("OpcUaNamespaceError", message, exc)
+            raise ApplicationServiceError(502, "OpcUaNamespaceError", message) from exc
 
     async def get_namespace_infos(self) -> list[OpcUaNamespaceInfo]:
         """Retrieve raw namespace infos (internal use).
@@ -352,12 +350,9 @@ class ModelQueryService:
             object_types = await self.opcua_client.get_object_types()
             namespace_infos = await self.get_namespace_infos()
         except Exception as exc:
-            raise ApplicationServiceError(
-                502,
-                "OpcUaObjectTypeError",
-                "Failed to read OPC UA object types",
-                {"cause": str(exc)},
-            ) from exc
+            message = "Failed to read OPC UA object types"
+            log_upstream_failure("OpcUaObjectTypeError", message, exc)
+            raise ApplicationServiceError(502, "OpcUaObjectTypeError", message) from exc
 
         effective_namespace_uri: str | None = None
         if namespace_uri is not None:

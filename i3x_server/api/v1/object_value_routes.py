@@ -59,6 +59,7 @@ from i3x_server.api.v1.write_validation import WriteValidationError, WriteValueV
 from i3x_server.application.dependencies import get_opcua_client, get_or_build_model
 from i3x_server.application.ports.opcua import DataValueDTO, OpcUaClientProtocol
 from i3x_server.config.settings import writes_enabled
+from i3x_server.logging_format import log_upstream_failure
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
 
@@ -499,21 +500,23 @@ async def update_historical_values_v1(
                 } or (exc.code == StatusCodes.BadServiceUnsupported and history_update_attempted):
                     if exc.code == StatusCodes.BadServiceUnsupported:
                         service_unsupported = True
-                    status_code, message = 501, f"OPC UA historical writes unsupported: {exc}"
+                    status_code, message = 501, "OPC UA historical writes unsupported"
                 elif exc.code == StatusCodes.BadNodeIdUnknown:
-                    status_code, message = 404, str(exc)
+                    status_code, message = 404, "OPC UA historical write target node not found"
                 elif exc.code in {
                     StatusCodes.BadHistoryOperationInvalid,
                     StatusCodes.BadInvalidArgument,
                     StatusCodes.BadTimestampNotSupported,
                 }:
-                    status_code, message = 400, str(exc)
+                    status_code, message = 400, "OPC UA historical write rejected by the server"
                 else:
                     status_code, message = _classify_write_error(exc)
-                    message = f"{message}: {exc}"
+                # The status code is the diagnostic: the upstream wording varies by server and
+                # language, so it stays in the log instead of the per-item message.
+                log_upstream_failure("OpcUaHistoryWriteError", message, exc)
             except Exception as exc:
                 status_code, message = _classify_write_error(exc)
-                message = f"{message}: {exc}"
+                log_upstream_failure("OpcUaHistoryWriteError", message, exc)
         logger.log(
             logging.INFO if status_code == 200 else logging.WARNING,
             "History write audit principal=%s element_id=%s node_id=%s timestamp=%s decision=%s detail=%s",

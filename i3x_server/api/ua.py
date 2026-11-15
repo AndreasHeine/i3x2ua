@@ -18,6 +18,7 @@ from i3x_server.application.dependencies import get_opcua_client
 from i3x_server.application.ports.opcua import OpcUaClientProtocol
 from i3x_server.application.state import UaStatusSnapshot, gateway_state
 from i3x_server.errors import i3x_http_error
+from i3x_server.logging_format import log_upstream_failure
 
 router = APIRouter(prefix="/ua", tags=["Diagnostics"])
 
@@ -134,12 +135,8 @@ async def get_ua_status(
     try:
         data_value = await opcua_client.read_server_status_data_value()
     except Exception as exc:
-        raise i3x_http_error(
-            502,
-            "OpcUaServerStatusError",
-            "Failed to read OPC UA ServerStatus",
-            {"cause": str(exc)},
-        ) from exc
+        log_upstream_failure("OpcUaServerStatusError", "Failed to read OPC UA ServerStatus", exc)
+        raise i3x_http_error(502, "OpcUaServerStatusError", "Failed to read OPC UA ServerStatus") from exc
 
     payload = data_value.value.value if data_value.value is not None else None
     result = _to_json_safe(payload)
@@ -157,12 +154,8 @@ async def get_ua_connection(
     try:
         snapshot = opcua_client.get_connection_snapshot()
     except Exception as exc:
-        raise i3x_http_error(
-            500,
-            "OpcUaConnectionStateError",
-            "Failed to resolve OPC UA connection state",
-            {"cause": str(exc)},
-        ) from exc
+        log_upstream_failure("OpcUaConnectionStateError", "Failed to resolve OPC UA connection state", exc)
+        raise i3x_http_error(500, "OpcUaConnectionStateError", "Failed to resolve OPC UA connection state") from exc
 
     startup_mode = gateway_state(request).ua_startup_mode
     result = UaConnectionResult(
@@ -187,12 +180,8 @@ async def get_ua_limits(opcua_client: OpcUaClientProtocol = Depends(get_opcua_cl
         operational_limits = await opcua_client.get_operational_limits()
         capabilities = await opcua_client.get_subscription_capabilities()
     except Exception as exc:
-        raise i3x_http_error(
-            502,
-            "OpcUaLimitsError",
-            "Failed to read OPC UA limits and capabilities",
-            {"cause": str(exc)},
-        ) from exc
+        log_upstream_failure("OpcUaLimitsError", "Failed to read OPC UA limits and capabilities", exc)
+        raise i3x_http_error(502, "OpcUaLimitsError", "Failed to read OPC UA limits and capabilities") from exc
 
     result = UaLimitsResult(
         operationalLimits=UaOperationalLimitsResult(

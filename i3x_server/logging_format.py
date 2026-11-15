@@ -9,6 +9,9 @@ visible in either format without a structured-logging dependency.
 The request id lives in a :class:`~contextvars.ContextVar`, which an asyncio task inherits from
 the request middleware, so log lines emitted inside a handler - including SSE stream events -
 carry the id of the request that produced them without every call site threading it through.
+
+:func:`log_upstream_failure` is the one place an upstream exception's text is written: responses
+must not carry it, so it stays here.
 """
 
 from __future__ import annotations
@@ -35,6 +38,29 @@ _request_id_var: ContextVar[str | None] = ContextVar("i3x_request_id", default=N
 def current_request_id() -> str | None:
     """The request id of the request currently being served, if any."""
     return _request_id_var.get()
+
+
+_UPSTREAM_LOGGER = logging.getLogger("i3x_server.upstream")
+
+
+def log_upstream_failure(error_code: str, message: str, cause: BaseException | str) -> None:
+    """Record an upstream failure server-side instead of returning its text to the client.
+
+    Error envelopes carry the gateway's own message only, so the exception text (server wording,
+    paths, session ids) has to stay in the log to remain diagnosable. The exception is attached as
+    ``exc_info`` so the JSON formatter puts it in the ``exception`` field and plain text logs carry
+    the traceback as well.
+    """
+    if isinstance(cause, BaseException):
+        _UPSTREAM_LOGGER.warning(
+            "upstream failure code=%s message=%s cause=%s",
+            error_code,
+            message,
+            cause,
+            exc_info=cause,
+        )
+    else:
+        _UPSTREAM_LOGGER.warning("upstream failure code=%s message=%s cause=%s", error_code, message, cause)
 
 
 @contextmanager

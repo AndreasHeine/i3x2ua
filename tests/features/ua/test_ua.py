@@ -94,6 +94,6 @@ def test_ua_state_error_shape(client: TestClient) -> None:
     assert payload["error"]["code"] == 502
     assert payload["error"]["message"] == "Failed to read OPC UA ServerStatus"
     assert payload["responseDetail"]["status"] == 502
-    # The cause diagnostic now accompanies the message in responseDetail.detail.
-    assert payload["responseDetail"]["detail"].startswith("Failed to read OPC UA ServerStatus")
-    assert "cause=boom" in payload["responseDetail"]["detail"]
+    # The upstream cause stays in the server-side log; the response carries only the gateway message.
+    assert payload["responseDetail"]["detail"] == "Failed to read OPC UA ServerStatus"
+    assert "boom" not in payload["responseDetail"]["detail"]

@@ -16,6 +16,7 @@ from fastapi import HTTPException, Request
 
 from i3x_server.domain.ports.opcua import DataValueDTO, OpcUaClientProtocol, Quality
 from i3x_server.errors import i3x_http_error
+from i3x_server.logging_format import log_upstream_failure
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.opcua_value import (
     normalize_timestamp,
@@ -107,12 +108,9 @@ class ObjectValueService:
         except Exception as exc:
             if isinstance(exc, HTTPException):
                 raise
-            raise i3x_http_error(
-                502,
-                "OpcUaReadError",
-                f"Failed to read current value for {element_id}",
-                {"cause": str(exc)},
-            ) from exc
+            message = f"Failed to read current value for {element_id}"
+            log_upstream_failure("OpcUaReadError", message, exc)
+            raise i3x_http_error(502, "OpcUaReadError", message) from exc
 
     async def get_history(
         self,
@@ -172,12 +170,9 @@ class ObjectValueService:
         except Exception as exc:
             if isinstance(exc, HTTPException):
                 raise
-            raise i3x_http_error(
-                502,
-                "OpcUaHistoryError",
-                f"Failed to read history for {element_id}",
-                {"cause": str(exc)},
-            ) from exc
+            message = f"Failed to read history for {element_id}"
+            log_upstream_failure("OpcUaHistoryError", message, exc)
+            raise i3x_http_error(502, "OpcUaHistoryError", message) from exc
 
     async def get_related_objects(
         self,

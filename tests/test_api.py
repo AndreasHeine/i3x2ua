@@ -1465,21 +1465,21 @@ def test_openapi_advertises_the_bulk_batch_limit(client: TestClient) -> None:
 
 
 def test_application_service_error_details_reach_response_detail(client: TestClient) -> None:
-    """`ApplicationServiceError.details` must surface in `responseDetail.detail` (L4)."""
+    """Gateway-owned `ApplicationServiceError.details` must surface in `responseDetail.detail` (L4)."""
     app = _fastapi_app(client)
 
     async def _raise_service_error() -> None:
         raise ApplicationServiceError(
-            502,
-            "OpcUaNamespaceError",
-            "Failed to read OPC UA namespaces",
-            {"cause": "connection reset"},
+            400,
+            "InvalidArgument",
+            "Invalid value for 'namespaceUri'",
+            {"field": "namespaceUri", "value": "n=1"},
         )
 
     app.add_api_route("/test/service-error", _raise_service_error, methods=["GET"])
     response = client.get("/test/service-error")
-    assert response.status_code == 502
+    assert response.status_code == 400
     payload = response.json()
     assert payload["success"] is False
-    assert payload["error"]["message"] == "Failed to read OPC UA namespaces"
-    assert payload["responseDetail"]["detail"] == "Failed to read OPC UA namespaces (cause=connection reset)"
+    assert payload["error"]["message"] == "Invalid value for 'namespaceUri'"
+    assert payload["responseDetail"]["detail"] == "Invalid value for 'namespaceUri' (field=namespaceUri, value=n=1)"

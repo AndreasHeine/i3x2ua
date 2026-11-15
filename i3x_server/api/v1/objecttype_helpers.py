@@ -56,6 +56,7 @@ from i3x_server.http_caching import (
     mark_not_cacheable,
     record_revision,
 )
+from i3x_server.logging_format import log_upstream_failure
 from i3x_server.model.revision import model_revision
 from i3x_server.schemas.objecttype_schema import deduplicate_schema_fragments, remove_opcua_schema_fields
 from i3x_server.schemas.state import BuildResult
@@ -492,12 +493,8 @@ async def _get_object_endpoint_context(
     try:
         namespace_infos = await opcua_client.get_namespace_infos()
     except Exception as exc:
-        raise i3x_http_error(
-            502,
-            "OpcUaNamespaceError",
-            "Failed to read OPC UA namespaces",
-            {"cause": str(exc)},
-        ) from exc
+        log_upstream_failure("OpcUaNamespaceError", "Failed to read OPC UA namespaces", exc)
+        raise i3x_http_error(502, "OpcUaNamespaceError", "Failed to read OPC UA namespaces") from exc
 
     object_type_element_ids_by_node_id: dict[str, str] = {}
     object_type_element_ids_by_source_type: dict[str, str] = {}

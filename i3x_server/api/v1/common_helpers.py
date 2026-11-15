@@ -22,6 +22,7 @@ from i3x_server.config.settings import trust_principal_header
 from i3x_server.domain.ports.opcua import Quality
 from i3x_server.domain.utils import expanded_node_id
 from i3x_server.errors import i3x_http_error
+from i3x_server.logging_format import log_upstream_failure
 from i3x_server.schemas.opcua_value import now_iso, to_json_safe_value
 from i3x_server.schemas.state import BuildResult
 
@@ -85,14 +86,10 @@ def _raise_not_found(entity_type: str, entity_id: str) -> Never:
 
 
 def _raise_opcua_error(operation: str, cause: Exception | str) -> Never:
-    """Fail the request with a 502 ``OpcUaError``; the upstream failure stays the cause."""
-    cause_str = str(cause) if isinstance(cause, Exception) else cause
-    raise i3x_http_error(
-        502,
-        "OpcUaError",
-        f"Failed to {operation}",
-        {"cause": cause_str},
-    ) from (cause if isinstance(cause, Exception) else None)
+    """Fail the request with a 502 ``OpcUaError``; the upstream failure stays in the server log."""
+    message = f"Failed to {operation}"
+    log_upstream_failure("OpcUaError", message, cause)
+    raise i3x_http_error(502, "OpcUaError", message) from (cause if isinstance(cause, Exception) else None)
 
 
 def _not_implemented(feature: str) -> Never:

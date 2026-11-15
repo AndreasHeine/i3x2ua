@@ -14,7 +14,7 @@ Use the required checks in [.github/workflows/quality.yml](../../.github/workflo
 - [ ] `uv run pip-audit` passes against the locked development environment.
 - [ ] The headless i3X conformance suite passes with the verdict `Full 1.0 Compliance`.
 
-## [ ] Phase 1 — Immediate reliability and security (days)
+## [x] Phase 1 — Immediate reliability and security (days)
 
 - [x] Prevent subscription mapping from hanging on composition cycles: track visited nodes and enforce node/depth budgets before acquiring the registry lock; keep the locked section limited to committing results.
 - [x] Add regression tests for cyclic mappings, including the `maxDepth=0` case, and verify the event loop remains responsive.
@@ -30,7 +30,7 @@ Use the required checks in [.github/workflows/quality.yml](../../.github/workflo
 - [x] Add dependency-bot rules preventing automatic asyncua major/minor upgrades; consolidate Dependabot and Renovate ownership to one bot.
 - [x] Pass `workflow_dispatch` values through environment variables rather than interpolating them into shell commands or Docker tags.
 - [x] Correct stale CI and coverage comments identified by the review.
-- [ ] Verify phase: pass the applicable checks in the Passing bar; run focused regression tests; inspect compose, nginx, published-image build configuration, and workflow changes for safe defaults.
+- [x] Verify phase: pass the applicable checks in the Passing bar; run focused regression tests; inspect compose, nginx, published-image build configuration, and workflow changes for safe defaults.
 
 ## [ ] Phase 2 — Short-term performance, robustness, and CI (weeks)
 

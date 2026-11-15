@@ -94,7 +94,24 @@ def test_the_secured_job_enables_tls_and_basic_auth() -> None:
     assert "NGINX_BASIC_AUTH_ENABLED=1" in script or "NGINX_BASIC_AUTH_ENABLED: 1" in script
     assert "NGINX_BASIC_AUTH_USER" in script, "auth must be configured with a user, not left empty"
     assert "NGINX_BASIC_AUTH_PASSWORD" in script, "auth must be configured with a password, not left empty"
-    assert "host.docker.internal" in script, "the proxy must reach the gateway running on the runner host"
+
+
+def test_the_secured_job_reaches_the_loopback_gateway_through_the_host_network() -> None:
+    """Regression: `host-gateway` is the docker bridge IP on Linux, not the host's loopback.
+
+    The gateway binds 127.0.0.1, so a proxied request aimed at the bridge gateway never reaches
+    it and the readiness probe times out (the CI run of 5cbd4a4 failed exactly there). Docker
+    Desktop forwards host-gateway to localhost, which is why the local check passed. The proxy
+    therefore joins the host network namespace and reaches the gateway on loopback directly.
+    """
+    script = _step(_secured_job(), "proxy")
+
+    assert "--network host" in script, "the proxy must share the runner's network namespace"
+    assert "NGINX_UPSTREAM_HOST=127.0.0.1" in script, "the upstream is the loopback gateway"
+    assert "host.docker.internal" not in script, "the bridge gateway cannot reach a loopback server"
+    assert "-p 8080:80" not in script, "host networking publishes ports directly; mapping is meaningless"
+    assert "NGINX_HTTP_PORT=8080" in script, "the proxy listens on the host port the asserts curl"
+    assert "NGINX_HTTPS_PORT=8443" in script, "the proxy listens on the host port the suite reaches"
 
 
 def test_the_secured_job_asserts_the_edge_behaviour_directly() -> None:

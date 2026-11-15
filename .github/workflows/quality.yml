@@ -292,21 +292,26 @@ jobs:
         run: docker build -f nginx/Dockerfile -t i3x2ua-proxy-ci .
 
       - name: Start the proxy with TLS and Basic Auth
-        # host.docker.internal maps the runner host, where the gateway listens on 8000. The edge
-        # limit stays configured but with a wide burst: the suite issues faster than a deployment's
-        # 20r/s, and shedding its requests would fail the contract check rather than the stack.
-        # The credentials are throwaway values for a container that never leaves the runner.
+        # --network host shares the runner's network namespace, so the proxy reaches the gateway
+        # on loopback. host-gateway would not: on Linux it is the docker bridge IP, and a gateway
+        # bound to 127.0.0.1 never answers requests aimed at it (the run of 5cbd4a4 timed out
+        # there; Docker Desktop masks the difference by forwarding host-gateway to localhost).
+        # Ports come from the entrypoint env instead of -p mappings, which are meaningless in
+        # host network mode. The edge limit stays configured but with a wide burst: the suite
+        # issues faster than a deployment's 20r/s, and shedding its requests would fail the
+        # contract check rather than the stack. The credentials are throwaway values for a
+        # container that never leaves the runner.
         run: |
           docker run -d --name i3x2ua-proxy-ci \
-            --add-host host.docker.internal:host-gateway \
-            -p 8080:80 -p 8443:443 \
+            --network host \
             -v "$PWD/certs/https-ci:/etc/nginx/certs:ro" \
-            -e NGINX_UPSTREAM_HOST=host.docker.internal \
+            -e NGINX_UPSTREAM_HOST=127.0.0.1 \
             -e NGINX_UPSTREAM_PORT=8000 \
             -e NGINX_SSL_CERTIFICATE=/etc/nginx/certs/fullchain.pem \
             -e NGINX_SSL_CERTIFICATE_KEY=/etc/nginx/certs/privkey.pem \
             -e NGINX_HTTPS_ENABLED=1 \
-            -e NGINX_HTTP_PORT=80 \
+            -e NGINX_HTTP_PORT=8080 \
+            -e NGINX_HTTPS_PORT=8443 \
             -e NGINX_HTTPS_REDIRECT_PORT=8443 \
             -e NGINX_BASIC_AUTH_ENABLED=1 \
             -e NGINX_BASIC_AUTH_USER=ci-user \

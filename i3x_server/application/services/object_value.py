@@ -91,18 +91,17 @@ class ObjectValueService:
                     {"element_id": element_id},
                 )
 
-            # Read current value from OPC UA
-            value_vqt = await self._read_current_value(node)
-            result: dict[str, Any] = value_vqt.model_dump()
+            # Collect the whole tree first, then read it in one batched Read service call:
+            # composition children cost no extra round trip (the adapter chunks internally).
+            components = self._collect_composition_components(node, max_depth or 0) if max_depth != 1 else []
+            values_by_source_id = await self._read_values_by_source_id([node, *components])
 
-            # If composition, collect component values
-            if max_depth != 1:
-                components = self._collect_composition_components(node, max_depth or 0)
-                if components:
-                    result["components"] = {}
-                    for component in components:
-                        component_vqt = await self._read_current_value(component)
-                        result["components"][component.id] = component_vqt.model_dump()
+            result: dict[str, Any] = self._vqt_for_node(node, values_by_source_id).model_dump()
+            if components:
+                result["components"] = {
+                    component.id: self._vqt_for_node(component, values_by_source_id).model_dump()
+                    for component in components
+                }
 
             return result
         except Exception as exc:
@@ -153,18 +152,17 @@ class ObjectValueService:
                     {"element_id": element_id},
                 )
 
-            # Read historical values
-            history_values = await self._read_history_values(node, start_dt, end_dt)
-            result: dict[str, Any] = {"values": [v.model_dump() for v in history_values]}
-
-            # If composition, collect component histories
-            if max_depth != 1:
-                components = self._collect_history_source_nodes(node, max_depth or 0)
-                if components:
-                    result["components"] = {}
-                    for component in components:
-                        component_history = await self._read_history_values(component, start_dt, end_dt)
-                        result["components"][component.id] = [v.model_dump() for v in component_history]
+            # Read the root and every composition level in one batched HistoryRead call.
+            components = self._collect_history_source_nodes(node, max_depth or 0) if max_depth != 1 else []
+            history_by_source_id = await self._read_history_by_source_id([node, *components], start_dt, end_dt)
+            result: dict[str, Any] = {
+                "values": [v.model_dump() for v in self._history_for_node(node, history_by_source_id)]
+            }
+            if components:
+                result["components"] = {
+                    component.id: [v.model_dump() for v in self._history_for_node(component, history_by_source_id)]
+                    for component in components
+                }
 
             return result
         except Exception as exc:
@@ -245,26 +243,61 @@ class ObjectValueService:
 
     # Private helpers
 
-    async def _read_current_value(self, node: ModelNode) -> VQT:
-        """Read current value from OPC UA for a node."""
-        if node.kind != "property":
-            return VQT(value=None, quality=Quality.GOOD_NO_DATA, timestamp=self._now_iso())
+    def _source_node_id(self, node: ModelNode) -> str:
+        """The OPC UA node that serves this element's value."""
+        return self.model.property_to_node.get(node.id) or node.source_node_id
 
-        source_node_id = self.model.property_to_node.get(node.id) or node.source_node_id
-        data_values = await self.opcua_client.read_data_values([source_node_id])
-        if not data_values:
-            return VQT(value=None, quality=Quality.GOOD_NO_DATA, timestamp=self._now_iso())
-        return self._vqt_from_data_value(data_values[0])
+    async def _read_values_by_source_id(self, nodes: list[ModelNode]) -> dict[str, DataValueDTO]:
+        """One batched read for every property node, keyed by the OPC UA node that serves it.
 
-    async def _read_history_values(self, node: ModelNode, start_time: datetime, end_time: datetime) -> list[VQT]:
-        """Read historical values from OPC UA for a node."""
+        Non-property elements are not read at all, and element ids sharing one OPC UA node are
+        requested once.
+        """
+        source_ids = [self._source_node_id(node) for node in nodes if node.kind == "property"]
+        unique_ids = list(dict.fromkeys(source_ids))
+        if not unique_ids:
+            return {}
+
+        data_values = await self.opcua_client.read_data_values(unique_ids)
+        # One result per requested node: a short answer must not pair values with the wrong ids.
+        if len(data_values) != len(unique_ids):
+            raise RuntimeError(f"OPC UA read returned {len(data_values)} values for {len(unique_ids)} requested nodes")
+        return dict(zip(unique_ids, data_values, strict=True))
+
+    async def _read_history_by_source_id(
+        self,
+        nodes: list[ModelNode],
+        start_time: datetime,
+        end_time: datetime,
+    ) -> dict[str, list[DataValueDTO]]:
+        """One batched history read for every property node, keyed by its OPC UA node."""
+        source_ids = [self._source_node_id(node) for node in nodes if node.kind == "property"]
+        unique_ids = list(dict.fromkeys(source_ids))
+        if not unique_ids:
+            return {}
+        return await self.opcua_client.read_history_values(
+            node_ids=unique_ids,
+            start_time=start_time,
+            end_time=end_time,
+        )
+
+    def _vqt_for_node(self, node: ModelNode, values_by_source_id: dict[str, DataValueDTO]) -> VQT:
+        """Value of one element from a batched read; non-properties answer ``GoodNoData``."""
+        data_value = values_by_source_id.get(self._source_node_id(node)) if node.kind == "property" else None
+        if data_value is None:
+            return VQT(value=None, quality=Quality.GOOD_NO_DATA, timestamp=self._now_iso())
+        return self._vqt_from_data_value(data_value)
+
+    def _history_for_node(
+        self,
+        node: ModelNode,
+        history_by_source_id: dict[str, list[DataValueDTO]],
+    ) -> list[VQT]:
+        """History of one element from a batched read; non-properties have no history."""
         if node.kind != "property":
             return []
-
-        source_node_id = self.model.property_to_node.get(node.id) or node.source_node_id
-        history_map = await self.opcua_client.read_history_values([source_node_id], start_time, end_time)
-        values = history_map.get(source_node_id, [])
-        return [self._to_vqt_from_history_value(item) for item in values]
+        items = history_by_source_id.get(self._source_node_id(node), [])
+        return [self._to_vqt_from_history_value(item) for item in items]
 
     def _collect_composition_components(self, root: ModelNode, max_depth: int) -> list[ModelNode]:
         """Collect composition child nodes up to max depth."""

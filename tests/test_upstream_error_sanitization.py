@@ -22,7 +22,7 @@ from fastapi.testclient import TestClient
 from i3x_server.application.errors import ApplicationServiceError
 from i3x_server.application.ports.opcua import OpcUaClientProtocol
 from i3x_server.application.services.model_query import ModelQueryService
-from i3x_server.application.services.object_value import VQT, ObjectValueService
+from i3x_server.application.services.object_value import ObjectValueService
 from i3x_server.application.services.subscription import SubscriptionAppService
 from i3x_server.logging_format import log_upstream_failure
 from i3x_server.schemas.i3x import ModelNode
@@ -259,24 +259,23 @@ def _model() -> BuildResult:
     )
 
 
-class _ReadFailingService(ObjectValueService):
-    """Service whose upstream reads fail with the text that must stay in the log."""
+class _ReadFailingClient:
+    """Client whose batched reads fail with the text that must stay in the log."""
 
     def __init__(self, cause: Exception) -> None:
-        super().__init__(cast(OpcUaClientProtocol, object()), _model())
         self._cause = cause
 
-    async def _read_current_value(self, node: ModelNode) -> VQT:
-        del node
+    async def read_data_values(self, node_ids: list[str]) -> Any:
+        del node_ids
         raise self._cause
 
-    async def _read_history_values(
+    async def read_history_values(
         self,
-        node: ModelNode,
+        node_ids: list[str],
         start_time: datetime,
         end_time: datetime,
-    ) -> list[VQT]:
-        del node, start_time, end_time
+    ) -> Any:
+        del node_ids, start_time, end_time
         raise self._cause
 
 
@@ -284,7 +283,7 @@ class _ReadFailingService(ObjectValueService):
 async def test_object_value_service_read_failure_keeps_cause_in_server_logs(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    service = _ReadFailingService(RuntimeError(_SECRET))
+    service = ObjectValueService(cast(OpcUaClientProtocol, _ReadFailingClient(RuntimeError(_SECRET))), _model())
     with caplog.at_level(logging.WARNING):
         with pytest.raises(HTTPException) as exc_info:
             await service.get_current_value("prop-a")
@@ -301,7 +300,7 @@ async def test_object_value_service_read_failure_keeps_cause_in_server_logs(
 async def test_object_value_service_history_failure_keeps_cause_in_server_logs(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    service = _ReadFailingService(RuntimeError(_SECRET))
+    service = ObjectValueService(cast(OpcUaClientProtocol, _ReadFailingClient(RuntimeError(_SECRET))), _model())
     with caplog.at_level(logging.WARNING):
         with pytest.raises(HTTPException) as exc_info:
             await service.get_history("prop-a", "2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z")

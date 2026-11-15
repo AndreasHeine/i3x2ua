@@ -64,7 +64,7 @@ jobs:
           echo "Dispatch tag accepted: $DISPATCH_TAG"
 
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           # A dispatched build must publish the code of the tag it names, not the default branch:
           # otherwise the image is built from master but tagged and stamped with the older release.
@@ -73,7 +73,7 @@ jobs:
 
       - name: Log in to GitHub Container Registry
         if: ${{ github.event_name != 'pull_request' }}
-        uses: docker/login-action@v4
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -82,7 +82,7 @@ jobs:
       - name: Extract Docker metadata
         if: ${{ github.event_name != 'pull_request' }}
         id: metadata
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
@@ -92,10 +92,10 @@ jobs:
             type=raw,value=${{ env.DISPATCH_TAG }},enable=${{ github.event_name == 'workflow_dispatch' }}
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4
         with:
           platforms: arm64,amd64
 
@@ -132,7 +132,7 @@ jobs:
       # `--load` only supports a single platform, so the scan image is built for amd64 only.
       - name: Build image for scanning (no push)
         id: scan_build
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: .
           push: false
@@ -146,7 +146,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Scan image for vulnerabilities (report)
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ steps.image_ref.outputs.name }}:scan-${{ github.sha }}
           format: sarif
@@ -158,14 +158,14 @@ jobs:
 
       - name: Upload vulnerability scan results
         if: ${{ github.event_name != 'pull_request' }}
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4
         with:
           sarif_file: trivy-results.sarif
 
       - name: Fail on critical vulnerabilities
         # Runs on pull requests as well, so a dependency that introduces a CRITICAL CVE is
         # caught before the image exists in the registry at all.
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ steps.image_ref.outputs.name }}:scan-${{ github.sha }}
           format: table
@@ -179,7 +179,7 @@ jobs:
         # docker-compose.yml advertises it is truthful for pulls of the published image and not
         # only for local builds. The scan build above passes the same arg, so Trivy sees exactly
         # the dependencies that are published.
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: .
           push: true

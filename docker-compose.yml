@@ -21,7 +21,7 @@ services:
       - "8000"
       - --proxy-headers
       - --forwarded-allow-ips
-      - "*"
+      - "${I3X_FORWARDED_ALLOW_IPS:-127.0.0.1,::1,172.16.0.0/12}"  # Trusted proxy addresses only; "*" would let any peer name any client and uvicorn writes that into scope["client"], the limiter key.
       - "--workers"
       - "1"  # Single worker on purpose: subscription state and MCP sessions are process-local.
       - "--limit-concurrency"

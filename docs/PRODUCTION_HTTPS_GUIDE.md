@@ -346,7 +346,7 @@ services:
       - "8000"
       - --proxy-headers
       - --forwarded-allow-ips
-      - "*"
+      - "${I3X_FORWARDED_ALLOW_IPS:-127.0.0.1,::1,172.16.0.0/12}"  # Trusted proxy addresses only; "*" lets any peer name any client, and uvicorn writes that into scope["client"].
       - --workers
       - "4"
       - --limit-concurrency
@@ -391,7 +391,7 @@ services:
       - "8001"
       - --proxy-headers
       - --forwarded-allow-ips
-      - "*"
+      - "${I3X_FORWARDED_ALLOW_IPS:-127.0.0.1,::1,172.16.0.0/12}"  # Trusted proxy addresses only; "*" lets any peer name any client, and uvicorn writes that into scope["client"].
       - --workers
       - "4"
       - --limit-concurrency
@@ -436,7 +436,7 @@ services:
       - "8002"
       - --proxy-headers
       - --forwarded-allow-ips
-      - "*"
+      - "${I3X_FORWARDED_ALLOW_IPS:-127.0.0.1,::1,172.16.0.0/12}"  # Trusted proxy addresses only; "*" lets any peer name any client, and uvicorn writes that into scope["client"].
       - --workers
       - "4"
       - --limit-concurrency
@@ -716,17 +716,26 @@ ssl_session_tickets off;
 
 ### 4. Rate Limiting
 
+Key every zone on the connecting address. `$http_x_forwarded_for` is whatever the client sent when
+nginx is the edge, so a zone keyed on it lets a caller buy a fresh bucket by changing the header:
+
 ```bash
 # Add to nginx config
 limit_req_zone $binary_remote_addr zone=api_limit:10m rate=10r/s;
-limit_req_zone $http_x_forwarded_for zone=api_limit_proxy:10m rate=10r/s;
 
 location / {
-  limit_req zone=api_limit_proxy burst=20 nodelay;
+  limit_req zone=api_limit burst=20 nodelay;
   limit_req_status 429;
   # ... rest of configuration
 }
 ```
+
+If nginx itself sits behind another proxy, the connecting address is that proxy's and every client
+shares one bucket; the real client address only becomes trustworthy when the upstream proxy sets
+`X-Forwarded-For` and you accept it from an address you control. The application has the same
+constraint: uvicorn rewrites the client address from `X-Forwarded-For` only for the proxies listed
+in `I3X_FORWARDED_ALLOW_IPS`, which is what the app's own limiter (`I3X_REQUEST_RATE_LIMIT_PER_MINUTE`)
+counts. See `docs/NGINX_CONFIGURATION_REFERENCE.md`.
 
 ### 5. CORS Configuration
 

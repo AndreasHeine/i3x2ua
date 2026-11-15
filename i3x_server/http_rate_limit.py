@@ -1,10 +1,14 @@
-"""Opt-in per-client request rate limiting.
+"""Opt-in per-client request limiting.
 
 The limiter is a gateway concern, not part of the i3X contract: the spec defines no admission
 semantics, so tripping the limit answers HTTP 429 with the spec-neutral error envelope the
 gateway uses for every other failure. It is disabled by default
-(``I3X_REQUEST_RATE_LIMIT_PER_MINUTE=0``) and keys on the connecting IP; behind a reverse proxy
-that is the proxy's IP, so deployments behind one must limit at the proxy instead.
+(``I3X_REQUEST_RATE_LIMIT_PER_MINUTE=0``) and keys on the connecting address. uvicorn's
+``--proxy-headers`` replaces that address with the client ``X-Forwarded-For`` reports, but only for
+proxies listed in ``I3X_FORWARDED_ALLOW_IPS``: a peer outside that list keeps its own address, so
+the key is not something a caller can choose. Behind a proxy that is *not* listed there every
+request shares the proxy's address, and the per-client limit belongs at the edge instead
+(nginx keys on ``$binary_remote_addr``).
 
 A sliding window is used rather than a fixed bucket: a burst that straddles a minute boundary
 cannot double the effective rate, which is what an upstream-DoS guard needs to bound.
@@ -41,6 +45,11 @@ def _rate_limit_payload(limit_per_minute: int) -> dict[str, Any]:
 
 
 def _client_key(scope: Scope) -> str:
+    """The address the request is attributed to.
+
+    ``scope["client"]`` is the connecting peer, unless uvicorn's proxy-header middleware rewrote it
+    from ``X-Forwarded-For`` because the peer is listed in ``I3X_FORWARDED_ALLOW_IPS``.
+    """
     client = scope.get("client")
     if isinstance(client, (tuple, list)) and client:
         return str(client[0])

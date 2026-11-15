@@ -79,6 +79,10 @@ upstream i3x2ua_backend {
 EOF
 )
 
+# The forwarded headers below are the client identity the gateway attributes a request to.
+# uvicorn accepts them only from the addresses listed in I3X_FORWARDED_ALLOW_IPS (compose lists
+# loopback plus the private container networks), which is why this proxy - not the caller - sets
+# them, and why nginx keys its own edge limits on $remote_addr rather than on the header.
 proxy_block=$(cat <<EOF
       proxy_http_version 1.1;
       proxy_set_header Host \$host;

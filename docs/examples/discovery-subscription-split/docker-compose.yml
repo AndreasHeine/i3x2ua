@@ -75,7 +75,7 @@ services:
       - "8000"
       - --proxy-headers
       - --forwarded-allow-ips
-      - "*"
+      - "${I3X_FORWARDED_ALLOW_IPS:-127.0.0.1,::1,172.16.0.0/12}"  # Trusted proxy addresses only; "*" lets any peer name any client, and uvicorn writes that into scope["client"].
       - --workers
       - "${I3X2UA_DISCOVERY_WORKERS:-2}"
     environment:
@@ -96,7 +96,7 @@ services:
       - "8000"
       - --proxy-headers
       - --forwarded-allow-ips
-      - "*"
+      - "${I3X_FORWARDED_ALLOW_IPS:-127.0.0.1,::1,172.16.0.0/12}"  # Trusted proxy addresses only; "*" lets any peer name any client, and uvicorn writes that into scope["client"].
       - --workers
       - "1"
     environment:

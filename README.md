@@ -712,9 +712,17 @@ This application implements the i3X API specification and is designed to run **b
 |---|---|
 | TLS (HTTPS) for all client-facing traffic | nginx `ssl_certificate` + `ssl_certificate_key` (`NGINX_HTTPS_ENABLED=1`) |
 | Client authentication (API key / OAuth / mTLS) | nginx `auth_request` or `satisfy any` directives (compose ships Basic Auth via `NGINX_BASIC_AUTH_*`) |
-| Rate limiting | nginx `limit_req_zone` + `limit_conn_zone`, shipped on by default (`NGINX_RATE_LIMIT_*`) |
+| Rate limiting | nginx `limit_req_zone` + `limit_conn_zone`, keyed on `$remote_addr`, shipped on by default (`NGINX_RATE_LIMIT_*`) |
 | Access logging | nginx `access_log`, every request including 200s |
 | HSTS and frame refusal | shipped: HSTS on the HTTPS server, `X-Frame-Options: DENY` everywhere |
+
+The client address a request is attributed to comes from `X-Forwarded-For`, and uvicorn only accepts
+it from proxies listed in `I3X_FORWARDED_ALLOW_IPS` (loopback plus the private container networks in
+the shipped command). That address is what the gateway's opt-in limiter
+(`I3X_REQUEST_RATE_LIMIT_PER_MINUTE`) counts, so trusting `*` would let any peer that reaches port
+8000 choose its own bucket; nginx's own limits key on `$remote_addr` for the same reason. Set
+`I3X_FORWARDED_ALLOW_IPS` to the proxy's address when it sits outside those ranges, and never enable
+`--proxy-headers` when no proxy fronts the app.
 
 The gateway extensions carry no auth layer either, so restrict them at the proxy when they should
 not be public - `/ua/*` diagnostics, MCP (`/mcp`), and the Prometheus scrape (`/metrics`), which a

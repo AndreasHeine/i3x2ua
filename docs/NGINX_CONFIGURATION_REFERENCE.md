@@ -359,14 +359,29 @@ proxy's address and the limit belongs there instead.
 
 ### Define Rate Limit Zones
 ```nginx
-# Rate limit by IP
+# Rate limit by the connecting address
 limit_req_zone $binary_remote_addr zone=api_limit:10m rate=10r/s;
-
-# Rate limit by X-Forwarded-For (behind proxy)
-limit_req_zone $http_x_forwarded_for zone=api_limit_proxy:10m rate=10r/s;
 
 # Rate limit by authentication user
 limit_req_zone $remote_user zone=user_limit:10m rate=50r/s;
+```
+
+Do not key a zone on `$http_x_forwarded_for`. When nginx is the edge that header is whatever the
+client sent, so a caller gets a fresh bucket for every address it writes into it - the limit stops
+protecting anything. `nginx/nginx.conf` and `nginx/entrypoint.sh` therefore key on
+`$binary_remote_addr` only.
+
+### Which address the limiter trusts
+
+nginx sets `X-Real-IP` and appends `$remote_addr` to `X-Forwarded-For` on every proxied request, and
+uvicorn's `--proxy-headers` writes that value into the ASGI client address - the key the gateway's
+own limiter (`I3X_REQUEST_RATE_LIMIT_PER_MINUTE`) counts. Only peers named by
+`I3X_FORWARDED_ALLOW_IPS` may do that; the shipped deployment trusts loopback plus the private
+container networks (`127.0.0.1,::1,172.16.0.0/12`). Trusting `*` instead makes the client address
+caller-supplied: each forged address gets its own window, so the limiter can be bypassed and the
+identity used for admission decisions is the attacker's. A peer outside the trust list keeps its own
+connecting address, and uvicorn takes the first *untrusted* address from a forwarded chain, so a
+forged prefix in a real proxy's header is ignored too.
 ```
 
 ### Apply Rate Limiting

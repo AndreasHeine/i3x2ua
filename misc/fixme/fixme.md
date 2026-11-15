@@ -38,7 +38,7 @@ Use the required checks in [.github/workflows/quality.yml](../../.github/workflo
 - [x] Add build-time indexes for model-node lookup and object-type lookup instead of repeated linear scans.
 - [x] Produce a stable content token during model construction and use it instead of serializing the full context on cache misses.
 - [x] Coordinate lazy builds and refreshes through one in-flight build pipeline; prevent stale results from replacing newer revisions and use one cache-invalidation policy.
-- [ ] Represent read failures distinctly from missing values; do not turn transport failures into `GoodNoData`.
+- [x] Represent read failures distinctly from missing values; do not turn transport failures into `GoodNoData`.
 - [ ] Record an observable sequence gap when subscription notifications are dropped.
 - [ ] Add per-client admission/resource controls for subscriptions and MCP streams; cap response sizes, history ranges, base64 decode sizes, and stream queues; enable the HTTP limiter by default when deployed behind a trusted proxy.
 - [ ] Add real asyncua-server contract tests for critical transport paths, including write access, variant types, method calls, malformed metadata, browse/handle reconciliation, and reconnect resync.

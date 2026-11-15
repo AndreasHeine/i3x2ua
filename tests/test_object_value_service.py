@@ -155,6 +155,21 @@ async def test_get_current_value_wraps_unexpected_error() -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_current_value_reports_bad_null_read_failure_as_bad_not_missing() -> None:
+    """A server-level read failure (Bad-null data value) must not read as a missing value."""
+
+    class _BadNullClient(_RecordingClient):
+        async def read_data_values(self, node_ids: list[str]) -> list[Any]:
+            self.value_requests.append(list(node_ids))
+            return [data_value_dto(None, "Bad", _TIMESTAMP) for _ in node_ids]
+
+    service = ObjectValueService(cast(OpcUaClientProtocol, _BadNullClient()), _model())
+    result = await service.get_current_value("prop-a")
+    assert result["quality"] == "Bad"
+    assert result["value"] is None
+
+
+@pytest.mark.asyncio
 async def test_get_current_value_batches_root_and_all_component_levels_into_one_read() -> None:
     client = _RecordingClient()
     service = ObjectValueService(cast(OpcUaClientProtocol, client), _chain_model())

@@ -350,6 +350,18 @@ async def read_values_batch_with_fallback(client: OpcUaClient, node_ids: list[st
             except Exception as retry_exc:
                 candidate_error = retry_exc
 
+        if client.is_transport_read_failure(candidate_error):
+            # A lost or timed-out transport is a failure, not a missing value: propagating it
+            # keeps the caller's answer distinct (502) instead of a GoodNoData no-value read.
+            client.record_failed_request()
+            logger.warning(
+                "OPC UA batch read unavailable endpoint=%s requested=%d error=%s; aborting reads",
+                client.endpoint,
+                len(node_ids),
+                candidate_error,
+            )
+            raise candidate_error from candidate_error
+
         if len(node_ids) <= 1:
             client.record_failed_request()
             logger.warning(

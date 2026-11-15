@@ -1465,6 +1465,46 @@ async def test_read_values_returns_none_for_failing_single_node(monkeypatch: pyt
 
 
 @pytest.mark.asyncio
+async def test_read_values_propagates_transport_failure_instead_of_no_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A lost transport must read as a failure, not as a missing value (GoodNoData)."""
+
+    class _TimeoutClient:
+        def get_node(self, node_id: str) -> SimpleNamespace:
+            return SimpleNamespace(node_id=node_id)
+
+        async def read_values(self, nodes: list[Any]) -> list[Any]:
+            del nodes
+            raise TimeoutError("read timed out")
+
+    client = OpcUaClient(endpoint="opc.tcp://localhost:4840")
+    cast(Any, client).raw_client = _TimeoutClient()
+
+    async def _limits() -> OpcUaOperationalLimits:
+        return OpcUaOperationalLimits(max_nodes_per_browse=None, max_nodes_per_read=10)
+
+    monkeypatch.setattr(client, "get_operational_limits", _limits)
+
+    with pytest.raises(TimeoutError):
+        await client.read_values(["a", "b"])
+
+    # A split half that hits a transport failure aborts the whole read the same way.
+    class _SplitTimeoutClient:
+        def get_node(self, node_id: str) -> SimpleNamespace:
+            return SimpleNamespace(node_id=node_id)
+
+        async def read_values(self, nodes: list[Any]) -> list[Any]:
+            if len(nodes) > 1:
+                raise RuntimeError("too many operations")
+            raise TimeoutError("read timed out")
+
+    cast(Any, client).raw_client = _SplitTimeoutClient()
+    with pytest.raises(TimeoutError):
+        await client.read_values(["a", "b"])
+
+
+@pytest.mark.asyncio
 async def test_get_namespace_infos_tolerates_partial_metadata_failures(monkeypatch: pytest.MonkeyPatch) -> None:
     class _NodeId:
         def __init__(self, value: str) -> None:

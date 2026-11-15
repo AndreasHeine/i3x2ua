@@ -410,6 +410,15 @@ Gateway observability sits outside `/v1` and is not part of the i3X contract:
   and it is unauthenticated like every other endpoint - restrict it at the reverse proxy when
   only scrapers should reach it. A diagnostics read that fails reports `0` instead of failing
   the scrape, so a reconnecting upstream never turns into a scrape error.
+- **Liveness and readiness** - `/health` is static liveness, so a reconnecting upstream never
+  flips a container health check. `/ready` reports whether the instance can serve i3X traffic
+  right now: `200` when the address-space model is built and the upstream connection is
+  `Connected`, `503` otherwise with `reasons` naming the missing conditions (`model_not_built`,
+  `upstream_not_connected`, `upstream_state_unavailable`). It mirrors the `i3x_model_built` and
+  `i3x_upstream_connected` gauges and reads only local state, so it adds no OPC UA round-trip;
+  use it as an orchestrator readiness probe to stop routing traffic to a degraded instance. Both
+  routes are excluded from the OpenAPI document and unauthenticated like every other diagnostics
+  route, so restrict them at the reverse proxy when only probes should reach them.
 
 Optional MCP endpoints are exposed only when `I3X_ENABLE_MCP=1`:
 
@@ -573,8 +582,11 @@ to `client_max_body_size 8m`, well above the largest legal bulk payload
 The app container runs uvicorn with a single worker plus `--limit-concurrency 200`:
 subscription state and MCP sessions are process-local, so extra workers would strand them,
 and the limit sheds load spikes with 503 instead of queueing them on the event loop.
-Container health checks probe the static `/health` readiness route, which never touches the
-OPC UA connection. The nginx container has its own health check that requests `/v1/info`
+Container health checks probe the static `/health` liveness route, which never touches the
+OPC UA connection, so a reconnecting server cannot get a working container killed. `/ready` is
+the separate readiness answer for an orchestrator's probe: it answers `200` only when the
+address-space model is built and the upstream connection is `Connected`, and `503` with the
+missing conditions otherwise. The nginx container has its own health check that requests `/v1/info`
 *through* the proxy, so a healthy proxy means the proxy → upstream path actually works.
 
 The proxy ships hardening by default, not as a docs-only recommendation: every server block

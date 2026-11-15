@@ -82,8 +82,10 @@ USER app
 
 EXPOSE 8000
 
-# /health is a static readiness route; probing it avoids spawning a Python interpreter
-# every 30s and does not touch the OPC UA connection.
+# /health is static liveness: it never touches the OPC UA connection, so a reconnecting server
+# cannot get a working container killed. Readiness - model built and the upstream Connected - is
+# /ready, which an orchestrator probes; wget keeps the probe from spawning a Python interpreter
+# every 30s.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD wget -q -O /dev/null http://127.0.0.1:8000/health
 

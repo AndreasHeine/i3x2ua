@@ -23,15 +23,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Python covers the gateway; JavaScript covers the frontend and the static pages.
-        language: [python, javascript-typescript]
+        # Python covers the gateway; JavaScript covers the frontend and the static pages;
+        # Actions covers this repository's own workflows (injection through event payloads).
+        language: [python, javascript-typescript, actions]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
 
       - name: Initialize CodeQL
-        # Neither language needs a build step: the Python package is pure source and the
-        # frontend is analyzed from its TypeScript sources.
+        # No language needs a build step: the Python package is pure source, the frontend is
+        # analyzed from its TypeScript sources, and Actions files are parsed directly.
         uses: github/codeql-action/init@v4
         with:
           languages: ${{ matrix.language }}

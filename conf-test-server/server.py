@@ -27,6 +27,7 @@ from asyncua.ua.uaerrors import BadSessionNotActivated, BadUserAccessDenied
 
 ATTRIBUTE_IDS = cast(Any, ua).AttributeIds
 
+logging.getLogger("asyncua").setLevel(logging.WARNING)
 logger = logging.getLogger("i3x.conformance.server")
 
 _PRUNED_ROOT_CHILD_NAMES = frozenset({"Locations", "Aliases"})

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import re
 import time
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -185,3 +187,51 @@ def test_rate_limit_covers_static_and_diagnostic_routes(monkeypatch: pytest.Monk
     with _client_with_env(monkeypatch, {"I3X_REQUEST_RATE_LIMIT_PER_MINUTE": "1"}) as client:
         assert client.get("/ua/connection").status_code == 200
         assert client.get("/ua/connection").status_code == 429
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+COMPOSE = (PROJECT_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+ENV_EXAMPLE = (PROJECT_ROOT / ".env-example").read_text(encoding="utf-8")
+
+
+def _service_block(compose: str, service: str) -> str:
+    """The YAML text of one service, i.e. up to the next service key at indent 2."""
+    lines = compose.splitlines()
+    start = next(index for index, line in enumerate(lines) if line == f"  {service}:")
+    end = next(index for index in range(start + 1, len(lines)) if re.fullmatch(r"  [A-Za-z0-9_-]+:", lines[index]))
+    return "\n".join(lines[start:end])
+
+
+def _env_comment_block(env_example: str, name: str) -> str:
+    """The comment lines that document ``name`` in ``.env-example``."""
+    lines = env_example.splitlines()
+    index = next(index for index, line in enumerate(lines) if line.startswith(f"{name}="))
+    comments: list[str] = []
+    for line in reversed(lines[:index]):
+        if line.startswith("#"):
+            comments.append(line)
+        elif line.strip():
+            break
+    return "\n".join(reversed(comments))
+
+
+def test_compose_enables_the_limiter_behind_a_trusted_proxy() -> None:
+    """The compose stack fronts the app with nginx and trusts exactly that proxy (L14).
+
+    ``--proxy-headers`` only rewrites the connecting address for peers listed in
+    ``--forwarded-allow-ips``, so behind the stack's own proxy the limiter can key on the real
+    client. Enabling it there costs nothing at the edge (nginx limits first) and protects a
+    deployment that reaches the app directly on the internal network.
+    """
+    app_block = _service_block(COMPOSE, "i3x2ua")
+    match = re.search(r"I3X_REQUEST_RATE_LIMIT_PER_MINUTE:\s*\"?(\d+)\"?", app_block)
+    assert match is not None, "the compose app service must enable the request limiter"
+    assert int(match.group(1)) > 0
+    assert "--forwarded-allow-ips" in COMPOSE
+
+
+def test_env_example_documents_the_proxy_condition_for_the_limiter() -> None:
+    """The default stays off (spec-neutral), but the template says when it should be on."""
+    assert "I3X_REQUEST_RATE_LIMIT_PER_MINUTE=0" in ENV_EXAMPLE
+    comment = _env_comment_block(ENV_EXAMPLE, "I3X_REQUEST_RATE_LIMIT_PER_MINUTE")
+    assert "trusted proxy" in comment.lower()

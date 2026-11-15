@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 from typing import Any, cast
 
@@ -479,6 +480,121 @@ def test_sse_stream_closes_on_transport_shutdown(protocol_client: TestClient) ->
 
     assert app.state.mcp_transport_sessions == {}
     assert not session.streams
+
+
+def _legacy_session_id(client: TestClient) -> str:
+    initialized = client.post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": "init",
+            "method": "initialize",
+            "params": {"protocolVersion": "2025-06-18"},
+        },
+    )
+    assert initialized.status_code == 200
+    return initialized.headers[MCP_SESSION_HEADER]
+
+
+def _sse_headers(session_id: str) -> dict[str, str]:
+    return {"Accept": "text/event-stream", MCP_SESSION_HEADER: session_id}
+
+
+def test_mcp_sse_stream_admission_is_per_client(protocol_client: TestClient) -> None:
+    """Streams are bounded per connecting address, not only per session (L14)."""
+    app = cast(FastAPI, protocol_client.app)
+    app.state.mcp_max_sse_streams_per_client = 2
+    session_id = _legacy_session_id(protocol_client)
+    headers = _sse_headers(session_id)
+
+    with protocol_client.stream("GET", "/mcp", headers=headers) as first:
+        assert first.status_code == 200
+        with protocol_client.stream("GET", "/mcp", headers=headers) as second:
+            assert second.status_code == 200
+            assert sum(app.state.mcp_streams_by_client.values()) == 2
+
+            # The third stream is refused with the same shape as the session cap (L11).
+            rejected = protocol_client.get("/mcp", headers=headers)
+            assert rejected.status_code == 400
+            assert rejected.json()["error"] == {
+                "code": -32000,
+                "message": "Too many MCP streams for this client",
+                "data": {"maxStreamsPerClient": 2},
+            }
+            # A refused stream must not occupy the budget it just exceeded.
+            assert sum(app.state.mcp_streams_by_client.values()) == 2
+
+    # Closing a stream frees its slot, so the bound is live-state, not a lifetime quota.
+    assert sum(app.state.mcp_streams_by_client.values()) == 0
+    with protocol_client.stream("GET", "/mcp", headers=headers) as reopened:
+        assert reopened.status_code == 200
+        assert sum(app.state.mcp_streams_by_client.values()) == 1
+
+
+def test_mcp_sse_queue_overflow_closes_a_slow_consumer(protocol_client: TestClient) -> None:
+    """A consumer that does not drain must not grow its notification queue (L14)."""
+    app = cast(FastAPI, protocol_client.app)
+    app.state.mcp_sse_queue_max_size = 2
+    session_id = _legacy_session_id(protocol_client)
+    session = app.state.mcp_transport_sessions[session_id]
+
+    with protocol_client.stream("GET", "/mcp", headers=_sse_headers(session_id)) as stream:
+        assert stream.status_code == 200
+        assert (
+            publish_mcp_notification(app, session_id, "notifications/message", {"level": "info", "data": "first"}) == 1
+        )
+        assert (
+            publish_mcp_notification(app, session_id, "notifications/message", {"level": "info", "data": "second"}) == 1
+        )
+
+        # Full: the oldest unread notification gives way to the close signal, and the stream ends.
+        assert (
+            publish_mcp_notification(app, session_id, "notifications/message", {"level": "info", "data": "third"}) == 0
+        )
+        assert session.streams == set()
+
+        lines = iter(stream.iter_lines())
+        assert next(lines) == "event: message"
+        assert json.loads(next(lines).removeprefix("data: "))["params"]["data"] == "second"
+        assert next(lines) == ""
+        assert list(lines) == []
+
+
+def test_transport_shutdown_closes_a_full_stream_queue(protocol_client: TestClient) -> None:
+    """The close signal must be deliverable even when the stream's queue is full."""
+    app = cast(FastAPI, protocol_client.app)
+    stream: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue(maxsize=1)
+    stream.put_nowait({"jsonrpc": "2.0", "method": "notifications/message"})
+    app.state.mcp_transport_sessions["legacy-session"] = McpTransportSession(
+        protocol_version=MCP_LEGACY_PROTOCOL_VERSION, streams={stream}
+    )
+
+    shutdown_mcp_transport(app)
+
+    assert app.state.mcp_transport_sessions == {}
+    assert stream.get_nowait() is None
+
+
+def test_session_delete_closes_a_full_stream_queue(protocol_client: TestClient) -> None:
+    app = cast(FastAPI, protocol_client.app)
+    session_id = _legacy_session_id(protocol_client)
+    session = app.state.mcp_transport_sessions[session_id]
+    stream: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue(maxsize=1)
+    stream.put_nowait({"jsonrpc": "2.0", "method": "notifications/message"})
+    session.streams.add(stream)
+
+    assert protocol_client.delete("/mcp", headers={MCP_SESSION_HEADER: session_id}).status_code == 200
+    assert stream.get_nowait() is None
+
+
+def test_modern_header_base64_decode_is_size_capped(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A header-encoded base64 value is bounded like every other decoded ByteString (L14)."""
+    monkeypatch.setenv("I3X_BASE64_MAX_DECODE_BYTES", "32")
+    accepted = base64.b64encode(b"x" * 32).decode("ascii")
+    assert jsonrpc._decode_modern_header_value(f"=?base64?{accepted}?=") == "x" * 32
+
+    oversized = base64.b64encode(b"x" * 33).decode("ascii")
+    assert jsonrpc._decode_modern_header_value(f"=?base64?{oversized}?=") is None
 
 
 @pytest.mark.parametrize("origin, expected", [("https://evil.example", 403), ("https://trusted.example", 200)])

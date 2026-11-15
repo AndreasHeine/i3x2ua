@@ -13,6 +13,7 @@ from uuid import UUID
 from asyncua import ua
 from asyncua.ua.status_codes import StatusCodes
 
+from i3x_server.config.settings import base64_decode_limit_bytes
 from i3x_server.domain.ports.opcua import NULL_VALUE_QUALITIES, Quality
 
 _INTEGER_BITS = {
@@ -82,10 +83,18 @@ def _convert_scalar(value: Any, variant_type: ua.VariantType) -> Any:
             return UUID(value)
     elif variant_type == ua.VariantType.ByteString:
         if isinstance(value, str):
+            limit = base64_decode_limit_bytes()
+            # Bound the encoded form before decoding, then the decoded payload: a historical
+            # write must not allocate a ByteString far above the configured limit.
+            if len(value) > ((limit + 2) // 3) * 4 + 4:
+                raise ValueError(f"ByteString exceeds the {limit} byte decode limit")
             try:
-                return base64.b64decode(value, validate=True)
+                decoded = base64.b64decode(value, validate=True)
             except (ValueError, binascii.Error) as exc:
                 raise ValueError("Invalid base64 ByteString") from exc
+            if len(decoded) > limit:
+                raise ValueError(f"ByteString exceeds the {limit} byte decode limit")
+            return decoded
     else:
         raise ValueError(f"Historical writes for {variant_type.name} values are not supported")
     raise ValueError(f"Value does not conform to OPC UA {variant_type.name}")

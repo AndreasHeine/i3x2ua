@@ -264,6 +264,33 @@ async def test_get_history_rejects_invalid_iso_timestamps() -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_history_rejects_a_range_beyond_the_maximum_span(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``I3X_HISTORY_MAX_RANGE_DAYS`` bounds the span a history query may ask for (L14)."""
+    monkeypatch.setenv("I3X_HISTORY_MAX_RANGE_DAYS", "30")
+    client = _RecordingClient()
+    service = ObjectValueService(cast(OpcUaClientProtocol, client), _model())
+    with pytest.raises(HTTPException) as exc_info:
+        await service.get_history("prop-a", "2026-01-01T00:00:00Z", "2026-02-01T00:00:01Z")
+    assert exc_info.value.status_code == 400
+    detail = exc_info.value.detail
+    assert isinstance(detail, dict)
+    assert detail["error"]["message"] == "History range exceeds the maximum of 30 days"
+    assert "30" in detail["responseDetail"]["detail"]
+    # Rejected before the round-trip: the upstream is never asked for an oversized span.
+    assert client.history_requests == []
+
+    # A span that exactly reaches the bound is still served.
+    result = await service.get_history("prop-a", "2026-01-01T00:00:00Z", "2026-01-31T00:00:00Z")
+    assert result["values"]
+    assert len(client.history_requests) == 1
+
+    # 0 disables the bound.
+    monkeypatch.setenv("I3X_HISTORY_MAX_RANGE_DAYS", "0")
+    wide = await service.get_history("prop-a", "2025-01-01T00:00:00Z", "2026-02-01T00:00:00Z")
+    assert wide["values"]
+
+
+@pytest.mark.asyncio
 async def test_get_history_batches_all_levels_into_one_read() -> None:
     client = _RecordingClient()
     service = ObjectValueService(cast(OpcUaClientProtocol, client), _chain_model())

@@ -17,7 +17,7 @@ import binascii
 import json
 from collections import deque
 from collections.abc import Mapping, Sequence
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, cast
 
 from asyncua.ua.status_codes import StatusCodes
@@ -43,7 +43,7 @@ from i3x_server.api.v1.contracts import (
 from i3x_server.api.v1.object_helpers import _composition_children_for_node, _find_model_node
 from i3x_server.api.v1.write_validation import WriteValidationError, WriteValueValidator
 from i3x_server.application.ports.opcua import DataValueDTO, OpcUaClientProtocol
-from i3x_server.config.settings import get_settings
+from i3x_server.config.settings import base64_decode_limit_bytes, get_settings, history_max_range_days
 from i3x_server.domain.ports.opcua import (
     WRITE_METADATA_UNCERTAIN_MESSAGE,
     WRITE_METADATA_UNSUPPORTED_MESSAGE,
@@ -86,10 +86,18 @@ def _is_valid_write_type(value: Any, variant_type: str | None) -> bool:
 def _decode_bytestring_write_value(value: Any, variant_type: str | None) -> Any:
     if variant_type is None or variant_type.strip().lower() != "bytestring" or not isinstance(value, str):
         return value
+    limit = base64_decode_limit_bytes()
+    # Bound the encoded form first: decoding an attacker-sized payload would allocate the
+    # payload itself before any limit could be checked.
+    if len(value) > ((limit + 2) // 3) * 4 + 4:
+        raise ValueError(f"ByteString exceeds the {limit} byte decode limit")
     try:
-        return base64.b64decode(value, validate=True)
+        decoded = base64.b64decode(value, validate=True)
     except (ValueError, binascii.Error) as exc:
         raise ValueError("Invalid base64 ByteString") from exc
+    if len(decoded) > limit:
+        raise ValueError(f"ByteString exceeds the {limit} byte decode limit")
+    return decoded
 
 
 # Stable OPC UA status codes for write failures. Classification is code-based: exception text
@@ -417,6 +425,15 @@ def _parse_history_time_range(body: GetObjectHistoryRequest) -> tuple[datetime |
             "startTime/endTime",
             None,
             "startTime must be less than or equal to endTime",
+        )
+    # A wide span is a request for every sample the server has stored in it: the bound keeps one
+    # query from turning into an unbounded upstream read.
+    max_days = history_max_range_days()
+    if max_days > 0 and end_time - start_time > timedelta(days=max_days):
+        _raise_invalid_argument(
+            "startTime/endTime",
+            None,
+            f"History range exceeds the maximum of {max_days} days",
         )
     return start_time, end_time
 

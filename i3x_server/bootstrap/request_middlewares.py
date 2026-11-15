@@ -63,6 +63,10 @@ def add_transport_middlewares(app: FastAPI) -> None:
     rate_limit_per_minute = runtime.request_rate_limit_per_minute
     if rate_limit_per_minute > 0:
         app.add_middleware(RateLimitMiddleware, limit_per_minute=rate_limit_per_minute)
+    # MCP stream admission lives on the state container because the counter is per connecting
+    # address and spans requests; the limit itself is read from the current environment, like the
+    # origin allowlist below.
+    state.mcp_max_sse_streams_per_client = runtime.mcp_max_sse_streams_per_client
     cors_origins = runtime.cors_allowed_origins
     # MCP origin allowlist: dedicated origins win, otherwise the CORS allowlist (without the
     # wildcard) is the source of truth. Wildcards are never a usable comparison target. The

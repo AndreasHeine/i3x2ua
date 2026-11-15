@@ -796,6 +796,55 @@ async def test_subscription_count_cap_rejects_and_frees_slots() -> None:
 
 
 @pytest.mark.asyncio
+async def test_per_client_subscription_cap_isolates_clients() -> None:
+    """``I3X_SUBSCRIPTION_MAX_PER_CLIENT`` bounds one client, not the whole gateway (L14)."""
+    service = SubscriptionService(
+        cast(OpcUaClientProtocol, FakeOpcUaClient()),
+        interval_seconds=1,
+        max_subscriptions=10,
+        max_subscriptions_per_client=2,
+    )
+    first = await service.create_subscription(client_id="c1", display_name="a")
+    await service.create_subscription(client_id="c1", display_name="b")
+
+    with pytest.raises(AdmissionLimitError) as exc_info:
+        await service.create_subscription(client_id="c1", display_name="c")
+    assert exc_info.value.status_code == 429
+    assert exc_info.value.error_code == "SubscriptionLimitPerClient"
+    assert exc_info.value.details == {"maxSubscriptionsPerClient": 2, "clientSubscriptions": 2, "clientId": "c1"}
+    # Rejected before insertion: the client's count stays at the cap.
+    assert sum(item.client_id == "c1" for item in service._subscriptions.values()) == 2
+
+    # A different client is unaffected by c1 exhausting its own budget.
+    other = await service.create_subscription(client_id="c2", display_name="d")
+    assert other.subscription_id not in {first.subscription_id}
+
+    # Deleting frees the client's slot, so the cap is live-state, not a lifetime quota.
+    await service.delete_subscriptions("c1", [first.subscription_id])
+    admitted = await service.create_subscription(client_id="c1", display_name="e")
+    assert admitted.subscription_id in service._subscriptions
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_unscoped_subscriptions_share_one_per_client_bucket() -> None:
+    """Clients without a ``clientId`` are indistinguishable, so they share one budget (L14)."""
+    service = SubscriptionService(
+        cast(OpcUaClientProtocol, FakeOpcUaClient()),
+        interval_seconds=1,
+        max_subscriptions_per_client=1,
+    )
+    await service.create_subscription(client_id=None)
+    with pytest.raises(AdmissionLimitError) as exc_info:
+        await service.create_subscription(client_id=None)
+    assert exc_info.value.error_code == "SubscriptionLimitPerClient"
+    # A named client still gets its own budget.
+    named = await service.create_subscription(client_id="c1")
+    assert named.subscription_id in service._subscriptions
+    await service.close()
+
+
+@pytest.mark.asyncio
 async def test_register_items_rejects_subtree_budget_without_truncating() -> None:
     """An oversized subtree is rejected with the error envelope; the monitored set stays intact."""
     service = SubscriptionService(cast(OpcUaClientProtocol, FakeOpcUaClient()), interval_seconds=1, subtree_max_nodes=2)

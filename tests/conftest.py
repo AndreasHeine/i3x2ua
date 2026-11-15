@@ -158,12 +158,14 @@ def configure_test_app(app: FastAPI) -> None:
     app.state.opcua_client = FakeOpcUaClient()
     # Mirror the production wiring (bootstrap.app_factory): the admission caps come from the
     # environment, so API-level tests toggle ``I3X_SUBSCRIPTION_MAX_COUNT`` /
-    # ``I3X_SUBSCRIPTION_SUBTREE_MAX_NODES`` exactly like a deployed gateway does.
+    # ``I3X_SUBSCRIPTION_MAX_PER_CLIENT`` / ``I3X_SUBSCRIPTION_SUBTREE_MAX_NODES`` exactly like a
+    # deployed gateway does.
     runtime = get_settings()
     app.state.subscription_service = SubscriptionService(
         app.state.opcua_client,
         interval_seconds=1,
         max_subscriptions=runtime.subscription_max_count,
+        max_subscriptions_per_client=runtime.subscription_max_per_client,
         subtree_max_nodes=runtime.subscription_subtree_max_nodes,
         native_max_bins=runtime.subscription_native_max_bins,
         native_max_monitored_items=runtime.subscription_native_max_monitored_items,

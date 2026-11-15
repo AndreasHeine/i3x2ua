@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any
@@ -287,6 +288,31 @@ def test_history_value_rejects_type_rank_and_range_errors(
 ) -> None:
     with pytest.raises(ValueError):
         historical_data_value(value, "Good", TIMESTAMP, variant_type, rank, dimensions)
+
+
+def test_history_value_caps_decoded_bytestring(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``I3X_BASE64_MAX_DECODE_BYTES`` bounds a historical ByteString write (L14)."""
+    monkeypatch.setenv("I3X_BASE64_MAX_DECODE_BYTES", "16")
+    payload = base64.b64encode(b"x" * 16).decode("ascii")
+    result = historical_data_value(payload, "Good", TIMESTAMP, ua.VariantType.ByteString, -1, None)
+    assert result.Value is not None
+    assert result.Value.Value == b"x" * 16
+
+    oversized = base64.b64encode(b"x" * 17).decode("ascii")
+    with pytest.raises(ValueError, match="ByteString exceeds"):
+        historical_data_value(oversized, "Good", TIMESTAMP, ua.VariantType.ByteString, -1, None)
+
+    # A payload far above the bound is refused before decoding, so the limit also bounds the
+    # memory a write request can allocate.
+    huge = base64.b64encode(b"x" * 100_000).decode("ascii")
+    with pytest.raises(ValueError, match="ByteString exceeds"):
+        historical_data_value(huge, "Good", TIMESTAMP, ua.VariantType.ByteString, -1, None)
+
+    # A payload far above the bound is refused before decoding, so the limit also bounds the
+    # memory a write request can allocate.
+    huge = base64.b64encode(b"x" * 100_000).decode("ascii")
+    with pytest.raises(ValueError, match="ByteString exceeds"):
+        historical_data_value(huge, "Good", TIMESTAMP, ua.VariantType.ByteString, -1, None)
 
 
 def test_history_null_quality_and_timezone() -> None:

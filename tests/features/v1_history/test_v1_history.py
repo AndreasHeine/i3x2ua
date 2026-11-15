@@ -13,6 +13,7 @@ from i3x_server.domain.utils import expanded_node_id
 from i3x_server.infrastructure.opcua.client import OpcUaNamespaceInfo
 from i3x_server.schemas.i3x import ModelNode
 from tests.conftest import (
+    _client_with_env,
     add_composition_depth_chain,
     assert_documented_response,
     data_value_dto,
@@ -331,3 +332,56 @@ def test_v1_history_query_accepts_rfc3339_offset(client: TestClient) -> None:
     )
     assert response.status_code == 200
     assert response.json()["results"][0]["success"] is True
+
+
+def test_v1_history_query_rejects_a_range_beyond_the_maximum_span(client: TestClient) -> None:
+    """An oversized span is refused with 400 before the upstream is asked (L14)."""
+    response = client.post(
+        "/v1/objects/history",
+        json={
+            "elementIds": ["property-abc"],
+            "startTime": "2026-01-01T00:00:00Z",
+            # One second past the default 30-day bound.
+            "endTime": "2026-02-01T00:00:01Z",
+        },
+    )
+    assert response.status_code == 400
+    payload = response.json()
+    assert payload["error"] == {"code": 400, "message": "History range exceeds the maximum of 30 days"}
+    assert payload["responseDetail"]["detail"].startswith("History range exceeds the maximum of 30 days")
+
+
+def test_v1_history_query_span_bound_is_configurable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``I3X_HISTORY_MAX_RANGE_DAYS`` is an env knob: inclusive bound, 0 disables it."""
+    with _client_with_env(monkeypatch, {"I3X_HISTORY_MAX_RANGE_DAYS": "1"}) as client:
+        exact = client.post(
+            "/v1/objects/history",
+            json={
+                "elementIds": ["property-abc"],
+                "startTime": "2026-01-01T00:00:00Z",
+                "endTime": "2026-01-02T00:00:00Z",
+            },
+        )
+        assert exact.status_code == 200
+        assert exact.json()["results"][0]["success"] is True
+
+        over = client.post(
+            "/v1/objects/history",
+            json={
+                "elementIds": ["property-abc"],
+                "startTime": "2026-01-01T00:00:00Z",
+                "endTime": "2026-01-03T00:00:00Z",
+            },
+        )
+        assert over.status_code == 400
+
+    with _client_with_env(monkeypatch, {"I3X_HISTORY_MAX_RANGE_DAYS": "0"}) as client:
+        wide = client.post(
+            "/v1/objects/history",
+            json={
+                "elementIds": ["property-abc"],
+                "startTime": "2025-01-01T00:00:00Z",
+                "endTime": "2026-02-01T00:00:00Z",
+            },
+        )
+        assert wide.status_code == 200

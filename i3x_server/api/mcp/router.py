@@ -28,6 +28,7 @@ from i3x_server.api.mcp.jsonrpc import (
     McpJsonRpcError,
     McpJsonRpcSuccess,
     _add_modern_response_metadata,
+    _close_stream,
     _handle_jsonrpc,
     _jsonrpc_error,
     _mcp_sessions,
@@ -36,9 +37,23 @@ from i3x_server.api.mcp.jsonrpc import (
     _register_mcp_session,
     _require_allowed_origin,
 )
+from i3x_server.application.state import gateway_state
 
 router = APIRouter(prefix="/mcp")
 logger = logging.getLogger(__name__)
+
+
+def _client_address(request: Request) -> str:
+    """The address a stream is attributed to.
+
+    Mirrors the request limiter's key: ``request.client`` is the connecting peer, and uvicorn's
+    proxy-header middleware replaces it with ``X-Forwarded-For`` only for the proxies listed in
+    ``--forwarded-allow-ips``. A peer outside that list keeps its own address, so the admission
+    key is not something the caller can choose.
+    """
+    client = request.client
+    return client[0] if client else "unknown"
+
 
 # The origin gate covers every MCP route, not only the JSON-RPC transport: the helper routes
 # below reach the same tool/resource semantics, so a browser from a disallowed origin must not
@@ -58,7 +73,7 @@ router.include_router(roots.router, dependencies=_helper_origin_guard)
             "description": "Session-scoped server-sent event stream.",
             "content": {"text/event-stream": {"schema": {"type": "string"}}},
         },
-        400: {"description": "Missing MCP session identifier."},
+        400: {"description": "Missing MCP session identifier, or this client's stream limit reached."},
         404: {"description": "Unknown MCP session."},
         406: {"description": "The Accept header must include text/event-stream."},
     },
@@ -79,7 +94,31 @@ async def mcp_get(request: Request) -> Response:
     if session is None:
         return JSONResponse(status_code=404, content=_jsonrpc_error(None, -32600, "Unknown MCP session"))
 
-    stream: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+    # Streams are admitted per connecting address, keyed the same way the request limiter keys:
+    # uvicorn only rewrites the address from X-Forwarded-For for proxies the operator listed.
+    state = gateway_state(request)
+    client_key = _client_address(request)
+    stream_limit = state.mcp_max_sse_streams_per_client
+    open_streams = state.mcp_streams_by_client.get(client_key, 0)
+    if open_streams >= stream_limit:
+        logger.warning(
+            "MCP stream limit reached client=%s open_streams=%d limit=%d",
+            client_key,
+            open_streams,
+            stream_limit,
+        )
+        return JSONResponse(
+            status_code=400,
+            content=_jsonrpc_error(
+                None,
+                -32000,
+                "Too many MCP streams for this client",
+                {"maxStreamsPerClient": stream_limit},
+            ),
+        )
+    state.mcp_streams_by_client[client_key] = open_streams + 1
+
+    stream: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue(maxsize=state.mcp_sse_queue_max_size)
     session.streams.add(stream)
     session.last_used = time.monotonic()
 
@@ -101,6 +140,13 @@ async def mcp_get(request: Request) -> Response:
                 yield f"event: message\ndata: {json.dumps(message, ensure_ascii=False)}\n\n"
         finally:
             session.streams.discard(stream)
+            # The slot must be freed on every exit path (end, disconnect, shutdown), otherwise a
+            # client that opens and closes streams eventually locks itself out.
+            remaining = state.mcp_streams_by_client.get(client_key, 0) - 1
+            if remaining > 0:
+                state.mcp_streams_by_client[client_key] = remaining
+            else:
+                state.mcp_streams_by_client.pop(client_key, None)
 
     return StreamingResponse(
         event_stream(),
@@ -124,7 +170,7 @@ async def mcp_delete(request: Request) -> Response:
     if session is None:
         return JSONResponse(status_code=404, content=_jsonrpc_error(None, -32600, "Unknown MCP session"))
     for stream in tuple(session.streams):
-        stream.put_nowait(None)
+        _close_stream(stream)
     return Response(status_code=200)
 
 

@@ -155,6 +155,13 @@ class GatewayState:
     mcp_overrides_applied: bool = False
     mcp_api_prefix: str = ""
     mcp_transport_sessions: dict[str, McpTransportSession] = field(default_factory=dict)
+    # Stream admission for the legacy SSE transport: the session cap bounds how many sessions
+    # exist, but each session could otherwise hold an unbounded number of streams and an
+    # unbounded notification queue per stream. ``mcp_streams_by_client`` counts live streams per
+    # connecting address; the queue bound closes a consumer that stops draining.
+    mcp_max_sse_streams_per_client: int = 8
+    mcp_sse_queue_max_size: int = 64
+    mcp_streams_by_client: dict[str, int] = field(default_factory=dict)
     mcp_prompts: PromptRegistry | None = None
     mcp_model_provider: Callable[[Request], Awaitable[BuildResult]] | None = None
 

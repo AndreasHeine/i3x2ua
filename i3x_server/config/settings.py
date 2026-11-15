@@ -55,6 +55,10 @@ class Settings(BaseSettings):
     # OPC UA server) is asked to track. Limits are gateway-side, not spec-side; exceeding them
     # is answered with the regular i3X error envelope instead of silently truncating.
     subscription_max_count: int = Field(default=1000, ge=1)
+    # The process-wide cap alone lets one client occupy the whole budget, so each client scope
+    # gets its own admission limit. Clients without a ``clientId`` are indistinguishable and
+    # therefore share one bucket.
+    subscription_max_per_client: int = Field(default=100, ge=1)
     subscription_subtree_max_nodes: int = Field(default=5000, ge=1)
     # Process-local floors for native OPC UA admissions. Servers that expose no capability
     # variables (i=24096/24097/...) report no limit at all; without a floor the bin count and
@@ -69,6 +73,10 @@ class Settings(BaseSettings):
     # the same node stay sequential (request order), so the bound only parallelises distinct
     # nodes - enough to pipeline writes without flooding the server session.
     write_concurrency: int = Field(default=8, ge=1)
+    # Decoded size a base64-encoded ByteString may reach (current-value writes, historical
+    # writes, and MCP header values). Requests are attacker-sized, so the bound must be applied
+    # before the decode can allocate the payload.
+    base64_max_decode_bytes: int = Field(default=1_048_576, ge=1)
     log_level: str = Field(default="INFO")
     # Log rendering: ``text`` keeps the historical ``asctime level name message`` layout,
     # ``json`` emits one JSON object per line. Default text so existing log consumers are unaffected.
@@ -78,6 +86,9 @@ class Settings(BaseSettings):
     # origins (minus "*"). A present ``Origin`` header must match one of these exactly; it is
     # never matched against the request's own host, which is attacker-controlled via ``Host``.
     mcp_allowed_origins: list[str] = Field(default_factory=list)
+    # SSE streams one connecting address may open on the legacy MCP transport. Sessions are
+    # already capped process-wide, but each session can hold an unbounded number of streams.
+    mcp_max_sse_streams_per_client: int = Field(default=8, ge=1)
     # Audit principal: the ``x-principal`` request header is trusted only when this is enabled.
     # Default false keeps audit records at "anonymous", so a caller cannot forge who performed a
     # write by sending an arbitrary header.
@@ -97,6 +108,9 @@ class Settings(BaseSettings):
     type_browsename_lookup_max: int = Field(default=20, ge=0)
     composition_max_depth: int = Field(default=32, ge=0)
     composition_max_nodes: int = Field(default=2000, ge=0)
+    # A history query asks the upstream for every sample in the requested span, so the span
+    # itself must be bounded (0 = unbounded, like the composition limits).
+    history_max_range_days: int = Field(default=30, ge=0)
     mcp_include_opcua_metadata: bool = Field(default=False)
     debug_subscription_stream: bool = Field(default=False)
 
@@ -207,3 +221,16 @@ def trust_principal_header() -> bool:
     an operator explicitly opts in (e.g. behind a trusted proxy that sets the header).
     """
     return get_settings().trust_principal_header
+
+
+def base64_decode_limit_bytes() -> int:
+    """The decoded size a base64-encoded ByteString is allowed to reach.
+
+    Read per call through ``get_settings()`` so the bound reacts to the current environment.
+    """
+    return get_settings().base64_max_decode_bytes
+
+
+def history_max_range_days() -> int:
+    """The largest history span a query may request, in days (0 = unbounded)."""
+    return get_settings().history_max_range_days

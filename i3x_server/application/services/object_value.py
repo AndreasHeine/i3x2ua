@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import logging
 from collections import deque
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import HTTPException, Request
 
+from i3x_server.config.settings import history_max_range_days
 from i3x_server.domain.ports.opcua import DataValueDTO, OpcUaClientProtocol, Quality
 from i3x_server.errors import i3x_http_error
 from i3x_server.logging_format import log_upstream_failure
@@ -139,6 +140,17 @@ class ObjectValueService:
                     400,
                     "InvalidArgument",
                     "startTime must be less than or equal to endTime",
+                    {"startTime": start_time, "endTime": end_time},
+                )
+
+            max_days = history_max_range_days()
+            if max_days > 0 and end_dt - start_dt > timedelta(days=max_days):
+                # Refused before the round-trip: an oversized span asks the upstream for every
+                # sample it has stored, which no single request should be able to demand.
+                raise i3x_http_error(
+                    400,
+                    "InvalidArgument",
+                    f"History range exceeds the maximum of {max_days} days",
                     {"startTime": start_time, "endTime": end_time},
                 )
 

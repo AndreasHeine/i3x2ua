@@ -8,6 +8,7 @@ documented-response validator come from ``tests/conftest.py``.
 
 from __future__ import annotations
 
+import base64
 import json
 from collections.abc import Generator, Mapping
 from dataclasses import dataclass
@@ -97,6 +98,23 @@ def test_decode_bytestring_write_value_accepts_base64_string() -> None:
 def test_decode_bytestring_write_value_rejects_invalid_base64_string() -> None:
     with pytest.raises(ValueError, match="Invalid base64 ByteString"):
         _decode_bytestring_write_value("!", "ByteString")
+
+
+def test_decode_bytestring_write_value_caps_the_decoded_size(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``I3X_BASE64_MAX_DECODE_BYTES`` bounds the ByteString a write may decode (L14)."""
+    monkeypatch.setenv("I3X_BASE64_MAX_DECODE_BYTES", "16")
+    accepted = base64.b64encode(b"x" * 16).decode("ascii")
+    assert _decode_bytestring_write_value(accepted, "ByteString") == b"x" * 16
+
+    oversized = base64.b64encode(b"x" * 17).decode("ascii")
+    with pytest.raises(ValueError, match="ByteString exceeds"):
+        _decode_bytestring_write_value(oversized, "ByteString")
+
+    # A payload far above the bound is rejected before decoding, so the limit also bounds the
+    # memory the request can allocate, not only the value handed to the upstream.
+    huge = "A" * 2_000_000
+    with pytest.raises(ValueError, match="ByteString exceeds"):
+        _decode_bytestring_write_value(huge, "ByteString")
 
 
 def _fastapi_app(client: TestClient) -> FastAPI:

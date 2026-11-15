@@ -66,6 +66,7 @@ class SubscriptionService:
         max_concurrent_native_admissions: int = 4,
         native_backoff_seconds: float = 30.0,
         max_subscriptions: int = 1000,
+        max_subscriptions_per_client: int = 100,
         subtree_max_nodes: int = 5000,
         subtree_max_depth: int = 32,
         native_max_bins: int = 100,
@@ -100,6 +101,9 @@ class SubscriptionService:
         # unbounded subscription count or subtree turns one request into thousands of monitored
         # items, so the caps reject instead of accepting and degrading every other client.
         self._max_subscriptions = max(1, int(max_subscriptions))
+        # Per-client share of the same budget: one client must not be able to occupy the whole
+        # gateway-wide cap and starve the others.
+        self._max_subscriptions_per_client = max(1, int(max_subscriptions_per_client))
         self._subtree_max_nodes = max(1, int(subtree_max_nodes))
         # Composition depth a monitored subtree may reach. ``0`` means unbounded, matching the
         # documented meaning of ``I3X_COMPOSITION_MAX_DEPTH``; the traversal itself always

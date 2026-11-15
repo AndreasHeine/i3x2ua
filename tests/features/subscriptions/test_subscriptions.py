@@ -505,6 +505,40 @@ def test_v1_subscription_count_cap_answers_429(monkeypatch: pytest.MonkeyPatch) 
         assert refilled.status_code == 200
 
 
+def test_v1_subscription_per_client_cap_answers_429(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One client cannot consume the gateway's whole subscription budget (L14)."""
+    with _client_with_env(
+        monkeypatch, {"I3X_SUBSCRIPTION_MAX_COUNT": "10", "I3X_SUBSCRIPTION_MAX_PER_CLIENT": "1"}
+    ) as client:
+        created = client.post("/v1/subscriptions", json={"clientId": "capped-client", "displayName": "First"})
+        assert created.status_code == 200
+        subscription_id = created.json()["result"]["subscriptionId"]
+
+        overflow = client.post("/v1/subscriptions", json={"clientId": "capped-client", "displayName": "Second"})
+        assert overflow.status_code == 429
+        payload = overflow.json()
+        assert payload["success"] is False
+        assert payload["error"] == {"code": 429, "message": "Subscription limit per client reached"}
+        assert payload["responseDetail"]["status"] == 429
+        assert "maxSubscriptionsPerClient=1" in payload["responseDetail"]["detail"]
+        assert "clientSubscriptions=1" in payload["responseDetail"]["detail"]
+        assert_documented_response(client, "post", "/v1/subscriptions", 429, payload)
+
+        # The rejected create leaves no state behind, and another client keeps its own budget.
+        service = fastapi_app(client).state.subscription_service
+        assert list(service._subscriptions) == [subscription_id]
+        other = client.post("/v1/subscriptions", json={"clientId": "other-client", "displayName": "First"})
+        assert other.status_code == 200
+
+        deleted = client.post(
+            "/v1/subscriptions/delete",
+            json={"clientId": "capped-client", "subscriptionIds": [subscription_id]},
+        )
+        assert deleted.status_code == 200
+        refilled = client.post("/v1/subscriptions", json={"clientId": "capped-client", "displayName": "Third"})
+        assert refilled.status_code == 200
+
+
 def test_v1_register_rejects_oversized_subtree_with_400(monkeypatch: pytest.MonkeyPatch) -> None:
     """An oversized subtree is rejected as 400 and never truncated; the monitored set stays intact."""
     with _client_with_env(monkeypatch, {"I3X_SUBSCRIPTION_SUBTREE_MAX_NODES": "2"}) as client:

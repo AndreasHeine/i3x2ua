@@ -50,6 +50,12 @@ services:
       I3X_SUBSCRIPTION_INTERVAL_SECONDS: 1  # Poll interval for subscription updates.
       I3X_SUBSCRIPTION_MAX_UPDATES: 10000  # Max queued updates per subscription.
       I3X_SUBSCRIPTION_TTL_SECONDS: 120  # Subscription expiry timeout in seconds.
+      # Admission control behind the trusted proxy: nginx sets X-Forwarded-For, and the app trusts
+      # forwarded headers only from the addresses listed in --forwarded-allow-ips, so the limiter
+      # keys on the real client rather than on the proxy. nginx already limits at the edge
+      # (limit_req/limit_conn); this second layer protects a deployment that reaches the app
+      # directly on the internal network.
+      I3X_REQUEST_RATE_LIMIT_PER_MINUTE: 600
       I3X_LOG_LEVEL: WARN  # Application log level.
       # I3X_CORS_ALLOWED_ORIGINS: "[]"  # JSON array of allowed CORS origins.
       I3X_OTEL_ENABLED: "true"  # Enable OpenTelemetry instrumentation.

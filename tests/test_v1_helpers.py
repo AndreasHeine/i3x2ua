@@ -534,6 +534,38 @@ def test_parse_iso_and_history_range_validation() -> None:
         object_value_helpers._parse_history_time_range(bad)
 
 
+def test_history_range_span_is_capped(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``I3X_HISTORY_MAX_RANGE_DAYS`` bounds the requested span (L14)."""
+    monkeypatch.setenv("I3X_HISTORY_MAX_RANGE_DAYS", "30")
+
+    wide = GetObjectHistoryRequest(
+        elementIds=["x"],
+        startTime="2026-01-01T00:00:00Z",
+        endTime="2026-02-01T00:00:01Z",
+        maxDepth=1,
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        object_value_helpers._parse_history_time_range(wide)
+    assert exc_info.value.status_code == 400
+    detail = exc_info.value.detail
+    assert isinstance(detail, dict)
+    assert detail["error"]["message"] == "History range exceeds the maximum of 30 days"
+    assert "30" in detail["responseDetail"]["detail"]
+
+    # The bound is inclusive: a span of exactly 30 days is served.
+    exact = GetObjectHistoryRequest(
+        elementIds=["x"],
+        startTime="2026-01-01T00:00:00Z",
+        endTime="2026-01-31T00:00:00Z",
+        maxDepth=1,
+    )
+    assert object_value_helpers._parse_history_time_range(exact)[0] is not None
+
+    # 0 disables the bound, like the other composition limits.
+    monkeypatch.setenv("I3X_HISTORY_MAX_RANGE_DAYS", "0")
+    assert object_value_helpers._parse_history_time_range(wide)[0] is not None
+
+
 def test_quality_timestamp_and_history_conversion_helpers() -> None:
     assert severity_quality(None) == "Good"
     assert severity_quality(0x00000000) == "Good"

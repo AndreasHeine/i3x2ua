@@ -186,6 +186,20 @@ async def _create_subscription(
                 "Subscription limit reached",
                 {"maxSubscriptions": service._max_subscriptions, "activeSubscriptions": active_count},
             )
+        # The process-wide cap protects the gateway; this one protects the other clients from a
+        # single one. ``None`` is its own bucket: unscoped clients cannot be told apart.
+        client_count = sum(1 for item in service._subscriptions.values() if item.client_id == client_id)
+        if client_count >= service._max_subscriptions_per_client:
+            raise AdmissionLimitError(
+                429,
+                "SubscriptionLimitPerClient",
+                "Subscription limit per client reached",
+                {
+                    "maxSubscriptionsPerClient": service._max_subscriptions_per_client,
+                    "clientSubscriptions": client_count,
+                    "clientId": client_id,
+                },
+            )
         service._subscriptions[subscription_id] = subscription_state
         # Snapshot inside the lock: ``register_items`` mutates ``state.monitored_objects`` and a
         # detail built after release can race with it ("dictionary changed size during iteration").

@@ -9,8 +9,11 @@ adapters can import the envelope helpers here without an import cycle.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
+import contextlib
+import logging
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from functools import lru_cache
@@ -21,8 +24,11 @@ from fastapi import FastAPI, Request
 from pydantic import BaseModel
 
 from i3x_server.application.state import McpTransportSession, gateway_state
+from i3x_server.config.settings import base64_decode_limit_bytes
 from i3x_server.errors import i3x_http_error
 from i3x_server.version import get_server_version
+
+logger = logging.getLogger(__name__)
 
 MCP_PROTOCOL_VERSION = "2026-07-28"
 MCP_LEGACY_PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26")
@@ -58,6 +64,19 @@ MCP_MAX_TRANSPORT_SESSIONS = 200
 MCP_SESSION_IDLE_TTL_SECONDS = 900.0
 
 
+def _close_stream(stream: asyncio.Queue[dict[str, Any] | None]) -> None:
+    """Signal a stream to end, making room for the sentinel when its queue is full.
+
+    A bounded queue cannot simply append the sentinel: the oldest unread notification gives way to
+    the close signal, so a stream that is closing never keeps an undeliverable backlog.
+    """
+    if stream.full():
+        with contextlib.suppress(asyncio.QueueEmpty):
+            stream.get_nowait()
+    with contextlib.suppress(asyncio.QueueFull):
+        stream.put_nowait(None)
+
+
 def publish_mcp_notification(
     app: FastAPI,
     session_id: str,
@@ -74,6 +93,17 @@ def publish_mcp_notification(
     if params is not None:
         message["params"] = params
     for stream in tuple(session.streams):
+        if stream.full():
+            # A consumer that stops draining must not grow the gateway's memory: it is closed
+            # instead of accumulating notifications (L14).
+            logger.warning(
+                "MCP SSE stream queue full; closing slow consumer session_id=%s queue_size=%d",
+                session_id,
+                stream.maxsize,
+            )
+            session.streams.discard(stream)
+            _close_stream(stream)
+            continue
         stream.put_nowait(message)
     return len(session.streams)
 
@@ -82,7 +112,7 @@ def shutdown_mcp_transport(app: FastAPI) -> None:
     sessions = gateway_state(app).mcp_transport_sessions
     for session in sessions.values():
         for stream in tuple(session.streams):
-            stream.put_nowait(None)
+            _close_stream(stream)
     sessions.clear()
 
 
@@ -166,9 +196,20 @@ def _decode_modern_header_value(value: str) -> str | None:
     prefix = "=?base64?"
     if not value.startswith(prefix) or not value.endswith("?="):
         return value
+    # Reject oversized payloads before decoding: the bound must limit what the request can make
+    # the gateway allocate, not only what it ends up accepting (L14).
+    limit = base64_decode_limit_bytes()
+    if len(value) - len(prefix) - 2 > ((limit + 2) // 3) * 4 + 4:
+        return None
     try:
-        return base64.b64decode(value[len(prefix) : -2], validate=True).decode("utf-8")
+        decoded = base64.b64decode(value[len(prefix) : -2], validate=True)
     except (binascii.Error, UnicodeDecodeError):
+        return None
+    if len(decoded) > limit:
+        return None
+    try:
+        return decoded.decode("utf-8")
+    except UnicodeDecodeError:
         return None
 
 

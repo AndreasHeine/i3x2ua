@@ -26,7 +26,6 @@ from i3x_server.domain.ports.opcua import (
 from i3x_server.infrastructure.opcua import values
 from i3x_server.infrastructure.opcua.client import OpcUaClient, _NotificationBridge
 from i3x_server.infrastructure.subscriptions.monitoring import _NodeDataChangeHandler
-from tests.conftest import FakeOpcUaClient
 
 
 def _server_timestamp(moment: datetime) -> ua.DateTime:
@@ -103,9 +102,11 @@ def test_to_data_value_dto_is_tolerant_of_partial_test_doubles() -> None:
     assert typed.value.variant_type == "Double"
 
 
-@pytest.mark.parametrize("candidate", [OpcUaClient, FakeOpcUaClient])
+@pytest.mark.parametrize("candidate", [OpcUaClient])
 def test_client_candidate_satisfies_opcua_port(candidate: type) -> None:
-    """The adapter and the shared test double implement every port method."""
+    """The adapter implements every port method; the shared double is verified statically
+    (plain ``OpcUaClientProtocol`` assignment) and behaviorally in ``test_opcua_fake_conformance``.
+    """
     missing = [name for name in get_protocol_members(OpcUaClientProtocol) if not hasattr(candidate, name)]
     assert missing == []
 

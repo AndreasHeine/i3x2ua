@@ -13,7 +13,6 @@ import json
 from collections.abc import Generator, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -26,36 +25,14 @@ from i3x_server.api.v1.contracts import MAX_BULK_ITEMS
 from i3x_server.api.v1.object_value_helpers import _decode_bytestring_write_value
 from i3x_server.application.errors import ApplicationServiceError
 from i3x_server.bootstrap.app_factory import create_app
-from i3x_server.infrastructure.opcua.client import (
-    OpcUaConnectionSnapshot,
-    OpcUaNamespaceInfo,
-    OpcUaOperationalLimits,
-    OpcUaRequestMetrics,
-    OpcUaSubscriptionCapabilities,
-)
+from i3x_server.domain.ports.opcua import OpcUaObjectTypeInfo, OpcUaObjectTypeMemberInfo
+from i3x_server.infrastructure.opcua.client import OpcUaConnectionSnapshot
 from i3x_server.infrastructure.subscriptions.service import SubscriptionService
 from i3x_server.mcp import load_overrides, load_tool_overrides
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
 from tests.conftest import _MCP_DISABLED_ENV, _MCP_ENABLED_ENV, assert_documented_response, data_value_dto
-
-
-@dataclass(slots=True)
-class FakeMachineThresholds:
-    min: float
-    max: float
-
-
-@dataclass(slots=True)
-class FakeMachineConfig:
-    thresholds: FakeMachineThresholds
-    mode: str
-
-
-class FakeExtensionObject:
-    def __init__(self, type_id: str, body: Any) -> None:
-        self.TypeId = type_id
-        self.Body = body
+from tests.opcua_fake import FakeExtensionObject, FakeMachineConfig, FakeMachineThresholds, FakeOpcUaClient
 
 
 def _contains_opcua_extension_key(value: Any) -> bool:
@@ -169,300 +146,86 @@ def _configure_test_app(app: FastAPI) -> None:
         property_to_node={property_id: "ns=2;s=Temperature"},
         action_to_method={action_id: ("ns=2;s=Machine", "ns=2;s=Reset")},
     )
-    app.state.opcua_client = FakeOpcUaClient()
+    app.state.opcua_client = FakeOpcUaClient(object_types=_api_object_types())
     app.state.subscription_service = SubscriptionService(app.state.opcua_client, interval_seconds=1)
 
 
-class FakeOpcUaClient:
-    def __init__(self) -> None:
-        self.values: dict[str, Any] = {"ns=2;s=Temperature": 42.5}
-        self.writable_by_node_id: dict[str, bool] = {"ns=2;s=Temperature": True}
-        self.user_writable_by_node_id: dict[str, bool] = {"ns=2;s=Temperature": True}
-        self.variant_type_by_node_id: dict[str, str] = {"ns=2;s=Temperature": "Double"}
-        self.last_write_vqt_by_node_id: dict[str, tuple[str, datetime]] = {}
-        self.last_write_variant_type_by_node_id: dict[str, str | None] = {}
-        self.write_failures: dict[str, Exception] = {}
-        self.history_update_support: bool | None = None
-        self.history_values: dict[str, list[Any]] = {
-            "ns=2;s=Temperature": [
-                data_value_dto(40.0, "Good", datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc)),
-                data_value_dto(41.5, "Good", datetime(2026, 1, 1, 10, 5, tzinfo=timezone.utc)),
-            ]
-        }
-        self._reads = 0
-        self.server_status_reads = 0
-        self._listeners: list[Any] = []
-        self._connection_snapshot = OpcUaConnectionSnapshot(
-            state="Connected",
-            endpoint="opc.tcp://opcua.umati.app:4843",
-            since=datetime(2026, 1, 1, 8, 11, 24, tzinfo=timezone.utc),
-        )
-        self._request_metrics = OpcUaRequestMetrics(
-            read_count=2451,
-            write_count=0,
-            browse_count=189,
-            method_call_count=27,
-            history_read_count=62,
-            history_write_count=0,
-            failed_request_count=14,
-            goodish_qualities=["Good", "Uncertain"],
-        )
-        self._operational_limits = OpcUaOperationalLimits(
-            max_nodes_per_browse=1000,
-            max_nodes_per_read=1000,
-        )
+def _api_object_types() -> list[OpcUaObjectTypeInfo]:
+    """ObjectType bodies with ``HasProperty`` reference context for the OPC UA metadata contract.
 
-    async def get_namespace_infos(self) -> list[OpcUaNamespaceInfo]:
-        return [
-            OpcUaNamespaceInfo(
-                uri="http://example.com/i3x",
-                display_name="I3X",
-                namespace_version="1.0",
-                server_uri="urn:test-server",
-            ),
-            OpcUaNamespaceInfo(
-                uri="http://example.com/custom",
-                display_name="Custom",
-                namespace_version="1.0",
-                server_uri="urn:test-server",
-            ),
-            OpcUaNamespaceInfo(
-                uri="http://example.com/runtime",
-                display_name="Runtime",
-                namespace_version="1.0",
-                server_uri="urn:test-server",
-            ),
-        ]
-
-    async def get_object_types(self) -> list[SimpleNamespace]:
-        return [
-            SimpleNamespace(
-                node_id="ns=1;i=1001",
-                parent_node_id=None,
-                browse_name="MachineType",
-                display_name="Machine Type",
-                description="Machine object type",
-                is_abstract=False,
-                properties={
-                    "temperature": "i=11",
-                    "running": "i=1",
-                    "config": "ns=1;i=3001",
-                },
-                members=[
-                    SimpleNamespace(
-                        node_id="ns=1;i=2001",
-                        parent_node_id="ns=1;i=1001",
-                        browse_name="temperature",
-                        display_name="Temperature",
-                        description="Current measured temperature",
-                        node_class="Variable",
-                        data_type="i=11",
-                        reference_type_id="ns=0;i=46",
-                        reference_type="HasProperty",
-                        reference_order=0,
-                        value=42.5,
-                        modelling_rule="Mandatory",
+    The canonical shared double ships plain members; this API-level fixture adds the reference
+    metadata the ``/v1/objecttypes`` schema contract asserts (data type, references, modelling rule).
+    """
+    return [
+        OpcUaObjectTypeInfo(
+            node_id="ns=1;i=1001",
+            parent_node_id=None,
+            browse_name="MachineType",
+            display_name="Machine Type",
+            properties={"temperature": "i=11", "running": "i=1", "config": "ns=1;i=3001"},
+            description="Machine object type",
+            is_abstract=False,
+            members=[
+                OpcUaObjectTypeMemberInfo(
+                    node_id="ns=1;i=2001",
+                    browse_name="temperature",
+                    display_name="Temperature",
+                    description="Current measured temperature",
+                    node_class="Variable",
+                    data_type="i=11",
+                    reference_type_id="ns=0;i=46",
+                    reference_type="HasProperty",
+                    reference_order=0,
+                    parent_node_id="ns=1;i=1001",
+                    value=42.5,
+                    modelling_rule="Mandatory",
+                ),
+                OpcUaObjectTypeMemberInfo(
+                    node_id="ns=1;i=2002",
+                    browse_name="running",
+                    display_name="Running",
+                    description="Running state",
+                    node_class="Variable",
+                    data_type="i=1",
+                    reference_type_id="ns=0;i=46",
+                    reference_type="HasProperty",
+                    reference_order=1,
+                    parent_node_id="ns=1;i=1001",
+                    value=True,
+                ),
+                OpcUaObjectTypeMemberInfo(
+                    node_id="ns=1;i=2003",
+                    browse_name="config",
+                    display_name="Config",
+                    description="Machine configuration",
+                    node_class="Variable",
+                    data_type="ns=1;i=3001",
+                    reference_type_id="ns=0;i=46",
+                    reference_type="HasProperty",
+                    reference_order=2,
+                    parent_node_id="ns=1;i=1001",
+                    value=FakeExtensionObject(
+                        "ns=1;i=3001",
+                        FakeMachineConfig(thresholds=FakeMachineThresholds(min=10.0, max=120.5), mode="auto"),
                     ),
-                    SimpleNamespace(
-                        node_id="ns=1;i=2002",
-                        parent_node_id="ns=1;i=1001",
-                        browse_name="running",
-                        display_name="Running",
-                        description="Running state",
-                        node_class="Variable",
-                        data_type="i=1",
-                        reference_type_id="ns=0;i=46",
-                        reference_type="HasProperty",
-                        reference_order=1,
-                        value=True,
-                        modelling_rule=None,
+                    schema_value=FakeExtensionObject(
+                        "ns=1;i=3001",
+                        FakeMachineConfig(thresholds=FakeMachineThresholds(min=10.0, max=120.5), mode="auto"),
                     ),
-                    SimpleNamespace(
-                        node_id="ns=1;i=2003",
-                        parent_node_id="ns=1;i=1001",
-                        browse_name="config",
-                        display_name="Config",
-                        description="Machine configuration",
-                        node_class="Variable",
-                        data_type="ns=1;i=3001",
-                        reference_type_id="ns=0;i=46",
-                        reference_type="HasProperty",
-                        reference_order=2,
-                        value=FakeExtensionObject(
-                            "ns=1;i=3001",
-                            FakeMachineConfig(
-                                thresholds=FakeMachineThresholds(min=10.0, max=120.5),
-                                mode="auto",
-                            ),
-                        ),
-                        modelling_rule=None,
-                    ),
-                ],
-            ),
-            SimpleNamespace(
-                node_id="ns=1;i=1002",
-                parent_node_id="ns=1;i=1001",
-                browse_name="SensorType",
-                display_name="Sensor Type",
-                description="Sensor subtype",
-                is_abstract=True,
-                properties={},
-                members=[],
-            ),
-        ]
-
-    async def read_value(self, node_id: str) -> Any:
-        return self.values[node_id]
-
-    async def read_browse_name(self, node_id: str) -> str | None:
-        if node_id == "ns=0;i=17364":
-            return "NetworkAddressDataType"
-        if node_id == "ns=0;i=865":
-            return "SessionDiagnosticsDataType"
-        if node_id == "ns=0;i=96":
-            return "RolePermissionType"
-        return None
-
-    async def read_values(self, node_ids: list[str]) -> list[Any]:
-        self._reads += 1
-        results: list[Any] = []
-        for node_id in node_ids:
-            base = self.values.get(node_id, 1.0)
-            if isinstance(base, (bytes, bytearray, memoryview)):
-                results.append(bytes(base))
-                continue
-            value = float(base) + self._reads
-            self.values[node_id] = value
-            results.append(value)
-        return results
-
-    async def read_data_values(self, node_ids: list[str]) -> list[Any]:
-        self._reads += 1
-        results: list[Any] = []
-        for node_id in node_ids:
-            base = self.values.get(node_id, 1.0)
-            # Mirrors a server that preserves the last written VQT: the bulk write path
-            # verifies quality and source timestamp through this batched read. Written
-            # values are answered verbatim (no simulated drift), so a verification read
-            # does not alter the stored value.
-            written = self.last_write_vqt_by_node_id.get(node_id)
-            if written is not None:
-                quality, source_timestamp = written
-                value = bytes(base) if isinstance(base, (bytes, bytearray, memoryview)) else base
-                results.append(data_value_dto(value, quality, source_timestamp))
-                continue
-            read_value: Any
-            if isinstance(base, (bytes, bytearray, memoryview)):
-                read_value = bytes(base)
-            else:
-                read_value = float(base) + self._reads
-                self.values[node_id] = read_value
-            results.append(data_value_dto(read_value, "Good", datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)))
-        return results
-
-    async def read_history_values(
-        self,
-        node_ids: list[str],
-        start_time: datetime | None,
-        end_time: datetime | None,
-    ) -> dict[str, list[Any]]:
-        del start_time, end_time
-        return {node_id: self.history_values.get(node_id, []) for node_id in node_ids}
-
-    async def read_write_access(self, node_id: str) -> tuple[bool, bool]:
-        return self.writable_by_node_id.get(node_id, False), self.user_writable_by_node_id.get(node_id, False)
-
-    async def read_variant_type(self, node_id: str) -> str | None:
-        return self.variant_type_by_node_id.get(node_id)
-
-    def history_update_supported(self) -> bool | None:
-        return self.history_update_support
-
-    async def write_value(
-        self,
-        node_id: str,
-        value: Any,
-        variant_type: str | None,
-        quality: str,
-        timestamp: datetime,
-        verify_metadata: bool = True,
-    ) -> None:
-        del verify_metadata
-        failure = self.write_failures.get(node_id)
-        if failure is not None:
-            self._request_metrics.failed_request_count += 1
-            raise failure
-        self.last_write_variant_type_by_node_id[node_id] = variant_type
-        self.last_write_vqt_by_node_id[node_id] = (quality, timestamp)
-        self.values[node_id] = value
-        self._request_metrics.write_count += 1
-
-    async def read_server_status_data_value(self) -> Any:
-        self.server_status_reads += 1
-        return data_value_dto(
-            {
-                "StartTime": datetime(2026, 1, 1, 8, 11, 22, tzinfo=timezone.utc),
-                "CurrentTime": datetime(2026, 1, 1, 9, 3, 47, tzinfo=timezone.utc),
-                "State": "Running",
-                "BuildInfo": {
-                    "ProductUri": "urn:vendor:server",
-                    "ManufacturerName": "Vendor",
-                    "ProductName": "UA Server",
-                    "SoftwareVersion": "1.2.3",
-                    "BuildNumber": "20260613",
-                    "BuildDate": datetime(2026, 1, 1, 7, 59, 0, tzinfo=timezone.utc),
-                },
-                "SecondsTillShutdown": 0,
-                "ShutdownReason": "",
-            },
-            "Good",
-            datetime(2026, 1, 1, 9, 3, 47, tzinfo=timezone.utc),
-        )
-
-    def get_connection_snapshot(self) -> OpcUaConnectionSnapshot:
-        return self._connection_snapshot
-
-    def snapshot_request_metrics(self) -> OpcUaRequestMetrics:
-        return self._request_metrics
-
-    async def get_operational_limits(self) -> OpcUaOperationalLimits:
-        return self._operational_limits
-
-    async def get_subscription_capabilities(self) -> OpcUaSubscriptionCapabilities:
-        return OpcUaSubscriptionCapabilities(
-            max_monitored_items_per_call=1,
-            max_subscriptions=100,
-            max_monitored_items=100,
-            max_subscriptions_per_session=100,
-            max_monitored_items_per_subscription=1,
-        )
-
-    async def create_datachange_subscription(self, publishing_interval_ms: float, handler: Any) -> Any:
-        del publishing_interval_ms, handler
-        return SimpleNamespace(delete=self._noop_async)
-
-    async def subscribe_data_changes(self, subscription: Any, node_ids: list[str]) -> list[int]:
-        del subscription
-        return list(range(len(node_ids)))
-
-    async def unsubscribe_data_changes(self, subscription: Any, handles: list[int]) -> None:
-        del subscription, handles
-
-    async def delete_subscription(self, subscription: Any) -> None:
-        await self._noop_async()
-
-    def get_monitored_item_handles(self, subscription: Any, node_ids: list[str]) -> dict[str, int] | None:
-        del subscription, node_ids
-        return None
-
-    def add_reconnect_listener(self, listener: Any) -> None:
-        self._listeners.append(listener)
-
-    async def call_method(self, object_node_id: str, method_node_id: str, args: list[Any]) -> Any:
-        return {"object": object_node_id, "method": method_node_id, "args": args}
-
-    async def _noop_async(self) -> None:
-        return None
+                ),
+            ],
+        ),
+        OpcUaObjectTypeInfo(
+            node_id="ns=1;i=1002",
+            parent_node_id="ns=1;i=1001",
+            browse_name="SensorType",
+            display_name="Sensor Type",
+            properties={},
+            description="Sensor subtype",
+            is_abstract=True,
+            members=[],
+        ),
+    ]
 
 
 def _test_client_with_env(monkeypatch: pytest.MonkeyPatch, env: Mapping[str, str]) -> Generator[TestClient, None, None]:

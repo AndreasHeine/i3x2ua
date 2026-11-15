@@ -11,14 +11,12 @@ from fastapi.testclient import TestClient
 
 from i3x_server.api.v1.object_value_routes import _COMPOSITION_TRUNCATION_DETAIL
 from i3x_server.schemas.i3x import ModelNode
-from tests.conftest import (
+from tests.conftest import add_composition_depth_chain, assert_documented_response, fastapi_app
+from tests.opcua_fake import (
     FakeExtensionObject,
     FakeMachineConfig,
     FakeMachineThresholds,
-    add_composition_depth_chain,
-    assert_documented_response,
     data_value_dto,
-    fastapi_app,
 )
 
 

@@ -38,6 +38,7 @@ from i3x_server.infrastructure.subscriptions.state import (
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.opcua_value import normalize_opcua_value, quality_from_status_code
 from i3x_server.schemas.state import BuildResult
+from tests.opcua_fake import SubscriptionClientFake as FakeOpcUaClient
 
 
 def _signed_dto(value: Any, severity: int, timestamp: datetime) -> DataValueDTO:
@@ -48,86 +49,6 @@ def _signed_dto(value: Any, severity: int, timestamp: datetime) -> DataValueDTO:
         quality=quality_from_status_code(SimpleNamespace(value=severity)),
         source_timestamp=timestamp,
     )
-
-
-class FakeOpcUaClient:
-    def __init__(self) -> None:
-        self.listeners: list[Any] = []
-        self.removed_listeners: list[Any] = []
-        self.deleted_subscriptions: list[Any] = []
-        self.read_values_calls = 0
-        self.read_data_values_calls = 0
-        self.create_subscription_calls = 0
-        self.subscribe_calls = 0
-        self.unsubscribed_calls: list[tuple[Any, list[int]]] = []
-        # Handlers handed to create_datachange_subscription, so tests can fire notifications.
-        self.handlers: list[Any] = []
-        # node_id -> DTO to serve instead of the generated Good value.
-        self.data_value_overrides: dict[str, DataValueDTO] = {}
-        # id(ua_subscription) -> handles asyncua reports after a reconnect (None = subscription lost).
-        self.restored_handles: dict[int, dict[str, int] | None] = {}
-
-    def add_reconnect_listener(self, listener: Any) -> None:
-        self.listeners.append(listener)
-
-    def remove_reconnect_listener(self, listener: Any) -> None:
-        self.removed_listeners.append(listener)
-        if listener in self.listeners:
-            self.listeners.remove(listener)
-
-    async def get_subscription_capabilities(self) -> Any:
-        return SimpleNamespace(
-            max_monitored_items_per_call=100,
-            max_subscriptions=100,
-            max_monitored_items=100,
-            max_subscriptions_per_session=100,
-            max_monitored_items_per_subscription=100,
-        )
-
-    async def create_datachange_subscription(self, publishing_interval_ms: float, handler: Any) -> Any:
-        del publishing_interval_ms
-        self.handlers.append(handler)
-        self.create_subscription_calls += 1
-        return SimpleNamespace(id=f"ua-sub-{self.create_subscription_calls}")
-
-    async def subscribe_data_changes(self, subscription: Any, node_ids: list[str]) -> int | list[int]:
-        del subscription
-        handles: list[int] = []
-        for _ in node_ids:
-            self.subscribe_calls += 1
-            handles.append(self.subscribe_calls)
-        return handles
-
-    async def unsubscribe_data_changes(self, subscription: Any, handles: list[int]) -> None:
-        self.unsubscribed_calls.append((subscription, list(handles)))
-
-    async def delete_subscription(self, subscription: Any) -> None:
-        self.deleted_subscriptions.append(subscription)
-
-    def get_monitored_item_handles(self, subscription: Any, node_ids: list[str]) -> dict[str, int] | None:
-        del node_ids
-        return self.restored_handles.get(id(subscription))
-
-    async def read_values(self, node_ids: list[str]) -> list[float]:
-        self.read_values_calls += 1
-        return [float(i + self.read_values_calls) for i, _ in enumerate(node_ids)]
-
-    async def read_data_values(self, node_ids: list[str]) -> list[DataValueDTO]:
-        self.read_data_values_calls += 1
-        results: list[DataValueDTO] = []
-        for index, node_id in enumerate(node_ids):
-            override = self.data_value_overrides.get(node_id)
-            if override is not None:
-                results.append(override)
-                continue
-            results.append(
-                _signed_dto(
-                    float(index + self.read_data_values_calls),
-                    0x00000000,
-                    datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc),
-                )
-            )
-        return results
 
 
 @pytest.mark.parametrize("empty_first", [False, True])
@@ -526,7 +447,7 @@ async def test_unregister_unknown_subscription_returns_false() -> None:
 
 
 class _SingleHandleOpcUaClient(FakeOpcUaClient):
-    async def subscribe_data_changes(self, subscription: Any, node_ids: list[str]) -> int:
+    async def subscribe_data_changes(self, subscription: Any, node_ids: list[str]) -> Any:
         del subscription, node_ids
         return 11
 
@@ -1265,7 +1186,8 @@ async def test_native_admissions_run_network_calls_concurrently() -> None:
             self.arrived_batches: list[list[str]] = []
             self.all_arrived = asyncio.Event()
 
-        async def subscribe_data_changes(self, subscription: Any, node_ids: list[str]) -> int | list[int]:
+        # Mirrors asyncua's legacy single-item behavior where the handle may come back as an int.
+        async def subscribe_data_changes(self, subscription: Any, node_ids: list[str]) -> Any:
             del subscription
             self.add_arrivals += 1
             self.arrived_batches.append(list(node_ids))
@@ -1325,7 +1247,8 @@ async def test_open_new_bin_batches_all_reserved_nodes_into_one_add() -> None:
             super().__init__()
             self.batches: list[list[str]] = []
 
-        async def subscribe_data_changes(self, subscription: Any, node_ids: list[str]) -> int | list[int]:
+        # Mirrors asyncua's legacy single-item behavior where the handle may come back as an int.
+        async def subscribe_data_changes(self, subscription: Any, node_ids: list[str]) -> Any:
             self.batches.append(list(node_ids))
             return await super().subscribe_data_changes(subscription, node_ids)
 
@@ -1363,7 +1286,8 @@ async def test_open_new_bin_excludes_reservation_of_released_monitor() -> None:
             super().__init__()
             self.batches: list[list[str]] = []
 
-        async def subscribe_data_changes(self, subscription: Any, node_ids: list[str]) -> int | list[int]:
+        # Mirrors asyncua's legacy single-item behavior where the handle may come back as an int.
+        async def subscribe_data_changes(self, subscription: Any, node_ids: list[str]) -> Any:
             self.batches.append(list(node_ids))
             return await super().subscribe_data_changes(subscription, node_ids)
 
@@ -1420,7 +1344,8 @@ async def test_open_new_bin_releases_handles_of_monitors_released_mid_batch() ->
             super().__init__()
             self._service = service
 
-        async def subscribe_data_changes(self, subscription: Any, node_ids: list[str]) -> int | list[int]:
+        # Mirrors asyncua's legacy single-item behavior where the handle may come back as an int.
+        async def subscribe_data_changes(self, subscription: Any, node_ids: list[str]) -> Any:
             # The only subscriber vanishes while the batch round-trip is in flight.
             async with self._service._lock:
                 del self._service._node_monitors[node_ids[0]]
@@ -1491,7 +1416,8 @@ async def test_add_node_to_bin_releases_duplicate_of_batch_committed_handle() ->
             self._bin = bin_
             self._monitor = monitor
 
-        async def subscribe_data_changes(self, subscription: Any, node_ids: list[str]) -> int | list[int]:
+        # Mirrors asyncua's legacy single-item behavior where the handle may come back as an int.
+        async def subscribe_data_changes(self, subscription: Any, node_ids: list[str]) -> Any:
             # The creating admission commits this node's batched handle mid-round-trip, exactly
             # as ``_open_new_bin`` does: handle committed and reservation released.
             async with self._service._lock:
@@ -1928,7 +1854,8 @@ async def test_bin_capacity_is_independent_of_per_call_limit(
                 max_monitored_items_per_subscription=per_subscription,
             )
 
-        async def subscribe_data_changes(self, subscription: Any, node_ids: list[str]) -> int | list[int]:
+        # Mirrors asyncua's legacy single-item behavior where the handle may come back as an int.
+        async def subscribe_data_changes(self, subscription: Any, node_ids: list[str]) -> Any:
             if per_call is not None:
                 assert len(node_ids) <= per_call
             return await super().subscribe_data_changes(subscription, node_ids)
@@ -2230,7 +2157,8 @@ async def test_per_item_rejection_degrades_only_that_node_and_cleans_up_subscrip
             super().__init__()
             self.rejected_node_ids = {"ns=2;s=Temperature"}
 
-        async def subscribe_data_changes(self, subscription: Any, node_ids: list[str]) -> int | list[int]:
+        # Mirrors asyncua's legacy single-item behavior where the handle may come back as an int.
+        async def subscribe_data_changes(self, subscription: Any, node_ids: list[str]) -> Any:
             if node_ids[0] in self.rejected_node_ids:
                 raise _status_error("BadNotSupported")
             return await super().subscribe_data_changes(subscription, node_ids)

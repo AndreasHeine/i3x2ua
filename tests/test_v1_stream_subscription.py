@@ -14,17 +14,16 @@ from i3x_server.api.v1.contracts import StreamRequest
 from i3x_server.api.v1.subscription_routes import stream_subscription_v1
 from i3x_server.application.ports.subscription import SubscriptionServicePort
 from i3x_server.application.services.subscription import SubscriptionAppService
-from i3x_server.domain.ports.opcua import OpcUaClientProtocol, OpcUaNamespaceInfo, Quality
+from i3x_server.domain.ports.opcua import OpcUaNamespaceInfo, Quality
 from i3x_server.infrastructure.subscriptions.state import SubscriptionSyncResult, SubscriptionUpdate
 from i3x_server.schemas.state import BuildResult
+from tests.opcua_fake import FakeOpcUaClient
 
-
-class _FakeOpcUaClient:
-    async def get_namespace_infos(self) -> list[OpcUaNamespaceInfo]:
-        return [
-            OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/", display_name="UA"),
-            OpcUaNamespaceInfo(uri="http://example.com/custom", display_name="Custom"),
-        ]
+# Namespace bodies the stream route resolves for subscription payloads.
+_STREAM_NAMESPACE_INFOS = [
+    OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/", display_name="UA"),
+    OpcUaNamespaceInfo(uri="http://example.com/custom", display_name="Custom"),
+]
 
 
 class _FakeSubscriptionService:
@@ -109,7 +108,7 @@ def _stream_app_service(fake_service: _FakeSubscriptionService) -> SubscriptionA
         action_to_method={},
     )
     return SubscriptionAppService(
-        opcua_client=cast(OpcUaClientProtocol, _FakeOpcUaClient()),
+        opcua_client=FakeOpcUaClient(namespace_infos=_STREAM_NAMESPACE_INFOS),
         model=empty_model,
         subscription_service=cast(SubscriptionServicePort, fake_service),
     )
@@ -125,7 +124,7 @@ async def test_stream_subscription_raises_not_found_when_activation_fails() -> N
     with pytest.raises(HTTPException) as exc_info:
         await stream_subscription_v1(
             body,
-            opcua_client=cast(OpcUaClientProtocol, _FakeOpcUaClient()),
+            opcua_client=FakeOpcUaClient(namespace_infos=_STREAM_NAMESPACE_INFOS),
             subscription_app_service=_stream_app_service(service),
         )
     assert exc_info.value.status_code == 404
@@ -152,7 +151,7 @@ async def test_stream_subscription_sends_initial_payload_then_close() -> None:
 
     response = await stream_subscription_v1(
         body,
-        opcua_client=cast(OpcUaClientProtocol, _FakeOpcUaClient()),
+        opcua_client=FakeOpcUaClient(namespace_infos=_STREAM_NAMESPACE_INFOS),
         subscription_app_service=_stream_app_service(service),
     )
     assert isinstance(response, StreamingResponse)
@@ -195,7 +194,7 @@ async def test_stream_subscription_keepalive_and_update_flow() -> None:
 
     response = await stream_subscription_v1(
         body,
-        opcua_client=cast(OpcUaClientProtocol, _FakeOpcUaClient()),
+        opcua_client=FakeOpcUaClient(namespace_infos=_STREAM_NAMESPACE_INFOS),
         subscription_app_service=_stream_app_service(service),
     )
     chunks: list[str] = []
@@ -220,7 +219,7 @@ async def test_stream_subscription_second_stream_closes_existing_stream() -> Non
     first_body = StreamRequest(clientId="client-1", subscriptionId="sub-1")
     first_response = await stream_subscription_v1(
         first_body,
-        opcua_client=cast(OpcUaClientProtocol, _FakeOpcUaClient()),
+        opcua_client=FakeOpcUaClient(namespace_infos=_STREAM_NAMESPACE_INFOS),
         subscription_app_service=_stream_app_service(service),
     )
     # The SSE body is an async generator, so its iterator really is closeable. Starlette types
@@ -234,7 +233,7 @@ async def test_stream_subscription_second_stream_closes_existing_stream() -> Non
     second_body = StreamRequest(clientId="client-1", subscriptionId="sub-1")
     second_response = await stream_subscription_v1(
         second_body,
-        opcua_client=cast(OpcUaClientProtocol, _FakeOpcUaClient()),
+        opcua_client=FakeOpcUaClient(namespace_infos=_STREAM_NAMESPACE_INFOS),
         subscription_app_service=_stream_app_service(service),
     )
     second_iterator: AsyncGenerator[str | bytes, None] = cast(
@@ -258,7 +257,7 @@ async def test_stream_subscription_raises_not_found_when_ack_sync_missing() -> N
     with pytest.raises(HTTPException) as exc_info:
         await stream_subscription_v1(
             body,
-            opcua_client=cast(OpcUaClientProtocol, _FakeOpcUaClient()),
+            opcua_client=FakeOpcUaClient(namespace_infos=_STREAM_NAMESPACE_INFOS),
             subscription_app_service=_stream_app_service(service),
         )
     assert exc_info.value.status_code == 404
@@ -297,7 +296,7 @@ async def test_stream_subscription_emits_dropped_event_for_sequence_gap() -> Non
 
     response = await stream_subscription_v1(
         body,
-        opcua_client=cast(OpcUaClientProtocol, _FakeOpcUaClient()),
+        opcua_client=FakeOpcUaClient(namespace_infos=_STREAM_NAMESPACE_INFOS),
         subscription_app_service=_stream_app_service(service),
     )
     chunks = [str(chunk) async for chunk in response.body_iterator]

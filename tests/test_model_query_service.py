@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import cast
 
 import pytest
 
@@ -14,9 +13,10 @@ from i3x_server.application.services.model_query import (
     _build_server_info,
     _to_namespace,
 )
-from i3x_server.domain.ports.opcua import OpcUaClientProtocol, OpcUaNamespaceInfo, OpcUaObjectTypeInfo
+from i3x_server.domain.ports.opcua import OpcUaNamespaceInfo, OpcUaObjectTypeInfo
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
+from tests.opcua_fake import FakeOpcUaClient
 
 
 def _model() -> BuildResult:
@@ -36,25 +36,6 @@ def _model() -> BuildResult:
         property_to_node={},
         action_to_method={},
     )
-
-
-class _FakeOpcUaClient:
-    def __init__(self, infos: list[OpcUaNamespaceInfo], error: Exception | None = None) -> None:
-        self._infos = infos
-        self._error = error
-        self.calls = 0
-        self.object_types: list[OpcUaObjectTypeInfo] = []
-
-    async def get_namespace_infos(self) -> list[OpcUaNamespaceInfo]:
-        self.calls += 1
-        if self._error:
-            raise self._error
-        return self._infos
-
-    async def get_object_types(self) -> list[OpcUaObjectTypeInfo]:
-        if self._error:
-            raise self._error
-        return self.object_types
 
 
 def test_namespace_model_dump() -> None:
@@ -121,8 +102,8 @@ async def test_get_namespaces_uses_cache() -> None:
         OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/", display_name="UA"),
         OpcUaNamespaceInfo(uri="http://example.com/custom", display_name="Custom"),
     ]
-    client = _FakeOpcUaClient(infos)
-    service = ModelQueryService(cast(OpcUaClientProtocol, client), _model())
+    client = FakeOpcUaClient(namespace_infos=infos)
+    service = ModelQueryService(client, _model())
 
     first = await service.get_namespaces()
     second = await service.get_namespaces()
@@ -132,13 +113,13 @@ async def test_get_namespaces_uses_cache() -> None:
         {"uri": "http://example.com/custom", "displayName": "Custom"},
     ]
     assert [item.model_dump() for item in second] == [item.model_dump() for item in first]
-    assert client.calls == 1
+    assert client.snapshot_runtime_metrics().namespace_reads == 1
 
 
 @pytest.mark.asyncio
 async def test_get_namespaces_wraps_client_errors() -> None:
-    client = _FakeOpcUaClient([], error=RuntimeError("namespace read failed"))
-    service = ModelQueryService(cast(OpcUaClientProtocol, client), _model())
+    client = FakeOpcUaClient(namespace_infos=[], error=RuntimeError("namespace read failed"))
+    service = ModelQueryService(client, _model())
     with pytest.raises(ApplicationServiceError) as exc_info:
         await service.get_namespaces()
     assert exc_info.value.status_code == 502
@@ -147,13 +128,13 @@ async def test_get_namespaces_wraps_client_errors() -> None:
 
 @pytest.mark.asyncio
 async def test_get_namespace_infos_uses_cache_and_empty_default() -> None:
-    client = _FakeOpcUaClient([])
-    service = ModelQueryService(cast(OpcUaClientProtocol, client), _model())
+    client = FakeOpcUaClient(namespace_infos=[])
+    service = ModelQueryService(client, _model())
     first = await service.get_namespace_infos()
     second = await service.get_namespace_infos()
     assert first == []
     assert second == []
-    assert client.calls == 1
+    assert client.snapshot_runtime_metrics().namespace_reads == 1
 
 
 @pytest.mark.asyncio
@@ -162,7 +143,7 @@ async def test_get_object_types_returns_items_and_honors_namespace_filter() -> N
         OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/", display_name="UA"),
         OpcUaNamespaceInfo(uri="http://example.com/custom", display_name="Custom"),
     ]
-    client = _FakeOpcUaClient(infos)
+    client = FakeOpcUaClient(namespace_infos=infos)
     client.object_types = [
         OpcUaObjectTypeInfo(
             node_id="ns=1;i=1001",
@@ -172,7 +153,7 @@ async def test_get_object_types_returns_items_and_honors_namespace_filter() -> N
             properties={},
         )
     ]
-    service = ModelQueryService(cast(OpcUaClientProtocol, client), _model())
+    service = ModelQueryService(client, _model())
 
     all_items = await service.get_object_types()
     assert len(all_items) == 1
@@ -188,8 +169,8 @@ async def test_get_object_types_returns_items_and_honors_namespace_filter() -> N
 
 @pytest.mark.asyncio
 async def test_get_object_types_wraps_client_errors() -> None:
-    client = _FakeOpcUaClient([], error=RuntimeError("object type read failed"))
-    service = ModelQueryService(cast(OpcUaClientProtocol, client), _model())
+    client = FakeOpcUaClient(namespace_infos=[], error=RuntimeError("object type read failed"))
+    service = ModelQueryService(client, _model())
     with pytest.raises(ApplicationServiceError) as exc_info:
         await service.get_object_types()
     assert exc_info.value.status_code == 502
@@ -201,7 +182,7 @@ async def test_get_relationship_types_contains_defaults_and_model_graph_items() 
     model = _model()
     model.graph_relationship_names = {"ConnectedTo"}
     model.graph_relationship_namespace_by_id = {"ConnectedTo": "http://example.com/custom"}
-    service = ModelQueryService(cast(OpcUaClientProtocol, _FakeOpcUaClient([])), model)
+    service = ModelQueryService(FakeOpcUaClient(namespace_infos=[]), model)
 
     items = await service.get_relationship_types()
     element_ids = {item["elementId"] for item in items}
@@ -235,7 +216,7 @@ async def test_get_relationship_types_uses_modelled_inverse_names() -> None:
         "MonitoredBy": "http://example.com/custom",
     }
     model.graph_relationship_inverse_by_id = {"Monitors": "MonitoredBy", "MonitoredBy": "Monitors"}
-    service = ModelQueryService(cast(OpcUaClientProtocol, _FakeOpcUaClient([])), model)
+    service = ModelQueryService(FakeOpcUaClient(namespace_infos=[]), model)
 
     items = await service.get_relationship_types(namespace_uri="http://example.com/custom")
     assert {item["elementId"] for item in items} == {"Monitors", "MonitoredBy"}
@@ -252,7 +233,7 @@ async def test_get_relationship_types_emits_each_reverse_record_once() -> None:
         "Beta": "http://example.com/custom",
     }
     model.graph_relationship_inverse_by_id = {"Alpha": "Shared", "Beta": "Shared"}
-    service = ModelQueryService(cast(OpcUaClientProtocol, _FakeOpcUaClient([])), model)
+    service = ModelQueryService(FakeOpcUaClient(namespace_infos=[]), model)
 
     items = await service.get_relationship_types(namespace_uri="http://example.com/custom")
     assert len(items) == len(set(item["elementId"] for item in items))
@@ -264,7 +245,7 @@ async def test_get_relationship_types_emits_each_reverse_record_once() -> None:
 
 @pytest.mark.asyncio
 async def test_get_objects_returns_model_nodes_and_filtering() -> None:
-    service = ModelQueryService(cast(OpcUaClientProtocol, _FakeOpcUaClient([])), _model())
+    service = ModelQueryService(FakeOpcUaClient(namespace_infos=[]), _model())
 
     all_objects = await service.get_objects()
     assert len(all_objects) == 1
@@ -290,7 +271,7 @@ async def test_get_objects_metadata_resolves_type_namespace_from_index() -> None
     node.source_type_id = "ns=2;s=MachineryType"
     model.namespace_uri_by_index = {0: "http://opcfoundation.org/UA/", 2: "http://example.com/custom"}
 
-    service = ModelQueryService(cast(OpcUaClientProtocol, _FakeOpcUaClient([])), model)
+    service = ModelQueryService(FakeOpcUaClient(namespace_infos=[]), model)
     metadata = (await service.get_objects(element_ids=["asset-root"], include_metadata=True))[0]["metadata"]
     assert isinstance(metadata, dict)
     assert metadata["typeNamespaceUri"] == "http://example.com/custom"

@@ -116,6 +116,7 @@ jobs:
           tags: ${{ steps.image_ref.outputs.name }}:scan-${{ github.sha }}
           build-args: |
             BUILD_VERSION=${{ steps.build_version.outputs.build_version }}
+            INSTALL_OTEL=true
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -149,6 +150,10 @@ jobs:
 
       - name: Build Docker image (push on non-PR events)
         if: ${{ github.event_name != 'pull_request' }}
+        # The registry image ships the optional OTel SDK/exporter, so `I3X_OTEL_ENABLED=true` as
+        # docker-compose.yml advertises it is truthful for pulls of the published image and not
+        # only for local builds. The scan build above passes the same arg, so Trivy sees exactly
+        # the dependencies that are published.
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -159,6 +164,7 @@ jobs:
           annotations: ${{ steps.metadata.outputs.annotations }}
           build-args: |
             BUILD_VERSION=${{ steps.build_version.outputs.build_version }}
+            INSTALL_OTEL=true
           sbom: true
           provenance: mode=max
           cache-from: type=gha

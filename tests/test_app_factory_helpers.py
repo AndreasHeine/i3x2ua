@@ -15,6 +15,7 @@ from fastapi import FastAPI
 from fastapi.routing import APIRoute
 from starlette.requests import Request
 
+from i3x_server import telemetry
 from i3x_server.application.services.model_cache import get_or_build_model
 from i3x_server.application.state import GatewayState, ObjectTypeContextCache, install_gateway_state
 from i3x_server.bootstrap import app_factory, runtime_setup
@@ -404,6 +405,9 @@ async def test_periodic_refresh_builds_outside_lock_and_readers_keep_old_revisio
 
 @pytest.mark.parametrize("enabled", [False, True])
 def test_create_app_configures_native_telemetry(monkeypatch: pytest.MonkeyPatch, enabled: bool) -> None:
+    # Export availability is pinned: without the ``otel`` extra the SDK/exporter is absent and
+    # ``auto_configure`` must degrade, so the assertion cannot depend on the test environment.
+    monkeypatch.setattr(telemetry, "missing_otel_export_modules", lambda: ())
     monkeypatch.setattr(settings, "otel_enabled", enabled)
     monkeypatch.setenv("OTEL_SERVICE_NAME", "test-service")
     app = create_app()

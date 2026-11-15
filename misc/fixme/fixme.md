@@ -19,7 +19,7 @@ Use the required checks in [.github/workflows/quality.yml](../../.github/workflo
 - [x] Prevent subscription mapping from hanging on composition cycles: track visited nodes and enforce node/depth budgets before acquiring the registry lock; keep the locked section limited to committing results.
 - [x] Add regression tests for cyclic mappings, including the `maxDepth=0` case, and verify the event loop remains responsive.
 - [x] Stop returning upstream exception text in API error responses; retain useful diagnostic details in server-side logs and add response tests for affected routes and services.
-- [ ] Make OpenTelemetry behavior consistent between the published image and deployment configuration: install the required OTel support or disable the advertised setting, and emit a gateway-owned startup diagnostic when tracing is unavailable.
+- [x] Make OpenTelemetry behavior consistent between the published image and deployment configuration: install the required OTel support or disable the advertised setting, and emit a gateway-owned startup diagnostic when tracing is unavailable.
 - [ ] Add request IDs to nginx access logs, including the incoming request ID; ensure the proxy logs remain useful when application INFO and uvicorn access logs are disabled.
 - [ ] Add a readiness endpoint based on model-built and upstream-connected state while keeping liveness static.
 - [ ] Configure a graceful-shutdown budget in the container and server that accommodates the existing task, MCP, and SSE cleanup.

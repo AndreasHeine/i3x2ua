@@ -24,6 +24,12 @@ This pulls in:
 FastAPI always installs `opentelemetry-api`. The SDK and exporter remain optional
 and are installed by the `otel` extra.
 
+Published container images install the extra as part of the build
+(`INSTALL_OTEL=true` in `.github/workflows/docker.yml`), so `I3X_OTEL_ENABLED=true` works for
+`ghcr.io/andreasheine/i3x2ua` pulls as well as local compose builds. In an environment without
+the extra the gateway logs a startup warning naming the missing modules instead of exporting
+silently.
+
 ---
 
 ## Environment Variables

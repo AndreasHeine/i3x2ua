@@ -20,6 +20,9 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 COPY pyproject.toml uv.lock README.md /app/
 COPY i3x_server /app/i3x_server
 
+# Registry builds pass `INSTALL_OTEL=true` (.github/workflows/docker.yml), so the published image
+# can export the traces docker-compose.yml advertises. The default keeps a lean image for
+# deployments that do not enable tracing.
 ARG INSTALL_OTEL=false
 RUN --mount=type=cache,target=/root/.cache/uv \
     if [ "$INSTALL_OTEL" = "true" ]; then \

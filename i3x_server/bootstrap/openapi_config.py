@@ -14,6 +14,7 @@ from typing import Any
 from fastapi.routing import APIRoute
 from fastapi.telemetry import TelemetryConfig
 
+from i3x_server import telemetry
 from i3x_server.api.v1.contracts import HttpErrorResponse
 from i3x_server.config.settings import settings
 
@@ -83,14 +84,18 @@ def telemetry_config() -> TelemetryConfig:
 
     Read from the import-time settings snapshot, like every other document field: the document
     is built once at startup, so re-parsing the environment per app would only change what the
-    schema advertises mid-process.
+    schema advertises mid-process. ``auto_configure`` additionally requires the optional
+    SDK/exporter: without them FastAPI only fails to build the export pipeline and reports that
+    on its own logger, so the gateway declines the attempt and lets
+    :func:`i3x_server.bootstrap.runtime_setup.diagnose_otel_capability` say why. The capability
+    is probed only when tracing is enabled, because probing resolves the optional packages.
     """
     return {
         "tracing": settings.otel_enabled,
         "metrics": settings.otel_enabled,
         "logs": False,
         "operation_spans": settings.otel_enabled,
-        "auto_configure": settings.otel_enabled,
+        "auto_configure": settings.otel_enabled and not telemetry.missing_otel_export_modules(),
     }
 
 

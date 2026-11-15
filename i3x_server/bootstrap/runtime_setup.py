@@ -23,7 +23,7 @@ from typing import Any
 
 from fastapi import FastAPI
 
-from i3x_server import logging_format
+from i3x_server import logging_format, telemetry
 from i3x_server.api.mcp.jsonrpc import shutdown_mcp_transport
 from i3x_server.api.v1.objecttype_helpers import warm_object_type_context
 from i3x_server.application.state import GatewayState, gateway_state
@@ -61,6 +61,31 @@ def _prepare_otel_environment() -> None:
     os.environ.setdefault("OTEL_SERVICE_NAME", settings.otel_service_name)
     if settings.otel_otlp_endpoint:
         os.environ.setdefault("OTEL_EXPORTER_OTLP_ENDPOINT", settings.otel_otlp_endpoint)
+
+
+def diagnose_otel_capability() -> None:
+    """State at startup when tracing is enabled but automatic OTLP export cannot run.
+
+    Registry images install the ``otel`` extra, so this fires only when a deployment turns
+    ``I3X_OTEL_ENABLED`` on in an environment without the SDK/exporter. FastAPI raises
+    ``FastAPIError`` for the same condition and its lifespan guard swallows it into the
+    ``fastapi`` logger, so an operator would see tracing advertised and simply missing; the
+    gateway names the missing modules and the remedy on its own logger instead.
+    """
+    if not settings.otel_enabled:
+        return
+    missing = telemetry.missing_otel_export_modules()
+    if not missing:
+        return
+    # The standard variable is what actually reaches the exporter, and deployment may set it
+    # without the gateway setting, so it is reported with precedence over the setting.
+    endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT") or settings.otel_otlp_endpoint or "unset"
+    logger.warning(
+        "OpenTelemetry enabled but automatic export cannot run modules=%s endpoint=%s; "
+        "tracing and metrics are not exported. Install the 'otel' extra or set I3X_OTEL_ENABLED=false",
+        ",".join(missing),
+        endpoint,
+    )
 
 
 def _installed_client(state: GatewayState) -> OpcUaClientProtocol:

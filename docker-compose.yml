@@ -3,6 +3,8 @@ services:
     build:
       context: .
       args:
+        # Tracing needs the optional SDK/exporter; the registry build installs the same extra,
+        # so I3X_OTEL_ENABLED below is truthful for registry pulls as well as this local build.
         INSTALL_OTEL: "true"
     image: i3x2ua-local
     # image: ghcr.io/andreasheine/i3x2ua:master

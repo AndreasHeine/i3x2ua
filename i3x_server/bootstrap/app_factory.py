@@ -39,6 +39,9 @@ from i3x_server.version import get_server_version
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Start the runtime, serve, then close it in reverse startup order."""
     runtime_setup._configure_logging()
+    # Before any telemetry seam runs: an image without the optional SDK/exporter must say so on
+    # the gateway's own logger rather than leave FastAPI's swallowed startup warning as the only trace.
+    runtime_setup.diagnose_otel_capability()
     runtime_setup.configure_otel_metrics()
     runtime = get_settings()
     mcp_enabled = runtime.enable_mcp

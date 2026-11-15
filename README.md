@@ -589,6 +589,17 @@ address-space model is built and the upstream connection is `Connected`, and `50
 missing conditions otherwise. The nginx container has its own health check that requests `/v1/info`
 *through* the proxy, so a healthy proxy means the proxy → upstream path actually works.
 
+Termination is budgeted in both the server and the container. uvicorn drains in-flight requests
+for `--timeout-graceful-shutdown 30` seconds, then the lifespan closes the runtime: it cancels
+and awaits the background tasks, releases monitored nodes (upstream round-trips), drains MCP and
+SSE sessions and disconnects the upstream. Docker's default grace period is 10s, which would
+SIGKILL that cleanup mid-way and leave a subscription or MCP session half-closed, so compose sets
+`stop_grace_period: 45s` - the 30s drain plus 15s for the cleanup after it. Outside compose the
+same budget is `docker stop -t 45`, and a Kubernetes pod needs
+`terminationGracePeriodSeconds: 45`. The drain stays below nginx's `proxy_read_timeout 60s`, so
+the proxy never times out a request the gateway is still draining, and it exceeds the upstream
+request timeout (10s) that in-flight reads are bounded by.
+
 The proxy ships hardening by default, not as a docs-only recommendation: every server block
 refuses framing (`X-Frame-Options: DENY`, matching the gateway CSP's `frame-ancestors 'none'`),
 the HTTPS server adds HSTS, and per-client request rate (`limit_req`, 20 r/s, burst 40) and

@@ -22,7 +22,7 @@ Use the required checks in [.github/workflows/quality.yml](../../.github/workflo
 - [x] Make OpenTelemetry behavior consistent between the published image and deployment configuration: install the required OTel support or disable the advertised setting, and emit a gateway-owned startup diagnostic when tracing is unavailable.
 - [x] Add request IDs to nginx access logs, including the incoming request ID; ensure the proxy logs remain useful when application INFO and uvicorn access logs are disabled.
 - [x] Add a readiness endpoint based on model-built and upstream-connected state while keeping liveness static.
-- [ ] Configure a graceful-shutdown budget in the container and server that accommodates the existing task, MCP, and SSE cleanup.
+- [x] Configure a graceful-shutdown budget in the container and server that accommodates the existing task, MCP, and SSE cleanup.
 - [ ] Remove working default credentials from the shipped compose configuration or fail safely when defaults are used with writes/MCP enabled.
 - [ ] Remove tracked private sample keys, replace them with safe setup-time generation, and rotate/revoke any credentials or certificates that must no longer be trusted.
 - [ ] Mark the proxy-less README quickstart as development-only and make the production security boundary and TLS/auth requirements explicit.

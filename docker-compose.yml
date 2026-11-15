@@ -29,6 +29,8 @@ services:
       - "--no-access-log"  # uvicorn's access log is redundant: nginx logs every request with its rid=.
       - "--timeout-keep-alive"
       - "75" # Raise keep-alive timeout above Nginx's 60s
+      - "--timeout-graceful-shutdown"
+      - "30" # Bound uvicorn's wait for in-flight requests; stop_grace_period covers the cleanup after it.
     environment:
       I3X_OPCUA_ENDPOINT: opc.tcp://opcua.umati.app:4843  # OPC UA server endpoint URL.
       # I3X_OPCUA_USERNAME: ""  # Optional OPC UA username.
@@ -76,8 +78,13 @@ services:
     security_opt:
       - no-new-privileges:true
     pids_limit: 256
+    # The 30s drain above, plus slack for the lifespan cleanup that follows it (task
+    # cancellation, monitored-node releases, MCP/SSE drain, upstream disconnect). Docker sends
+    # SIGKILL 10s after SIGTERM by default, which would cut that cleanup mid-way and leave a
+    # subscription or MCP session half-closed.
+    stop_grace_period: 45s
     healthcheck:
-      # Static readiness route; busybox wget is cheaper than spawning Python per probe.
+      # Static liveness route; busybox wget is cheaper than spawning Python per probe.
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8000/health"]
       interval: 30s
       timeout: 5s
@@ -155,6 +162,10 @@ services:
     security_opt:
       - no-new-privileges:true
     pids_limit: 128
+    # Proxy workers can outlive the default 10s grace: the SSE and MCP blocks allow
+    # proxy_read_timeout 3600s, so a worker holding a stream is SIGKILLed mid-stream unless the
+    # grace period is long enough for the gateway's 30s drain to close those streams first.
+    stop_grace_period: 45s
     healthcheck:
       # Probes through the proxy rather than the app: it proves the proxy -> upstream path works,
       # which the app's own /health check cannot (a healthy app behind a broken proxy is unusable).

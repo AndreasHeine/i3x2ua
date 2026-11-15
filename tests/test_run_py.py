@@ -112,3 +112,19 @@ def test_uvicorn_command_disables_concurrency_limit_with_zero(isolated_environ: 
 def test_uvicorn_command_inserts_reload_before_app_target(isolated_environ: dict[str, str]) -> None:
     command = _command(reload_enabled=True)
     assert command[:6] == [sys.executable, "-m", "uvicorn", "i3x_server.main:app", "--reload", "--host"]
+
+
+def test_uvicorn_command_applies_default_graceful_shutdown_budget(isolated_environ: dict[str, str]) -> None:
+    """uvicorn's default wait for in-flight requests is unbounded; `run.py` sets a budget."""
+    assert _command()[-4:-2] == ["--timeout-graceful-shutdown", "30"]
+
+
+def test_uvicorn_command_honours_graceful_shutdown_override(isolated_environ: dict[str, str]) -> None:
+    isolated_environ["I3X_UVICORN_GRACEFUL_SHUTDOWN_SECONDS"] = "20"
+    assert _command()[-4:-2] == ["--timeout-graceful-shutdown", "20"]
+
+
+def test_uvicorn_command_disables_graceful_shutdown_with_zero(isolated_environ: dict[str, str]) -> None:
+    """`0` keeps uvicorn's unbounded wait, like the concurrency limit does."""
+    isolated_environ["I3X_UVICORN_GRACEFUL_SHUTDOWN_SECONDS"] = "0"
+    assert "--timeout-graceful-shutdown" not in _command()

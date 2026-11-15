@@ -50,6 +50,13 @@ def _uvicorn_command(host: str, port: str, reload_enabled: bool, uvicorn_loop: s
     ``--limit-concurrency`` sheds load spikes with 503 instead of queueing them on the
     event loop; the value is tunable because the HTTP side has no OPC UA budget attached
     to it. ``0`` or an empty value disables the limit (unlimited concurrency).
+
+    ``--timeout-graceful-shutdown`` bounds uvicorn's wait for in-flight requests on
+    termination. Its default is unbounded, and the lifespan cleanup that runs *after* that
+    wait (task cancellation, monitored-node releases, MCP/SSE drain, upstream disconnect) is
+    not covered by it, so a container must also allow for it: the shipped image and compose
+    use ``30`` seconds with ``stop_grace_period: 45s``. ``0`` or an empty value keeps the
+    unbounded wait.
     """
     command = [
         sys.executable,
@@ -65,6 +72,10 @@ def _uvicorn_command(host: str, port: str, reload_enabled: bool, uvicorn_loop: s
     ]
     if reload_enabled:
         command.insert(4, "--reload")
+
+    graceful_shutdown = os.getenv("I3X_UVICORN_GRACEFUL_SHUTDOWN_SECONDS", "30").strip()
+    if graceful_shutdown and graceful_shutdown != "0":
+        command += ["--timeout-graceful-shutdown", graceful_shutdown]
 
     limit_concurrency = os.getenv("I3X_UVICORN_LIMIT_CONCURRENCY", "200").strip()
     if limit_concurrency and limit_concurrency != "0":

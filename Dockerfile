@@ -93,4 +93,8 @@ ENTRYPOINT ["/sbin/tini", "--"]
 # --limit-concurrency sheds load with 503 instead of piling requests onto the single
 # event loop. Workers stay at 1 on purpose: subscription state and MCP sessions are
 # process-local, so multiple workers would strand them (see docs/SCALING_GUIDE.md).
-CMD ["python", "-m", "uvicorn", "i3x_server.main:app", "--host", "0.0.0.0", "--port", "8000", "--limit-concurrency", "200"]
+# --timeout-graceful-shutdown bounds uvicorn's wait for in-flight requests; the lifespan
+# cleanup that runs after it (task cancellation, monitored-node releases, MCP/SSE drain,
+# upstream disconnect) needs a container grace period on top of that drain - compose sets
+# stop_grace_period: 45s, because Docker's default 10s would SIGKILL mid-cleanup.
+CMD ["python", "-m", "uvicorn", "i3x_server.main:app", "--host", "0.0.0.0", "--port", "8000", "--limit-concurrency", "200", "--timeout-graceful-shutdown", "30"]

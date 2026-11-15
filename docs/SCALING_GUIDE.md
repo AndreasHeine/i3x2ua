@@ -193,6 +193,17 @@ observable to clients and keeps the loop responsive instead of queueing until th
 Raise it together with the OPC UA concurrency budgets when the upstream server can absorb more
 traffic; lowering it protects a constrained upstream and a small container.
 
+## Shutdown Budget
+
+Load shedding protects the running instance; termination needs its own budget. uvicorn waits for
+in-flight requests without a bound unless `--timeout-graceful-shutdown` is set, and the lifespan
+cleanup runs *after* that wait - cancelling and awaiting the background tasks, releasing monitored
+nodes, draining MCP and SSE sessions, then disconnecting the upstream. Docker sends SIGKILL 10s
+after SIGTERM by default, so both numbers have to be written down: the shipped deployment drains
+for 30s inside a 45s `stop_grace_period`. `run.py` reads the drain from
+`I3X_UVICORN_GRACEFUL_SHUTDOWN_SECONDS` (default `30`, `0` keeps the unbounded wait), and each
+worker process gets the same drain in a multi-worker deployment.
+
 ---
 
 # Multi-Worker Deployment

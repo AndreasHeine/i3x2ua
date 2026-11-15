@@ -320,6 +320,18 @@ command:
 ```
 `run.py` takes the same value from `I3X_UVICORN_LIMIT_CONCURRENCY`.
 
+### Budget the Shutdown
+Termination needs room for uvicorn's drain *and* the cleanup that follows it:
+```yaml
+command:
+  - --timeout-graceful-shutdown
+  - "30"  # Bound the wait for in-flight requests
+stop_grace_period: 45s  # Drain plus the lifespan cleanup after it
+```
+`run.py` takes the drain from `I3X_UVICORN_GRACEFUL_SHUTDOWN_SECONDS` (`0` keeps uvicorn's
+unbounded default). Outside compose use `docker stop -t 45`; a Kubernetes pod needs
+`terminationGracePeriodSeconds: 45`.
+
 ### Cache The SPA Assets
 The generated NGINX config already serves the hashed `/_app/` assets from disk with
 `Cache-Control: public, immutable`; keep that block when customizing `entrypoint.sh`.

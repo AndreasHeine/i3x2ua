@@ -273,7 +273,9 @@ async def browse_references_descriptions(
                             browse_next_references_total += 1
                     if recovery_result.ContinuationPoint:
                         continuation_entries.append((node, recovery_result.ContinuationPoint, refs))
-                    continue
+                # Reconciliation consumed this round; continue with the fresh points
+                # instead of falling through to the BrowseNext result handling below.
+                continue
 
             client.runtime_metrics.browse_next_calls += 1
             if len(next_results) != len(continuation_entries):

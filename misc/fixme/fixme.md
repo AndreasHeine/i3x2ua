@@ -41,7 +41,7 @@ Use the required checks in [.github/workflows/quality.yml](../../.github/workflo
 - [x] Represent read failures distinctly from missing values; do not turn transport failures into `GoodNoData`.
 - [x] Record an observable sequence gap when subscription notifications are dropped.
 - [x] Add per-client admission/resource controls for subscriptions and MCP streams; cap response sizes, history ranges, base64 decode sizes, and stream queues; enable the HTTP limiter by default when deployed behind a trusted proxy.
-- [ ] Add real asyncua-server contract tests for critical transport paths, including write access, variant types, method calls, malformed metadata, browse/handle reconciliation, and reconnect resync.
+- [x] Add real asyncua-server contract tests for critical transport paths, including write access, variant types, method calls, malformed metadata, browse/handle reconciliation, and reconnect resync.
 - [ ] Unify the divergent OPC UA test fakes and add assertions that validate response bodies and behavior, not only status codes or method presence.
 - [ ] Replace wall-clock sleeps/deadlines in flake-prone tests with injected clocks or deterministic synchronization.
 - [ ] Add a parity test between `.env-example` and `Settings`; document supported log-format configuration and align template/compose values with actual defaults.

@@ -14,7 +14,13 @@ from i3x_server.application.dependencies import (
     get_subscription_service,
 )
 from i3x_server.application.ports.subscription import SubscriptionServicePort
-from i3x_server.application.state import GatewayState, install_gateway_state
+from i3x_server.application.services.model_cache import build_model
+from i3x_server.application.state import (
+    GatewayState,
+    ObjectTypeContextCache,
+    ObjectTypeContextSlot,
+    install_gateway_state,
+)
 from i3x_server.domain.ports.opcua import OpcUaClientProtocol
 from i3x_server.model.builder import ModelBuilder
 from i3x_server.schemas.i3x import ModelNode
@@ -169,3 +175,85 @@ async def test_get_or_build_model_waits_for_preload_task() -> None:
     request.app.state.model_preload_task = asyncio.create_task(preload())
     result = await get_or_build_model(request)
     assert result is cached
+
+
+@pytest.mark.asyncio
+async def test_lazy_build_keeps_the_object_type_context_cache() -> None:
+    """One invalidation policy: contexts stay cached; the token key detects model changes."""
+    built = _build_result()
+    cache = ObjectTypeContextCache(max_entries=2)
+    cache.store(
+        ObjectTypeContextSlot(
+            model_token="older-model", namespace_token=(), object_types_token="types", context=object()
+        )
+    )
+
+    class FakeBuilder:
+        async def build(self) -> BuildResult:
+            return built
+
+    state = GatewayState(
+        model_cache=None,
+        model_builder=cast(ModelBuilder, FakeBuilder()),
+        object_type_context_cache=cache,
+    )
+
+    assert await get_or_build_model(_request_with_state(state)) is built
+    assert state.object_type_context_cache is cache
+
+
+@pytest.mark.asyncio
+async def test_forced_build_shares_the_in_flight_lazy_build() -> None:
+    """A forced caller (preload/refresh) joins the running walk instead of starting a second one."""
+    built = _build_result()
+    release = asyncio.Event()
+
+    class FakeBuilder:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def build(self) -> BuildResult:
+            self.calls += 1
+            await release.wait()
+            return built
+
+    builder = FakeBuilder()
+    state = GatewayState(model_cache=None, model_builder=cast(ModelBuilder, builder))
+    request = _request_with_state(state)
+
+    lazy = asyncio.create_task(get_or_build_model(request))
+    await asyncio.sleep(0)
+    forced = asyncio.create_task(build_model(request, force=True))
+    await asyncio.sleep(0)
+
+    release.set()
+    assert await lazy is built
+    assert await forced is built
+    assert builder.calls == 1
+    assert state.model_cache is built
+
+
+@pytest.mark.asyncio
+async def test_stale_build_cannot_publish_over_a_fresher_result() -> None:
+    """A walk that lost the publish race is discarded; its callers get the published result."""
+    published = _build_result()
+    late = _build_result()
+
+    class FakeBuilder:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def build(self) -> BuildResult:
+            self.calls += 1
+            return late
+
+    builder = FakeBuilder()
+    state = GatewayState(model_cache=published, model_builder=cast(ModelBuilder, builder))
+    # A fresher walk already published under a higher sequence; this walk starts afterwards
+    # but carries a lower sequence, as a slow walk that began earlier would.
+    state.model_published_sequence = 2
+
+    result = await build_model(_request_with_state(state), force=True)
+    assert result is published
+    assert state.model_cache is published
+    assert builder.calls == 1

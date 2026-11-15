@@ -403,6 +403,227 @@ async def test_periodic_refresh_builds_outside_lock_and_readers_keep_old_revisio
     assert await get_or_build_model(request) is new
 
 
+@pytest.mark.asyncio
+async def test_periodic_refresh_joins_an_in_flight_lazy_build(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Refresh must not walk the server a second time while a lazy build is running."""
+    built = BuildResult(
+        nodes_by_id={},
+        root_ids=[],
+        children_by_id={},
+        instances_by_type_id={},
+        property_to_node={},
+        action_to_method={},
+    )
+    lazy_started = asyncio.Event()
+    lazy_release = asyncio.Event()
+    refresh_started = asyncio.Event()
+    refresh_release = asyncio.Event()
+    calls = 0
+
+    class _ModelBuilder:
+        async def build(self) -> BuildResult:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                lazy_started.set()
+                await lazy_release.wait()
+            else:
+                refresh_started.set()
+                await refresh_release.wait()
+            return built
+
+    class _OpcUaClient:
+        def reset_runtime_metrics(self) -> None:
+            return None
+
+        async def get_namespace_infos(self) -> list[object]:
+            return []
+
+        async def get_object_types(self) -> list[object]:
+            return []
+
+    async def _no_warm(_: FastAPI, _model: BuildResult) -> None:
+        return None
+
+    app = FastAPI()
+    install_gateway_state(
+        app,
+        GatewayState(
+            model_cache=None,
+            model_builder=cast(ModelBuilder, _ModelBuilder()),
+            opcua_client=cast(OpcUaClientProtocol, _OpcUaClient()),
+        ),
+    )
+    monkeypatch.setattr(settings, "model_refresh_interval_seconds", 1)
+    monkeypatch.setattr(runtime_setup, "_warm_object_type_context", _no_warm)
+
+    lazy = asyncio.create_task(get_or_build_model(Request({"type": "http", "app": app})))
+    await lazy_started.wait()
+
+    async def _fake_sleep(_: float) -> None:
+        # Stop the refresh loop once the published cache exists.
+        if app.state.model_cache is not None:
+            raise asyncio.CancelledError()
+
+    monkeypatch.setattr(asyncio, "sleep", _fake_sleep)
+    refresh = asyncio.create_task(_run_periodic_model_refresh(app))
+    await asyncio.sleep(0)
+
+    lazy_release.set()
+    # Harmless when the refresh joins the walk; releases the second walk if one started.
+    refresh_release.set()
+    assert await lazy is built
+    assert calls == 1
+    assert app.state.model_cache is built
+    with pytest.raises(asyncio.CancelledError):
+        await refresh
+
+
+@pytest.mark.asyncio
+async def test_lazy_build_joins_an_in_flight_refresh(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A lazy request during a refresh awaits the refresh walk instead of starting its own."""
+    built = BuildResult(
+        nodes_by_id={},
+        root_ids=[],
+        children_by_id={},
+        instances_by_type_id={},
+        property_to_node={},
+        action_to_method={},
+    )
+    build_started = asyncio.Event()
+    build_release = asyncio.Event()
+    calls = 0
+
+    class _ModelBuilder:
+        async def build(self) -> BuildResult:
+            nonlocal calls
+            calls += 1
+            build_started.set()
+            await build_release.wait()
+            return built
+
+    class _OpcUaClient:
+        def reset_runtime_metrics(self) -> None:
+            return None
+
+        async def get_namespace_infos(self) -> list[object]:
+            return []
+
+        async def get_object_types(self) -> list[object]:
+            return []
+
+    async def _no_warm(_: FastAPI, _model: BuildResult) -> None:
+        return None
+
+    app = FastAPI()
+    install_gateway_state(
+        app,
+        GatewayState(
+            model_cache=None,
+            model_builder=cast(ModelBuilder, _ModelBuilder()),
+            opcua_client=cast(OpcUaClientProtocol, _OpcUaClient()),
+        ),
+    )
+    monkeypatch.setattr(settings, "model_refresh_interval_seconds", 1)
+    monkeypatch.setattr(runtime_setup, "_warm_object_type_context", _no_warm)
+
+    async def _fake_sleep(_: float) -> None:
+        if app.state.model_cache is not None:
+            raise asyncio.CancelledError()
+
+    monkeypatch.setattr(asyncio, "sleep", _fake_sleep)
+    refresh = asyncio.create_task(_run_periodic_model_refresh(app))
+    await build_started.wait()
+
+    # The refresh walk is registered in the shared in-flight slot so lazy callers can join it.
+    assert app.state.model_build_task is not None
+
+    lazy = asyncio.create_task(get_or_build_model(Request({"type": "http", "app": app})))
+    await asyncio.sleep(0)
+
+    build_release.set()
+    assert await lazy is built
+    assert calls == 1
+    assert app.state.model_cache is built
+    assert app.state.model_build_task is None
+    with pytest.raises(asyncio.CancelledError):
+        await refresh
+
+
+@pytest.mark.asyncio
+async def test_model_preload_publishes_through_the_build_slot(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Preload builds through the shared slot and swaps under the model lock."""
+    model = BuildResult(
+        nodes_by_id={},
+        root_ids=[],
+        children_by_id={},
+        instances_by_type_id={},
+        property_to_node={},
+        action_to_method={},
+    )
+    build_started = asyncio.Event()
+    build_release = asyncio.Event()
+
+    class _ModelBuilder:
+        async def build(self) -> BuildResult:
+            build_started.set()
+            await build_release.wait()
+            return model
+
+    class _OpcUaClient:
+        def reset_runtime_metrics(self) -> None:
+            return None
+
+        def snapshot_runtime_metrics(self) -> Any:
+            return SimpleNamespace(
+                browse_calls=0,
+                browse_next_calls=0,
+                read_calls=0,
+                history_read_calls=0,
+                method_calls=0,
+                browse_nodes=0,
+                browse_initial_references=0,
+                browse_next_references=0,
+                read_nodes=0,
+                history_read_nodes=0,
+                browse_tree_calls=0,
+                browse_tree_nodes_last=0,
+                namespace_reads=0,
+                namespace_count_last=0,
+                namespace_info_builds=0,
+                namespace_info_count_last=0,
+                object_type_reads=0,
+                object_type_count_last=0,
+            )
+
+    async def _no_warm(_: FastAPI, _model: BuildResult) -> None:
+        return None
+
+    app = FastAPI()
+    install_gateway_state(
+        app,
+        GatewayState(
+            opcua_client=cast(OpcUaClientProtocol, _OpcUaClient()),
+            model_builder=cast(ModelBuilder, _ModelBuilder()),
+            model_cache=None,
+        ),
+    )
+    monkeypatch.setattr(settings, "model_preload_blocking", False)
+    monkeypatch.setattr(runtime_setup, "_warm_object_type_context", _no_warm)
+
+    preload = asyncio.create_task(_run_model_preload(app))
+    await build_started.wait()
+
+    # Readers can join the preload walk through the slot; the cache swaps only at publish.
+    assert app.state.model_build_task is not None
+    assert app.state.model_cache is None
+
+    build_release.set()
+    await preload
+    assert app.state.model_cache is model
+    assert app.state.model_build_task is None
+
+
 @pytest.mark.parametrize("enabled", [False, True])
 def test_create_app_configures_native_telemetry(monkeypatch: pytest.MonkeyPatch, enabled: bool) -> None:
     # Export availability is pinned: without the ``otel`` extra the SDK/exporter is absent and

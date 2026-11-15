@@ -26,6 +26,7 @@ from fastapi import FastAPI
 from i3x_server import logging_format, telemetry
 from i3x_server.api.mcp.jsonrpc import shutdown_mcp_transport
 from i3x_server.api.v1.objecttype_helpers import warm_object_type_context
+from i3x_server.application.services.model_cache import build_model
 from i3x_server.application.state import GatewayState, gateway_state
 from i3x_server.config.settings import Settings, get_settings, settings
 from i3x_server.domain.ports.opcua import OpcUaClientProtocol
@@ -33,7 +34,6 @@ from i3x_server.infrastructure.opcua.client import OpcUaClient, model_refresh_bu
 from i3x_server.infrastructure.subscriptions.service import SubscriptionService
 from i3x_server.mcp.invocation import get_api_prefix, init_mcp_metrics
 from i3x_server.mcp.tool_definitions import build_mcp_tools, load_overrides, load_prompt_overrides
-from i3x_server.model.builder import ModelBuilder
 from i3x_server.prompts.registry import PromptRegistry
 from i3x_server.schemas.state import BuildResult
 
@@ -94,14 +94,6 @@ def _installed_client(state: GatewayState) -> OpcUaClientProtocol:
     if client is None:
         raise RuntimeError("OPC UA client is not installed on the app state")
     return client
-
-
-def _installed_model_builder(state: GatewayState) -> ModelBuilder:
-    """Same guarantee as :func:`_installed_client`, for the model builder."""
-    builder = state.model_builder
-    if builder is None:
-        raise RuntimeError("ModelBuilder is not installed on the app state")
-    return builder
 
 
 def build_opcua_client() -> OpcUaClient:
@@ -216,11 +208,11 @@ async def _run_model_preload(app: FastAPI) -> None:
         client.reset_runtime_metrics()
         build_started = asyncio.get_running_loop().time()
         # Background refresh work runs under the dedicated refresh budget so a rebuild
-        # cannot consume the read budget that request handlers share.
-        async with model_refresh_budget(client):
-            preload = await _installed_model_builder(state).build()
+        # cannot consume the read budget that request handlers share. The walk goes
+        # through the shared build pipeline, so lazy callers join it and the swap is
+        # serialized under the model lock.
+        preload = await build_model(app, force=True, throttle=lambda: model_refresh_budget(client))
         build_duration_s = asyncio.get_running_loop().time() - build_started
-        state.model_cache = preload
         metrics = client.snapshot_runtime_metrics()
         duration_s = asyncio.get_running_loop().time() - started
         logger.info(
@@ -297,19 +289,15 @@ async def _run_periodic_model_refresh(app: FastAPI) -> None:
 
         started = perf_counter()
         try:
-            # Build outside the lock so readers keep serving the previous model revision
-            # while the refresh round-trips run; only the swap is serialized. The refresh
-            # budget keeps the rebuild's round-trips from consuming the read budget that
+            # One build pipeline: the refresh joins an in-flight lazy walk instead of
+            # browsing the server a second time, and lazy callers join this walk through
+            # the shared slot. The walk runs outside the model lock so readers keep
+            # serving the previous revision; the pipeline publishes only the newest walk,
+            # so a stale result never replaces a fresher revision. Under the refresh
+            # budget the rebuild's round-trips do not consume the read budget that
             # request handlers share.
             client = _installed_client(state)
-            async with model_refresh_budget(client):
-                built = await _installed_model_builder(state).build()
-            async with state.model_lock:
-                state.model_cache = built
-                # Keep the existing object-type context unless the refreshed model is
-                # materially different. This avoids a pointless rebuild on equivalent
-                # refreshes while still allowing _get_object_type_context() to detect
-                # genuine changes via content-derived tokens.
+            built = await build_model(app, force=True, throttle=lambda: model_refresh_budget(_installed_client(state)))
             logger.info(
                 "Periodic model refresh finished nodes=%d roots=%d properties=%d actions=%d duration_s=%.3f",
                 len(built.nodes_by_id),

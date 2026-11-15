@@ -124,6 +124,10 @@ class GatewayState:
     model_cache: BuildResult | None = None
     model_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     model_build_task: asyncio.Task[BuildResult] | None = None
+    # Build pipeline ordering: a sequence is assigned when a walk starts and the swap only
+    # publishes the newest one, so a stale walk cannot replace a fresher revision.
+    model_build_sequence: int = 0
+    model_published_sequence: int = 0
     model_preload_task: asyncio.Task[None] | None = None
     model_refresh_task: asyncio.Task[None] | None = None
     opcua_retry_task: asyncio.Task[None] | None = None

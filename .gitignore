@@ -35,6 +35,10 @@ coverage*.xml
 # Shipped production template: deploy.sh copies it on fresh clones, so it must be tracked.
 !docs/.env.production.example
 
+# Generated certificate and key material: created at setup with
+# scripts/generate_https_dev_cert.py / scripts/generate_opcua_client_cert.py, never committed.
+certs/**/*.pem
+
 # IDE / Editor
 .vscode/
 .idea/

@@ -251,7 +251,8 @@ uv run uvicorn i3x_server.main:app --reload --host 127.0.0.1 --port 8000 --loop 
 
 If you do not set `I3X_ENABLE_MCP`, the app starts without MCP support and `/mcp` returns `404`.
 
-Use encrypted OPC UA with the included sample client certificate (development/testing):
+Use encrypted OPC UA with a client certificate generated at setup (development/testing). The
+repository tracks no PEM material, so the bundle has to be generated first:
 
 ```bash
 uv run python scripts/generate_opcua_client_cert.py
@@ -561,6 +562,12 @@ Run with compose:
 docker compose up -d
 ```
 
+Before the first run on a fresh clone, set the proxy credentials in `.env`
+(`NGINX_BASIC_AUTH_USER` / `NGINX_BASIC_AUTH_PASSWORD`) and generate the TLS bundle
+(`uv run python scripts/generate_https_dev_cert.py`). The repository tracks neither: nginx refuses
+to start when Basic Auth is enabled without credentials, or when HTTPS is enabled without a
+certificate and key.
+
 Build your own image with an explicit server version for `/v1/info`:
 
 ```bash
@@ -634,7 +641,9 @@ If you enable HTTPS, mount or place the certificate files in the configured cert
 
 If your OPC UA server runs on the Docker host machine, set `I3X_OPCUA_ENDPOINT` to `opc.tcp://host.docker.internal:<port>` instead of `127.0.0.1`.
 
-For local HTTPS testing with the nginx reverse proxy, generate sample certificates:
+For local HTTPS testing with the nginx reverse proxy, generate sample certificates. No PEM
+material is tracked by git, so a fresh clone has none and nginx refuses to start with
+`NGINX_HTTPS_ENABLED=1` until the bundle exists:
 
 ```bash
 uv run python scripts/generate_https_dev_cert.py

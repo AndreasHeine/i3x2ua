@@ -46,7 +46,9 @@ certificate directory:
 - `https-sample/fullchain.pem`
 - `https-sample/privkey.pem`
 
-For local use, the repository's `certs` directory is mounted by default. Replace
+For local use, the repository's `certs` directory is mounted by default. The repository tracks no
+PEM material, so generate the bundle first (`uv run python scripts/generate_https_dev_cert.py`).
+Replace
 the sample certificates for any real deployment. The example redirects HTTP to
 HTTPS.
 

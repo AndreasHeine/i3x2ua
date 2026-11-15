@@ -154,7 +154,9 @@ When security mode is not `None`, policy + certificate + key must be configured,
 
 ## Sample Client Certificate (Encrypted Connection)
 
-This repository includes a sample OPC UA client certificate/key pair for local encrypted connection tests:
+Generate a sample OPC UA client certificate/key pair at setup for local encrypted connection
+tests. The repository tracks no PEM material (`certs/**/*.pem` is ignored), so the files exist
+only after generation:
 
 - `certs/opcua-client-sample/client-cert.pem`
 - `certs/opcua-client-sample/client-key.pem`

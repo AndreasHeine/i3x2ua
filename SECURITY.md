@@ -93,18 +93,29 @@ Production environments should:
 - Enable audit logging (the shipped nginx proxy logs every request, successful ones included)
 - Keep operating systems and containers updated
 
-## Committed Sample Certificates and Keys
+## Sample Certificates and Keys
 
-The repository ships development sample material in `certs/https-sample/` and
-`certs/opcua-client-sample/`, including private keys. Because they are published in a
-public repository, these keys are **public samples** and carry no confidentiality or
-identity value:
+Private key material is not part of the repository. Development certificate bundles are generated
+at setup:
 
-- Never use them in production or as client credentials.
-- They exist so `docker compose` and the sample clients work out of the box.
-- Generate your own material with `scripts/generate_https_dev_cert.py` and
-  `scripts/generate_opcua_client_cert.py` (or a CA) and keep private keys out of the
-  repository and out of image builds.
+```bash
+uv run python scripts/generate_https_dev_cert.py
+uv run python scripts/generate_opcua_client_cert.py
+```
+
+The sample bundles that were committed earlier - `certs/https-sample/privkey.pem` with its
+certificate and `certs/opcua-client-sample/client-key.pem` with its certificate - are
+**withdrawn**. Their private keys were published in a public repository and remain reachable in
+git history, so they carry no confidentiality or identity value and must not be trusted anywhere:
+
+- Untrust the sample OPC UA client certificate on any server that previously trusted it, and
+  issue new per-environment material for real clients.
+- Reissue TLS material for any endpoint that used the sample key; anyone with the repository can
+  read it and impersonate the edge.
+- Never use the sample material in production or as client credentials.
+- Generate unique material with the scripts above (or a CA), keep private keys out of the
+  repository and out of image builds, and note that regenerated material under `certs/` is
+  ignored by git.
 
 ## Vulnerability Handling Process
 

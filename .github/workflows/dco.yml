@@ -14,6 +14,15 @@ jobs:
     name: Verify Signed-off-by trailers
     runs-on: ubuntu-26.04
     timeout-minutes: 10
+    # Event payload values are handed to the shell as environment variables. `${{ }}` inside a script
+    # substitutes text before the runner executes it, so a payload value must never be interpolated
+    # into the script body.
+    env:
+      EVENT_NAME: ${{ github.event_name }}
+      PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      PUSH_BEFORE: ${{ github.event.before }}
+      PUSH_SHA: ${{ github.sha }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -44,14 +53,14 @@ jobs:
             return 1
           }
 
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            range="${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            range="${PR_BASE_SHA}..${PR_HEAD_SHA}"
             echo "Checking commit range: ${range}"
             mapfile -t commits < <(git rev-list --no-merges "${range}")
           else
-            before="${{ github.event.before }}"
+            before="$PUSH_BEFORE"
             if [[ -n "${before}" && "${before}" != "0000000000000000000000000000000000000000" ]]; then
-              range="${before}..${{ github.sha }}"
+              range="${before}..${PUSH_SHA}"
               echo "Checking commit range: ${range}"
               mapfile -t commits < <(git rev-list --no-merges "${range}")
             else

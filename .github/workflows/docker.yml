@@ -25,6 +25,16 @@ env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
   PLATFORMS: linux/amd64,linux/arm64/v8
+  # Event payload values are handed to the shell as environment variables. `${{ }}` inside a script
+  # substitutes text before the runner executes it, so payload text that contains shell metacharacters
+  # would become code; the dispatch tag is caller-typed and also selects the checkout ref and the
+  # published Docker tag, so it is validated against a plain tag name before anything consumes it.
+  EVENT_NAME: ${{ github.event_name }}
+  DISPATCH_TAG: ${{ github.event.inputs.tag }}
+  RELEASE_TAG: ${{ github.event.release.tag_name }}
+  PR_NUMBER: ${{ github.event.pull_request.number }}
+  REF_NAME: ${{ github.ref_name }}
+  CHECKOUT_REF: ${{ github.event.inputs.tag || github.ref }}
 
 jobs:
   build-and-push:
@@ -39,12 +49,27 @@ jobs:
       cancel-in-progress: true
 
     steps:
+      - name: Validate dispatch tag
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        shell: bash
+        run: |
+          # The dispatched tag selects the checkout ref and the published Docker tag, so it must be a
+          # plain tag name: no slashes, quotes, spaces, shell metacharacters or leading dash (git would
+          # read that as an option). Anything else fails here, before the checkout or tag list can act
+          # on it.
+          if [[ ! "$DISPATCH_TAG" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]; then
+            echo "Invalid dispatch tag: '$DISPATCH_TAG' is not a plain tag name"
+            exit 1
+          fi
+          echo "Dispatch tag accepted: $DISPATCH_TAG"
+
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
           # A dispatched build must publish the code of the tag it names, not the default branch:
           # otherwise the image is built from master but tagged and stamped with the older release.
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          # The value comes from env, and the step above has already rejected malformed tags.
+          ref: ${{ env.CHECKOUT_REF }}
 
       - name: Log in to GitHub Container Registry
         if: ${{ github.event_name != 'pull_request' }}
@@ -64,7 +89,7 @@ jobs:
             type=raw,value=master,enable=${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
             type=raw,value=${{ github.ref_name }},enable=${{ github.event_name == 'release' && github.event.action == 'published' }}
             type=raw,value=latest,enable=${{ github.event_name == 'release' && github.event.action == 'published' }}
-            type=raw,value=${{ github.event.inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' }}
+            type=raw,value=${{ env.DISPATCH_TAG }},enable=${{ github.event_name == 'workflow_dispatch' }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -84,14 +109,14 @@ jobs:
         id: build_version
         shell: bash
         run: |
-          if [[ "${{ github.event_name }}" == "release" ]]; then
-            value="${{ github.event.release.tag_name }}"
-          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            value="${{ github.event.inputs.tag }}"
-          elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            value="pr-${{ github.event.pull_request.number }}"
+          if [[ "$EVENT_NAME" == "release" ]]; then
+            value="$RELEASE_TAG"
+          elif [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            value="$DISPATCH_TAG"
+          elif [[ "$EVENT_NAME" == "pull_request" ]]; then
+            value="pr-${PR_NUMBER}"
           else
-            value="${{ github.ref_name }}"
+            value="$REF_NAME"
           fi
 
           value="${value#refs/tags/}"

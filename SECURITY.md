@@ -33,17 +33,26 @@ E-Mail: info@andreas-heine.net
 
 ### Dependency Management
 
-Dependencies are continuously monitored and updated through automated tooling:
+Dependency updates are owned by a single bot, Renovate. It proposes upgrades for the Python pins and
+the uv lockfile, the Dockerfile and Compose images, GitHub Actions pins, and the frontend packages.
+Upgrades arrive as pull requests and are never auto-merged, so every one is reviewed and must pass CI.
 
-- Dependabot
-- Renovate
+`asyncua` is not upgraded automatically for major or minor versions, and lockfile maintenance does not
+move it. The gateway's transport adapter and the OPC UA fixture server rely on that library's internal
+state, so a bump is a deliberate change reviewed against the conformance suite. Patch updates are
+proposed, but they must pass CI before merging.
 
-These tools regularly:
+Vulnerability detection is separate from upgrade proposals and runs in CI:
 
-- Identify vulnerable dependencies
-- Propose dependency upgrades
-- Track new security advisories
-- Help maintain version currency
+- `pip-audit` checks the locked Python environment against the PyPI advisory database
+- Trivy scans the built image before anything is published
+- The frontend is installed from its committed lockfile with `npm ci`
+
+The bot regularly:
+
+- Proposes dependency upgrades for every managed dependency source
+- Keeps the lockfiles refreshed within their pinned ranges
+- Helps maintain version currency
 
 ### Release Management
 

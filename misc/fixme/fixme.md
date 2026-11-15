@@ -27,7 +27,7 @@ Use the required checks in [.github/workflows/quality.yml](../../.github/workflo
 - [x] Remove tracked private sample keys, replace them with safe setup-time generation, and rotate/revoke any credentials or certificates that must no longer be trusted.
 - [x] Mark the proxy-less README quickstart as development-only and make the production security boundary and TLS/auth requirements explicit.
 - [x] Restrict forwarded-header trust to the known proxy; update rate-limit documentation to use a trusted remote-address key rather than caller-controlled `X-Forwarded-For`.
-- [ ] Add dependency-bot rules preventing automatic asyncua major/minor upgrades; consolidate Dependabot and Renovate ownership to one bot.
+- [x] Add dependency-bot rules preventing automatic asyncua major/minor upgrades; consolidate Dependabot and Renovate ownership to one bot.
 - [ ] Pass `workflow_dispatch` values through environment variables rather than interpolating them into shell commands or Docker tags.
 - [ ] Correct stale CI and coverage comments identified by the review.
 - [ ] Verify phase: pass the applicable checks in the Passing bar; run focused regression tests; inspect compose, nginx, published-image build configuration, and workflow changes for safe defaults.

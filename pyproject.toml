@@ -8,6 +8,10 @@ classifiers = [
     "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
 ]
 dependencies = [
+    # Pinned exactly, and the dependency bot never proposes a major or minor bump
+    # (.github/renovate.json): infrastructure/opcua/recovery.py and conf-test-server/server.py
+    # depend on asyncua's internal state, so a bump is a deliberate change tested against the
+    # conformance suite.
     "asyncua==2.1.0",
     "fastapi==0.163.0",
     "jsonschema[format]>=4.23.0",

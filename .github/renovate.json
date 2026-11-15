@@ -29,6 +29,18 @@
       "matchUpdateTypes": ["major"],
       "enabled": true,
       "pinDigests": true
+    },
+    {
+      "matchPackageNames": ["asyncua"],
+      "matchUpdateTypes": ["major", "minor", "lockfileMaintenance"],
+      "enabled": false,
+      "description": "infrastructure/opcua/recovery.py and conf-test-server/server.py use asyncua internals, so major and minor bumps must be decided by hand against the conformance suite; lockfile maintenance must not move the pin either."
+    },
+    {
+      "matchPackageNames": ["asyncua"],
+      "matchUpdateTypes": ["patch"],
+      "automerge": false,
+      "description": "Patch bumps are proposed, but the same internals mean they must pass CI before merging."
     }
   ]
 }

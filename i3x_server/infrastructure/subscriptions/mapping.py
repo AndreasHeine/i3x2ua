@@ -4,7 +4,9 @@ Pure functions over the built model: which OPC UA source nodes a registered
 object should monitor, and the node_id-to-elementId lookup used to label
 updates. No service state is involved. A ``max_nodes`` budget makes an oversized
 subtree a rejection instead of a silent truncation: monitoring thousands of
-nodes per object would multiply into unbounded upstream load.
+nodes per object would multiply into unbounded upstream load. ``max_depth_limit``
+bounds the traversal depth itself, so a request for unlimited depth cannot walk
+an arbitrarily deep chain.
 """
 
 from __future__ import annotations
@@ -25,6 +27,31 @@ def _raise_budget_exceeded(element_id: str, node_count: int, max_nodes: int) -> 
     )
 
 
+def _raise_depth_exceeded(element_id: str, depth: int, max_depth: int) -> None:
+    raise AdmissionLimitError(
+        400,
+        "CompositionDepthLimit",
+        "Composition depth limit exceeded",
+        {"elementId": element_id, "compositionDepth": depth, "maxDepth": max_depth},
+    )
+
+
+def _composition_depth_limit(max_depth: int, max_depth_limit: int | None) -> tuple[int, bool]:
+    """Effective composition level limit and whether the gateway bound cuts the request short.
+
+    ``max_depth`` is the caller's request (``0`` = unlimited), ``max_depth_limit`` the gateway's
+    own bound (``None``/``0`` = unbounded). The second value says the traversal stopped below
+    what the caller asked for, so an incomplete mapping is rejected rather than committed.
+    """
+    requested = max_depth if max_depth > 0 else None
+    bound = max_depth_limit if max_depth_limit is not None and max_depth_limit > 0 else None
+    if requested is None:
+        return (bound, bound is not None) if bound is not None else (0, False)
+    if bound is None:
+        return requested, False
+    return min(requested, bound), requested > bound
+
+
 def _build_source_index(model: BuildResult) -> dict[str, ModelNode]:
     """Source-node-id lookup over the whole model.
 
@@ -40,12 +67,14 @@ def _resolve_object_mappings(
     model: BuildResult,
     source_index: dict[str, ModelNode],
     max_nodes: int | None = None,
+    max_depth_limit: int | None = None,
 ) -> dict[str, str]:
     """Monitored node_id-to-elementId mappings for one registered object.
 
     Keys are canonical node ids only; the service adds the case-folded aliases when it
     merges the mappings, mirroring the full-resolution behavior. ``max_nodes`` bounds the
-    subtree of this single object (``None`` = no gateway-side budget).
+    subtree of this single object (``None`` = no gateway-side budget), ``max_depth_limit``
+    the composition depth beneath it.
     """
     node = model.nodes_by_id.get(element_id)
     if node is None:
@@ -54,13 +83,20 @@ def _resolve_object_mappings(
         if max_nodes is not None and max_nodes < 1:
             _raise_budget_exceeded(element_id, 1, max_nodes)
         return {element_id: element_id}
-    return _collect_property_source_mappings(model, node, max_depth=max_depth, max_nodes=max_nodes)
+    return _collect_property_source_mappings(
+        model,
+        node,
+        max_depth=max_depth,
+        max_nodes=max_nodes,
+        max_depth_limit=max_depth_limit,
+    )
 
 
 def _resolve_monitored_node_ids(
     monitored_objects: dict[str, int],
     model: BuildResult,
     max_nodes: int | None = None,
+    max_depth_limit: int | None = None,
 ) -> tuple[set[str], dict[str, str]]:
     """Node set and label lookup for all monitored objects, under an optional shared budget."""
     source_index = _build_source_index(model)
@@ -68,7 +104,14 @@ def _resolve_monitored_node_ids(
     node_to_element_id: dict[str, str] = {}
 
     for element_id, max_depth in monitored_objects.items():
-        mappings = _resolve_object_mappings(element_id, max_depth, model, source_index, max_nodes=max_nodes)
+        mappings = _resolve_object_mappings(
+            element_id,
+            max_depth,
+            model,
+            source_index,
+            max_nodes=max_nodes,
+            max_depth_limit=max_depth_limit,
+        )
         # The budget counts the *union* of monitored nodes: subtrees that share a node must not
         # double-count it, and a total above the cap is a rejection, not a truncation.
         union = node_ids | set(mappings.keys())
@@ -86,16 +129,31 @@ def _collect_property_source_mappings(
     root: ModelNode,
     max_depth: int,
     max_nodes: int | None = None,
+    max_depth_limit: int | None = None,
 ) -> dict[str, str]:
+    """Composition descendants of ``root`` as monitored node_id-to-elementId mappings.
+
+    ``max_nodes`` bounds the subtree of this single object (``None`` = no gateway-side budget)
+    and ``max_depth_limit`` the composition depth beneath it (``None``/``0`` = unbounded).
+    ``visited`` makes ``HasComponent``/``ComponentOf`` cycles terminate: without it an
+    unlimited request (``maxDepth=0``) re-enqueued cyclic nodes forever.
+    """
     if root.kind == "property":
         return {root.source_node_id: root.id}
 
     result: dict[str, str] = {}
-    depth_limit = max(0, max_depth)
+    depth_limit, limited_by_gateway = _composition_depth_limit(max_depth, max_depth_limit)
+    visited: set[str] = set()
     queue: deque[tuple[str, int]] = deque([(root.id, 0)])
 
     while queue:
         node_id, depth = queue.popleft()
+        if node_id in visited:
+            # A shared or cyclic descendant is collected once; re-enqueueing it would repeat work
+            # forever on a cycle.
+            continue
+        visited.add(node_id)
+
         node = model.nodes_by_id.get(node_id)
         if node is None:
             continue
@@ -109,6 +167,10 @@ def _collect_property_source_mappings(
             continue
 
         if depth_limit != 0 and depth >= depth_limit:
+            # Children already visited are not lost; only genuinely unvisited descendants mean
+            # the gateway bound cut the requested subtree short.
+            if limited_by_gateway and any(child_id not in visited for child_id in model.composition_child_ids(node.id)):
+                _raise_depth_exceeded(root.id, depth, depth_limit)
             continue
 
         # Spec: recursion follows HasComponent only; hierarchical children (HasChildren)

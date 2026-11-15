@@ -67,6 +67,7 @@ class SubscriptionService:
         native_backoff_seconds: float = 30.0,
         max_subscriptions: int = 1000,
         subtree_max_nodes: int = 5000,
+        subtree_max_depth: int = 32,
         native_max_bins: int = 100,
         native_max_monitored_items: int = 10000,
     ) -> None:
@@ -100,6 +101,10 @@ class SubscriptionService:
         # items, so the caps reject instead of accepting and degrading every other client.
         self._max_subscriptions = max(1, int(max_subscriptions))
         self._subtree_max_nodes = max(1, int(subtree_max_nodes))
+        # Composition depth a monitored subtree may reach. ``0`` means unbounded, matching the
+        # documented meaning of ``I3X_COMPOSITION_MAX_DEPTH``; the traversal itself always
+        # terminates because cyclic composition nodes are visited once.
+        self._subtree_max_depth = max(0, int(subtree_max_depth))
         self._native_max_bins = max(1, int(native_max_bins))
         self._native_max_monitored_items = max(1, int(native_max_monitored_items))
         self._cleanup_task: asyncio.Task[None] | None = None
@@ -297,10 +302,11 @@ class SubscriptionService:
         monitored_objects: dict[str, int],
         model: BuildResult,
         max_nodes: int | None = None,
+        max_depth_limit: int | None = None,
     ) -> tuple[set[str], dict[str, str]]:
         # Kept as the service-facing entry point; the mapping lives in ``mapping.py``.
-        # ``max_nodes`` defaults to the service's subtree budget.
-        return items._resolve_monitored_node_ids(self, monitored_objects, model, max_nodes)
+        # ``max_nodes`` and ``max_depth_limit`` default to the service's subtree budgets.
+        return items._resolve_monitored_node_ids(self, monitored_objects, model, max_nodes, max_depth_limit)
 
     def _collect_property_source_mappings(
         self,
@@ -308,10 +314,11 @@ class SubscriptionService:
         root: ModelNode,
         max_depth: int,
         max_nodes: int | None = None,
+        max_depth_limit: int | None = None,
     ) -> dict[str, str]:
         # Kept as the service-facing entry point; the mapping lives in ``mapping.py``.
-        # ``max_nodes`` defaults to the service's subtree budget.
-        return items._collect_property_source_mappings(self, model, root, max_depth, max_nodes)
+        # ``max_nodes`` and ``max_depth_limit`` default to the service's subtree budgets.
+        return items._collect_property_source_mappings(self, model, root, max_depth, max_nodes, max_depth_limit)
 
     def schedule_node_datachange(
         self,

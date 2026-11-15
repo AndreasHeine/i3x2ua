@@ -377,9 +377,12 @@ async def test_register_and_unregister_update_mappings_incrementally(monkeypatch
         model: BuildResult,
         source_index: dict[str, ModelNode],
         max_nodes: int | None = None,
+        max_depth_limit: int | None = None,
     ) -> dict[str, str]:
         resolves.append(element_id)
-        return real_resolve(element_id, max_depth, model, source_index, max_nodes=max_nodes)
+        return real_resolve(
+            element_id, max_depth, model, source_index, max_nodes=max_nodes, max_depth_limit=max_depth_limit
+        )
 
     monkeypatch.setattr(mapping, "_build_source_index", counted_build)
     monkeypatch.setattr(mapping, "_resolve_object_mappings", counted_resolve)
@@ -853,6 +856,288 @@ def test_mapping_budget_names_the_offending_object_and_counts_unions() -> None:
 
     with pytest.raises(AdmissionLimitError):
         mapping._resolve_monitored_node_ids({"prop-0": 1, "asset-root": 0}, model, max_nodes=2)
+
+
+class _LookupBudgetModel(BuildResult):
+    """``BuildResult`` that fails a traversal exceeding a test lookup budget.
+
+    A composition cycle made the mapping BFS re-enqueue nodes forever, so an assertion-only
+    regression test would hang instead of failing. The lookup cap turns unbounded work into a
+    deterministic failure.
+    """
+
+    def __init__(self, *args: Any, lookup_budget: int, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.lookup_budget = lookup_budget
+        self.lookup_calls = 0
+
+    def composition_child_ids(self, node_id: str) -> list[str]:
+        self.lookup_calls += 1
+        if self.lookup_calls > self.lookup_budget:
+            raise AssertionError(f"composition traversal exceeded its lookup budget ({self.lookup_budget})")
+        return super().composition_child_ids(node_id)
+
+
+def _cyclic_model(*, lookup_budget: int = 100) -> _LookupBudgetModel:
+    """``HasComponent`` cycle ``cycle-a`` -> ``cycle-b`` -> ``cycle-c`` -> ``cycle-a``.
+
+    OPC UA servers may model ``HasComponent``/``ComponentOf`` reciprocally, so the composition
+    plane is a graph, not a tree: monitoring must terminate on a cycle.
+    """
+    nodes = {
+        "cycle-a": ModelNode(
+            id="cycle-a", name="Cycle A", kind="asset", type=None, children=["cycle-b"], source_node_id="ns=2;s=CycleA"
+        ),
+        "cycle-b": ModelNode(
+            id="cycle-b", name="Cycle B", kind="asset", type=None, children=["cycle-c"], source_node_id="ns=2;s=CycleB"
+        ),
+        "cycle-c": ModelNode(
+            id="cycle-c", name="Cycle C", kind="asset", type=None, children=["cycle-a"], source_node_id="ns=2;s=CycleC"
+        ),
+        "prop-a": ModelNode(
+            id="prop-a",
+            name="Temperature",
+            kind="property",
+            type="Double",
+            children=[],
+            source_node_id="ns=2;s=CycleTemperature",
+        ),
+        "prop-b": ModelNode(
+            id="prop-b",
+            name="Pressure",
+            kind="property",
+            type="Double",
+            children=[],
+            source_node_id="ns=2;s=CyclePressure",
+        ),
+        "prop-c": ModelNode(
+            id="prop-c", name="Speed", kind="property", type="Double", children=[], source_node_id="ns=2;s=CycleSpeed"
+        ),
+    }
+    return _LookupBudgetModel(
+        nodes_by_id=nodes,
+        root_ids=["cycle-a"],
+        children_by_id={
+            "cycle-a": ["prop-a", "cycle-b"],
+            "cycle-b": ["prop-b", "cycle-c"],
+            "cycle-c": ["prop-c", "cycle-a"],
+            "prop-a": [],
+            "prop-b": [],
+            "prop-c": [],
+        },
+        instances_by_type_id={},
+        property_to_node={
+            "prop-a": "ns=2;s=CycleTemperature",
+            "prop-b": "ns=2;s=CyclePressure",
+            "prop-c": "ns=2;s=CycleSpeed",
+        },
+        action_to_method={},
+        composition_children_by_id={
+            "cycle-a": ["prop-a", "cycle-b"],
+            "cycle-b": ["prop-b", "cycle-c"],
+            "cycle-c": ["prop-c", "cycle-a"],
+        },
+        lookup_budget=lookup_budget,
+    )
+
+
+def _chain_model(levels: int) -> BuildResult:
+    """Composition chain of ``levels`` asset levels, one property at the deepest level."""
+    nodes: dict[str, ModelNode] = {}
+    composition: dict[str, list[str]] = {}
+    for index in range(levels):
+        node_id = f"level-{index}"
+        nodes[node_id] = ModelNode(
+            id=node_id,
+            name=f"Level {index}",
+            kind="asset",
+            type=None,
+            children=[],
+            source_node_id=f"ns=2;s=Level{index}",
+        )
+        composition[node_id] = [f"level-{index + 1}"] if index < levels - 1 else ["chain-prop"]
+    nodes["chain-prop"] = ModelNode(
+        id="chain-prop",
+        name="ChainProp",
+        kind="property",
+        type="Double",
+        children=[],
+        source_node_id="ns=2;s=ChainProp",
+    )
+    composition["chain-prop"] = []
+    return BuildResult(
+        nodes_by_id=nodes,
+        root_ids=["level-0"],
+        children_by_id={node_id: [] for node_id in nodes},
+        instances_by_type_id={},
+        property_to_node={"chain-prop": "ns=2;s=ChainProp"},
+        action_to_method={},
+        composition_children_by_id=composition,
+    )
+
+
+def test_mapping_terminates_on_composition_cycle_at_max_depth_zero() -> None:
+    """``maxDepth=0`` (unlimited) must not re-enqueue cyclic composition nodes forever."""
+    model = _cyclic_model()
+    result = mapping._collect_property_source_mappings(model, model.nodes_by_id["cycle-a"], max_depth=0)
+    assert result == {
+        "ns=2;s=CycleTemperature": "prop-a",
+        "ns=2;s=CyclePressure": "prop-b",
+        "ns=2;s=CycleSpeed": "prop-c",
+    }
+    # Each object is visited once: the cycle guard terminates, it does not truncate.
+    assert model.lookup_calls <= 4
+
+
+def test_mapping_with_cycle_and_depth_limit_collects_each_property_once() -> None:
+    """A depth-limited request on a cyclic graph still reports one mapping per property."""
+    model = _cyclic_model()
+    result = mapping._collect_property_source_mappings(model, model.nodes_by_id["cycle-a"], max_depth=2)
+    assert result == {"ns=2;s=CycleTemperature": "prop-a", "ns=2;s=CyclePressure": "prop-b"}
+
+
+def test_mapping_rejects_composition_deeper_than_the_gateway_bound() -> None:
+    """A gateway depth bound that cuts the requested subtree short is rejected, not truncated."""
+    model = _chain_model(6)
+
+    with pytest.raises(AdmissionLimitError) as exc_info:
+        mapping._collect_property_source_mappings(model, model.nodes_by_id["level-0"], max_depth=0, max_depth_limit=3)
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.error_code == "CompositionDepthLimit"
+    assert exc_info.value.details == {"elementId": "level-0", "compositionDepth": 3, "maxDepth": 3}
+
+
+def test_mapping_gateway_depth_bound_leaves_shallow_requests_untouched() -> None:
+    """The bound only rejects when it actually cuts descendants off; shallow subtrees stay valid."""
+    model = _chain_model(3)
+
+    unlimited = mapping._collect_property_source_mappings(
+        model, model.nodes_by_id["level-0"], max_depth=0, max_depth_limit=3
+    )
+    assert unlimited == {"ns=2;s=ChainProp": "chain-prop"}
+
+    within = mapping._collect_property_source_mappings(
+        model, model.nodes_by_id["level-0"], max_depth=3, max_depth_limit=3
+    )
+    assert within == {"ns=2;s=ChainProp": "chain-prop"}
+
+    # A cyclic graph whose descendants the bound still covers must not be rejected: revisiting a
+    # visited node is not a lost descendant.
+    cyclic = _cyclic_model()
+    covered = mapping._collect_property_source_mappings(
+        cyclic, cyclic.nodes_by_id["cycle-a"], max_depth=0, max_depth_limit=3
+    )
+    assert covered == {
+        "ns=2;s=CycleTemperature": "prop-a",
+        "ns=2;s=CyclePressure": "prop-b",
+        "ns=2;s=CycleSpeed": "prop-c",
+    }
+
+
+@pytest.mark.asyncio
+async def test_register_items_with_composition_cycle_keeps_the_event_loop_responsive() -> None:
+    """A cyclic mapping must complete, commit, and let other subscription operations run."""
+    service = SubscriptionService(cast(OpcUaClientProtocol, FakeOpcUaClient()), interval_seconds=1)
+    created = await service.create_subscription(client_id="c1")
+    model = _cyclic_model()
+
+    ticks = 0
+
+    async def heartbeat() -> None:
+        nonlocal ticks
+        while True:
+            ticks += 1
+            await asyncio.sleep(0.01)
+
+    async def concurrent_reader() -> int:
+        observed = 0
+        for _ in range(3):
+            await service.list_subscriptions("c1")
+            observed += 1
+        return observed
+
+    heartbeat_task = asyncio.create_task(heartbeat())
+    reader_task = asyncio.create_task(concurrent_reader())
+    try:
+        assert (
+            await service.register_items("c1", created.subscription_id, ["cycle-a"], max_depth=0, model=model) is True
+        )
+        assert await reader_task == 3
+        assert ticks >= 1
+
+        state_obj = service._subscriptions[created.subscription_id]
+        assert state_obj.monitored_node_ids == {
+            "ns=2;s=CycleTemperature",
+            "ns=2;s=CyclePressure",
+            "ns=2;s=CycleSpeed",
+        }
+        assert state_obj.monitored_objects == {"cycle-a": 0}
+    finally:
+        heartbeat_task.cancel()
+        reader_task.cancel()
+        for task in (heartbeat_task, reader_task):
+            with suppress(asyncio.CancelledError):
+                await task
+        await service.close()
+
+
+@pytest.mark.asyncio
+async def test_register_items_resolves_mappings_outside_the_registry_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Budgets are enforced before the lock; the locked section only commits results."""
+    service = SubscriptionService(cast(OpcUaClientProtocol, FakeOpcUaClient()), interval_seconds=1)
+    created = await service.create_subscription(client_id="c1")
+    model = _model()
+
+    resolve = mapping._resolve_object_mappings
+    lock_held_during_resolution: list[bool] = []
+
+    def probe(*args: Any, **kwargs: Any) -> dict[str, str]:
+        lock_held_during_resolution.append(service._lock.locked())
+        return resolve(*args, **kwargs)
+
+    monkeypatch.setattr(mapping, "_resolve_object_mappings", probe)
+    assert await service.register_items("c1", created.subscription_id, ["asset-root"], max_depth=1, model=model) is True
+    assert lock_held_during_resolution
+    assert not any(lock_held_during_resolution)
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_register_items_applies_the_gateway_depth_bound() -> None:
+    """The service passes its composition depth bound into the mapping resolution."""
+    service = SubscriptionService(cast(OpcUaClientProtocol, FakeOpcUaClient()), interval_seconds=1, subtree_max_depth=2)
+    created = await service.create_subscription(client_id="c1")
+    model = _chain_model(6)
+
+    with pytest.raises(AdmissionLimitError) as exc_info:
+        await service.register_items("c1", created.subscription_id, ["level-0"], max_depth=0, model=model)
+    assert exc_info.value.error_code == "CompositionDepthLimit"
+
+    state_obj = service._subscriptions[created.subscription_id]
+    assert state_obj.monitored_node_ids == set()
+    assert state_obj.monitored_objects == {}
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_registrations_on_one_subscription_keep_both_objects() -> None:
+    """Racing registrations must not lose the object committed by the other one."""
+    service = SubscriptionService(cast(OpcUaClientProtocol, FakeOpcUaClient()), interval_seconds=1)
+    created = await service.create_subscription(client_id="c1")
+    model = _model()
+
+    results = await asyncio.gather(
+        service.register_items("c1", created.subscription_id, ["asset-root"], max_depth=1, model=model),
+        service.register_items("c1", created.subscription_id, ["asset-child"], max_depth=1, model=model),
+    )
+    assert list(results) == [True, True]
+
+    state_obj = service._subscriptions[created.subscription_id]
+    assert state_obj.monitored_objects == {"asset-root": 1, "asset-child": 1}
+    assert state_obj.monitored_node_ids == {"ns=2;s=Temperature", "ns=2;s=Pressure"}
+    await service.close()
 
 
 @pytest.mark.asyncio

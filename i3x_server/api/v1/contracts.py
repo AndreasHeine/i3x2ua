@@ -603,9 +603,9 @@ class RegisterMonitoredItemsRequest(BaseModel):
         description=(
             "Maximum composition depth to monitor beneath each registered object. "
             "Use 0 to monitor all descendant properties, bounded by the gateway's monitored-item "
-            "budget (`I3X_SUBSCRIPTION_SUBTREE_MAX_NODES`); an oversized subtree is rejected as "
-            "HTTP 400 instead of being truncated. Values above the gateway admission bound are "
-            "rejected as HTTP 400."
+            "budget (`I3X_SUBSCRIPTION_SUBTREE_MAX_NODES`) and composition depth bound "
+            "(`I3X_COMPOSITION_MAX_DEPTH`); an oversized subtree is rejected as HTTP 400 instead "
+            "of being truncated. Values above the gateway admission bound are rejected as HTTP 400."
         ),
     )
 

@@ -2,14 +2,16 @@
 
 Owns the mapping plumbing (model revision -> source index -> node ids/element ids) and
 the reconciliation of the shared node registry against a subscription's desired set.
-Network work stays outside the registry lock; helpers are reached through the service so
-patching a service method keeps affecting every path.
+Mapping resolution and network work stay outside the registry lock - the locked sections
+snapshot the state a resolution derives from and commit its results - so helpers are reached
+through the service and patching a service method keeps affecting every path.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from i3x_server.domain.errors import AdmissionLimitError
@@ -25,6 +27,72 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+@dataclass(slots=True)
+class _MappingSnapshot:
+    """Registry state a mapping resolution was derived from.
+
+    Resolution runs outside the registry lock, so committing its results has to prove the state
+    they were built against has not changed meanwhile.
+    """
+
+    token: str | None
+    depths: dict[str, int]
+    mappings: dict[str, dict[str, str]]
+
+
+def _snapshot_mappings(
+    subscription_state: state._SubscriptionState, depths: dict[str, int] | None = None
+) -> _MappingSnapshot:
+    """Copy the mapping state under the lock; ``depths`` overrides the target depth set."""
+    return _MappingSnapshot(
+        token=subscription_state.mapping_model_token,
+        depths=dict(subscription_state.monitored_objects) if depths is None else depths,
+        mappings=dict(subscription_state.object_mappings),
+    )
+
+
+def _snapshot_matches(subscription_state: state._SubscriptionState, snapshot: _MappingSnapshot) -> bool:
+    """Whether the registry state still matches what the pre-lock resolution derived from."""
+    return (
+        subscription_state.mapping_model_token == snapshot.token
+        and subscription_state.monitored_objects == snapshot.depths
+    )
+
+
+def _resolve_mappings_for_depths(
+    snapshot: _MappingSnapshot,
+    target_depths: dict[str, int],
+    model: BuildResult,
+    source_index: dict[str, ModelNode],
+    token: str,
+    budget_nodes: int,
+    budget_depth: int | None,
+) -> dict[str, dict[str, str]]:
+    """Prospective mappings for ``target_depths``, built into containers that are not yet committed.
+
+    A refreshed model revision invalidates every mapping built against the previous revision, so
+    nothing is reused; otherwise stored mappings survive for objects whose depth is unchanged.
+    The node and composition-depth budgets are enforced here, so an oversized subtree is rejected
+    before the registry lock is ever acquired.
+    """
+    stale_model = snapshot.token != token
+    object_mappings: dict[str, dict[str, str]] = {}
+    for element_id, depth in target_depths.items():
+        stored = snapshot.mappings.get(element_id)
+        if not stale_model and stored is not None and snapshot.depths.get(element_id) == depth:
+            object_mappings[element_id] = stored
+            continue
+        object_mappings[element_id] = mapping._resolve_object_mappings(
+            element_id,
+            depth,
+            model,
+            source_index,
+            max_nodes=budget_nodes,
+            max_depth_limit=budget_depth,
+        )
+    return object_mappings
+
+
 async def _register_items(
     service: SubscriptionService,
     client_id: str | None,
@@ -35,41 +103,52 @@ async def _register_items(
 ) -> bool:
     service._ensure_cleanup_task()
     requested_count = len(element_ids)
+    token = model_revision(model)
+    budget_nodes = service._subtree_max_nodes
+    budget_depth = service._subtree_max_depth
+    # The source index is a content cache keyed by the revision token, so it is safe to build
+    # outside the lock; nothing in the resolution phase awaits.
+    source_index = service._source_index(token, model)
+
     previous_monitored_nodes = 0
     monitored_nodes_count = 0
     monitored_objects_count = 0
+
+    # Mapping resolution is CPU-bound (now bounded by visited nodes and the node/depth budgets),
+    # so it runs outside the registry lock: holding the lock across a traversal stalls every other
+    # subscription operation, and an address-space cycle used to wedge the event loop entirely.
     async with service._lock:
         subscription_state = service._subscriptions.get(subscription_id)
         if subscription_state is None or (client_id is not None and subscription_state.client_id != client_id):
             return False
-        previous_node_ids = set(subscription_state.monitored_node_ids)
-        previous_monitored_nodes = len(previous_node_ids)
-        token = model_revision(model)
-        source_index = service._source_index(token, model)
-        budget = service._subtree_max_nodes
-        # Mappings are built into prospective containers and committed only after the budget
-        # check. A rejected registration must leave the previous monitored set intact -
-        # truncating silently would report monitoring that never happens upstream.
-        depths = dict(subscription_state.monitored_objects)
-        if subscription_state.mapping_model_token != token:
-            # A refreshed model invalidates every mapping built against the previous revision.
-            depths.update({element_id: max_depth for element_id in element_ids})
-            object_mappings = {
-                element_id: mapping._resolve_object_mappings(element_id, depth, model, source_index, max_nodes=budget)
-                for element_id, depth in depths.items()
-            }
-        else:
-            object_mappings = dict(subscription_state.object_mappings)
-            for element_id in element_ids:
-                known_depth = depths.get(element_id)
-                if known_depth == max_depth and element_id in subscription_state.object_mappings:
-                    continue
-                depths[element_id] = max_depth
-                object_mappings[element_id] = mapping._resolve_object_mappings(
-                    element_id, max_depth, model, source_index, max_nodes=budget
-                )
+        previous_monitored_nodes = len(subscription_state.monitored_node_ids)
+        snapshot = _snapshot_mappings(subscription_state)
+
+    target_depths = dict(snapshot.depths)
+    target_depths.update({element_id: max_depth for element_id in element_ids})
+    object_mappings = _resolve_mappings_for_depths(
+        snapshot, target_depths, model, source_index, token, budget_nodes, budget_depth
+    )
+
+    async with service._lock:
+        subscription_state = service._subscriptions.get(subscription_id)
+        if subscription_state is None or (client_id is not None and subscription_state.client_id != client_id):
+            return False
+        if not _snapshot_matches(subscription_state, snapshot):
+            # A concurrent register/unregister changed the state while the mappings were being
+            # built. Re-resolve against the current state instead of committing stale results;
+            # the traversal is bounded, so holding the lock here cannot wedge the loop.
+            snapshot = _snapshot_mappings(subscription_state)
+            target_depths = dict(snapshot.depths)
+            target_depths.update({element_id: max_depth for element_id in element_ids})
+            object_mappings = _resolve_mappings_for_depths(
+                snapshot, target_depths, model, source_index, token, budget_nodes, budget_depth
+            )
+        # The budget counts the *union* of monitored nodes across the subscription: a rejected
+        # registration must leave the previous monitored set intact, because truncating silently
+        # would report monitoring that never happens upstream.
         monitored_node_ids, node_to_element_id = service._merge_object_mappings(object_mappings)
-        if len(monitored_node_ids) > budget:
+        if len(monitored_node_ids) > budget_nodes:
             raise AdmissionLimitError(
                 400,
                 "MonitoredItemBudget",
@@ -77,10 +156,10 @@ async def _register_items(
                 {
                     "subscriptionId": subscription_id,
                     "monitoredNodes": len(monitored_node_ids),
-                    "maxNodes": budget,
+                    "maxNodes": budget_nodes,
                 },
             )
-        subscription_state.monitored_objects = depths
+        subscription_state.monitored_objects = target_depths
         subscription_state.mapping_model_token = token
         subscription_state.object_mappings = object_mappings
         subscription_state.monitored_node_ids = monitored_node_ids
@@ -125,30 +204,51 @@ async def _unregister_items(
 ) -> bool:
     service._ensure_cleanup_task()
     requested_count = len(element_ids)
+    token = model_revision(model)
+    budget_nodes = service._subtree_max_nodes
+    budget_depth = service._subtree_max_depth
+    removed_ids = set(element_ids)
+    source_index = service._source_index(token, model)
+
     previous_monitored_nodes = 0
     monitored_nodes_count = 0
     monitored_objects_count = 0
+
+    def _remaining_depths(subscription_state: state._SubscriptionState) -> dict[str, int]:
+        return {
+            element_id: depth
+            for element_id, depth in subscription_state.monitored_objects.items()
+            if element_id not in removed_ids
+        }
+
+    # Same split as registration: the rebuild for a refreshed model revision is CPU-bound, so it
+    # happens outside the lock and only the commit is guarded.
     async with service._lock:
         subscription_state = service._subscriptions.get(subscription_id)
         if subscription_state is None or (client_id is not None and subscription_state.client_id != client_id):
             return False
-        previous_node_ids = set(subscription_state.monitored_node_ids)
-        previous_monitored_nodes = len(previous_node_ids)
-        for element_id in element_ids:
-            subscription_state.monitored_objects.pop(element_id, None)
-        token = model_revision(model)
-        if subscription_state.mapping_model_token != token:
-            # A refreshed model invalidates every mapping built against the previous revision.
-            subscription_state.mapping_model_token = token
-            source_index = service._source_index(token, model)
-            subscription_state.object_mappings = {
-                element_id: mapping._resolve_object_mappings(element_id, depth, model, source_index)
-                for element_id, depth in subscription_state.monitored_objects.items()
-            }
-        else:
-            for element_id in element_ids:
-                subscription_state.object_mappings.pop(element_id, None)
-        monitored_node_ids, node_to_element_id = service._merge_object_mappings(subscription_state.object_mappings)
+        previous_monitored_nodes = len(subscription_state.monitored_node_ids)
+        snapshot = _snapshot_mappings(subscription_state, depths=_remaining_depths(subscription_state))
+
+    object_mappings = _resolve_mappings_for_depths(
+        snapshot, snapshot.depths, model, source_index, token, budget_nodes, budget_depth
+    )
+
+    async with service._lock:
+        subscription_state = service._subscriptions.get(subscription_id)
+        if subscription_state is None or (client_id is not None and subscription_state.client_id != client_id):
+            return False
+        if not _snapshot_matches(subscription_state, snapshot):
+            # State changed while the mappings were being built: re-derive the remaining objects
+            # against the current state (bounded, so holding the lock here cannot wedge the loop).
+            snapshot = _snapshot_mappings(subscription_state, depths=_remaining_depths(subscription_state))
+            object_mappings = _resolve_mappings_for_depths(
+                snapshot, snapshot.depths, model, source_index, token, budget_nodes, budget_depth
+            )
+        monitored_node_ids, node_to_element_id = service._merge_object_mappings(object_mappings)
+        subscription_state.monitored_objects = dict(snapshot.depths)
+        subscription_state.mapping_model_token = token
+        subscription_state.object_mappings = object_mappings
         subscription_state.monitored_node_ids = monitored_node_ids
         subscription_state.node_to_element_id = node_to_element_id
         monitored_nodes_count = len(monitored_node_ids)
@@ -371,10 +471,14 @@ def _resolve_monitored_node_ids(
     monitored_objects: dict[str, int],
     model: BuildResult,
     max_nodes: int | None = None,
+    max_depth_limit: int | None = None,
 ) -> tuple[set[str], dict[str, str]]:
-    # ``max_nodes`` defaults to the service's subtree budget.
+    # ``max_nodes`` and ``max_depth_limit`` default to the service's subtree budgets.
     return mapping._resolve_monitored_node_ids(
-        monitored_objects, model, max_nodes=service._subtree_max_nodes if max_nodes is None else max_nodes
+        monitored_objects,
+        model,
+        max_nodes=service._subtree_max_nodes if max_nodes is None else max_nodes,
+        max_depth_limit=service._subtree_max_depth if max_depth_limit is None else max_depth_limit,
     )
 
 
@@ -384,8 +488,13 @@ def _collect_property_source_mappings(
     root: ModelNode,
     max_depth: int,
     max_nodes: int | None = None,
+    max_depth_limit: int | None = None,
 ) -> dict[str, str]:
-    # ``max_nodes`` defaults to the service's subtree budget.
+    # ``max_nodes`` and ``max_depth_limit`` default to the service's subtree budgets.
     return mapping._collect_property_source_mappings(
-        model, root, max_depth, max_nodes=service._subtree_max_nodes if max_nodes is None else max_nodes
+        model,
+        root,
+        max_depth,
+        max_nodes=service._subtree_max_nodes if max_nodes is None else max_nodes,
+        max_depth_limit=service._subtree_max_depth if max_depth_limit is None else max_depth_limit,
     )

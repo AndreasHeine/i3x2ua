@@ -117,6 +117,8 @@ def build_subscription_service(opcua_client: OpcUaClientProtocol) -> Subscriptio
         native_backoff_seconds=settings.subscription_native_backoff_seconds,
         max_subscriptions=settings.subscription_max_count,
         subtree_max_nodes=settings.subscription_subtree_max_nodes,
+        # The same server-imposed composition bound that bounds value/history recursion.
+        subtree_max_depth=settings.composition_max_depth,
         native_max_bins=settings.subscription_native_max_bins,
         native_max_monitored_items=settings.subscription_native_max_monitored_items,
     )

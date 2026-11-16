@@ -9,6 +9,7 @@ import pytest
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 from jsonschema import validate
+from prometheus_client import generate_latest
 
 from i3x_server.api.mcp import jsonrpc
 from i3x_server.api.mcp.jsonrpc import (
@@ -500,12 +501,22 @@ def _sse_headers(session_id: str) -> dict[str, str]:
     return {"Accept": "text/event-stream", MCP_SESSION_HEADER: session_id}
 
 
+def _shed_count(reason: str) -> float:
+    """How many requests admission control has refused with ``reason`` since the process started."""
+    sample = f'i3x_http_requests_shed_total{{reason="{reason}"}}'
+    for line in generate_latest().decode("utf-8").splitlines():
+        if line.startswith(f"{sample} "):
+            return float(line.rsplit(" ", 1)[1])
+    return 0.0
+
+
 def test_mcp_sse_stream_admission_is_per_client(protocol_client: TestClient) -> None:
     """Streams are bounded per connecting address, not only per session (L14)."""
     app = cast(FastAPI, protocol_client.app)
     app.state.mcp_max_sse_streams_per_client = 2
     session_id = _legacy_session_id(protocol_client)
     headers = _sse_headers(session_id)
+    shed_before = _shed_count("sse-stream")
 
     with protocol_client.stream("GET", "/mcp", headers=headers) as first:
         assert first.status_code == 200
@@ -523,6 +534,8 @@ def test_mcp_sse_stream_admission_is_per_client(protocol_client: TestClient) -> 
             }
             # A refused stream must not occupy the budget it just exceeded.
             assert sum(app.state.mcp_streams_by_client.values()) == 2
+            # The refusal is admission control, so it is counted as shed rather than as a handler error.
+            assert _shed_count("sse-stream") == shed_before + 1.0
 
     # Closing a stream frees its slot, so the bound is live-state, not a lifetime quota.
     assert sum(app.state.mcp_streams_by_client.values()) == 0

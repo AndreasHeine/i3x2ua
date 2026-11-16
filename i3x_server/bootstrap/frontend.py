@@ -12,12 +12,12 @@ import hashlib
 import logging
 import os
 import posixpath
-from collections.abc import Awaitable, Callable
 from pathlib import Path
 
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from i3x_server.api.openapi import DocumentedFastAPI
 
@@ -146,18 +146,34 @@ def install_frontend(app: DocumentedFastAPI, frontend_dist: Path) -> None:
 
     app.frontend("/", directory=str(frontend_dist), fallback=None)
     frontend_page_paths = _frontend_page_paths(frontend_dist)
+    app.add_middleware(FrontendRedirectMiddleware, page_paths=frontend_page_paths)
 
-    @app.middleware("http")
-    async def redirect_frontend_pages_to_canonical_url(
-        request: Request,
-        call_next: Callable[[Request], Awaitable[Response]],
-    ) -> Response:
-        if request.method not in {"GET", "HEAD"} or request.url.path.endswith("/"):
-            return await call_next(request)
-        normalized = "/" + posixpath.normpath(request.url.path.lstrip("/"))
-        if normalized in frontend_page_paths:
-            redirect_url = request.url.path + "/"
-            if request.url.query:
-                redirect_url += f"?{request.url.query}"
-            return RedirectResponse(url=redirect_url)
-        return await call_next(request)
+
+class FrontendRedirectMiddleware:
+    """Pure ASGI middleware that answers a bare page URL with a redirect to its canonical form.
+
+    ``app.middleware("http")`` wraps ``BaseHTTPMiddleware``, which copies the scope and re-serialises
+    every body chunk of every request - including API and SSE requests, which are never a page - just
+    to decide on a path. The decision is made from the scope before the handler runs, so a request
+    that is not a page passes straight through.
+    """
+
+    def __init__(self, app: ASGIApp, page_paths: set[str]) -> None:
+        self.app = app
+        self._page_paths = page_paths
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or scope["method"] not in {"GET", "HEAD"} or scope["path"].endswith("/"):
+            await self.app(scope, receive, send)
+            return
+
+        normalized = "/" + posixpath.normpath(scope["path"].lstrip("/"))
+        if normalized not in self._page_paths:
+            await self.app(scope, receive, send)
+            return
+
+        redirect_url = scope["path"] + "/"
+        query = scope.get("query_string")
+        if isinstance(query, bytes) and query:
+            redirect_url += f"?{query.decode()}"
+        await RedirectResponse(url=redirect_url)(scope, receive, send)

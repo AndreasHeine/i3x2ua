@@ -38,6 +38,7 @@ from i3x_server.api.mcp.jsonrpc import (
     _require_allowed_origin,
 )
 from i3x_server.application.state import gateway_state
+from i3x_server.http_metrics import count_shed
 
 router = APIRouter(prefix="/mcp")
 logger = logging.getLogger(__name__)
@@ -107,6 +108,9 @@ async def mcp_get(request: Request) -> Response:
             open_streams,
             stream_limit,
         )
+        # Refusing a stream is admission control on the streaming surface, so it belongs to the
+        # shed counter rather than to the handler-error statistics.
+        count_shed("sse-stream")
         return JSONResponse(
             status_code=400,
             content=_jsonrpc_error(

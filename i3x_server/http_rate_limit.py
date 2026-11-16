@@ -23,6 +23,8 @@ from typing import Any
 
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from i3x_server.http_metrics import count_shed, track_rate_limit_clients
+
 WINDOW_SECONDS = 60.0
 # Distinct client keys are bounded so a spoofed stream of source addresses cannot turn the
 # limiter itself into a memory leak; the least recently admitted key is evicted.
@@ -73,7 +75,14 @@ class RateLimitMiddleware:
             return
 
         client_key = _client_key(scope)
-        if not self._admit(client_key):
+        # The gauge is read after the decision, so it reports the keys the limiter is holding for
+        # admitted traffic: a refused request is never recorded and must not inflate the key set.
+        admitted = self._admit(client_key)
+        track_rate_limit_clients(len(self._hits_by_client))
+        if not admitted:
+            # A tripped limit is admission control rather than a handler failure, so it is counted
+            # separately from the 429 the handler-less response carries.
+            count_shed("rate-limit")
             await self._send_rate_limit(send, client_key)
             return
 

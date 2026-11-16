@@ -879,8 +879,11 @@ scrape_configs:
       - targets: ["i3x:8000"]
 ```
 
-It reports `i3x_http_requests_total` and `i3x_http_request_duration_seconds` (labelled by the
-matched route template) plus gauges mirroring the JSON diagnostics: `i3x_model_nodes`,
+It reports `i3x_http_requests_total` and `i3x_http_request_duration_seconds` (time to first byte),
+`i3x_http_stream_duration_seconds` (how long a response written in chunks kept running),
+`i3x_http_requests_in_flight`, `i3x_http_requests_shed_total{reason}` (what admission control
+refused), and `i3x_http_rate_limit_clients` - request instruments are labelled by the matched route
+template - plus gauges mirroring the JSON diagnostics: `i3x_model_nodes`,
 `i3x_model_built`, `i3x_subscriptions_active`, `i3x_upstream_connected`, and
 `i3x_opcua_requests{operation}`. The endpoint is unauthenticated like every other endpoint, so
 scrape it on the internal network or restrict it at the proxy.

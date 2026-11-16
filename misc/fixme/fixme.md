@@ -32,7 +32,7 @@ Use the required checks in [.github/workflows/quality.yml](../../.github/workflo
 - [x] Correct stale CI and coverage comments identified by the review.
 - [x] Verify phase: pass the applicable checks in the Passing bar; run focused regression tests; inspect compose, nginx, published-image build configuration, and workflow changes for safe defaults.
 
-## [ ] Phase 2 — Short-term performance, robustness, and CI (weeks)
+## [x] Phase 2 — Short-term performance, robustness, and CI (weeks)
 
 - [x] Batch application-layer reads for current values and history to eliminate per-component OPC UA round trips.
 - [x] Add build-time indexes for model-node lookup and object-type lookup instead of repeated linear scans.
@@ -54,7 +54,7 @@ Use the required checks in [.github/workflows/quality.yml](../../.github/workflo
 - [x] Replace hot-path `BaseHTTPMiddleware` with pure ASGI middleware; add in-flight, shed, limiter, and streaming-duration metrics.
 - [x] Retain handles for fire-and-forget tasks and surface failures; replace deprecated event-loop acquisition with `asyncio.get_running_loop()`.
 - [x] Add an interpreter compatibility job for Python 3.13 against asyncua/uvicorn support claims.
-- [ ] Verify phase: pass the applicable checks in the Passing bar; confirm targeted tests fail before their corresponding fixes and pass afterward; benchmark batched reads and indexed lookups against representative cases.
+- [x] Verify phase: pass the applicable checks in the Passing bar; confirm targeted tests fail before their corresponding fixes and pass afterward; benchmark batched reads and indexed lookups against representative cases.
 
 ## [ ] Phase 3 — Medium-term architecture and deployment (months)
 

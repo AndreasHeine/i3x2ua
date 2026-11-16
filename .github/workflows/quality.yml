@@ -35,6 +35,29 @@ jobs:
         working-directory: frontend
         run: npm ci
 
+      - name: Lint the frontend
+        working-directory: frontend
+        run: npm run lint
+
+      - name: Type-check the frontend
+        # svelte-kit sync writes the tsconfig the check reads; the check covers .svelte components,
+        # which the build alone does not verify.
+        working-directory: frontend
+        run: npm run check
+
+      - name: Test the frontend
+        # The built-in test runner of the interpreter, so the test gate adds no dependency to the
+        # published app.
+        working-directory: frontend
+        run: npm run test
+
+      - name: Audit the frontend dependencies
+        # pip-audit covers the Python side; npm audit covers this one. The level is high because the
+        # Svelte toolchain carries low-severity advisories upstream has not released a fix for, so a
+        # gate on any advisory would block every run without reporting something actionable.
+        working-directory: frontend
+        run: npm run audit
+
       - name: Build frontend
         working-directory: frontend
         run: npm run build

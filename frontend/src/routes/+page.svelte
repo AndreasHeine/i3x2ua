@@ -34,7 +34,7 @@
     <p class="lead">{description}</p>
   </section>
   <section class="grid">
-    {#each links as link}
+    {#each links as link (link.href)}
       <a class="card" href={link.href}>
         <span>{link.label}</span>
         <span class="arrow">&rarr;</span>

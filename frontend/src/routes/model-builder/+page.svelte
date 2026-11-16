@@ -1,6 +1,8 @@
 <script>
   import { onMount } from 'svelte';
 
+  import { formatUtcTimestamp, qualityPct, sortedEntries } from '../../lib/format.js';
+
   const endpoint = '/model/metrics';
 
   let metrics = null;
@@ -21,26 +23,6 @@
     } finally {
       loading = false;
     }
-  };
-
-  const sortedEntries = (value) =>
-    Object.entries(value || {}).sort((a, b) => {
-      if (b[1] === a[1]) {
-        return a[0].localeCompare(b[0]);
-      }
-      return b[1] - a[1];
-    });
-
-  const qualityPct = (num, total) => {
-    if (!total) return '0.0';
-    return ((num / total) * 100).toFixed(1);
-  };
-
-  const formatUtcTimestamp = (value) => {
-    if (!value) return 'n/a';
-    const dt = new Date(value);
-    if (Number.isNaN(dt.getTime())) return value;
-    return dt.toLocaleString();
   };
 
   onMount(() => {
@@ -146,7 +128,7 @@
         <div>
           <h4>By kind</h4>
           <ul class="metric-list">
-            {#each sortedEntries(metrics.volume.byKind) as [name, count]}
+            {#each sortedEntries(metrics.volume.byKind) as [name, count] (name)}
               <li><span>{name}</span><strong>{count}</strong></li>
             {/each}
           </ul>
@@ -154,7 +136,7 @@
         <div>
           <h4>Confidence</h4>
           <ul class="metric-list">
-            {#each sortedEntries(metrics.quality.confidence) as [name, count]}
+            {#each sortedEntries(metrics.quality.confidence) as [name, count] (name)}
               <li><span>{name}</span><strong>{count}</strong></li>
             {/each}
           </ul>
@@ -162,7 +144,7 @@
         <div>
           <h4>Semantic role</h4>
           <ul class="metric-list">
-            {#each sortedEntries(metrics.quality.semanticRole) as [name, count]}
+            {#each sortedEntries(metrics.quality.semanticRole) as [name, count] (name)}
               <li><span>{name}</span><strong>{count}</strong></li>
             {/each}
           </ul>
@@ -176,7 +158,7 @@
         <div>
           <h4>Namespaces</h4>
           <ul class="metric-list">
-            {#each sortedEntries(metrics.context.namespaceCounts).slice(0, 12) as [name, count]}
+            {#each sortedEntries(metrics.context.namespaceCounts).slice(0, 12) as [name, count] (name)}
               <li><span class="truncate" title={name}>{name}</span><strong>{count}</strong></li>
             {/each}
           </ul>
@@ -184,7 +166,7 @@
         <div>
           <h4>Applied profiles</h4>
           <ul class="metric-list">
-            {#each sortedEntries(metrics.context.appliedProfileCounts).slice(0, 12) as [name, count]}
+            {#each sortedEntries(metrics.context.appliedProfileCounts).slice(0, 12) as [name, count] (name)}
               <li><span class="truncate" title={name}>{name}</span><strong>{count}</strong></li>
             {/each}
           </ul>

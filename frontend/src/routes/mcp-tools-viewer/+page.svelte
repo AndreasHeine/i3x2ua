@@ -59,7 +59,7 @@
           </tr>
         </thead>
         <tbody>
-          {#each rows as row}
+          {#each rows as row (row.name)}
             <tr>
               <td class="tool-name">{row.name}</td>
               <td>{row.description}</td>

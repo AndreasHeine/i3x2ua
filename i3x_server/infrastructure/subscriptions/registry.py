@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING
+from contextlib import suppress
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from i3x_server.background_tasks import start_tracked_task
 from i3x_server.domain.errors import AdmissionLimitError
 from i3x_server.infrastructure.subscriptions import monitoring, state
 from i3x_server.infrastructure.subscriptions.state import SubscriptionDeleteResult, SubscriptionDetail
@@ -48,11 +50,15 @@ def _ensure_cleanup_task(service: SubscriptionService) -> None:
         # reconnect, sync after shutdown) must not resurrect background tasks.
         return
     if service._cleanup_task is None or service._cleanup_task.done():
-        service._cleanup_task = asyncio.create_task(service._cleanup_loop())
+        service._cleanup_task = start_tracked_task(service._cleanup_loop(), "subscription cleanup loop", logger)
     if service._node_datachange_task is None or service._node_datachange_task.done():
-        service._node_datachange_task = asyncio.create_task(service._node_datachange_loop())
+        service._node_datachange_task = start_tracked_task(
+            service._node_datachange_loop(), "subscription datachange loop", logger
+        )
     if service._shared_polling_task is None or service._shared_polling_task.done():
-        service._shared_polling_task = asyncio.create_task(monitoring._shared_polling_loop(service))
+        service._shared_polling_task = start_tracked_task(
+            service._shared_polling_loop(), "subscription shared polling loop", logger
+        )
 
 
 async def _cleanup_loop(service: SubscriptionService) -> None:
@@ -109,6 +115,18 @@ def _initiate_shutdown(service: SubscriptionService) -> None:
         subscription_state.update_event.set()
 
 
+async def _join_quietly(task: asyncio.Task[Any]) -> None:
+    """Cancel a runtime loop and join it without letting its failure abort the teardown.
+
+    A loop that died was already reported by :func:`i3x_server.background_tasks.start_tracked_task`.
+    Re-raising it here would stop ``close()`` before the remaining subscriptions are released and
+    the client is disconnected, so shutdown joins the task whatever it ended with.
+    """
+    task.cancel()
+    with suppress(asyncio.CancelledError, Exception):
+        await task
+
+
 async def _close(service: SubscriptionService) -> None:
     # Signal all waiting SSE stream tasks to wake up and terminate *before*
     # any cleanup so that HTTP connections can be closed while Uvicorn is
@@ -129,29 +147,17 @@ async def _close(service: SubscriptionService) -> None:
     cleanup_task = service._cleanup_task
     service._cleanup_task = None
     if cleanup_task is not None:
-        cleanup_task.cancel()
-        try:
-            await cleanup_task
-        except asyncio.CancelledError:
-            pass
+        await _join_quietly(cleanup_task)
 
     node_datachange_task = service._node_datachange_task
     service._node_datachange_task = None
     if node_datachange_task is not None:
-        node_datachange_task.cancel()
-        try:
-            await node_datachange_task
-        except asyncio.CancelledError:
-            pass
+        await _join_quietly(node_datachange_task)
 
     shared_polling_task = service._shared_polling_task
     service._shared_polling_task = None
     if shared_polling_task is not None:
-        shared_polling_task.cancel()
-        try:
-            await shared_polling_task
-        except asyncio.CancelledError:
-            pass
+        await _join_quietly(shared_polling_task)
 
     remove_listener = getattr(service._opcua_client, "remove_reconnect_listener", None)
     if callable(remove_listener):

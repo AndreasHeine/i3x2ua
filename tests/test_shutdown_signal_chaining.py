@@ -63,7 +63,7 @@ def _install(
     """Register the lifespan's handler over a stand-in for Uvicorn's exit handler."""
 
     loop = _RecordingLoop()
-    monkeypatch.setattr(asyncio, "get_event_loop", lambda: loop)
+    monkeypatch.setattr(asyncio, "get_running_loop", lambda: loop)
     app = FastAPI()
     state = install_gateway_state(app, GatewayState())
 

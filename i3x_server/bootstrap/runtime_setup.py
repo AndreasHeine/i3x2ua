@@ -427,7 +427,7 @@ def install_shutdown_signal_handlers(app: FastAPI, subscription_service: Subscri
     ``--timeout-graceful-shutdown`` bound never applies. On Unix, asyncio's ``add_signal_handler`` is
     tried first so the callback already runs on the event loop thread.
     """
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     def _close_streams() -> None:
         """Called from the asyncio event loop when a termination signal fires."""

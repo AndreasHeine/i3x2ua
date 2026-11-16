@@ -16,6 +16,8 @@ from collections.abc import Awaitable, Callable
 from time import perf_counter
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
+from i3x_server.background_tasks import start_tracked_task
+
 if TYPE_CHECKING:
     from i3x_server.infrastructure.opcua.client import OpcUaClient
 
@@ -76,7 +78,15 @@ def _metadata_dict_cache_write(
 def _start_metadata_load(client: OpcUaClient, key: str, loader: Callable[[], Awaitable[_T]]) -> asyncio.Future[_T]:
     task = client.metadata_load_tasks.get(key)
     if task is None:
-        task = asyncio.ensure_future(loader())
+
+        async def _run_load() -> _T:
+            # The loader seam is typed as an awaitable; a tracked task needs a coroutine, which is
+            # what create_task requires.
+            return await loader()
+
+        # A stale cache is served while this runs unawaited, so a failed refresh must be reported:
+        # without it the gateway keeps serving stale metadata and nothing says why.
+        task = start_tracked_task(_run_load(), f"metadata load key={key}", logger)
         client.metadata_load_tasks[key] = task
         task.add_done_callback(lambda done: _finish_metadata_load(client, key, done))
     return cast("asyncio.Future[_T]", task)

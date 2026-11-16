@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 
 from asyncua.client.ua_client import UaClientState
 
+from i3x_server.background_tasks import start_tracked_task
 from i3x_server.domain.ports.opcua import SecurityMode
 
 if TYPE_CHECKING:
@@ -121,10 +122,15 @@ async def disconnect(client: OpcUaClient) -> None:
 
 
 def start_connection_tasks(client: OpcUaClient) -> None:
+    # Both loops mirror or repair the session for the rest of the process, so a failure has to be
+    # reported rather than left to asyncio's collection-time message: a dead watcher would keep
+    # /ua/status claiming a connection the transport no longer has.
     if client.connection_state_task is None or client.connection_state_task.done():
-        client.connection_state_task = asyncio.create_task(client.watch_connection_state())
+        client.connection_state_task = start_tracked_task(
+            client.watch_connection_state(), "connection state watcher", logger
+        )
     if client.reconnect_handler_task is None or client.reconnect_handler_task.done():
-        client.reconnect_handler_task = asyncio.create_task(client.reconnect_handler_loop())
+        client.reconnect_handler_task = start_tracked_task(client.reconnect_handler_loop(), "reconnect handler", logger)
 
 
 async def stop_connection_tasks(client: OpcUaClient) -> None:
@@ -135,7 +141,9 @@ async def stop_connection_tasks(client: OpcUaClient) -> None:
         if task is None:
             continue
         task.cancel()
-        with suppress(asyncio.CancelledError):
+        # A watcher that died already reported its failure through start_tracked_task; re-raising it
+        # here would abort the disconnect that follows.
+        with suppress(asyncio.CancelledError, Exception):
             await task
 
 

@@ -86,6 +86,21 @@ def test_the_job_runs_the_suite_and_the_claim_check() -> None:
     assert "id-token" not in block, "only the coverage job may mint an OIDC token"
 
 
+def test_the_job_builds_the_frontend_the_suite_serves() -> None:
+    """Regression: without ``dist`` every page route answers 404, so the suite cannot pass there.
+
+    ``install_frontend`` serves the prerendered bundle from ``dist/`` and logs "Frontend dist
+    directory not found" when it is missing; the compatibility job inherited the pytest job's suite
+    but not its frontend build, and the eight page tests failed with 404 on the claimed interpreter.
+    """
+    block = _job_block(JOB)
+
+    assert "npm ci" in block, "the frontend's locked dependencies must be installed"
+    assert "npm run build" in block, "the suite serves the prerendered pages from dist/"
+    assert "cache-dependency-path: frontend/package-lock.json" in block, "node caching keys off the frontend lock"
+    assert block.index("npm run build") < block.index("python -m pytest"), "the bundle must exist before the suite runs"
+
+
 def test_the_job_comment_quotes_the_declared_range() -> None:
     """Regression: the comment explains why the interpreter is below the project's floor."""
     block = _job_block(JOB)

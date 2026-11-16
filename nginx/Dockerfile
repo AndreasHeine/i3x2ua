@@ -1,7 +1,9 @@
 # The proxy serves the prebuilt SPA assets from disk, so the frontend build happens in
 # this image too. docker-compose.yml uses the repository root as the build context, and
 # only the dist output is copied into the nginx layer - node/npm never reach the runtime.
-FROM node:26-alpine AS frontend
+# Digest-pinned like the gateway image (Dockerfile), so the proxy compiles the SPA with the same
+# Node the published image uses and neither tag can move underneath a build.
+FROM node:26-alpine@sha256:6bd9ab43c0ec0190ca7b2d193906cb8b7edf6e7f4afa43ddeccd6452710bffb5 AS frontend
 
 WORKDIR /app/frontend
 
@@ -12,7 +14,7 @@ COPY frontend /app/frontend
 RUN --mount=type=cache,target=/root/.npm npm run build
 
 
-FROM nginx:1.31-alpine
+FROM nginx:1.31-alpine@sha256:fed7e14be83cbd2661a75cdc5b872d936cf155d46c327084d30b8df19ae88d72
 
 RUN apk add --no-cache apache2-utils
 

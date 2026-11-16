@@ -25,6 +25,12 @@
       "groupName": "compose images"
     },
     {
+      "matchManagers": ["dockerfile"],
+      "matchDatasources": ["docker"],
+      "pinDigests": true,
+      "description": "Base images in the Dockerfiles are pinned by digest, so a digest change must arrive as a proposed PR (config:recommended defaults to pinDigests: false, which would leave every pin stale). Compose references stay tag-pinned: docker-compose.yml builds i3x2ua-local and docs/examples pull the published gateway's floating master tag."
+    },
+    {
       "matchDatasources": ["docker"],
       "matchUpdateTypes": ["major"],
       "enabled": true,

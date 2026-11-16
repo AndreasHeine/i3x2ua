@@ -26,7 +26,7 @@ CONFORMANCE_MANIFEST = PROJECT_ROOT / "i3X" / "conformance-tests" / "package.jso
 
 def _node_stage() -> tuple[int, str]:
     """The Node major version and image reference of the frontend stage in the Dockerfile."""
-    match = re.search(r"^FROM (node:(\d+)-alpine) AS frontend$", DOCKERFILE, re.MULTILINE)
+    match = re.search(r"^FROM (node:(\d+)-alpine)(?:@sha256:[0-9a-f]{64})? AS frontend$", DOCKERFILE, re.MULTILINE)
     assert match is not None, "the Dockerfile must keep a named frontend stage"
     return int(match.group(2)), match.group(1)
 

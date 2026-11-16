@@ -1,4 +1,7 @@
-FROM python:3.15.2-alpine AS builder
+# Base images are pinned by digest, not by tag: a tag names whatever upstream publishes next, so a
+# rebuild - or anyone with registry write access - changes what the image contains without changing
+# this file. Renovate proposes digest updates (.github/renovate.json), so a bump is a reviewed PR.
+FROM python:3.15.2-alpine@sha256:0f9552bb28711333da16915ec146f5e6bb44a7fdac9ced15dc17c2e0206346dd AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
@@ -13,9 +16,12 @@ RUN apk add --no-cache \
         openssl-dev \
         pkgconf
 
+# uv is pinned to one exact version so the toolchain does not drift with whatever PyPI publishes
+# next; Renovate's managers read the lockfile and the image references, not a pip install, so a bump
+# here is a deliberate change to this file.
 RUN --mount=type=cache,target=/root/.cache/pip \
     python -m pip install --upgrade pip setuptools \
-    && pip install uv
+    && pip install uv==0.10.8
 
 COPY pyproject.toml uv.lock README.md /app/
 COPY i3x_server /app/i3x_server
@@ -32,7 +38,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     fi
 
 
-FROM node:26-alpine AS frontend
+FROM node:26-alpine@sha256:6bd9ab43c0ec0190ca7b2d193906cb8b7edf6e7f4afa43ddeccd6452710bffb5 AS frontend
 
 WORKDIR /app/frontend
 
@@ -43,7 +49,7 @@ COPY frontend /app/frontend
 RUN --mount=type=cache,target=/root/.npm npm run build
 
 
-FROM python:3.15.2-alpine AS runtime
+FROM python:3.15.2-alpine@sha256:0f9552bb28711333da16915ec146f5e6bb44a7fdac9ced15dc17c2e0206346dd AS runtime
 
 ARG BUILD_VERSION=master
 

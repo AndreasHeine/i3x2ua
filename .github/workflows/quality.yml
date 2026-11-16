@@ -183,6 +183,49 @@ jobs:
           name: coverage-xml-${{ matrix.python-version }}
           path: coverage.xml
 
+  # pyproject declares setuptools.build_meta, but nothing else in CI ever runs it: the published image
+  # copies raw source rather than a built distribution, so a packaging mistake - a dropped subpackage, a
+  # drifted requires-python, a license that stops shipping - would only be noticed by whoever installs
+  # the published package. The same validator an operator can run locally is the gate here.
+  package-build:
+    name: Package Build + Metadata
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with:
+          python-version: "3.15"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        # The validator reads pyproject.toml with tomllib; the lock decides which interpreter runs it.
+        run: uv sync --frozen
+
+      - name: Build the wheel and sdist
+        run: uv build
+
+      - name: Validate the distribution metadata
+        # Compares the artifacts with pyproject.toml and with the source tree: name, version, summary,
+        # requires-python, license classifier and license text, dependencies and extras, packaged
+        # modules, wheel layout, and wheel/sdist agreement.
+        run: uv run python scripts/check_package_metadata.py
+
+      - name: Upload the built distribution
+        # The artifacts are the evidence a reviewer inspects; nothing is published from this job.
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: i3x2ua-dist
+          path: dist
+
   pip-audit:
     name: Dependency Audit
     runs-on: ubuntu-26.04

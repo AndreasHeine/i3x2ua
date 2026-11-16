@@ -48,7 +48,7 @@ Use the required checks in [.github/workflows/quality.yml](../../.github/workflo
 - [x] Exercise the HTTPS/auth deployment stack in CI and run conformance against that secured stack, in addition to the current fixture-server check.
 - [x] Remove the duplicate CodeQL workflow while retaining the required language coverage.
 - [x] Pin GitHub Actions to immutable SHAs; narrow workflow permissions, scope `id-token` to the job that needs it, and add concurrency control to the quality workflow.
-- [ ] Add package build and metadata validation (`uv build` plus metadata checks).
+- [x] Add package build and metadata validation (`uv build` plus metadata checks).
 - [ ] Add frontend lint, type-check, test, and dependency-audit gates.
 - [ ] Pin Docker base images by digest and pin the `uv` installation in the Dockerfile.
 - [ ] Replace hot-path `BaseHTTPMiddleware` with pure ASGI middleware; add in-flight, shed, limiter, and streaming-duration metrics.

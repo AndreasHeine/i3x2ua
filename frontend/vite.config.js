@@ -11,7 +11,9 @@ export default defineConfig({
       }),
       prerender: {
         crawl: false,
-        entries: ['/', '/view', '/mcp-tools-viewer'],
+        // Every page is prerendered (src/routes/+layout.js), and with crawl: false only these
+        // entries reach the prerenderer: a page left out ships no index.html at all.
+        entries: ['/', '/view', '/mcp-tools-viewer', '/model-builder'],
         handleHttpError: 'warn'
       }
     })

@@ -1,6 +1,14 @@
 <script>
   import { onMount } from 'svelte';
 
+  /**
+   * Titles for the endpoints the viewer may poll. Declared as a map because the requested endpoint
+   * arrives as a string: the literal object type has no index signature, so indexing it with a
+   * value that is not one of the six keys fails the type check even though the hasOwnProperty
+   * guard below already rejects unknown endpoints.
+   *
+   * @type {Record<string, string>}
+   */
   const knownViewTargets = {
     '/v1/info': 'i3X Server Info',
     '/model/metrics': 'Model Builder Metrics',
@@ -14,6 +22,7 @@
   let output = 'Loading...';
   let isError = false;
 
+  /** @param {string} endpoint */
   const load = async (endpoint) => {
     try {
       const response = await fetch(endpoint, { cache: 'no-store' });
@@ -49,6 +58,7 @@
     if (refreshMs > 0) {
       // Polling only makes sense while the tab is visible: a hidden page would keep
       // hitting /ua/status every 2s (and the OPC UA traffic behind it) for nobody.
+      /** @type {ReturnType<typeof setInterval> | null} */
       let timer = null;
       const startPolling = () => {
         if (timer !== null) return;

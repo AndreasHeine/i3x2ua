@@ -1,6 +1,10 @@
 <script>
   import { onMount } from 'svelte';
 
+  /** One rendered row of the tool table. */
+  /** @typedef {{ name: string; description: string; schema: string }} ToolRow */
+
+  /** @type {ToolRow[]} */
   let rows = [];
   let error = '';
 

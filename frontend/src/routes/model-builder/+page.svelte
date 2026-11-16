@@ -5,6 +5,21 @@
 
   const endpoint = '/model/metrics';
 
+  /**
+   * The payload ``/model/metrics`` returns, mirroring ``ModelMetricsResponse`` in
+   * ``i3x_server/api/v1/contracts.py``. Typed rather than ``any`` so a field the API renames fails
+   * ``npm run check`` instead of rendering ``undefined`` in a panel.
+   *
+   * @typedef {object} ModelMetrics
+   * @property {{ totalNodes: number, rootNodes: number, byKind: Record<string, number> }} volume
+   * @property {{ browseDurationS: number, mapDurationS: number, totalDurationS: number, buildCompletedAtUtc: string | null }} build
+   * @property {{ hierarchyEdges: number, compositionEdges: number, graphEdges: number, uniqueGraphRelationshipNames: number }} relationships
+   * @property {{ confidence: Record<string, number>, semanticRole: Record<string, number>, lowConfidenceNodes: number, unknownSemanticRoleNodes: number }} quality
+   * @property {{ readableProperties: number, invokableActions: number, typedInstanceGroups: number, typedInstances: number }} coverage
+   * @property {{ namespaceCounts: Record<string, number>, nodesWithoutNamespace: number, appliedProfileCounts: Record<string, number>, nodesWithoutProfiles: number }} context
+   */
+
+  /** @type {ModelMetrics | null} */
   let metrics = null;
   let loading = true;
   let error = '';

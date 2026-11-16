@@ -206,6 +206,42 @@ jobs:
           name: coverage-xml-${{ matrix.python-version }}
           path: coverage.xml
 
+  # asyncua's classifiers stop at 3.13 and uvicorn's at 3.14 while the package claims 3.14-3.15 and
+  # the image ships python:3.15.2-alpine, so both libraries run on an interpreter neither of them
+  # declares. 3.13 is the highest interpreter both do declare, so the gateway's transport and
+  # server-loop paths are exercised there too; scripts/check_interpreter_compatibility.py then
+  # compares the claims with the interpreters CI runs and the image ships.
+  interpreter-compatibility:
+    name: Interpreter Compatibility (3.13 claim)
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with:
+          python-version: "3.13"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: true
+
+      - name: Install the declared dependencies
+        # uv sync resolves against requires-python = ">=3.14,<3.16" and would refuse this
+        # interpreter, so the job installs the dependency list from pyproject.toml rather than the
+        # project itself: what is being verified is the libraries' claim, not the declared range.
+        run: uv pip install --system --group dev -r pyproject.toml
+
+      - name: Run the suite on the claimed interpreter
+        # Coverage is measured by the matrix jobs, whose interpreters are the ones the image ships.
+        run: python -m pytest -q -o addopts=""
+
+      - name: Check the dependency interpreter claims
+        run: python scripts/check_interpreter_compatibility.py
+
   # pyproject declares setuptools.build_meta, but nothing else in CI ever runs it: the published image
   # copies raw source rather than a built distribution, so a packaging mistake - a dropped subpackage, a
   # drifted requires-python, a license that stops shipping - would only be noticed by whoever installs

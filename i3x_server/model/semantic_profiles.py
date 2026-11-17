@@ -142,10 +142,31 @@ def active_profiles_for_node(
     type_definition_hierarchy: tuple[OpcUaTypeDefinitionInfo, ...] = (),
     available_profiles: tuple[SemanticProfile, ...] | None = None,
 ) -> ResolvedProfileSet:
-    profiles = available_profiles or load_default_profiles()
+    """Resolve the profiles active for a node.
+
+    ``available_profiles=None`` uses the default profiles; an explicit empty tuple means no
+    profiles are active. Matches are ordered by descending priority; equal priorities keep the
+    order in which they were supplied (a stable sort), so the first profile in the tuple wins.
+    """
+    profiles = load_default_profiles() if available_profiles is None else available_profiles
     matched = [profile for profile in profiles if profile.matches_node(node, type_definition_hierarchy)]
     matched.sort(key=lambda profile: profile.priority, reverse=True)
     return ResolvedProfileSet(profiles=tuple(matched))
+
+
+def _type_override_tokens(
+    node: OpcUaNodeInfo,
+    type_definition_hierarchy: tuple[OpcUaTypeDefinitionInfo, ...],
+) -> set[str]:
+    """Type identity used to match overrides.
+
+    Only the node's type definition and its supertype ancestry identify a type; the instance's
+    browse name and node id must not participate, otherwise an instance named like an override
+    type would receive it without carrying that type in its ancestry.
+    """
+    tokens = {_normalize_token(node.type_definition_id)}
+    tokens.update(_normalize_token(item.browse_name) for item in type_definition_hierarchy)
+    return tokens
 
 
 def resolve_semantic_role(
@@ -154,13 +175,10 @@ def resolve_semantic_role(
     *,
     type_definition_hierarchy: tuple[OpcUaTypeDefinitionInfo, ...] = (),
 ) -> SemanticRole:
+    # Overrides are applied in profile priority order (descending); equal priorities keep the
+    # supplied tuple order, so the first matching override wins.
     profiles = active_profiles.profiles if active_profiles else load_default_profiles()
-    type_tokens = {
-        _normalize_token(node.type_definition_id),
-        _normalize_token(node.browse_name),
-        _normalize_token(node.node_id),
-    }
-    type_tokens.update(_normalize_token(item.browse_name) for item in type_definition_hierarchy)
+    type_tokens = _type_override_tokens(node, type_definition_hierarchy)
     for profile in profiles:
         for override in profile.overrides:
             if _normalize_token(override.type_name) in type_tokens:
@@ -203,12 +221,7 @@ def has_profile_override_for_node(
     type_definition_hierarchy: tuple[OpcUaTypeDefinitionInfo, ...] = (),
 ) -> bool:
     profiles = active_profiles.profiles if active_profiles else load_default_profiles()
-    type_tokens = {
-        _normalize_token(node.type_definition_id),
-        _normalize_token(node.browse_name),
-        _normalize_token(node.node_id),
-    }
-    type_tokens.update(_normalize_token(item.browse_name) for item in type_definition_hierarchy)
+    type_tokens = _type_override_tokens(node, type_definition_hierarchy)
     for profile in profiles:
         for override in profile.overrides:
             if _normalize_token(override.type_name) in type_tokens:
@@ -221,22 +234,16 @@ def forced_relationship_class_for_node(
     active_profiles: ResolvedProfileSet | None = None,
     type_definition_hierarchy: tuple[OpcUaTypeDefinitionInfo, ...] = (),
 ) -> Literal["hierarchy", "composition"] | None:
+    # Overrides are applied in profile priority order (descending); equal priorities keep the
+    # supplied tuple order, so the first override with a forced class wins.
     profiles = active_profiles.profiles if active_profiles else load_default_profiles()
-    type_names = [_normalize_token(item.browse_name) for item in type_definition_hierarchy]
-    type_names.extend(
-        (
-            _normalize_token(node.type_definition_id),
-            _normalize_token(node.browse_name),
-            _normalize_token(node.node_id),
-        )
-    )
+    type_names = _type_override_tokens(node, type_definition_hierarchy)
     for profile in profiles:
-        for type_name in type_names:
-            for override in profile.overrides:
-                if _normalize_token(override.type_name) != type_name:
-                    continue
-                if override.force_hierarchy:
-                    return "hierarchy"
-                if override.force_composition:
-                    return "composition"
+        for override in profile.overrides:
+            if _normalize_token(override.type_name) not in type_names:
+                continue
+            if override.force_hierarchy:
+                return "hierarchy"
+            if override.force_composition:
+                return "composition"
     return None

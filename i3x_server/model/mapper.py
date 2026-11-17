@@ -85,6 +85,19 @@ def _classify_hierarchical_family(tokens: set[str], target_node_class: str | Non
     return "hierarchy"
 
 
+# Tokens the shared family classifier recognizes on its own; a profile alias outside this set
+# has no built-in lineage, so its declared category must decide the relationship class.
+_BUILT_IN_HIERARCHICAL_FAMILY_TOKENS = {
+    "hasproperty",
+    "propertyof",
+    "i46",
+    "hascomponent",
+    "hasorderedcomponent",
+    "i47",
+    "i48",
+}
+
+
 def _normalize_token(value: str | None) -> str:
     if not value:
         return ""
@@ -105,6 +118,14 @@ def _reference_class_from_profile_rules(
     profiles: tuple[SemanticProfile, ...] | None,
     target_node_class: str | None,
 ) -> ReferenceClass | None:
+    """Derive the relationship class from profile rules, honoring each declared category.
+
+    Precedence within a profile: a graph match wins; a built-in hierarchical-family token is
+    delegated to the target-class-aware family classifier (so HasComponent maps by target
+    class); any other matched alias carries the class its profile declared, so a custom
+    composition alias never falls through to ``hierarchy``. Composition aliases take
+    precedence over hierarchy aliases when both match.
+    """
     if not profiles:
         return None
     for profile in profiles:
@@ -118,10 +139,13 @@ def _reference_class_from_profile_rules(
         if has_graph_match:
             return "graph"
 
-        # If profile rules match the hierarchical family, delegate to shared
-        # family classification so HasComponent can map by target class.
+        # If profile rules match the hierarchical family, delegate to shared family
+        # classification so HasComponent can map by target class. Custom aliases outside
+        # the built-in family have no lineage, so use the profile's declared category.
         if has_hierarchy_match or has_composition_match:
-            return _classify_hierarchical_family(tokens, target_node_class)
+            if tokens & _BUILT_IN_HIERARCHICAL_FAMILY_TOKENS:
+                return _classify_hierarchical_family(tokens, target_node_class)
+            return "composition" if has_composition_match else "hierarchy"
     return None
 
 

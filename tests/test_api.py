@@ -734,6 +734,20 @@ def test_openapi_operations_are_grouped_by_workflow(client: TestClient) -> None:
     assert generated["paths"]["/v1/namespaces"]["get"]["operationId"] == "getNamespacesV1"
 
 
+def test_request_validation_failure_is_logged_with_diagnostics(
+    client: TestClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level("WARNING", logger="i3x_server.bootstrap.error_handlers"):
+        response = client.post(
+            "/v1/subscriptions/unregister",
+            json={"clientId": "example-client", "subscriptionId": "s1", "elementIds": []},
+        )
+
+    assert response.status_code == 400
+    messages = [r.getMessage() for r in caplog.records if r.name == "i3x_server.bootstrap.error_handlers"]
+    assert any("/v1/subscriptions/unregister" in m and "elementIds" in m for m in messages)
+
+
 def test_openapi_errors_match_runtime(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     invalid_limit = client.get("/model/namespace-gaps", params={"limit": 0})
     assert invalid_limit.status_code == 400

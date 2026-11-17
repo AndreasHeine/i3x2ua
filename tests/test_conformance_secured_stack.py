@@ -122,6 +122,18 @@ def test_the_secured_job_asserts_the_edge_behaviour_directly() -> None:
     assert re.search(r"\b401\b", block), "an unauthenticated request must be asserted to be refused"
 
 
+def test_redirect_probe_waits_for_proxy_startup_and_reports_failures() -> None:
+    """A detached container can take time to open its listening sockets."""
+    script = _step(_secured_job(), "HTTP redirects")
+
+    assert "--retry-connrefused" in script
+    assert re.search(r"--retry\s+[1-9]\d*", script)
+    assert re.search(r"--retry-max-time\s+[1-9]\d*", script)
+    assert re.search(r"--max-time\s+[1-9]\d*", script)
+    assert "docker logs i3x2ua-proxy-ci" in script
+    assert "exit 1" in script
+
+
 def test_the_secured_job_runs_the_suite_through_the_proxy() -> None:
     """The suite has to carry credentials and accept the self-signed certificate."""
     script = _step(_secured_job(), "conformance")

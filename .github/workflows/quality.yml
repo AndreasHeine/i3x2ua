@@ -450,9 +450,15 @@ jobs:
             i3x2ua-proxy-ci
 
       - name: Assert HTTP redirects to HTTPS
-        # nginx answers the redirect itself, so this holds before the gateway is even running.
+        # nginx answers the redirect itself, before the gateway is running. Docker returns before
+        # the detached container has necessarily opened its ports, so allow time for startup.
         run: |
-          outcome="$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' http://127.0.0.1:8080/v1/model)"
+          if ! outcome="$(curl -sS --retry 30 --retry-connrefused --retry-delay 1 --retry-max-time 30 --max-time 2 \
+            -o /dev/null -w '%{http_code} %{redirect_url}' http://127.0.0.1:8080/v1/model)"; then
+            echo "proxy HTTP entrypoint did not become available"
+            docker logs i3x2ua-proxy-ci
+            exit 1
+          fi
           echo "HTTP entrypoint answered: $outcome"
           code="${outcome%% *}"
           target="${outcome#* }"

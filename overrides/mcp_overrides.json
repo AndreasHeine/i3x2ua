@@ -1,5 +1,5 @@
 {
-  "$schema": "./schema.json",
+  "$schema": "./mcp_overrides.schema.json",
   "tools": {
     "getObjectsV1": {
       "description": "DISCOVERY: Start unknown-asset searches here. MCP defaults to root=true and returns at most 50 compact objects; follow pagination.nextOffset with the same filters if needed. Explicitly set root=false only when the user requests full-model enumeration. Then navigate from returned elementIds with queryRelatedObjectsV1. Never guess typeElementId values such as \"plc\"; filter only with an exact known type ID.",

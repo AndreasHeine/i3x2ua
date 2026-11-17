@@ -660,7 +660,7 @@ def test_mcp_pagination_helpers_preserve_total_and_next_offset() -> None:
 
 
 def test_load_overrides_variants(tmp_path: Path) -> None:
-    schema_path = tmp_path / "schema.json"
+    schema_path = tmp_path / "mcp_overrides.schema.json"
     schema_path.write_text(
         json.dumps(
             {

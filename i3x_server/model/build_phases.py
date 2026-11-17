@@ -21,6 +21,7 @@ from i3x_server.domain.ports.opcua import (
 )
 from i3x_server.model.semantic_profiles import (
     ResolvedProfileSet,
+    SemanticProfile,
     active_profiles_for_node,
     resolve_namespace_uri,
 )
@@ -159,8 +160,13 @@ def build_active_profiles(
     by_source_node: dict[str, OpcUaNodeInfo],
     type_definition_hierarchy_by_id: dict[str, tuple[OpcUaTypeDefinitionInfo, ...]],
     namespace_uri_by_index: dict[int, str],
+    available_profiles: tuple[SemanticProfile, ...] | None = None,
 ) -> tuple[dict[str, str | None], dict[str, ResolvedProfileSet]]:
-    """Namespace URI and semantic profile set per source node, keyed by source node id."""
+    """Namespace URI and semantic profile set per source node, keyed by source node id.
+
+    ``available_profiles=None`` falls back to the built-in profiles; the model builder passes
+    the profiles loaded at startup (built-ins extended or replaced by ``overrides`` config).
+    """
     namespace_uri_by_source: dict[str, str | None] = {}
     active_profiles_by_source: dict[str, ResolvedProfileSet] = {}
     for source_id, opc_node in by_source_node.items():
@@ -173,5 +179,6 @@ def build_active_profiles(
         active_profiles_by_source[source_id] = active_profiles_for_node(
             opc_node,
             type_definition_hierarchy,
+            available_profiles,
         )
     return namespace_uri_by_source, active_profiles_by_source

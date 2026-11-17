@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/overrides/semantic_overrides.schema.json",
+  "title": "Semantic Profile Overrides",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "profiles": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/semanticProfile"
+      }
+    }
+  },
+  "required": [
+    "profiles"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "semanticProfile": {
+      "type": "object",
+      "properties": {
+        "profile_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "priority": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "namespace_uri": {
+          "type": "string"
+        },
+        "known_types": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "hierarchy_references": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "composition_references": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "graph_references": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "overrides": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/profileOverride"
+          }
+        }
+      },
+      "required": [
+        "profile_id",
+        "priority",
+        "namespace_uri"
+      ],
+      "additionalProperties": false
+    },
+    "profileOverride": {
+      "type": "object",
+      "properties": {
+        "type_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "namespace_uri": {
+          "type": "string"
+        },
+        "semantic_role": {
+          "type": "string",
+          "enum": [
+            "asset",
+            "group",
+            "component",
+            "datapoint",
+            "property",
+            "unknown"
+          ]
+        },
+        "force_hierarchy": {
+          "type": "boolean",
+          "default": false
+        },
+        "force_composition": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "required": [
+        "type_name"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

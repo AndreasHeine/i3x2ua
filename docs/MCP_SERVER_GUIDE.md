@@ -180,15 +180,20 @@ history   queryHistoricalValuesV1      → only when a trend is asked for
 ## 4. The overrides file
 
 **File:** `overrides/mcp_overrides.json`
-**Schema:** `overrides/schema.json`
+**Schema:** `overrides/mcp_overrides.schema.json`
 **Loaded:** at startup, validated with JSON Schema.
+
+The schema file was renamed from `overrides/schema.json`. A deployment that mounts an
+older overrides directory keeps working: if the renamed schema is absent and the old
+`overrides/schema.json` is present, the loader uses it and logs a deprecation warning.
+Rename the file in your mount to silence the warning.
 
 | Top-level key | Required | Meaning |
 |---|---|---|
 | `tools` | yes | Per-tool overrides, keyed by exact tool name |
 | `prompts` | yes | Prompt templates (use `{}` when you have none) |
 | `excluded_tools` | no | Tool names removed from discovery **and** calls |
-| `$schema` | no | Points at `./schema.json` so editors flag mistakes |
+| `$schema` | no | Points at `./mcp_overrides.schema.json` so editors flag mistakes |
 
 Tool override fields:
 
@@ -227,7 +232,7 @@ Minimal valid file:
 
 ```json
 {
-  "$schema": "./schema.json",
+  "$schema": "./mcp_overrides.schema.json",
   "tools": {
     "getObjectsV1": {
       "description": "DISCOVERY: start here for unknown assets. Defaults to root=true and returns 50 compact objects; continue with pagination.nextOffset.",
@@ -265,7 +270,7 @@ and any call returns `Unknown tool <name>`.
 
 ```json
 {
-  "$schema": "./schema.json",
+  "$schema": "./mcp_overrides.schema.json",
   "tools": { /* keep your descriptions */ },
   "prompts": { /* keep your prompts */ },
   "excluded_tools": [
@@ -444,3 +449,65 @@ tools). That is the lever that works.
 5. Exclude tempting tools instead of writing longer warnings.
 6. Edit → validate → restart → verify with `GET /mcp/tools`.
 7. Keep monitoring tools available only when someone actually wants live updates.
+
+---
+
+## 11. Semantic profile overrides
+
+**File:** `overrides/semantic_overrides.json`
+**Schema:** `overrides/semantic_overrides.schema.json`
+**Loaded:** once at startup, validated with JSON Schema; changes apply on restart.
+
+The model builder classifies nodes with semantic profiles (see
+`docs/OPCUA_I3X_MAPPING_PROFILE.md`). The built-ins are `machinery` (priority 100) and
+`generic` (priority 10). This file configures additional profiles without code changes:
+
+| Field | Required | Meaning |
+|---|---|---|
+| `profiles` | yes | Array of custom profiles; file order decides order among equal priorities |
+| `profile_id` | yes | Unique custom id; an existing built-in id **replaces** that profile entirely |
+| `priority` | yes | Higher wins first; ties put custom profiles before remaining built-ins |
+| `namespace_uri` | yes | Canonical namespace URI matched against the instance type's ancestry (`""` = any) |
+| `known_types` | no | Type BrowseNames that identify the profile |
+| `hierarchy_references` / `composition_references` / `graph_references` | no | Relationship aliases per plane, honoring the existing classification rules |
+| `overrides` | no | Per-type rules: `type_name`, optional `namespace_uri`, optional `semantic_role`, optional `force_hierarchy`/`force_composition` |
+
+Rules worth knowing:
+
+- An absent file keeps all built-in behavior; `{"profiles": []}` does the same.
+- A present-but-invalid file (bad JSON, schema violation, duplicate `profile_id`, an override
+  forcing both hierarchy and composition) **fails startup** with a message naming the file and
+  location — the gateway never silently serves defaults the operator did not configure. Remove
+  the file or fix the entry and restart.
+- Namespace matching keeps the built-in semantics: exact URI compare (case and trailing slash
+  insensitive, never a substring), evaluated over the resolved type ancestry.
+- `confidence` is not accepted; its runtime behavior is not implemented yet.
+- In Docker Compose the repository's `overrides` directory is mounted at `/app/overrides`.
+
+Documented example (the repository ships it; it targets a namespace no real server publishes,
+so it changes nothing until you adapt it):
+
+```json
+{
+  "$schema": "./semantic_overrides.schema.json",
+  "profiles": [
+    {
+      "profile_id": "vendor_asset",
+      "priority": 150,
+      "namespace_uri": "urn:example:vendor",
+      "known_types": [],
+      "hierarchy_references": ["Organizes"],
+      "composition_references": ["HasProperty"],
+      "graph_references": [],
+      "overrides": [
+        {
+          "type_name": "VendorIdentificationType",
+          "namespace_uri": "urn:example:vendor",
+          "semantic_role": "asset",
+          "force_hierarchy": true
+        }
+      ]
+    }
+  ]
+}
+```

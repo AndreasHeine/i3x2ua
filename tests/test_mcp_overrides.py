@@ -9,13 +9,64 @@ import pytest
 
 from i3x_server.mcp import load_overrides
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
+def test_mcp_overrides_schema_renamed_and_legacy_removed() -> None:
+    assert (REPO_ROOT / "overrides" / "mcp_overrides.schema.json").exists()
+    assert not (REPO_ROOT / "overrides" / "schema.json").exists()
+
+
+def test_shipped_mcp_overrides_validate_against_renamed_schema() -> None:
+    loaded = load_overrides()
+
+    assert loaded.get("tools")
+    assert loaded.get("prompts")
+
+
+def test_legacy_schema_path_used_when_renamed_schema_absent(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Deployments mounting an older overrides directory keep working, with a deprecation warning."""
+    legacy_schema_path = tmp_path / "schema.json"
+    _write_json(legacy_schema_path, {"type": "object"})
+    overrides_path = tmp_path / "mcp_overrides.json"
+    overrides: dict[str, Any] = {"tools": {}, "prompts": {}}
+    _write_json(overrides_path, overrides)
+
+    caplog.set_level(logging.WARNING)
+    loaded = load_overrides(path=overrides_path, schema_path=tmp_path / "mcp_overrides.schema.json")
+
+    assert loaded == overrides
+    assert "deprecated" in caplog.text
+
+
+def test_renamed_schema_takes_precedence_over_legacy(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    # The new schema requires ``tools``; the legacy stand-in accepts anything, so applying
+    # the new schema proves the renamed file wins when both are present.
+    _write_json(tmp_path / "schema.json", {"type": "object"})
+    _write_json(
+        tmp_path / "mcp_overrides.schema.json",
+        {"type": "object", "properties": {"tools": {"type": "object"}}, "required": ["tools"]},
+    )
+    overrides_path = tmp_path / "mcp_overrides.json"
+    _write_json(overrides_path, {"prompts": {}})
+
+    caplog.set_level(logging.WARNING)
+    loaded = load_overrides(path=overrides_path, schema_path=tmp_path / "mcp_overrides.schema.json")
+
+    assert loaded == {}
+    assert "validation failed" in caplog.text
+    assert "deprecated" not in caplog.text
+
+
 def test_load_overrides_applies_valid_payload(tmp_path: Path) -> None:
-    schema_path = tmp_path / "schema.json"
+    schema_path = tmp_path / "mcp_overrides.schema.json"
     overrides_path = tmp_path / "mcp_overrides.json"
 
     schema = {
@@ -49,7 +100,7 @@ def test_load_overrides_applies_valid_payload(tmp_path: Path) -> None:
 
 
 def test_load_overrides_allows_omitted_excluded_tools(tmp_path: Path) -> None:
-    schema_path = tmp_path / "schema.json"
+    schema_path = tmp_path / "mcp_overrides.schema.json"
     overrides_path = tmp_path / "mcp_overrides.json"
     schema = {
         "type": "object",
@@ -73,7 +124,7 @@ def test_load_overrides_skips_invalid_payload_with_clear_log(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    schema_path = tmp_path / "schema.json"
+    schema_path = tmp_path / "mcp_overrides.schema.json"
     overrides_path = tmp_path / "mcp_overrides.json"
 
     schema = {
@@ -108,7 +159,7 @@ def test_load_overrides_skips_malformed_json_with_clear_log(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    schema_path = tmp_path / "schema.json"
+    schema_path = tmp_path / "mcp_overrides.schema.json"
     overrides_path = tmp_path / "mcp_overrides.json"
 
     _write_json(schema_path, {"type": "object"})
@@ -127,7 +178,7 @@ def test_load_overrides_skips_unreadable_file_with_clear_log(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Only malformed JSON had a graceful path; any other read failure used to crash startup."""
-    schema_path = tmp_path / "schema.json"
+    schema_path = tmp_path / "mcp_overrides.schema.json"
     _write_json(schema_path, {"type": "object"})
 
     binary_path = tmp_path / "mcp_overrides.json"

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://example.local/schemas/overrides/schema.json",
+  "$id": "https://example.local/schemas/overrides/mcp_overrides.schema.json",
   "title": "MCP Overrides",
   "type": "object",
   "properties": {

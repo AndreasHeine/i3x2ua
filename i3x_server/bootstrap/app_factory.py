@@ -52,7 +52,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     state = gateway_state(app)
     state.ua_startup_mode = startup_mode
     state.opcua_client = opcua_client
-    state.model_builder = ModelBuilder(opcua_client)
+    # Semantic profiles load once per startup: an absent file keeps the built-ins, an invalid
+    # file aborts startup, and an application restart re-reads the file to apply changes.
+    state.model_builder = ModelBuilder(opcua_client, semantic_profiles=runtime_setup.load_semantic_profiles())
     state.mcp_model_provider = get_or_build_model
     subscription_service = runtime_setup.build_subscription_service(opcua_client)
     state.subscription_service = subscription_service

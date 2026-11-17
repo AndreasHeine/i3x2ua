@@ -23,14 +23,27 @@ from time import perf_counter
 from i3x_server.domain.ports.opcua import OpcUaClientProtocol, OpcUaNodeInfo
 from i3x_server.model import build_phases, node_mapping, reference_graph
 from i3x_server.model.revision import compute_model_revision
+from i3x_server.model.semantic_profiles import SemanticProfile, load_default_profiles
 from i3x_server.schemas.state import BuildResult
 
 logger = logging.getLogger(__name__)
 
 
 class ModelBuilder:
-    def __init__(self, opcua_client: OpcUaClientProtocol) -> None:
+    def __init__(
+        self,
+        opcua_client: OpcUaClientProtocol,
+        semantic_profiles: tuple[SemanticProfile, ...] | None = None,
+    ) -> None:
         self._opcua_client = opcua_client
+        # Profiles loaded once at startup from ``overrides/semantic_overrides.json`` (merged
+        # with the built-ins); ``None`` keeps the built-in profiles, e.g. for direct builds.
+        self._semantic_profiles = semantic_profiles
+
+    @property
+    def semantic_profiles(self) -> tuple[SemanticProfile, ...]:
+        """The profiles this builder resolves with; the built-ins when none were supplied."""
+        return self._semantic_profiles if self._semantic_profiles is not None else load_default_profiles()
 
     async def build(self) -> BuildResult:
         started = perf_counter()
@@ -51,6 +64,7 @@ class ModelBuilder:
             by_source_node,
             type_definition_hierarchy_by_id,
             namespace_uri_by_index,
+            self._semantic_profiles,
         )
 
         graph = reference_graph.build_reference_graph(

@@ -26,8 +26,18 @@ The current implementation already applies the following behavior:
   profiles
 - hierarchy-first parent selection with graph fallback for non-structural edges
 
-The code currently ships with built-in profiles. External profile loading can be
-added later without changing the mapping contract described here.
+The code ships with built-in profiles, and operators can configure additional
+profiles through `overrides/semantic_overrides.json` (validated against
+`overrides/semantic_overrides.schema.json`) without changing the mapping
+contract described here. The file loads once at startup and changes apply on
+restart. An absent file (or an empty `profiles` array) keeps the built-ins. A
+custom profile with a new id extends them; a custom profile with an existing
+id replaces that entire profile. Duplicate custom ids, malformed JSON, schema
+violations, or overrides forcing both hierarchy and composition fail startup
+with a clear error naming the file and location. Profile ordering keeps
+descending priority; on equal priorities custom profiles precede the
+remaining built-ins, and file order determines custom-profile order. Matching,
+namespace, and type ancestry semantics are unchanged by configuration.
 
 ## Canonical Rules
 

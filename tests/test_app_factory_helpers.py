@@ -31,6 +31,8 @@ from i3x_server.bootstrap.runtime_setup import (
 from i3x_server.config.settings import settings
 from i3x_server.domain.ports.opcua import OpcUaClientProtocol
 from i3x_server.model.builder import ModelBuilder
+from i3x_server.model.semantic_overrides import SemanticOverridesError
+from i3x_server.model.semantic_profiles import SemanticProfile, load_default_profiles
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
 
@@ -825,3 +827,55 @@ async def test_degraded_startup_shutdown_skips_disconnect_while_never_connected(
         assert app.state.model_cache.nodes_by_id == {}
         assert app.state.opcua_retry_task is not None
     assert disconnects.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_lifespan_fails_on_invalid_semantic_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A present-but-invalid semantic overrides file must abort startup, not serve defaults."""
+    monkeypatch.setenv("I3X_SKIP_OPCUA_CONNECT", "1")
+    monkeypatch.setenv("I3X_ENABLE_MCP", "0")
+
+    def failing_loader() -> Any:
+        raise SemanticOverridesError("Semantic overrides at overrides/semantic_overrides.json are invalid")
+
+    monkeypatch.setattr(runtime_setup, "load_semantic_profiles", failing_loader)
+    app = FastAPI()
+    install_gateway_state(app, GatewayState())
+    with pytest.raises(SemanticOverridesError, match="invalid"):
+        async with app_factory.lifespan(app):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_lifespan_loads_semantic_profiles_once_per_startup(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Profiles load once at startup, go to the builder, and a restart re-reads them."""
+    monkeypatch.setenv("I3X_SKIP_OPCUA_CONNECT", "1")
+    monkeypatch.setenv("I3X_ENABLE_MCP", "0")
+    monkeypatch.setenv("I3X_MODEL_REFRESH_INTERVAL_SECONDS", "0")
+
+    first = load_default_profiles()
+    second: tuple[SemanticProfile, ...] = tuple(
+        profile for profile in load_default_profiles() if profile.profile_id == "generic"
+    )
+    loads = 0
+
+    def loader() -> Any:
+        nonlocal loads
+        loads += 1
+        return first if loads == 1 else second
+
+    monkeypatch.setattr(runtime_setup, "load_semantic_profiles", loader)
+
+    first_app = FastAPI()
+    install_gateway_state(first_app, GatewayState())
+    async with app_factory.lifespan(first_app):
+        assert first_app.state.model_builder is not None
+        assert first_app.state.model_builder.semantic_profiles == first
+
+    second_app = FastAPI()
+    install_gateway_state(second_app, GatewayState())
+    async with app_factory.lifespan(second_app):
+        assert second_app.state.model_builder is not None
+        assert second_app.state.model_builder.semantic_profiles == second
+
+    assert loads == 2

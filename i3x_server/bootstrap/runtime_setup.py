@@ -34,6 +34,8 @@ from i3x_server.infrastructure.opcua.client import OpcUaClient, model_refresh_bu
 from i3x_server.infrastructure.subscriptions.service import SubscriptionService
 from i3x_server.mcp.invocation import get_api_prefix, init_mcp_metrics
 from i3x_server.mcp.tool_definitions import build_mcp_tools, load_overrides, load_prompt_overrides
+from i3x_server.model import semantic_overrides
+from i3x_server.model.semantic_profiles import SemanticProfile
 from i3x_server.prompts.registry import PromptRegistry
 from i3x_server.schemas.state import BuildResult
 
@@ -140,6 +142,17 @@ def build_subscription_service(opcua_client: OpcUaClientProtocol) -> Subscriptio
         native_max_bins=settings.subscription_native_max_bins,
         native_max_monitored_items=settings.subscription_native_max_monitored_items,
     )
+
+
+def load_semantic_profiles() -> tuple[SemanticProfile, ...]:
+    """Load the semantic profiles for this startup from ``overrides/semantic_overrides.json``.
+
+    Delegates to :func:`i3x_server.model.semantic_overrides.load_semantic_profiles`: an absent
+    file keeps the built-ins, a present-but-invalid file raises ``SemanticOverridesError`` so
+    startup fails with a clear error instead of serving defaults the operator did not configure.
+    The lifespan loads once; restarting re-reads the file and applies the changes.
+    """
+    return semantic_overrides.load_semantic_profiles()
 
 
 async def connect_upstream(opcua_client: OpcUaClient, runtime: Settings) -> str:

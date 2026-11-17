@@ -15,7 +15,10 @@ from i3x_server.mcp.model_tools import MCP_MODEL_TOOL_SCHEMAS
 
 logger = logging.getLogger(__name__)
 DEFAULT_MCP_OVERRIDES_PATH = Path("overrides/mcp_overrides.json")
-DEFAULT_MCP_OVERRIDES_SCHEMA_PATH = Path("overrides/schema.json")
+DEFAULT_MCP_OVERRIDES_SCHEMA_PATH = Path("overrides/mcp_overrides.schema.json")
+# Deployments may mount an overrides directory from before the schema was renamed; the old
+# name is accepted with a deprecation warning so such mounts keep validating their overrides.
+LEGACY_MCP_OVERRIDES_SCHEMA_FILE_NAME = "schema.json"
 
 MCP_EXCLUDED_OPERATION_IDS = {"streamSubscription"}
 MCP_PAGINATED_LIST_TOOLS = {"getObjectsV1", "getObjectTypesV1", "getRelationshipTypesV1"}
@@ -134,6 +137,15 @@ def load_overrides(
         return {}
 
     schema_file = _resolve_override_path(schema_path)
+    if not schema_file.exists():
+        legacy_schema_file = schema_file.parent / LEGACY_MCP_OVERRIDES_SCHEMA_FILE_NAME
+        if legacy_schema_file.exists():
+            logger.warning(
+                "MCP overrides schema at %s is deprecated; rename it to %s. Using the legacy schema.",
+                legacy_schema_file,
+                schema_file,
+            )
+            schema_file = legacy_schema_file
     if not _validate_overrides_schema(overrides, schema_file, override_file):
         return {}
 

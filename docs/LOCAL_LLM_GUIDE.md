@@ -134,13 +134,15 @@ tool catalog; MCP clients should connect to `/mcp`.
 
 i3x2ua loads tool and prompt overrides from `overrides/mcp_overrides.json`
 when the application starts. The repository's
-[`overrides/schema.json`](../overrides/schema.json) defines the accepted
-format. Keep both top-level `tools` and `prompts` objects in the file, and
+[`overrides/mcp_overrides.schema.json`](../overrides/mcp_overrides.schema.json) defines the
+accepted format. Keep both top-level `tools` and `prompts` objects in the file, and
 validate JSON syntax before restarting the server. Add tool names to the
 optional top-level `excluded_tools` array to omit them from MCP discovery and
 calls; names must match the MCP tool names exactly. This also applies to
 built-in cached-model tools. In Docker Compose, the repository's `overrides`
-directory is mounted at `/app/overrides`.
+directory is mounted at `/app/overrides`. Semantic profiles that steer node
+classification are configured separately in `overrides/semantic_overrides.json`
+(see `docs/MCP_SERVER_GUIDE.md` section 11); an invalid file fails startup.
 
 Use the exact tool names as keys. Overrides apply to REST-derived tools,
 `readContainerValues`, and cached-model tools such as `searchModelElements`,
@@ -151,7 +153,7 @@ finding and reading a line-level temperature property:
 
 ```json
 {
-  "$schema": "./schema.json",
+  "$schema": "./mcp_overrides.schema.json",
   "tools": {
     "getObjectsV1": {
       "description": "DISCOVERY: Find the target line or machine when its elementId is unknown. Start with root objects, match by name, and use only returned elementIds for follow-up navigation. Do not enumerate the full model or guess IDs.",

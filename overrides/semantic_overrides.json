@@ -1,0 +1,22 @@
+{
+  "$schema": "./semantic_overrides.schema.json",
+  "profiles": [
+    {
+      "profile_id": "vendor_asset",
+      "priority": 150,
+      "namespace_uri": "urn:example:vendor",
+      "known_types": [],
+      "hierarchy_references": ["Organizes"],
+      "composition_references": ["HasProperty"],
+      "graph_references": [],
+      "overrides": [
+        {
+          "type_name": "VendorIdentificationType",
+          "namespace_uri": "urn:example:vendor",
+          "semantic_role": "asset",
+          "force_hierarchy": true
+        }
+      ]
+    }
+  ]
+}

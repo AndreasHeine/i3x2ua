@@ -125,8 +125,18 @@ Argument JSON Schemas permit both arrays and null for `ArrayDimensions`.
 11. Internal model metadata `appliedProfileIds`
 - Ordered list of profile ids matched against the resolved instance type and
   its `HasSubtype` ancestry.
-- A specialized profile must match its configured type namespace fragment and,
-  when configured, a type BrowseName on the same type or ancestor.
+- A specialized profile matches when its canonical namespace URI equals the
+  namespace URI of any type in the resolved chain (case-insensitive, trailing-slash
+  insensitive exact compare, never a substring) and, when known types are configured,
+  any type in the chain carries one of those BrowseNames. The namespace and known-type
+  constraints are evaluated independently and may be satisfied by different chain
+  entries, so a companion type in its own namespace derived from a type in another
+  namespace (for example a Machinery type deriving from the DI `FunctionalGroupType`)
+  activates the profile.
+- A profile override may pin a namespace URI; it then matches only chain entries whose
+  BrowseName and namespace URI both identify it, so a same-named type in an unrelated
+  namespace carries no override. Overrides without a namespace match the chain's
+  BrowseNames.
 - `force_hierarchy` and `force_composition` on a matching type override control
   the incoming relationship for that instance, taking precedence over the
   relationship-reference classification.

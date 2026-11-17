@@ -330,6 +330,146 @@ async def test_build_active_profiles_keys_every_source_node() -> None:
     assert set(active_profiles_by_source) == set(nodes)
 
 
+_MACHINERY_NAMESPACE_INFOS = {
+    2: "http://opcfoundation.org/UA/MachineTool/",
+    3: "http://opcfoundation.org/UA/Machinery/",
+    4: "http://opcfoundation.org/UA/DI/",
+}
+
+
+async def test_build_active_profiles_activates_machinery_from_canonical_namespace_ancestor() -> None:
+    """The Machinery chain spans two namespaces and must still activate the profile.
+
+    ``MachineryItemIdentificationType`` is in the Machinery namespace (OPC 40001-1 §8.3)
+    and its ``FunctionalGroupType`` ancestor is in the DI namespace (OPC 10000-100
+    §4.4.1); the namespace constraint is satisfied on the Machinery entry alone.
+    """
+    nodes = {"ns=2;s=Machine": _instance("ns=2;i=26")}
+    hierarchies = await build_phases.resolve_type_hierarchies(
+        _client(
+            _HierarchyClient(
+                {
+                    "ns=2;i=26": [
+                        OpcUaTypeDefinitionInfo(node_id="ns=2;i=26", browse_name="MachineToolType"),
+                        OpcUaTypeDefinitionInfo(
+                            node_id="ns=3;i=1004",
+                            browse_name="MachineryItemIdentificationType",
+                        ),
+                        OpcUaTypeDefinitionInfo(node_id="ns=4;i=1005", browse_name="FunctionalGroupType"),
+                    ]
+                }
+            )
+        ),
+        list(nodes.values()),
+        _MACHINERY_NAMESPACE_INFOS,
+    )
+
+    _, active_profiles_by_source = build_phases.build_active_profiles(
+        nodes,
+        hierarchies,
+        _MACHINERY_NAMESPACE_INFOS,
+    )
+
+    assert active_profiles_by_source["ns=2;s=Machine"].profile_ids == ("machinery", "generic")
+
+
+async def test_build_active_profiles_di_functional_group_ancestor_stays_generic() -> None:
+    """A DI ``FunctionalGroupType`` ancestor alone is not Machinery evidence."""
+    nodes = {"ns=2;s=Group": _instance("ns=2;i=30")}
+    hierarchies = await build_phases.resolve_type_hierarchies(
+        _client(
+            _HierarchyClient(
+                {"ns=2;i=30": [OpcUaTypeDefinitionInfo(node_id="ns=4;i=1005", browse_name="FunctionalGroupType")]}
+            )
+        ),
+        list(nodes.values()),
+        _MACHINERY_NAMESPACE_INFOS,
+    )
+
+    _, active_profiles_by_source = build_phases.build_active_profiles(
+        nodes,
+        hierarchies,
+        _MACHINERY_NAMESPACE_INFOS,
+    )
+
+    assert active_profiles_by_source["ns=2;s=Group"].profile_ids == ("generic",)
+
+
+def test_map_nodes_records_machinery_evidence_and_keeps_hasaddin_hierarchy() -> None:
+    """Machinery profile evidence lands on the mapped model; ``HasAddIn`` stays hierarchy.
+
+    Machinery references AddIns with ``HasAddIn``, a Core ``HasComponent`` subtype
+    (OPC 10000-5 §11.21); the generic target-class-aware mapping keeps the object AddIn
+    on the structural hierarchy plane, and the profile override forces it explicitly.
+    """
+    machine = _node("ns=2;s=Machine")
+    machine.type_definition_id = "ns=2;i=26"
+    identification = _node("ns=2;s=Identification", parent="ns=2;s=Machine")
+    identification.type_definition_id = "ns=2;i=27"
+    machine.outgoing_references = [OpcUaReferenceInfo("ns=2;s=Identification", "ns=0;i=17604", "HasAddIn")]
+
+    nodes = [machine, identification]
+    by_source = {node.node_id: node for node in nodes}
+    hierarchies = {
+        "ns=2;i=26": (
+            OpcUaTypeDefinitionInfo(
+                node_id="ns=2;i=26",
+                browse_name="MachineToolType",
+                namespace_uri="http://opcfoundation.org/UA/MachineTool/",
+            ),
+            OpcUaTypeDefinitionInfo(
+                node_id="ns=3;i=1004",
+                browse_name="MachineryItemIdentificationType",
+                namespace_uri="http://opcfoundation.org/UA/Machinery/",
+            ),
+            OpcUaTypeDefinitionInfo(
+                node_id="ns=4;i=1005",
+                browse_name="FunctionalGroupType",
+                namespace_uri="http://opcfoundation.org/UA/DI/",
+            ),
+        ),
+        "ns=2;i=27": (
+            OpcUaTypeDefinitionInfo(
+                node_id="ns=3;i=1005",
+                browse_name="MachineryComponentIdentificationType",
+                namespace_uri="http://opcfoundation.org/UA/Machinery/",
+            ),
+            OpcUaTypeDefinitionInfo(
+                node_id="ns=4;i=1005",
+                browse_name="FunctionalGroupType",
+                namespace_uri="http://opcfoundation.org/UA/DI/",
+            ),
+        ),
+    }
+    namespace_uri_by_source, active_profiles_by_source = build_phases.build_active_profiles(by_source, hierarchies, {})
+    graph = reference_graph.build_reference_graph(
+        opc_nodes=nodes,
+        by_source_node=by_source,
+        namespace_infos=_namespace_infos(),
+        reference_supertypes_by_id={},
+        type_definition_hierarchy_by_id=hierarchies,
+        active_profiles_by_source=active_profiles_by_source,
+    )
+
+    mapping = node_mapping.map_nodes(
+        by_source_node=by_source,
+        graph=graph,
+        type_definition_hierarchy_by_id=hierarchies,
+        namespace_uri_by_source=namespace_uri_by_source,
+        active_profiles_by_source=active_profiles_by_source,
+    )
+
+    machine_id = graph.mapped_id_by_source["ns=2;s=Machine"]
+    identification_id = graph.mapped_id_by_source["ns=2;s=Identification"]
+
+    assert mapping.applied_profile_ids_by_id[machine_id] == ["machinery", "generic"]
+    assert mapping.applied_profile_ids_by_id[identification_id] == ["machinery", "generic"]
+    assert graph.hierarchy_parent_by_id[identification_id] == machine_id
+    assert graph.hierarchy_children_by_id[machine_id] == [identification_id]
+    assert mapping.nodes_by_id[identification_id].semantic_role == "asset"
+    assert mapping.mapping_confidence_by_id[machine_id] == "high"
+
+
 def test_reference_graph_turns_extra_hierarchy_parents_into_organized_by_edges() -> None:
     nodes = [_node("ns=0;i=1"), _node("ns=0;i=2"), _node("ns=0;i=3")]
     nodes[0].outgoing_references = [OpcUaReferenceInfo("ns=0;i=3", "i=35", "Organizes")]

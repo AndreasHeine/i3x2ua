@@ -14,6 +14,9 @@ MappingConfidence = Literal["high", "medium", "low"]
 @dataclass(frozen=True, slots=True)
 class ProfileOverride:
     type_name: str
+    # When set, the override matches only type entries whose namespace URI equals this
+    # canonical URI, so a same-named type in an unrelated namespace cannot carry it.
+    namespace_uri: str | None = None
     semantic_role: SemanticRole | None = None
     force_hierarchy: bool = False
     force_composition: bool = False
@@ -28,8 +31,9 @@ class ProfileOverride:
 class SemanticProfile:
     profile_id: str
     priority: int
-    # Matches the namespace of a node in the instance type's inheritance chain.
-    namespace_uri_fragment: str
+    # Canonical namespace URI compared against the namespace of any node in the instance
+    # type's inheritance chain; an empty value means no namespace constraint.
+    namespace_uri: str
     known_types: tuple[str, ...] = ()
     hierarchy_references: tuple[str, ...] = ()
     composition_references: tuple[str, ...] = ()
@@ -41,19 +45,26 @@ class SemanticProfile:
         node: OpcUaNodeInfo,
         type_definition_hierarchy: tuple[OpcUaTypeDefinitionInfo, ...] = (),
     ) -> bool:
-        if not self.namespace_uri_fragment and not self.known_types:
+        if not self.namespace_uri and not self.known_types:
             return True
-        known_type_tokens = {_normalize_token(item) for item in self.known_types}
-        for type_info in type_definition_hierarchy:
-            if self.namespace_uri_fragment and (
-                not type_info.namespace_uri
-                or self.namespace_uri_fragment.lower() not in type_info.namespace_uri.lower()
+        # Namespace and known-type constraints are evaluated independently: a chain entry
+        # satisfies the namespace constraint, another entry may satisfy the type constraint.
+        # Companion models mix namespaces - a Machinery type derives from the DI
+        # FunctionalGroupType (OPC 40001-1 §8.3) - so requiring both on the same entry
+        # would never match a real hierarchy.
+        if self.namespace_uri and not any(
+            _namespace_uri_matches(type_info.namespace_uri, self.namespace_uri)
+            for type_info in type_definition_hierarchy
+        ):
+            return False
+        if self.known_types:
+            known_type_tokens = {_normalize_token(item) for item in self.known_types}
+            if not any(
+                _normalize_token(type_info.browse_name) in known_type_tokens
+                for type_info in type_definition_hierarchy
             ):
-                continue
-            if known_type_tokens and _normalize_token(type_info.browse_name) not in known_type_tokens:
-                continue
-            return True
-        return False
+                return False
+        return True
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,10 +76,14 @@ class ResolvedProfileSet:
         return tuple(profile.profile_id for profile in self.profiles)
 
 
+# Canonical namespace URI declared by the standard (trailing slash included): OPC 40001-1
+# §20.1-20.2. The Machinery types derive from the DI namespace (OPC 10000-100 §4.4.1).
+_MACHINERY_NAMESPACE_URI = "http://opcfoundation.org/UA/Machinery/"
+
 _GENERIC_PROFILE = SemanticProfile(
     profile_id="generic",
     priority=10,
-    namespace_uri_fragment="",
+    namespace_uri="",
     hierarchy_references=("Organizes", "HasChild", "HierarchicalReferences"),
     composition_references=("HasComponent", "HasOrderedComponent", "HasProperty", "PropertyOf"),
     graph_references=("NonHierarchicalReferences", "GeneratesEvent", "HasEventSource"),
@@ -77,22 +92,43 @@ _GENERIC_PROFILE = SemanticProfile(
 _MACHINERY_PROFILE = SemanticProfile(
     profile_id="machinery",
     priority=100,
-    namespace_uri_fragment="http://opcfoundation.org/UA/Machinery",
-    known_types=("FunctionalGroupType", "DataItemType"),
+    # Membership of any chain entry in the canonical Machinery namespace identifies the
+    # model; the standard intentionally does not define a generic MachineryItem ObjectType
+    # and leaves its domain-specific organization open (OPC 40001-1 §6.3.1), so known
+    # types are deliberately not enumerated here.
+    namespace_uri=_MACHINERY_NAMESPACE_URI,
+    known_types=(),
     hierarchy_references=("Organizes",),
-    composition_references=("HasProperty", "DataItemType"),
-    graph_references=("FlowsTo",),
+    # ``HasAddIn`` (OPC 10000-5 §11.21) is the ReferenceType Machinery uses for AddIns
+    # (OPC 40001-1 §9.2, §11.2) and is a ``HasComponent`` subtype, so the generic
+    # target-class-aware family classification already maps object AddIns to hierarchy
+    # and Variable targets to composition; no Machinery-specific relationship rule is
+    # declared. ``DataItemType`` is a Core VariableType (OPC 10000-8 §5.3.1) - not a
+    # relationship type - and ``FlowsTo`` belongs to the TMC model (OPC 30060 §12.1),
+    # so neither may appear as a Machinery reference alias.
+    composition_references=("HasProperty",),
+    graph_references=(),
     overrides=(
+        # Machinery identification AddIns describe a MachineryItem's identity and are
+        # defined in the Machinery namespace (OPC 40001-1 §8.3, §10.2), derived from the
+        # DI FunctionalGroupType (OPC 10000-100 §4.4.1). Scoped to that namespace, the
+        # identity maps to the asset role and keeps the AddIn structural plane on the
+        # hierarchy. Concrete subtypes inherit the identity through their ancestry - an
+        # intentionally broad rule confined to Machinery-namespace entries; types that
+        # merely inherit the DI FunctionalGroupType, and the open-ended domain-specific
+        # MachineryItem types (§6.3.1), are intentionally left to generic mapping.
         ProfileOverride(
-            type_name="FunctionalGroupType",
-            semantic_role="group",
+            type_name="MachineryItemIdentificationType",
+            namespace_uri=_MACHINERY_NAMESPACE_URI,
+            semantic_role="asset",
             force_hierarchy=True,
             confidence="high",
         ),
         ProfileOverride(
-            type_name="DataItemType",
-            semantic_role="datapoint",
-            force_composition=True,
+            type_name="MachineryComponentIdentificationType",
+            namespace_uri=_MACHINERY_NAMESPACE_URI,
+            semantic_role="asset",
+            force_hierarchy=True,
             confidence="high",
         ),
     ),
@@ -114,6 +150,17 @@ def _normalize_token(value: str | None) -> str:
     if ";" in lowered:
         lowered = lowered.rsplit(";", 1)[-1]
     return "".join(ch for ch in lowered if ch.isalnum())
+
+
+def _namespace_uri_matches(namespace_uri: str | None, canonical_uri: str) -> bool:
+    """Exact namespace URI comparison, normalized by case and trailing slash.
+
+    Never a substring match: ``http://opcfoundation.org/UA/Machinery/ProcessValues/`` is a
+    distinct namespace and must not satisfy the canonical Machinery namespace.
+    """
+    if not namespace_uri:
+        return False
+    return namespace_uri.strip().rstrip("/").lower() == canonical_uri.strip().rstrip("/").lower()
 
 
 def load_default_profiles() -> tuple[SemanticProfile, ...]:
@@ -169,6 +216,27 @@ def _type_override_tokens(
     return tokens
 
 
+def _override_matches(
+    override: ProfileOverride,
+    node: OpcUaNodeInfo,
+    type_definition_hierarchy: tuple[OpcUaTypeDefinitionInfo, ...],
+) -> bool:
+    """Match an override against type identity, optionally scoped to its namespace.
+
+    A namespace-scoped override applies only to chain entries whose BrowseName *and*
+    namespace URI both identify it, so a same-named type in an unrelated namespace - and
+    mere inheritance of the generic DI ``FunctionalGroupType`` - cannot carry the override.
+    """
+    token = _normalize_token(override.type_name)
+    if not override.namespace_uri:
+        return token in _type_override_tokens(node, type_definition_hierarchy)
+    return any(
+        _normalize_token(type_info.browse_name) == token
+        and _namespace_uri_matches(type_info.namespace_uri, override.namespace_uri)
+        for type_info in type_definition_hierarchy
+    )
+
+
 def resolve_semantic_role(
     node: OpcUaNodeInfo,
     active_profiles: ResolvedProfileSet | None = None,
@@ -178,10 +246,9 @@ def resolve_semantic_role(
     # Overrides are applied in profile priority order (descending); equal priorities keep the
     # supplied tuple order, so the first matching override wins.
     profiles = active_profiles.profiles if active_profiles else load_default_profiles()
-    type_tokens = _type_override_tokens(node, type_definition_hierarchy)
     for profile in profiles:
         for override in profile.overrides:
-            if _normalize_token(override.type_name) in type_tokens:
+            if _override_matches(override, node, type_definition_hierarchy):
                 if override.semantic_role is not None:
                     return override.semantic_role
 
@@ -221,10 +288,9 @@ def has_profile_override_for_node(
     type_definition_hierarchy: tuple[OpcUaTypeDefinitionInfo, ...] = (),
 ) -> bool:
     profiles = active_profiles.profiles if active_profiles else load_default_profiles()
-    type_tokens = _type_override_tokens(node, type_definition_hierarchy)
     for profile in profiles:
         for override in profile.overrides:
-            if _normalize_token(override.type_name) in type_tokens:
+            if _override_matches(override, node, type_definition_hierarchy):
                 return True
     return False
 
@@ -237,10 +303,9 @@ def forced_relationship_class_for_node(
     # Overrides are applied in profile priority order (descending); equal priorities keep the
     # supplied tuple order, so the first override with a forced class wins.
     profiles = active_profiles.profiles if active_profiles else load_default_profiles()
-    type_names = _type_override_tokens(node, type_definition_hierarchy)
     for profile in profiles:
         for override in profile.overrides:
-            if _normalize_token(override.type_name) not in type_names:
+            if not _override_matches(override, node, type_definition_hierarchy):
                 continue
             if override.force_hierarchy:
                 return "hierarchy"

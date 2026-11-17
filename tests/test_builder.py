@@ -1147,6 +1147,10 @@ async def test_model_builder_applies_profile_from_type_definition_ancestor(batch
                     uri="http://opcfoundation.org/UA/Machinery/",
                     display_name="Machinery",
                 ),
+                OpcUaNamespaceInfo(
+                    uri="http://opcfoundation.org/UA/DI/",
+                    display_name="DI",
+                ),
             ]
 
         async def resolve_type_definition_hierarchy(
@@ -1160,7 +1164,11 @@ async def test_model_builder_applies_profile_from_type_definition_ancestor(batch
                     browse_name="MachineToolType",
                 ),
                 OpcUaTypeDefinitionInfo(
-                    node_id="ns=3;i=1001",
+                    node_id="ns=3;i=1004",
+                    browse_name="MachineryItemIdentificationType",
+                ),
+                OpcUaTypeDefinitionInfo(
+                    node_id="ns=4;i=1005",
                     browse_name="FunctionalGroupType",
                 ),
             ]
@@ -1179,11 +1187,20 @@ async def test_model_builder_applies_profile_from_type_definition_ancestor(batch
 
     machine_id = result.node_id_by_name["Machine"]
     assert result.applied_profile_ids_by_id[machine_id] == ["machinery", "generic"]
-    assert result.semantic_role_by_id[machine_id] == "group"
+    assert result.semantic_role_by_id[machine_id] == "asset"
+    assert result.mapping_confidence_by_id[machine_id] == "high"
 
 
 @pytest.mark.asyncio
 async def test_model_builder_profile_relationship_flags_override_reference_classification() -> None:
+    """A Machinery identity override forces the incoming relationship over classification.
+
+    The identification AddIn (OPC 40001-1 §8.3) is referenced here with ``HasProperty``,
+    which the generic classifier maps to composition; the namespace-scoped override on
+    ``MachineryComponentIdentificationType`` forces it onto the hierarchy plane instead.
+    A plain Variable child keeps its generic composition classification.
+    """
+
     class FakeOpcuaWithForcedRelationshipOverrides:
         async def browse_tree(self) -> list[OpcUaNodeInfo]:
             return [
@@ -1196,34 +1213,33 @@ async def test_model_builder_profile_relationship_flags_override_reference_class
                     data_type=None,
                     outgoing_references=[
                         OpcUaReferenceInfo(
-                            target_node_id="ns=1;s=Group",
+                            target_node_id="ns=1;s=Identification",
                             reference_type_id="ns=0;i=46",
                             reference_browse_name="HasProperty",
                         ),
                         OpcUaReferenceInfo(
-                            target_node_id="ns=1;s=DataItem",
-                            reference_type_id="ns=0;i=35",
-                            reference_browse_name="Organizes",
+                            target_node_id="ns=1;s=Temp",
+                            reference_type_id="ns=0;i=46",
+                            reference_browse_name="HasProperty",
                         ),
                     ],
                 ),
                 OpcUaNodeInfo(
-                    node_id="ns=1;s=Group",
+                    node_id="ns=1;s=Identification",
                     parent_node_id="ns=1;s=Root",
-                    browse_name="Group",
-                    display_name="Group",
-                    node_class="Object",
-                    data_type=None,
-                    type_definition_id="ns=2;i=26",
-                ),
-                OpcUaNodeInfo(
-                    node_id="ns=1;s=DataItem",
-                    parent_node_id="ns=1;s=Root",
-                    browse_name="DataItem",
-                    display_name="DataItem",
+                    browse_name="Identification",
+                    display_name="Identification",
                     node_class="Object",
                     data_type=None,
                     type_definition_id="ns=2;i=27",
+                ),
+                OpcUaNodeInfo(
+                    node_id="ns=1;s=Temp",
+                    parent_node_id="ns=1;s=Root",
+                    browse_name="Temp",
+                    display_name="Temp",
+                    node_class="Variable",
+                    data_type="Double",
                 ),
             ]
 
@@ -1239,6 +1255,10 @@ async def test_model_builder_profile_relationship_flags_override_reference_class
                     uri="http://opcfoundation.org/UA/Machinery/",
                     display_name="Machinery",
                 ),
+                OpcUaNamespaceInfo(
+                    uri="http://opcfoundation.org/UA/DI/",
+                    display_name="DI",
+                ),
             ]
 
         async def resolve_type_definition_hierarchy(
@@ -1246,28 +1266,31 @@ async def test_model_builder_profile_relationship_flags_override_reference_class
             type_definition_id: str,
         ) -> list[OpcUaTypeDefinitionInfo]:
             type_info_by_id = {
-                "ns=2;i=26": OpcUaTypeDefinitionInfo(
-                    node_id="ns=3;i=1001",
-                    browse_name="FunctionalGroupType",
-                ),
-                "ns=2;i=27": OpcUaTypeDefinitionInfo(
-                    node_id="ns=3;i=1002",
-                    browse_name="DataItemType",
-                ),
+                "ns=2;i=27": [
+                    OpcUaTypeDefinitionInfo(
+                        node_id="ns=3;i=1005",
+                        browse_name="MachineryComponentIdentificationType",
+                    ),
+                    OpcUaTypeDefinitionInfo(
+                        node_id="ns=4;i=1005",
+                        browse_name="FunctionalGroupType",
+                    ),
+                ],
             }
-            return [type_info_by_id[type_definition_id]]
+            return type_info_by_id[type_definition_id]
 
     builder = ModelBuilder(cast(OpcUaClientProtocol, FakeOpcuaWithForcedRelationshipOverrides()))
     result = await builder.build()
 
     root_id = result.node_id_by_name["Root"]
-    group_id = result.node_id_by_name["Group"]
-    data_item_id = result.node_id_by_name["DataItem"]
+    identification_id = result.node_id_by_name["Identification"]
+    temp_id = result.node_id_by_name["Temp"]
 
-    assert result.hierarchy_children_by_id[root_id] == [group_id]
-    assert result.composition_children_by_id[root_id] == [data_item_id]
-    assert result.relationships_by_id[root_id]["HasChildren"] == [group_id]
-    assert result.relationships_by_id[root_id]["HasComponent"] == [data_item_id]
+    assert result.applied_profile_ids_by_id[identification_id] == ["machinery", "generic"]
+    assert result.hierarchy_children_by_id[root_id] == [identification_id]
+    assert result.composition_children_by_id[root_id] == [temp_id]
+    assert result.relationships_by_id[root_id]["HasChildren"] == [identification_id]
+    assert result.relationships_by_id[root_id]["HasComponent"] == [temp_id]
 
 
 def test_mapper_helper_functions() -> None:

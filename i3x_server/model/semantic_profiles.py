@@ -60,8 +60,7 @@ class SemanticProfile:
         if self.known_types:
             known_type_tokens = {_normalize_token(item) for item in self.known_types}
             if not any(
-                _normalize_token(type_info.browse_name) in known_type_tokens
-                for type_info in type_definition_hierarchy
+                _normalize_token(type_info.browse_name) in known_type_tokens for type_info in type_definition_hierarchy
             ):
                 return False
         return True

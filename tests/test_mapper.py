@@ -415,6 +415,7 @@ def test_machinery_profile_does_not_treat_core_variable_type_names_as_relationsh
 # is declared: object AddIns stay hierarchy (the machine->machine structural plane),
 # Variable targets stay composition.
 
+
 def test_machinery_profile_keeps_hasaddin_hierarchy_for_object_targets() -> None:
     classification, confidence = classify_opcua_reference_with_confidence(
         reference_type_node_id="ns=0;i=17604",
@@ -440,6 +441,7 @@ def test_machinery_profile_keeps_hasaddin_composition_for_variable_targets() -> 
 
 
 # --- Machinery overrides are scoped to their namespace identity ----------------------------
+
 
 def test_machinery_override_applies_to_identification_subtypes_via_machinery_ancestry() -> None:
     """Intentionally broad rule, scoped to the Machinery namespace.
@@ -571,6 +573,7 @@ def test_profile_custom_graph_alias_classifies_graph() -> None:
 
 # --- Overrides must match type identity, not instance names ------------------------------
 
+
 def _collision_object(node_id: str, browse_name: str) -> OpcUaNodeInfo:
     return OpcUaNodeInfo(
         node_id=node_id,
@@ -588,10 +591,7 @@ def test_semantic_role_override_requires_type_ancestry_not_instance_browse_name(
     node = _collision_object("ns=1;s=FunctionalGroupType", "FunctionalGroupType")
     active_profiles = ResolvedProfileSet(profiles=load_default_profiles())
 
-    assert (
-        resolve_semantic_role(node, active_profiles, type_definition_hierarchy=())
-        == "asset"
-    )
+    assert resolve_semantic_role(node, active_profiles, type_definition_hierarchy=()) == "asset"
     assert not has_profile_override_for_node(node, active_profiles, type_definition_hierarchy=())
 
 
@@ -599,9 +599,7 @@ def test_forced_relationship_override_requires_type_ancestry_not_instance_browse
     node = _collision_object("ns=1;s=MachineryItemIdentificationType", "MachineryItemIdentificationType")
     active_profiles = ResolvedProfileSet(profiles=load_default_profiles())
 
-    assert forced_relationship_class_for_node(
-        node, active_profiles, type_definition_hierarchy=()
-    ) is None
+    assert forced_relationship_class_for_node(node, active_profiles, type_definition_hierarchy=()) is None
 
 
 def test_forced_relationship_override_applies_from_type_ancestry() -> None:
@@ -622,9 +620,10 @@ def test_forced_relationship_override_applies_from_type_ancestry() -> None:
         ),
     )
 
-    assert forced_relationship_class_for_node(
-        node, active_profiles, type_definition_hierarchy=type_hierarchy
-    ) == "hierarchy"
+    assert (
+        forced_relationship_class_for_node(node, active_profiles, type_definition_hierarchy=type_hierarchy)
+        == "hierarchy"
+    )
 
 
 def test_namespace_scoped_override_requires_namespace_and_browse_name_on_one_entry() -> None:
@@ -696,6 +695,7 @@ def test_profile_namespace_and_known_type_constraints_match_on_separate_entries(
 
 # --- Explicit empty-profile contract: None defaults, () means none -----------------------
 
+
 def _plain_container() -> OpcUaNodeInfo:
     return OpcUaNodeInfo(
         node_id="ns=1;s=Container",
@@ -717,6 +717,7 @@ def test_active_profiles_empty_tuple_means_no_profiles() -> None:
 
 
 # --- Precedence for equal-priority profiles and conflicting overrides --------------------
+
 
 def test_active_profiles_equal_priority_preserves_tuple_order() -> None:
     first = SemanticProfile(profile_id="first", priority=5, namespace_uri="")

@@ -47,7 +47,7 @@ def register_exception_handlers(app: FastAPI) -> None:
         request: Request,
         exc: RequestValidationError,
     ) -> JSONResponse:
-# Keep the field diagnostics (loc/msg) in `responseDetail.detail`: for a bulk
+        # Keep the field diagnostics (loc/msg) in `responseDetail.detail`: for a bulk
         # API the message alone is the difference between a fast fix and a guessing loop.
         message = "Invalid request payload or parameters"
         errors = list(exc.errors())

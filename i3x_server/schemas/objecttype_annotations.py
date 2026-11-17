@@ -296,9 +296,9 @@ def _safe_annotation_expression(node: ast.AST, globals_dict: Mapping[str, Any]) 
     Annotation strings are sourced from upstream OPC UA structure metadata, so they must never
     be executed. Only constructs a type annotation can legitimately contain are accepted:
     literals, name lookups resolved against the owner module's globals, attribute chains on
-    modules/classes, subscripts of typing constructs, containers, and ``X | Y`` unions. Anything
-    else - calls, lambdas, comprehensions, ``__globals__`` traversal - raises, and the caller
-    degrades to ``None`` instead of running it.
+    modules/classes, subscripts of typing constructs, containers, and ``X | Y`` unions, including
+    quoted union operands. Anything else - calls, lambdas, comprehensions, ``__globals__``
+    traversal - raises, and the caller degrades to ``None`` instead of running it.
     """
     if isinstance(node, ast.Expression):
         return _safe_annotation_expression(node.body, globals_dict)
@@ -328,9 +328,12 @@ def _safe_annotation_expression(node: ast.AST, globals_dict: Mapping[str, Any]) 
     if isinstance(node, ast.List):
         return [_safe_annotation_expression(item, globals_dict) for item in node.elts]
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
-        return _safe_annotation_expression(node.left, globals_dict) | _safe_annotation_expression(
-            node.right, globals_dict
-        )
+        left, right = node.left, node.right
+        if isinstance(left, ast.Constant) and isinstance(left.value, str):
+            left = ast.parse(left.value, mode="eval").body
+        if isinstance(right, ast.Constant) and isinstance(right.value, str):
+            right = ast.parse(right.value, mode="eval").body
+        return _safe_annotation_expression(left, globals_dict) | _safe_annotation_expression(right, globals_dict)
     raise ValueError(f"unsupported annotation expression {type(node).__name__}")
 
 

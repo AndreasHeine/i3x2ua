@@ -864,6 +864,27 @@ def test_generated_annotation_resolves_type_expressions_without_executing() -> N
     assert objecttype_annotations._evaluate_generated_annotation("typing.Optional[int]", owner) == int | None
     assert objecttype_annotations._evaluate_generated_annotation("list[ua.String]", owner) == list[ua.String]
     assert objecttype_annotations._evaluate_generated_annotation("ua.String | None", owner) == ua.String | None
+    assert (
+        objecttype_annotations._evaluate_generated_annotation("typing.Literal['value']", owner)
+        == typing.Literal["value"]
+    )
+
+
+@pytest.mark.parametrize("annotation", ["'list[ua.Int32]' | None", "None | 'list[ua.Int32]'"])
+def test_generated_annotation_resolves_quoted_union_operand(annotation: str) -> None:
+    assert objecttype_annotations._evaluate_generated_annotation(annotation, ua.Variant, "Dimensions") == (
+        list[ua.Int32] | None
+    )
+
+
+def test_variant_dimensions_schema_without_annotation_warning(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.WARNING, logger=objecttype_annotations.__name__):
+        schema = objecttype_annotations._structure_schema_for_type(ua.Variant, objecttype_registry._SchemaRegistry())
+    assert schema["properties"]["Dimensions"] == {
+        "type": ["array", "null"],
+        "items": {"type": "integer"},
+    }
+    assert not caplog.records
 
 
 def test_generated_annotation_never_executes_code(
@@ -890,6 +911,7 @@ def test_generated_annotation_never_executes_code(
             assert objecttype_annotations._evaluate_generated_annotation("evil.__globals__", owner) is None
             assert objecttype_annotations._evaluate_generated_annotation("[x for x in range(3)]", owner) is None
             assert objecttype_annotations._evaluate_generated_annotation("1 +", owner) is None
+            assert objecttype_annotations._evaluate_generated_annotation("'evil()' | None", owner) is None
 
         assert calls == []
         assert "not evaluated" in caplog.text

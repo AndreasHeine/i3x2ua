@@ -10,7 +10,7 @@
     "lint": "eslint .",
     "check": "svelte-kit sync && svelte-check --tsconfig ./jsconfig.json",
     "test": "node --test",
-    "audit": "npm audit --audit-level=high"
+    "audit": "npm audit --omit=dev --audit-level=high"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

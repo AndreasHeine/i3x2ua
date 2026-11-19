@@ -9,6 +9,7 @@ from i3x_server.domain.ports.opcua import OpcUaNamespaceInfo, OpcUaTypeDefinitio
 from i3x_server.infrastructure.opcua.client import OpcUaClientProtocol, OpcUaNodeInfo, OpcUaReferenceInfo
 from i3x_server.model.builder import ModelBuilder
 from i3x_server.model.mapper import infer_kind, map_type, stable_i3x_id
+from i3x_server.model.revision import model_revision
 from i3x_server.schemas.state import BuildResult
 from tests.conftest import CountingNodeMap
 
@@ -111,6 +112,52 @@ async def test_model_builder_maps_opcua_description_to_metadata() -> None:
 
     node = next(iter(model.nodes_by_id.values()))
     assert node.metadata["description"] == "Machine description"
+
+
+@pytest.mark.asyncio
+async def test_model_builder_preserves_qualified_browse_name() -> None:
+    class FakeOpcuaWithQualifiedBrowseName:
+        def __init__(self, browse_namespace_uri: str = "urn:browse-names") -> None:
+            self.browse_namespace_uri = browse_namespace_uri
+
+        async def browse_tree(self) -> list[OpcUaNodeInfo]:
+            return [
+                OpcUaNodeInfo(
+                    node_id="ns=2;s=Machine",
+                    parent_node_id=None,
+                    browse_name="MachineBrowse",
+                    display_name="Machine",
+                    node_class="Object",
+                    data_type=None,
+                    type_definition_id="ns=2;i=100",
+                    browse_name_namespace_index=3,
+                )
+            ]
+
+        async def get_namespace_infos(self) -> list[OpcUaNamespaceInfo]:
+            return [
+                OpcUaNamespaceInfo(uri="http://opcfoundation.org/UA/", display_name="OPC UA"),
+                OpcUaNamespaceInfo(uri="urn:instances", display_name="Instances"),
+                OpcUaNamespaceInfo(uri="urn:types", display_name="Types"),
+                OpcUaNamespaceInfo(uri=self.browse_namespace_uri, display_name="Browse Names"),
+            ]
+
+    model = await ModelBuilder(
+        cast(OpcUaClientProtocol, FakeOpcuaWithQualifiedBrowseName())
+    ).build()
+    node = next(iter(model.nodes_by_id.values()))
+    assert node.name == "Machine"
+    assert model.browse_name_by_id[node.id] == "MachineBrowse"
+    assert model.browse_name_namespace_uri_by_id[node.id] == "urn:browse-names"
+    assert model.expanded_type_definition_id_by_id[node.id] == "nsu=urn:types;i=100"
+
+    previous_revision = model.revision
+    remapped_model = await ModelBuilder(
+        cast(OpcUaClientProtocol, FakeOpcuaWithQualifiedBrowseName("urn:updated-browse-names"))
+    ).build()
+    remapped_id = next(iter(remapped_model.nodes_by_id))
+    assert remapped_model.browse_name_namespace_uri_by_id[remapped_id] == "urn:updated-browse-names"
+    assert model_revision(remapped_model) != previous_revision
 
 
 @pytest.mark.asyncio

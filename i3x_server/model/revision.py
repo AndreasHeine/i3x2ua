@@ -15,7 +15,7 @@ from i3x_server.schemas.state import BuildResult
 def compute_model_revision(model: BuildResult) -> str:
     # Each node carries its children, parent, relationships, role, confidence and metadata
     # (uaNodeId, expandedNodeId, namespaceUri, appliedProfileIds), so the lookup indexes derived from them
-    # are covered by the node hash. Only fields not reflected in the nodes are added.
+    # are covered by the node hash. BrowseName and expanded TypeDefinition indexes are also content.
     digest = hashlib.sha256()
     for node_id in sorted(model.nodes_by_id):
         digest.update(model.nodes_by_id[node_id].model_dump_json().encode())
@@ -29,6 +29,9 @@ def compute_model_revision(model: BuildResult) -> str:
         "graph_relationship_namespace_by_id": model.graph_relationship_namespace_by_id,
         "graph_relationship_display_name_by_id": model.graph_relationship_display_name_by_id,
         "graph_relationship_inverse_by_id": model.graph_relationship_inverse_by_id,
+        "browse_name_by_id": model.browse_name_by_id,
+        "browse_name_namespace_uri_by_id": model.browse_name_namespace_uri_by_id,
+        "expanded_type_definition_id_by_id": model.expanded_type_definition_id_by_id,
     }
     digest.update(json.dumps(extra, sort_keys=True, separators=(",", ":")).encode())
     return digest.hexdigest()[:32]

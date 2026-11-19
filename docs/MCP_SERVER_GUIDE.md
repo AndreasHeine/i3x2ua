@@ -78,9 +78,22 @@ by the shipped overrides.
 | `getElementContext` | One call that returns an element plus ancestors, children, relationships, type and metadata | `elementId`, `ancestorDepth`, `childLimit`, `relationshipLimit`, `includeChildren`, `includeRelationships`, `includeTypeAndMetadata` | depth ≤ 32 (default 3), limits ≤ 500 (defaults 100) |
 | `summarizeSubtree` | Overview of a subtree without dumping every node | `rootElementId`, `maxDepth`, `includeHierarchy`, `includeComposition`, `includeProperties`, `includeActions`, `maxNodes` | depth ≤ 32 (default 4), nodes ≤ 500 (default 200) |
 | `traceRelationshipPath` | Shortest connection between two known elements | `sourceElementId`, `targetElementId`, `relationshipPlanes`, `direction` (`outgoing`/`incoming`/`either`), `maxDepth` | depth ≤ 32 (default 8), search capped at 5000 nodes |
-| `getBrowsePath` | Canonical browse path for one element | `elementId` | — |
+| `getBrowsePath` | Canonical display-name path and namespace-qualified BrowseName segments for one element | `elementId` | — |
 | `getInstancesOfType` | All instances of a type (and its subtypes) | `typeElementId`, `includeSubtypes`, `offset`, `limit`, `typeContextRevision` | offset ≥ 1 requires `typeContextRevision` |
-| `resolveBrowsePath` | Path of display names → element, e.g. `Machines/Line1/Station5/Temperature` | `path` **or** `segments` | one of the two required |
+| `resolveBrowsePath` | Resolve display-name or namespace-qualified BrowseName paths to all matching elements | exactly one of `path`, `segments`, `qualifiedSegments`; optional `offset`, `limit`, `modelRevision` | page default 50, max 100; offset ≥ 1 requires `modelRevision` |
+
+`resolveBrowsePath` always returns a `matches` array, including when there are
+zero or one matches. Each match includes the authoritative i3X `elementId`, the
+display name, its qualified `browseName`, and expanded OPC UA `nodeId` and
+`typeDefinitionId` values (the latter is `null` when no TypeDefinition exists).
+`path` is a slash-separated display-name path; use `segments` for names containing
+`/`. `qualifiedSegments` contains `{namespaceUri, name}` BrowseNames. `getBrowsePath`
+returns both display-name forms plus `qualifiedSegments`; use the arrays for
+lossless round trips. Matches are sorted by `elementId`. For subsequent pages,
+pass the returned `modelRevision`; a changed model returns a conflict so paging can
+restart from offset 0. If a candidate's BrowseName namespace cannot be resolved,
+the tool returns an explicit model error rather than silently omitting a possible
+match.
 
 ### C. Reading values
 

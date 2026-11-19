@@ -15,6 +15,7 @@ class _ModelAccessIndex:
     name_grams: dict[str, set[str]] = field(default_factory=dict)
     children_by_plane: dict[str, dict[str, tuple[str, ...]]] = field(default_factory=dict)
     path_children: dict[str | None, dict[str, tuple[str, ...]]] | None = None
+    qualified_path_children: dict[str | None, dict[tuple[str | None, str], tuple[str, ...]]] | None = None
     type_context_token: object | None = None
     direct_instances: dict[str, tuple[str, ...]] = field(default_factory=dict)
     subtype_instances: dict[str, tuple[str, ...]] = field(default_factory=dict)
@@ -65,6 +66,9 @@ class BuildResult:
     parent_id_by_id: dict[str, str | None] = field(default_factory=dict)
     applied_profile_ids_by_id: dict[str, list[str]] = field(default_factory=dict)
     namespace_uri_by_id: dict[str, str | None] = field(default_factory=dict)
+    browse_name_by_id: dict[str, str] = field(default_factory=dict)
+    browse_name_namespace_uri_by_id: dict[str, str | None] = field(default_factory=dict)
+    expanded_type_definition_id_by_id: dict[str, str | None] = field(default_factory=dict)
     element_id_by_node_id: dict[str, str] = field(default_factory=dict)
     element_id_by_expanded_node_id: dict[str, str] = field(default_factory=dict)
     namespace_uri_by_index: dict[int, str] = field(default_factory=dict)

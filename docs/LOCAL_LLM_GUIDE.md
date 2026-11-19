@@ -184,8 +184,8 @@ discovery.
 
 | Tool | Use |
 |---|---|
-| `resolveBrowsePath` | Resolve `{"path":"Machines/Line1/Station5/Temperature"}` directly to an element. |
-| `getBrowsePath` | Return the canonical path and segments for `{"elementId":"..."}`. |
+| `resolveBrowsePath` | Resolve exactly one of `path`, `segments`, or `qualifiedSegments`; returns all matches in a `matches` array. |
+| `getBrowsePath` | Return display-name path/segments and namespace-qualified BrowseName segments for `{"elementId":"..."}`. |
 | `getInstancesOfType` | List instances for `{"typeElementId":"...","includeSubtypes":true}`. |
 | `getChildren` | List direct children for `{"elementId":"...","plane":"hierarchy"}`; also supports `composition` and outgoing `graph` neighbors. |
 | `getCompositionProperties` | List recursive composition properties for `{"elementIds":["...","..."]}`, without reading values. |
@@ -205,19 +205,27 @@ targeted search text; filter-only or empty-text listing is rejected. Prefer
 focused path/child traversal for navigation, then use searches to locate a
 specific target; do not page through broad matches.
 
-Paths use exact, case-sensitive cached display names and include the root.
+Paths use exact, case-sensitive cached display names or BrowseNames and include the root.
 Canonical paths prefer hierarchy parents, falling back to canonical/composition
-parents for composition-only elements. Supply exactly one of `path` or
-`segments`; use `{"segments":["Machines","Station5","Pressure/Flow"]}` when a
-name contains `/`. `getBrowsePath` returns both forms; use its segments for a
-lossless round trip. A missing path returns `found:false`; duplicate paths return
-409 rather than choosing an arbitrary element. Unknown element/type IDs return
-404. Invalid parent/type cycles return an explicit error.
+parents for composition-only elements. Supply exactly one of `path`, `segments`,
+or `qualifiedSegments`. `path` is slash-separated and cannot represent a name
+containing `/`; use an array form for those names. A qualified segment is an
+object with `namespaceUri` and `name`. `getBrowsePath` returns both display-name
+forms and `qualifiedSegments`; use either array form for a lossless round trip.
+`resolveBrowsePath` returns `matches: []` for no match and an array even for one
+match; ambiguous paths return every matching element, sorted by `elementId`. Match `elementId` values
+are i3X identifiers, while non-null OPC UA `nodeId` and `typeDefinitionId`
+values use expanded `nsu=…;…` format. Browse-path results support `offset` and
+`limit` (default 50, maximum 100); pass the returned `modelRevision` on pages
+after offset 0. A changed revision returns a conflict and requires restarting
+from offset 0. Unknown element/type IDs return 404. Invalid parent/type cycles
+or unavailable BrowseName namespace data return an explicit error.
 
-List tools accept `offset` (default 0) and `limit` (default 50, maximum 100).
-Results contain compact `[elementId, displayName]` pairs, sorted by case-folded
-display name then element ID, with `total`, `returned`, `offset`, and
-`nextOffset` when more results remain. `getCompositionProperties` accepts up to
+Other paged list tools accept `offset` (default 0) and `limit` (default 50,
+maximum 100). Their results contain compact `[elementId, displayName]` pairs,
+sorted by case-folded display name then element ID, with `total`, `returned`,
+`offset`, and `nextOffset` when more results remain. `resolveBrowsePath` returns
+match objects instead. `getCompositionProperties` accepts up to
 50 object IDs, deduplicates them, sorts them the same way, and applies pagination
 independently to each object's `properties` list. It follows composition only,
 including nested components, not hierarchy children. No tool returns live values.

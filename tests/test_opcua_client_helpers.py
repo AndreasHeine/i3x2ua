@@ -658,7 +658,7 @@ async def test_node_description_is_read_with_required_node_attributes(monkeypatc
     node = SimpleNamespace(nodeid=ua.NodeId.from_string("ns=2;s=Device"))
     attribute_batches: list[list[AttributeIds]] = []
     values_by_attribute = {
-        AttributeIds.BrowseName: ua.QualifiedName("Device"),
+        AttributeIds.BrowseName: ua.QualifiedName("Device", 7),
         AttributeIds.DisplayName: ua.LocalizedText("Device"),
         AttributeIds.NodeClass: ua.NodeClass.Object,
         AttributeIds.Description: ua.LocalizedText("Device description"),
@@ -701,6 +701,7 @@ async def test_node_description_is_read_with_required_node_attributes(monkeypatc
         ]
     ]
     assert result[0].description == "Device description"
+    assert result[0].browse_name_namespace_index == 7
 
 
 @pytest.mark.asyncio
@@ -709,7 +710,7 @@ async def test_fallback_node_description_is_read_with_node_names(monkeypatch: py
     node = SimpleNamespace(nodeid=ua.NodeId.from_string("ns=2;s=Reset"))
     requested_attributes: list[AttributeIds] = []
     values_by_attribute = {
-        AttributeIds.BrowseName: ua.QualifiedName("Reset"),
+        AttributeIds.BrowseName: ua.QualifiedName("Reset", 7),
         AttributeIds.DisplayName: ua.LocalizedText("Reset"),
         AttributeIds.NodeClass: ua.NodeClass.Method,
         AttributeIds.Description: ua.LocalizedText("Reset method"),
@@ -744,6 +745,7 @@ async def test_fallback_node_description_is_read_with_node_names(monkeypatch: py
         AttributeIds.UserExecutable,
     ]
     assert result.description == "Reset method"
+    assert result.browse_name_namespace_index == 7
 
 
 @pytest.mark.asyncio

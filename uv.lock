@@ -523,7 +523,7 @@ wheels = [
 
 [[package]]
 name = "fastapi"
-version = "0.164.0"
+version = "0.165.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "annotated-doc" },
@@ -534,9 +534,9 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "typing-inspection" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/4b/9f/d0e353b6c275329d17b1c926db48003e1276879855e8b6c87eb9d57907ad/fastapi-0.164.0.tar.gz", hash = "sha256:3db1b4b146924d284b33bd6b9ca244c8bd0560d5e3526591447fd3abe4383989", size = 555183, upload-time = "2026-11-18T13:09:09.456Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/27/f9/e7820ef181026fea100bde02d811445bf8e883362d7092b6928767147056/fastapi-0.165.0.tar.gz", hash = "sha256:dd94d4128319c1e1d50535ab023ab698f850a4d2822f0e181747b46f4ff3c0ab", size = 557984, upload-time = "2026-11-18T19:15:37.076Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b5/56/d1ddbd742cd6c5d309651d3906ef7c246f170b73246db9b63d8a2fd5b3b3/fastapi-0.164.0-py3-none-any.whl", hash = "sha256:6ec63b74a112a6acc22c87f29bb8cb209002050cfeb4f993b959e6caea65c468", size = 157847, upload-time = "2026-11-18T13:09:07.796Z" },
+    { url = "https://files.pythonhosted.org/packages/c4/c1/3b74c030262a1b38b1fee180f80b4007bbc11c9ac12028cb18c7bcecaec9/fastapi-0.165.0-py3-none-any.whl", hash = "sha256:896f48462042bb4f162147eb8fac7e858753dc1f486765709baf105d70e4fc5b", size = 159475, upload-time = "2026-11-18T19:15:35.345Z" },
 ]
 
 [package.optional-dependencies]
@@ -710,8 +710,8 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "asyncua", specifier = "==2.1.0" },
-    { name = "fastapi", specifier = "==0.164.0" },
-    { name = "fastapi", extras = ["opentelemetry"], marker = "extra == 'otel'", specifier = "==0.164.0" },
+    { name = "fastapi", specifier = "==0.165.0" },
+    { name = "fastapi", extras = ["opentelemetry"], marker = "extra == 'otel'", specifier = "==0.165.0" },
     { name = "jsonschema", extras = ["format"], specifier = ">=4.23.0" },
     { name = "prometheus-client", specifier = ">=0.26.0" },
     { name = "pydantic", specifier = "==2.14.3" },

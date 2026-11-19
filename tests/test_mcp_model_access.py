@@ -219,9 +219,7 @@ def test_qualified_paths_and_display_paths_return_all_matches(model: BuildResult
     model.browse_name_by_id["station-b"] = "Station"
     model.browse_name_namespace_uri_by_id["station-b"] = "urn:browse-b"
 
-    display_result = invoke_model_access_tool(
-        model, "resolveBrowsePath", {"path": "Machines/Station/Identification"}
-    )
+    display_result = invoke_model_access_tool(model, "resolveBrowsePath", {"path": "Machines/Station/Identification"})
     assert [item["elementId"] for item in display_result["matches"]] == [
         "identification-a",
         "identification-b",
@@ -261,15 +259,21 @@ def test_qualified_paths_round_trip_composition_and_slash_names(model: BuildResu
     slash_path = invoke_model_access_tool(model, "getBrowsePath", {"elementId": "slash"})
     assert slash_path["path"] == "Machines/Station/Pressure/Flow"
     assert slash_path["qualifiedSegments"][-1] == {"namespaceUri": "urn:process", "name": "Pressure/Flow"}
-    assert invoke_model_access_tool(
-        model, "resolveBrowsePath", {"qualifiedSegments": slash_path["qualifiedSegments"]}
-    )["matches"][0]["elementId"] == "slash"
+    assert (
+        invoke_model_access_tool(model, "resolveBrowsePath", {"qualifiedSegments": slash_path["qualifiedSegments"]})[
+            "matches"
+        ][0]["elementId"]
+        == "slash"
+    )
 
     composition_path = invoke_model_access_tool(model, "getBrowsePath", {"elementId": "temp2"})
     assert composition_path["qualifiedSegments"][-2] == {"namespaceUri": "urn:components", "name": "MotorBrowse"}
-    assert invoke_model_access_tool(
-        model, "resolveBrowsePath", {"qualifiedSegments": composition_path["qualifiedSegments"]}
-    )["matches"][0]["elementId"] == "temp2"
+    assert (
+        invoke_model_access_tool(
+            model, "resolveBrowsePath", {"qualifiedSegments": composition_path["qualifiedSegments"]}
+        )["matches"][0]["elementId"]
+        == "temp2"
+    )
 
 
 def test_resolve_browse_path_pagination_is_deterministic_and_revision_checked(model: BuildResult) -> None:
@@ -285,9 +289,7 @@ def test_resolve_browse_path_pagination_is_deterministic_and_revision_checked(mo
         model.browse_name_namespace_uri_by_id[element_id] = "urn:browse"
         model.parent_id_by_id[element_id] = "root"
 
-    first = invoke_model_access_tool(
-        model, "resolveBrowsePath", {"segments": ["Machines", "Same"], "limit": 2}
-    )
+    first = invoke_model_access_tool(model, "resolveBrowsePath", {"segments": ["Machines", "Same"], "limit": 2})
     assert first["total"] == 5
     assert first["returned"] == 2
     assert first["nextOffset"] == 2

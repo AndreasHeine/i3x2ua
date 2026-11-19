@@ -142,9 +142,7 @@ async def test_model_builder_preserves_qualified_browse_name() -> None:
                 OpcUaNamespaceInfo(uri=self.browse_namespace_uri, display_name="Browse Names"),
             ]
 
-    model = await ModelBuilder(
-        cast(OpcUaClientProtocol, FakeOpcuaWithQualifiedBrowseName())
-    ).build()
+    model = await ModelBuilder(cast(OpcUaClientProtocol, FakeOpcuaWithQualifiedBrowseName())).build()
     node = next(iter(model.nodes_by_id.values()))
     assert node.name == "Machine"
     assert model.browse_name_by_id[node.id] == "MachineBrowse"

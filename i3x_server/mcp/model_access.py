@@ -436,9 +436,7 @@ def invoke_model_access_tool(
                 parent_candidates = tuple(sorted(set(matches)))
         else:
             display_segments = (
-                tuple(arguments["segments"])
-                if "segments" in arguments
-                else tuple(arguments["path"].split("/"))
+                tuple(arguments["segments"]) if "segments" in arguments else tuple(arguments["path"].split("/"))
             )
             display_path_index = index.path_children
             if display_path_index is None:

@@ -80,6 +80,7 @@ class ModelBuilder:
             graph=graph,
             type_definition_hierarchy_by_id=type_definition_hierarchy_by_id,
             namespace_uri_by_source=namespace_uri_by_source,
+            namespace_uri_by_index=namespace_uri_by_index,
             active_profiles_by_source=active_profiles_by_source,
         )
         map_duration_s = perf_counter() - map_started
@@ -114,6 +115,9 @@ class ModelBuilder:
             parent_id_by_id=mapping.parent_id_by_id,
             applied_profile_ids_by_id=mapping.applied_profile_ids_by_id,
             namespace_uri_by_id=mapping.namespace_uri_by_id,
+            browse_name_by_id=mapping.browse_name_by_id,
+            browse_name_namespace_uri_by_id=mapping.browse_name_namespace_uri_by_id,
+            expanded_type_definition_id_by_id=mapping.expanded_type_definition_id_by_id,
             element_id_by_node_id=element_id_by_node_id,
             element_id_by_expanded_node_id=element_id_by_expanded_node_id,
             namespace_uri_by_index=namespace_uri_by_index,

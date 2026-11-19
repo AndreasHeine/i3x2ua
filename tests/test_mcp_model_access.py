@@ -33,7 +33,13 @@ from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
 
 _ACCESS_ARGUMENTS: dict[str, dict[str, Any]] = {
-    "resolveBrowsePath": {"path": "Machines/Station/Temperature"},
+    "resolveBrowsePath": {
+        "qualifiedSegments": [
+            {"namespaceUri": "urn:browse", "name": "Machines"},
+            {"namespaceUri": "urn:browse", "name": "Station"},
+            {"namespaceUri": "urn:browse", "name": "Temperature"},
+        ]
+    },
     "getBrowsePath": {"elementId": "temp"},
     "getInstancesOfType": {"typeElementId": "type-base"},
     "getChildren": {"elementId": "root"},
@@ -93,6 +99,8 @@ def model() -> BuildResult:
         ModelNode(id="action", name="Start", kind="action", source_node_id="m", source_type_id="ns=2;i=1"),
         ModelNode(id="other", name="Other", kind="asset", source_node_id="o"),
     ]
+    browse_name_by_id = {node.id: node.name for node in nodes}
+    browse_name_namespace_uri_by_id: dict[str, str | None] = {node.id: "urn:browse" for node in nodes}
     return BuildResult(
         nodes_by_id={node.id: node for node in nodes},
         root_ids=["root", "other"],
@@ -110,6 +118,8 @@ def model() -> BuildResult:
         },
         graph_related_by_id={"station-a": [("Links", "station-b"), ("Other", "station-b"), ("Links", "missing")]},
         namespace_uri_by_id={"station-a": "urn:machines", "temp": "urn:machines"},
+        browse_name_by_id=browse_name_by_id,
+        browse_name_namespace_uri_by_id=browse_name_namespace_uri_by_id,
         semantic_role_by_id={"station-a": "asset", "station-b": "asset", "temp": "datapoint"},
     )
 
@@ -142,32 +152,193 @@ def context() -> _ObjectTypeContext:
 
 
 def test_path_resolution_and_canonical_paths(model: BuildResult) -> None:
-    assert invoke_model_access_tool(model, "resolveBrowsePath", {"path": "Machines/Station/Temperature"}) == {
+    result = invoke_model_access_tool(model, "resolveBrowsePath", {"path": "Machines/Station/Temperature"})
+    assert result == {
         "modelRevision": model_revision(model),
-        "found": True,
-        "elementId": "temp",
-        "displayName": "Temperature",
-        "kind": "property",
+        "total": 1,
+        "returned": 1,
+        "offset": 0,
+        "matches": [
+            {
+                "elementId": "temp",
+                "nodeId": None,
+                "displayName": "Temperature",
+                "browseName": {"namespaceUri": "urn:browse", "name": "Temperature"},
+                "typeDefinitionId": None,
+                "kind": "property",
+            }
+        ],
     }
+    slash_result = invoke_model_access_tool(
+        model, "resolveBrowsePath", {"segments": ["Machines", "Station", "Pressure/Flow"]}
+    )
+    assert slash_result["matches"][0]["elementId"] == "slash"
     assert (
-        invoke_model_access_tool(model, "resolveBrowsePath", {"segments": ["Machines", "Station", "Pressure/Flow"]})[
-            "elementId"
-        ]
-        == "slash"
+        invoke_model_access_tool(model, "resolveBrowsePath", {"path": "machines/Station/Temperature"})["matches"] == []
     )
     assert (
-        invoke_model_access_tool(model, "resolveBrowsePath", {"path": "machines/Station/Temperature"})["found"] is False
+        invoke_model_access_tool(model, "resolveBrowsePath", {"path": "Machines"})["matches"][0]["elementId"] == "root"
     )
-    assert invoke_model_access_tool(model, "resolveBrowsePath", {"path": "Machines"})["elementId"] == "root"
     assert invoke_model_access_tool(model, "getBrowsePath", {"elementId": "temp2"}) == {
         "modelRevision": model_revision(model),
         "path": "Machines/Station/Motor/TemperatureSetpoint",
         "segments": ["Machines", "Station", "Motor", "TemperatureSetpoint"],
+        "qualifiedSegments": [
+            {"namespaceUri": "urn:browse", "name": "Machines"},
+            {"namespaceUri": "urn:browse", "name": "Station"},
+            {"namespaceUri": "urn:browse", "name": "Motor"},
+            {"namespaceUri": "urn:browse", "name": "TemperatureSetpoint"},
+        ],
     }
     assert invoke_model_access_tool(model, "getBrowsePath", {"elementId": "root"})["segments"] == ["Machines"]
+    ambiguous = invoke_model_access_tool(model, "resolveBrowsePath", {"path": "Machines/Station"})
+    assert [item["elementId"] for item in ambiguous["matches"]] == ["station-a", "station-b"]
+    assert ambiguous["total"] == 2
+
+
+def test_qualified_paths_and_display_paths_return_all_matches(model: BuildResult) -> None:
+    for element_id, parent, browse_namespace, type_id in (
+        ("identification-a", "station-a", "urn:browse-a", "ns=3;i=100"),
+        ("identification-b", "station-a", "urn:browse-a", "ns=3;i=100"),
+        ("identification-c", "station-b", "urn:browse-b", "ns=4;i=200"),
+    ):
+        model.nodes_by_id[element_id] = ModelNode(
+            id=element_id,
+            name="Identification",
+            kind="property",
+            source_node_id=element_id,
+            metadata={
+                "uaNodeId": f"ns=2;s={element_id}",
+                "uaTypeNodeId": type_id,
+            },
+        )
+        model.browse_name_by_id[element_id] = "Id"
+        model.browse_name_namespace_uri_by_id[element_id] = browse_namespace
+        model.parent_id_by_id[element_id] = parent
+    model.namespace_uri_by_index = {2: "urn:instances", 3: "urn:types-a", 4: "urn:types-b"}
+    model.browse_name_by_id["station-b"] = "Station"
+    model.browse_name_namespace_uri_by_id["station-b"] = "urn:browse-b"
+
+    display_result = invoke_model_access_tool(
+        model, "resolveBrowsePath", {"path": "Machines/Station/Identification"}
+    )
+    assert [item["elementId"] for item in display_result["matches"]] == [
+        "identification-a",
+        "identification-b",
+        "identification-c",
+    ]
+    assert [item["typeDefinitionId"] for item in display_result["matches"]] == [
+        "nsu=urn:types-a;i=100",
+        "nsu=urn:types-a;i=100",
+        "nsu=urn:types-b;i=200",
+    ]
+    assert [item["nodeId"] for item in display_result["matches"]] == [
+        "nsu=urn:instances;s=identification-a",
+        "nsu=urn:instances;s=identification-b",
+        "nsu=urn:instances;s=identification-c",
+    ]
+    assert display_result["matches"][0]["browseName"] == {"namespaceUri": "urn:browse-a", "name": "Id"}
+
+    qualified_path = [
+        {"namespaceUri": "urn:browse", "name": "Machines"},
+        {"namespaceUri": "urn:browse-b", "name": "Station"},
+        {"namespaceUri": "urn:browse-b", "name": "Id"},
+    ]
+    qualified_result = invoke_model_access_tool(model, "resolveBrowsePath", {"qualifiedSegments": qualified_path})
+    assert [item["elementId"] for item in qualified_result["matches"]] == ["identification-c"]
+    assert qualified_result["matches"][0]["displayName"] == "Identification"
+
+
+def test_qualified_paths_round_trip_composition_and_slash_names(model: BuildResult) -> None:
+    model.browse_name_by_id.update({"slash": "Pressure/Flow", "temp2": "Setpoint", "component": "MotorBrowse"})
+    model.browse_name_namespace_uri_by_id.update(
+        {"slash": "urn:process", "temp2": "urn:signals", "component": "urn:components"}
+    )
+    for element_id in ("root", "station-a", "slash", "component", "temp2"):
+        model.browse_name_by_id.setdefault(element_id, model.nodes_by_id[element_id].name)
+        model.browse_name_namespace_uri_by_id.setdefault(element_id, "urn:browse")
+
+    slash_path = invoke_model_access_tool(model, "getBrowsePath", {"elementId": "slash"})
+    assert slash_path["path"] == "Machines/Station/Pressure/Flow"
+    assert slash_path["qualifiedSegments"][-1] == {"namespaceUri": "urn:process", "name": "Pressure/Flow"}
+    assert invoke_model_access_tool(
+        model, "resolveBrowsePath", {"qualifiedSegments": slash_path["qualifiedSegments"]}
+    )["matches"][0]["elementId"] == "slash"
+
+    composition_path = invoke_model_access_tool(model, "getBrowsePath", {"elementId": "temp2"})
+    assert composition_path["qualifiedSegments"][-2] == {"namespaceUri": "urn:components", "name": "MotorBrowse"}
+    assert invoke_model_access_tool(
+        model, "resolveBrowsePath", {"qualifiedSegments": composition_path["qualifiedSegments"]}
+    )["matches"][0]["elementId"] == "temp2"
+
+
+def test_resolve_browse_path_pagination_is_deterministic_and_revision_checked(model: BuildResult) -> None:
+    for index in range(5):
+        element_id = f"same-{index}"
+        model.nodes_by_id[element_id] = ModelNode(
+            id=element_id,
+            name="Same",
+            kind="asset",
+            source_node_id=element_id,
+        )
+        model.browse_name_by_id[element_id] = "Same"
+        model.browse_name_namespace_uri_by_id[element_id] = "urn:browse"
+        model.parent_id_by_id[element_id] = "root"
+
+    first = invoke_model_access_tool(
+        model, "resolveBrowsePath", {"segments": ["Machines", "Same"], "limit": 2}
+    )
+    assert first["total"] == 5
+    assert first["returned"] == 2
+    assert first["nextOffset"] == 2
+    assert [item["elementId"] for item in first["matches"]] == ["same-0", "same-1"]
+    second = invoke_model_access_tool(
+        model,
+        "resolveBrowsePath",
+        {"segments": ["Machines", "Same"], "limit": 2, "offset": 2, "modelRevision": first["modelRevision"]},
+    )
+    assert [item["elementId"] for item in second["matches"]] == ["same-2", "same-3"]
     with pytest.raises(HTTPException) as exc:
-        invoke_model_access_tool(model, "resolveBrowsePath", {"path": "Machines/Station"})
+        invoke_model_access_tool(
+            model,
+            "resolveBrowsePath",
+            {"segments": ["Machines", "Same"], "limit": 2, "offset": 2, "modelRevision": "stale"},
+        )
     assert exc.value.status_code == 409
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"uaNodeId": "ns=2;s=Temperature"},
+        {"uaTypeNodeId": "ns=2;i=100"},
+    ],
+)
+def test_unexpandable_node_ids_fail_explicitly(model: BuildResult, metadata: dict[str, str]) -> None:
+    model.nodes_by_id["temp"].metadata.update(metadata)
+    with pytest.raises(HTTPException) as exc:
+        invoke_model_access_tool(model, "resolveBrowsePath", {"path": "Machines/Station/Temperature"})
+    assert exc.value.status_code == 500
+
+
+def test_unresolved_browse_name_namespace_fails_path_generation(model: BuildResult) -> None:
+    model.browse_name_namespace_uri_by_id["temp"] = None
+    with pytest.raises(HTTPException) as exc:
+        invoke_model_access_tool(model, "getBrowsePath", {"elementId": "temp"})
+    assert exc.value.status_code == 500
+    with pytest.raises(HTTPException) as exc:
+        invoke_model_access_tool(
+            model,
+            "resolveBrowsePath",
+            {
+                "qualifiedSegments": [
+                    {"namespaceUri": "urn:browse", "name": "Machines"},
+                    {"namespaceUri": "urn:browse", "name": "Station"},
+                    {"namespaceUri": "urn:browse", "name": "Temperature"},
+                ]
+            },
+        )
+    assert exc.value.status_code == 500
 
 
 @pytest.mark.parametrize("parent", ["temp", "missing"])
@@ -187,11 +358,15 @@ def test_paths_support_deep_models_without_recursion(model: BuildResult) -> None
         model.nodes_by_id[element_id] = ModelNode(
             id=element_id, name=str(index), kind="asset", source_node_id=element_id
         )
+        model.browse_name_by_id[element_id] = str(index)
+        model.browse_name_namespace_uri_by_id[element_id] = "urn:browse"
         model.parent_id_by_id[element_id] = f"deep-{index - 1}" if index else "root"
     result = invoke_model_access_tool(model, "getBrowsePath", {"elementId": "deep-1099"})
     assert len(result["segments"]) == 1101
     assert (
-        invoke_model_access_tool(model, "resolveBrowsePath", {"segments": result["segments"]})["elementId"]
+        invoke_model_access_tool(model, "resolveBrowsePath", {"segments": result["segments"]})["matches"][0][
+            "elementId"
+        ]
         == "deep-1099"
     )
     access_index = model._model_access_index_cache
@@ -410,8 +585,10 @@ def test_indexes_reused_and_invalidated_by_revision(model: BuildResult) -> None:
     assert model._model_access_index_cache is cached
     model.nodes_by_id["other"].name = "Renamed"
     model.revision = ""
-    assert invoke_model_access_tool(model, "resolveBrowsePath", {"path": "Other"})["found"] is False
-    assert invoke_model_access_tool(model, "resolveBrowsePath", {"path": "Renamed"})["elementId"] == "other"
+    assert invoke_model_access_tool(model, "resolveBrowsePath", {"path": "Other"})["matches"] == []
+    assert (
+        invoke_model_access_tool(model, "resolveBrowsePath", {"path": "Renamed"})["matches"][0]["elementId"] == "other"
+    )
     assert model._model_access_index_cache is not cached
     replacement = BuildResult(
         nodes_by_id={},
@@ -453,7 +630,7 @@ def test_path_and_type_lookups_reuse_indexes_without_scanning_nodes(
     invoke_model_access_tool(model, "resolveBrowsePath", {"path": "Other"})
     invoke_model_access_tool(model, "getInstancesOfType", {"typeElementId": "type-base"}, context)
     model.nodes_by_id = NoNodeScan(model.nodes_by_id)
-    assert invoke_model_access_tool(model, "resolveBrowsePath", {"path": "Other"})["elementId"] == "other"
+    assert invoke_model_access_tool(model, "resolveBrowsePath", {"path": "Other"})["matches"][0]["elementId"] == "other"
     assert invoke_model_access_tool(model, "getInstancesOfType", {"typeElementId": "type-base"}, context)["total"] == 3
     assert invoke_model_access_tool(model, "findElementsByNamespace", {"namespaceUri": "urn:machines"})["total"] == 2
     assert invoke_model_access_tool(model, "findElementsByRole", {"semanticRole": "asset"})["total"] == 2
@@ -464,10 +641,16 @@ def test_path_and_type_lookups_reuse_indexes_without_scanning_nodes(
     [
         ("resolveBrowsePath", {}),
         ("resolveBrowsePath", {"path": "a", "segments": ["a"]}),
+        ("resolveBrowsePath", {"qualifiedSegments": [{"namespaceUri": "urn:test", "name": "a"}], "path": "a"}),
         ("resolveBrowsePath", {"path": "/a"}),
         ("resolveBrowsePath", {"path": "a//b"}),
         ("resolveBrowsePath", {"segments": ["a", " "]}),
         ("resolveBrowsePath", {"segments": []}),
+        ("resolveBrowsePath", {"qualifiedSegments": []}),
+        ("resolveBrowsePath", {"qualifiedSegments": [{"namespaceUri": "urn:test"}]}),
+        ("resolveBrowsePath", {"qualifiedSegments": [{"namespaceUri": "", "name": "a"}]}),
+        ("resolveBrowsePath", {"segments": ["a"], "offset": 1}),
+        ("resolveBrowsePath", {"segments": ["a"], "offset": 1, "modelRevision": " "}),
         ("getBrowsePath", {"elementId": " "}),
         ("getChildren", {"elementId": "root", "plane": "invalid"}),
         ("getChildren", {"elementId": "root", "limit": True}),

@@ -103,6 +103,18 @@ def configure_test_app(app: FastAPI) -> None:
         instances_by_type_id={"ns=1;i=1001": [root_id], "ns=1;i=1002": ["sensor-root"]},
         property_to_node={property_id: "ns=2;s=Temperature"},
         action_to_method={action_id: ("ns=2;s=Machine", "ns=2;s=Reset")},
+        browse_name_by_id={
+            root_id: "Machine",
+            "sensor-root": "Sensor",
+            property_id: "Temperature",
+            action_id: "Reset",
+        },
+        browse_name_namespace_uri_by_id={
+            root_id: "http://opcfoundation.org/UA/",
+            "sensor-root": "http://opcfoundation.org/UA/",
+            property_id: "http://opcfoundation.org/UA/",
+            action_id: "http://opcfoundation.org/UA/",
+        },
     )
     app.state.opcua_client = FakeOpcUaClient()
     # Mirror the production wiring (bootstrap.app_factory): the admission caps come from the

@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 from jsonschema import Draft202012Validator
 
-from i3x_server.domain.utils import expanded_node_id
+from i3x_server.domain.utils import canonical_node_id, expanded_node_id
 from i3x_server.errors import i3x_http_error
 from i3x_server.model.revision import model_revision
 from i3x_server.schemas.state import BuildResult, _ModelAccessIndex
@@ -29,16 +29,41 @@ def _schema(properties: dict[str, Any], required: list[str]) -> dict[str, Any]:
     return {"type": "object", "properties": properties, "required": required, "additionalProperties": False}
 
 
+_BROWSE_NAME = _schema(
+    {"namespaceUri": _ID, "name": _ID},
+    ["namespaceUri", "name"],
+)
+
+
 MCP_MODEL_ACCESS_SCHEMAS = {
     "resolveBrowsePath": {
         **_schema(
             {
                 "path": {**_ID, "description": "Exact slash-separated cached display names, including the root."},
-                "segments": {"type": "array", "items": _ID, "minItems": 1},
+                "segments": {
+                    "type": "array",
+                    "items": _ID,
+                    "minItems": 1,
+                    "description": "Exact display-name segments; use for names containing '/'.",
+                },
+                "qualifiedSegments": {
+                    "type": "array",
+                    "items": _BROWSE_NAME,
+                    "minItems": 1,
+                    "description": "Exact OPC UA BrowseName segments qualified by namespace URI.",
+                },
+                **_PAGE,
+                "modelRevision": _ID,
             },
             [],
         ),
-        "oneOf": [{"required": ["path"]}, {"required": ["segments"]}],
+        "oneOf": [{"required": ["path"]}, {"required": ["segments"]}, {"required": ["qualifiedSegments"]}],
+        "allOf": [
+            {
+                "if": {"properties": {"offset": {"type": "integer", "minimum": 1}}, "required": ["offset"]},
+                "then": {"required": ["modelRevision"]},
+            }
+        ],
     },
     "getBrowsePath": _schema({"elementId": _ID}, ["elementId"]),
     "getInstancesOfType": {
@@ -157,23 +182,96 @@ def _validate_parent_chains(model: BuildResult, parents: Mapping[str, str | None
         validated.update(chain)
 
 
-def _segments(model: BuildResult, element_id: str, known: dict[str, tuple[str, ...]] | None = None) -> tuple[str, ...]:
+def _canonical_path_ids(model: BuildResult, element_id: str) -> tuple[str, ...]:
     chain: list[str] = []
     visited: set[str] = set()
     current: str | None = element_id
-    while current is not None and (known is None or current not in known):
+    while current is not None:
         if current in visited or current not in model.nodes_by_id:
             raise i3x_http_error(500, "Invalid Model", "Canonical parent chain contains a cycle or missing element")
         visited.add(current)
         chain.append(current)
         current = _parent(model, current)
-    if known is None:
-        return tuple(model.nodes_by_id[child].name for child in reversed(chain))
-    segments = known[current] if current is not None else ()
-    for child in reversed(chain):
-        segments = (*segments, model.nodes_by_id[child].name)
-        known[child] = segments
-    return segments
+    return tuple(reversed(chain))
+
+
+def _qualified_browse_name(model: BuildResult, element_id: str) -> tuple[str, str] | None:
+    name = model.browse_name_by_id.get(element_id)
+    namespace_uri = model.browse_name_namespace_uri_by_id.get(element_id)
+    if isinstance(name, str) and name and isinstance(namespace_uri, str) and namespace_uri:
+        return namespace_uri, name
+    return None
+
+
+def _required_qualified_browse_name(model: BuildResult, element_id: str) -> dict[str, str]:
+    browse_name = _qualified_browse_name(model, element_id)
+    if browse_name is None:
+        raise i3x_http_error(
+            500,
+            "Invalid Model",
+            f"BrowseName namespace is unavailable for model element: {element_id}",
+        )
+    namespace_uri, name = browse_name
+    return {"namespaceUri": namespace_uri, "name": name}
+
+
+def _expanded_identifier(model: BuildResult, values: Iterable[Any], description: str) -> str | None:
+    candidates = tuple(value for value in values if value is not None)
+    if not candidates:
+        return None
+    for candidate in candidates:
+        if not isinstance(candidate, str) or not candidate:
+            continue
+        expanded = canonical_node_id(candidate, model.namespace_uri_by_index)
+        if isinstance(expanded, str) and expanded.startswith("nsu=") and ";" in expanded[4:]:
+            return expanded
+    raise i3x_http_error(500, "Invalid Model", f"Cannot expand OPC UA {description}")
+
+
+def _node_id(model: BuildResult, element_id: str) -> str | None:
+    metadata = model.nodes_by_id[element_id].metadata
+    return _expanded_identifier(
+        model,
+        (metadata.get("expandedNodeId"), metadata.get("uaNodeId")),
+        f"NodeId for model element: {element_id}",
+    )
+
+
+def _type_definition_id(model: BuildResult, element_id: str) -> str | None:
+    return _expanded_identifier(
+        model,
+        (
+            model.expanded_type_definition_id_by_id.get(element_id),
+            model.nodes_by_id[element_id].metadata.get("uaTypeNodeId"),
+        ),
+        f"TypeDefinition NodeId for model element: {element_id}",
+    )
+
+
+def _browse_page(
+    model: BuildResult,
+    element_ids: tuple[str, ...],
+    arguments: Mapping[str, Any],
+) -> dict[str, Any]:
+    offset, limit = arguments.get("offset", 0), arguments.get("limit", 50)
+    page = element_ids[offset : offset + limit]
+    return {
+        "total": len(element_ids),
+        "returned": len(page),
+        "offset": offset,
+        **({"nextOffset": offset + len(page)} if offset + len(page) < len(element_ids) else {}),
+        "matches": [
+            {
+                "elementId": element_id,
+                "nodeId": _node_id(model, element_id),
+                "displayName": model.nodes_by_id[element_id].name,
+                "browseName": _required_qualified_browse_name(model, element_id),
+                "typeDefinitionId": _type_definition_id(model, element_id),
+                "kind": model.nodes_by_id[element_id].kind,
+            }
+            for element_id in page
+        ],
+    }
 
 
 def _page(model: BuildResult, ids: Iterable[str], arguments: Mapping[str, Any]) -> dict[str, Any]:
@@ -250,43 +348,112 @@ def invoke_model_access_tool(
     if tool_name == "getBrowsePath":
         element_id = arguments["elementId"]
         _require_element(model, element_id)
-        segments = _segments(model, element_id)
-        return {"modelRevision": revision, "path": "/".join(segments), "segments": list(segments)}
+        path_ids = _canonical_path_ids(model, element_id)
+        segments = tuple(model.nodes_by_id[path_id].name for path_id in path_ids)
+        qualified_path_segments = [_required_qualified_browse_name(model, path_id) for path_id in path_ids]
+        return {
+            "modelRevision": revision,
+            "path": "/".join(segments),
+            "segments": list(segments),
+            "qualifiedSegments": qualified_path_segments,
+        }
 
     index = _index(model)
     result: dict[str, Any]
     if tool_name == "resolveBrowsePath":
-        if index.path_children is None:
+        if index.path_children is None or index.qualified_path_children is None:
             path_children: dict[str | None, dict[str, list[str]]] = {}
+            qualified_path_children: dict[str | None, dict[tuple[str | None, str], list[str]]] = {}
             parent_by_id: dict[str, str | None] = {}
             for element_id in index.ordered_ids:
                 parent = _parent(model, element_id)
                 parent_by_id[element_id] = parent
-                path_children.setdefault(parent, {}).setdefault(model.nodes_by_id[element_id].name, []).append(
-                    element_id
-                )
+                node = model.nodes_by_id[element_id]
+                path_children.setdefault(parent, {}).setdefault(node.name, []).append(element_id)
+                qualified_name = _qualified_browse_name(model, element_id)
+                if qualified_name is not None:
+                    qualified_path_children.setdefault(parent, {}).setdefault(qualified_name, []).append(element_id)
+                else:
+                    browse_name = model.browse_name_by_id.get(element_id)
+                    if isinstance(browse_name, str) and browse_name:
+                        qualified_path_children.setdefault(parent, {}).setdefault((None, browse_name), []).append(
+                            element_id
+                        )
             _validate_parent_chains(model, parent_by_id)
             index.path_children = {
                 parent: {name: tuple(children) for name, children in children_by_name.items()}
                 for parent, children_by_name in path_children.items()
             }
-        segments = tuple(arguments["segments"]) if "segments" in arguments else tuple(arguments["path"].split("/"))
+            index.qualified_path_children = {
+                parent: {name: tuple(children) for name, children in children_by_name.items()}
+                for parent, children_by_name in qualified_path_children.items()
+            }
+
+        offset = arguments.get("offset", 0)
+        requested_revision = arguments.get("modelRevision")
+        if offset > 0 and requested_revision is None:
+            raise i3x_http_error(
+                400,
+                "Bad Request",
+                "modelRevision is required when offset is greater than 0",
+            )
+        if requested_revision is not None and requested_revision != revision:
+            raise i3x_http_error(
+                409,
+                "Conflict",
+                "Model revision changed; restart browse-path pagination from offset 0",
+            )
+
         parent_candidates: tuple[str | None, ...] = (None,)
         matches: list[str] = []
-        for segment in segments:
-            matches = [
-                child for parent in parent_candidates for child in index.path_children.get(parent, {}).get(segment, ())
-            ]
-            if not matches:
-                break
-            parent_candidates = tuple(matches)
-        if len(matches) > 1:
-            raise i3x_http_error(409, "Ambiguous Path", "Browse path matches multiple elements; use an elementId")
-        if not matches:
-            result = {"found": False}
+        qualified = "qualifiedSegments" in arguments
+        if qualified:
+            qualified_segments = tuple(
+                (segment["namespaceUri"], segment["name"]) for segment in arguments["qualifiedSegments"]
+            )
+            qualified_path_index = index.qualified_path_children
+            if qualified_path_index is None:
+                raise i3x_http_error(500, "Invalid Model", "Qualified browse path index is unavailable")
+            for segment in qualified_segments:
+                unresolved = [
+                    element_id
+                    for parent in parent_candidates
+                    for element_id in qualified_path_index.get(parent, {}).get((None, segment[1]), ())
+                ]
+                if unresolved:
+                    raise i3x_http_error(
+                        500,
+                        "Invalid Model",
+                        f"BrowseName namespace is unavailable for model element: {unresolved[0]}",
+                    )
+                matches = [
+                    child
+                    for parent in parent_candidates
+                    for child in qualified_path_index.get(parent, {}).get(segment, ())
+                ]
+                if not matches:
+                    break
+                parent_candidates = tuple(sorted(set(matches)))
         else:
-            node = model.nodes_by_id[matches[0]]
-            result = {"found": True, "elementId": node.id, "displayName": node.name, "kind": node.kind}
+            display_segments = (
+                tuple(arguments["segments"])
+                if "segments" in arguments
+                else tuple(arguments["path"].split("/"))
+            )
+            display_path_index = index.path_children
+            if display_path_index is None:
+                raise i3x_http_error(500, "Invalid Model", "Browse path index is unavailable")
+            for segment in display_segments:
+                matches = [
+                    child
+                    for parent in parent_candidates
+                    for child in display_path_index.get(parent, {}).get(segment, ())
+                ]
+                if not matches:
+                    break
+                parent_candidates = tuple(sorted(set(matches)))
+        ordered_matches = tuple(sorted(set(matches)))
+        result = _browse_page(model, ordered_matches, arguments)
     elif tool_name == "getInstancesOfType":
         if context is None:
             raise i3x_http_error(

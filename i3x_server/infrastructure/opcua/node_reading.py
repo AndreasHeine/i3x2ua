@@ -207,6 +207,9 @@ async def read_node_info(client: OpcUaClient, node: Any, parent_node_id: str | N
         display_name=display_name_obj.Text,
         node_class=node_class_obj.name,
         data_type=data_type,
+        browse_name_namespace_index=(
+            browse_name_obj.NamespaceIndex if type(getattr(browse_name_obj, "NamespaceIndex", None)) is int else None
+        ),
         type_definition_id=type_definition_id,
         event_notifier=event_notifier,
         description=description,
@@ -251,6 +254,7 @@ async def read_node_infos_limited(client: OpcUaClient, entries: list[tuple[Any, 
 
         object_or_variable_nodes: list[Any] = []
         mandatory_by_node_id: dict[str, tuple[str, str, NodeClass]] = {}
+        browse_name_namespace_by_node_id: dict[str, int | None] = {}
         descriptions_by_node_id: dict[str, str] = {}
         class_attributes_by_node_id: dict[str, dict[AttributeIds, Any]] = {}
         fallback_entries: list[tuple[Any, str | None]] = []
@@ -283,6 +287,8 @@ async def read_node_infos_limited(client: OpcUaClient, entries: list[tuple[Any, 
                 continue
 
             mandatory_by_node_id[node_id] = (browse_name, display_name, node_class)
+            namespace_index = getattr(browse_name_value, "NamespaceIndex", None)
+            browse_name_namespace_by_node_id[node_id] = namespace_index if type(namespace_index) is int else None
             applicable_attributes = _NODE_INFO_CLASS_ATTRIBUTES.get(node_class, ())
             class_attributes_by_node_id[node_id] = {
                 attr: client.extract_class_node_info_attribute(node_id, node_class, attr, node_values[attr])
@@ -319,6 +325,7 @@ async def read_node_infos_limited(client: OpcUaClient, entries: list[tuple[Any, 
                 display_name=display_name,
                 node_class=node_class.name,
                 data_type=data_type,
+                browse_name_namespace_index=browse_name_namespace_by_node_id.get(node_id),
                 type_definition_id=_normalize_type_definition_id(type_definitions_by_node_id.get(node_id)),
                 event_notifier=bool(class_attributes.get(AttributeIds.EventNotifier, False)),
                 description=descriptions_by_node_id.get(node_id),

@@ -74,6 +74,7 @@ class OpcUaNodeInfo:
     user_access_level: int | None = None
     executable: bool | None = None
     user_executable: bool | None = None
+    browse_name_namespace_index: int | None = 0
 
 
 @dataclass(frozen=True, slots=True)

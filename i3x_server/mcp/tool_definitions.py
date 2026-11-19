@@ -464,11 +464,13 @@ def build_mcp_tools(
     )
     model_tool_descriptions = {
         "resolveBrowsePath": (
-            "Resolve an exact root-inclusive path of cached display names to one element. "
-            "Pass path or segments (for names containing '/'). Duplicate paths return 409. No live OPC UA calls."
+            "Resolve an exact root-inclusive path using display names or namespace-qualified BrowseNames. "
+            "Pass exactly one of path, segments, or qualifiedSegments; all matches are returned in a matches array. "
+            "Use offset and limit for paging, passing modelRevision on later pages. No live OPC UA calls."
         ),
         "getBrowsePath": (
-            "Get an element's canonical root-inclusive path and segments from cached hierarchy/composition parents. "
+            "Get an element's canonical root-inclusive display-name path, segments, and namespace-qualified "
+            "BrowseName segments from cached hierarchy/composition parents. "
             "No live OPC UA calls."
         ),
         "getInstancesOfType": (

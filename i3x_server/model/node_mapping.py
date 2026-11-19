@@ -41,6 +41,9 @@ class NodeMappingResult:
     mapping_confidence_by_id: dict[str, str]
     applied_profile_ids_by_id: dict[str, list[str]]
     namespace_uri_by_id: dict[str, str | None]
+    browse_name_by_id: dict[str, str]
+    browse_name_namespace_uri_by_id: dict[str, str | None]
+    expanded_type_definition_id_by_id: dict[str, str | None]
     parent_id_by_id: dict[str, str | None]
 
 
@@ -50,6 +53,7 @@ def map_nodes(
     graph: GraphResult,
     type_definition_hierarchy_by_id: dict[str, tuple[OpcUaTypeDefinitionInfo, ...]],
     namespace_uri_by_source: dict[str, str | None],
+    namespace_uri_by_index: dict[int, str] | None = None,
     active_profiles_by_source: dict[str, ResolvedProfileSet],
 ) -> NodeMappingResult:
     """Map every source node in browse order so the model revision hash stays stable."""
@@ -64,7 +68,11 @@ def map_nodes(
     mapping_confidence_by_id: dict[str, str] = {}
     applied_profile_ids_by_id: dict[str, list[str]] = {}
     namespace_uri_by_id: dict[str, str | None] = {}
+    browse_name_by_id: dict[str, str] = {}
+    browse_name_namespace_uri_by_id: dict[str, str | None] = {}
+    expanded_type_definition_id_by_id: dict[str, str | None] = {}
 
+    namespace_uris = namespace_uri_by_index or {}
     for source_id, opc_node in by_source_node.items():
         mapped_id = graph.mapped_id_by_source[source_id]
         child_ids = graph.child_ids_by_source.get(source_id, [])
@@ -78,6 +86,23 @@ def map_nodes(
             )
         active_profiles_resolved = active_profiles_by_source.get(source_id)
         namespace_uri = namespace_uri_by_source.get(source_id)
+        browse_name_namespace_uri = (
+            namespace_uris.get(opc_node.browse_name_namespace_index)
+            if opc_node.browse_name_namespace_index is not None
+            else None
+        )
+        if opc_node.browse_name_namespace_index == 0 and not browse_name_namespace_uri:
+            browse_name_namespace_uri = "http://opcfoundation.org/UA/"
+        expanded_type_definition_id = (
+            canonical_node_id(opc_node.type_definition_id, namespace_uris)
+            if opc_node.type_definition_id is not None
+            else None
+        )
+        if not isinstance(expanded_type_definition_id, str) or not expanded_type_definition_id.startswith("nsu="):
+            expanded_type_definition_id = None
+        browse_name_by_id[mapped_id] = opc_node.browse_name
+        browse_name_namespace_uri_by_id[mapped_id] = browse_name_namespace_uri
+        expanded_type_definition_id_by_id[mapped_id] = expanded_type_definition_id
         hierarchy_children = graph.hierarchy_children_by_id.get(mapped_id, [])
         composition_children = graph.composition_children_by_id.get(mapped_id, [])
         graph_relations = graph.graph_related_by_id.get(mapped_id, [])
@@ -181,6 +206,9 @@ def map_nodes(
         mapping_confidence_by_id=mapping_confidence_by_id,
         applied_profile_ids_by_id=applied_profile_ids_by_id,
         namespace_uri_by_id=namespace_uri_by_id,
+        browse_name_by_id=browse_name_by_id,
+        browse_name_namespace_uri_by_id=browse_name_namespace_uri_by_id,
+        expanded_type_definition_id_by_id=expanded_type_definition_id_by_id,
         parent_id_by_id=parent_id_by_id,
     )
 

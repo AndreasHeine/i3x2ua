@@ -1,9 +1,4 @@
-"""Upstream failure text stays server-side (security finding A10).
-
-Error envelopes must carry the gateway's own message only. The upstream exception text (paths,
-session ids, server wording) belongs in the server-side log, where operators can read it without
-it ever reaching a client.
-"""
+"""Upstream failure text must not appear in client responses or server logs."""
 
 from __future__ import annotations
 
@@ -24,12 +19,12 @@ from i3x_server.application.ports.opcua import OpcUaClientProtocol
 from i3x_server.application.services.model_query import ModelQueryService
 from i3x_server.application.services.object_value import ObjectValueService
 from i3x_server.application.services.subscription import SubscriptionAppService
-from i3x_server.logging_format import log_upstream_failure
+from i3x_server.logging_format import JsonFormatter, TextFormatter, log_upstream_failure
 from i3x_server.schemas.i3x import ModelNode
 from i3x_server.schemas.state import BuildResult
 from tests.conftest import fastapi_app
 
-# Text only an upstream could produce. It must appear in the log and never in a response body.
+# Text only an upstream could produce. It must never appear in logs or response bodies.
 _SECRET = "upstream-detail-4f8a2c: session 17 reset at /srv/opcua/private"
 
 
@@ -71,7 +66,7 @@ def _status_error(code: int) -> UaStatusCodeError:
     raise AssertionError(f"status code {code} does not raise a UaStatusCodeError")
 
 
-def test_ua_status_failure_keeps_cause_in_server_logs(client: TestClient, caplog: pytest.LogCaptureFixture) -> None:
+def test_ua_status_failure_hides_cause_from_server_logs(client: TestClient, caplog: pytest.LogCaptureFixture) -> None:
     app = fastapi_app(client)
     _fail_on(app, "read_server_status_data_value", RuntimeError(_SECRET))
     with caplog.at_level(logging.WARNING):
@@ -81,10 +76,12 @@ def test_ua_status_failure_keeps_cause_in_server_logs(client: TestClient, caplog
     assert payload["error"]["message"] == "Failed to read OPC UA ServerStatus"
     assert payload["responseDetail"]["detail"] == "Failed to read OPC UA ServerStatus"
     _assert_no_upstream_text(payload)
-    assert _SECRET in caplog.text
+    assert _SECRET not in caplog.text
 
 
-def test_ua_connection_failure_keeps_cause_in_server_logs(client: TestClient, caplog: pytest.LogCaptureFixture) -> None:
+def test_ua_connection_failure_hides_cause_from_server_logs(
+    client: TestClient, caplog: pytest.LogCaptureFixture
+) -> None:
     app = fastapi_app(client)
 
     def _raise() -> Any:
@@ -98,10 +95,10 @@ def test_ua_connection_failure_keeps_cause_in_server_logs(client: TestClient, ca
     assert payload["error"]["message"] == "Failed to resolve OPC UA connection state"
     assert payload["responseDetail"]["detail"] == "Failed to resolve OPC UA connection state"
     _assert_no_upstream_text(payload)
-    assert _SECRET in caplog.text
+    assert _SECRET not in caplog.text
 
 
-def test_ua_limits_failure_keeps_cause_in_server_logs(client: TestClient, caplog: pytest.LogCaptureFixture) -> None:
+def test_ua_limits_failure_hides_cause_from_server_logs(client: TestClient, caplog: pytest.LogCaptureFixture) -> None:
     app = fastapi_app(client)
     _fail_on(app, "get_operational_limits", RuntimeError(_SECRET))
     with caplog.at_level(logging.WARNING):
@@ -111,10 +108,10 @@ def test_ua_limits_failure_keeps_cause_in_server_logs(client: TestClient, caplog
     assert payload["error"]["message"] == "Failed to read OPC UA limits and capabilities"
     assert payload["responseDetail"]["detail"] == "Failed to read OPC UA limits and capabilities"
     _assert_no_upstream_text(payload)
-    assert _SECRET in caplog.text
+    assert _SECRET not in caplog.text
 
 
-def test_namespaces_failure_keeps_cause_in_server_logs(client: TestClient, caplog: pytest.LogCaptureFixture) -> None:
+def test_namespaces_failure_hides_cause_from_server_logs(client: TestClient, caplog: pytest.LogCaptureFixture) -> None:
     app = fastapi_app(client)
     _fail_on(app, "get_namespace_infos", RuntimeError(_SECRET))
     with caplog.at_level(logging.WARNING):
@@ -124,10 +121,10 @@ def test_namespaces_failure_keeps_cause_in_server_logs(client: TestClient, caplo
     assert payload["error"]["message"] == "Failed to read OPC UA namespaces"
     assert payload["responseDetail"]["detail"] == "Failed to read OPC UA namespaces"
     _assert_no_upstream_text(payload)
-    assert _SECRET in caplog.text
+    assert _SECRET not in caplog.text
 
 
-def test_objects_failure_keeps_cause_in_server_logs(client: TestClient, caplog: pytest.LogCaptureFixture) -> None:
+def test_objects_failure_hides_cause_from_server_logs(client: TestClient, caplog: pytest.LogCaptureFixture) -> None:
     """`GET /v1/objects` reports the namespace discovery failure without the upstream cause."""
     app = fastapi_app(client)
     _fail_on(app, "get_namespace_infos", RuntimeError(_SECRET))
@@ -138,10 +135,10 @@ def test_objects_failure_keeps_cause_in_server_logs(client: TestClient, caplog: 
     assert payload["error"]["message"] == "Failed to read OPC UA namespaces"
     assert payload["responseDetail"]["detail"] == "Failed to read OPC UA namespaces"
     _assert_no_upstream_text(payload)
-    assert _SECRET in caplog.text
+    assert _SECRET not in caplog.text
 
 
-def test_objecttypes_failure_keeps_cause_in_server_logs(client: TestClient, caplog: pytest.LogCaptureFixture) -> None:
+def test_objecttypes_failure_hides_cause_from_server_logs(client: TestClient, caplog: pytest.LogCaptureFixture) -> None:
     app = fastapi_app(client)
     _fail_on(app, "get_object_types", RuntimeError(_SECRET))
     with caplog.at_level(logging.WARNING):
@@ -151,10 +148,10 @@ def test_objecttypes_failure_keeps_cause_in_server_logs(client: TestClient, capl
     assert payload["error"]["message"] == "Failed to read object types"
     assert payload["responseDetail"]["detail"] == "Failed to read object types"
     _assert_no_upstream_text(payload)
-    assert _SECRET in caplog.text
+    assert _SECRET not in caplog.text
 
 
-def test_value_read_failure_keeps_cause_in_server_logs(client: TestClient, caplog: pytest.LogCaptureFixture) -> None:
+def test_value_read_failure_hides_cause_from_server_logs(client: TestClient, caplog: pytest.LogCaptureFixture) -> None:
     app = fastapi_app(client)
     _fail_on(app, "read_data_values", RuntimeError(_SECRET))
     with caplog.at_level(logging.WARNING):
@@ -164,10 +161,12 @@ def test_value_read_failure_keeps_cause_in_server_logs(client: TestClient, caplo
     assert payload["error"]["message"] == "Failed to read values"
     assert payload["responseDetail"]["detail"] == "Failed to read values"
     _assert_no_upstream_text(payload)
-    assert _SECRET in caplog.text
+    assert _SECRET not in caplog.text
 
 
-def test_history_read_failure_keeps_cause_in_server_logs(client: TestClient, caplog: pytest.LogCaptureFixture) -> None:
+def test_history_read_failure_hides_cause_from_server_logs(
+    client: TestClient, caplog: pytest.LogCaptureFixture
+) -> None:
     app = fastapi_app(client)
     _fail_on(app, "read_history_values", RuntimeError(_SECRET))
     with caplog.at_level(logging.WARNING):
@@ -177,10 +176,10 @@ def test_history_read_failure_keeps_cause_in_server_logs(client: TestClient, cap
     assert payload["error"]["message"] == "Failed to read historical values"
     assert payload["responseDetail"]["detail"] == "Failed to read historical values"
     _assert_no_upstream_text(payload)
-    assert _SECRET in caplog.text
+    assert _SECRET not in caplog.text
 
 
-def test_subscription_create_failure_keeps_cause_in_server_logs(
+def test_subscription_create_failure_hides_cause_from_server_logs(
     client: TestClient, caplog: pytest.LogCaptureFixture
 ) -> None:
     app = fastapi_app(client)
@@ -197,14 +196,13 @@ def test_subscription_create_failure_keeps_cause_in_server_logs(
     assert payload["error"]["message"] == "Failed to create subscription"
     assert payload["responseDetail"]["detail"] == "Failed to create subscription"
     _assert_no_upstream_text(payload)
-    assert _SECRET in caplog.text
+    assert _SECRET not in caplog.text
 
 
 @pytest.mark.parametrize(
     ("failure", "status", "message"),
     [
-        # asyncua builds the wording from the status code, so the upstream text is whatever
-        # ``str(failure)`` says - it must appear in the log and never in the item message.
+        # Upstream wording must not appear in the log or the item message.
         (_status_error(StatusCodes.BadHistoryOperationUnsupported), 501, "OPC UA historical writes unsupported"),
         (_status_error(StatusCodes.BadNodeIdUnknown), 404, "OPC UA historical write target node not found"),
         (_status_error(StatusCodes.BadHistoryOperationInvalid), 400, "OPC UA historical write rejected by the server"),
@@ -237,7 +235,7 @@ def test_history_write_items_hide_upstream_text(
     assert item["error"]["message"] == message
     assert item["responseDetail"]["detail"] == message
     assert upstream_text not in json.dumps(payload)
-    assert upstream_text in caplog.text
+    assert upstream_text not in caplog.text
 
 
 def _model() -> BuildResult:
@@ -260,7 +258,7 @@ def _model() -> BuildResult:
 
 
 class _ReadFailingClient:
-    """Client whose batched reads fail with the text that must stay in the log."""
+    """Client whose batched reads fail with sensitive text."""
 
     def __init__(self, cause: Exception) -> None:
         self._cause = cause
@@ -280,7 +278,7 @@ class _ReadFailingClient:
 
 
 @pytest.mark.asyncio
-async def test_object_value_service_read_failure_keeps_cause_in_server_logs(
+async def test_object_value_service_read_failure_hides_cause_from_server_logs(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     service = ObjectValueService(cast(OpcUaClientProtocol, _ReadFailingClient(RuntimeError(_SECRET))), _model())
@@ -293,11 +291,11 @@ async def test_object_value_service_read_failure_keeps_cause_in_server_logs(
     assert detail["error"]["message"] == "Failed to read current value for prop-a"
     assert detail["responseDetail"]["detail"] == "Failed to read current value for prop-a"
     _assert_no_upstream_text(detail)
-    assert _SECRET in caplog.text
+    assert _SECRET not in caplog.text
 
 
 @pytest.mark.asyncio
-async def test_object_value_service_history_failure_keeps_cause_in_server_logs(
+async def test_object_value_service_history_failure_hides_cause_from_server_logs(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     service = ObjectValueService(cast(OpcUaClientProtocol, _ReadFailingClient(RuntimeError(_SECRET))), _model())
@@ -310,7 +308,7 @@ async def test_object_value_service_history_failure_keeps_cause_in_server_logs(
     assert detail["error"]["message"] == "Failed to read history for prop-a"
     assert detail["responseDetail"]["detail"] == "Failed to read history for prop-a"
     _assert_no_upstream_text(detail)
-    assert _SECRET in caplog.text
+    assert _SECRET not in caplog.text
 
 
 class _NamespaceFailingClient:
@@ -319,7 +317,7 @@ class _NamespaceFailingClient:
 
 
 @pytest.mark.asyncio
-async def test_model_query_service_namespace_failure_keeps_cause_in_server_logs(
+async def test_model_query_service_namespace_failure_hides_cause_from_server_logs(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     service = ModelQueryService(cast(OpcUaClientProtocol, _NamespaceFailingClient()), _model())
@@ -329,7 +327,7 @@ async def test_model_query_service_namespace_failure_keeps_cause_in_server_logs(
     assert exc_info.value.status_code == 502
     assert exc_info.value.error_code == "OpcUaNamespaceError"
     assert exc_info.value.details == {}
-    assert _SECRET in caplog.text
+    assert _SECRET not in caplog.text
 
 
 class _ObjectTypesFailingClient(_NamespaceFailingClient):
@@ -338,7 +336,7 @@ class _ObjectTypesFailingClient(_NamespaceFailingClient):
 
 
 @pytest.mark.asyncio
-async def test_model_query_service_object_type_failure_keeps_cause_in_server_logs(
+async def test_model_query_service_object_type_failure_hides_cause_from_server_logs(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     service = ModelQueryService(cast(OpcUaClientProtocol, _ObjectTypesFailingClient()), _model())
@@ -348,7 +346,7 @@ async def test_model_query_service_object_type_failure_keeps_cause_in_server_log
     assert exc_info.value.status_code == 502
     assert exc_info.value.error_code == "OpcUaObjectTypeError"
     assert exc_info.value.details == {}
-    assert _SECRET in caplog.text
+    assert _SECRET not in caplog.text
 
 
 class _SubscriptionFailingService:
@@ -383,7 +381,7 @@ async def test_subscription_app_service_wraps_without_upstream_text(
     assert detail["error"]["message"] == "Failed to list subscriptions"
     assert detail["responseDetail"]["detail"] == "Failed to list subscriptions"
     _assert_no_upstream_text(detail)
-    assert _SECRET in caplog.text
+    assert _SECRET not in caplog.text
 
 
 def test_gateway_owned_diagnostics_still_reach_the_client(client: TestClient) -> None:
@@ -421,13 +419,22 @@ def test_history_write_audit_identity_is_not_leaked(client: TestClient, monkeypa
 
 
 def test_log_upstream_failure_records_both_cause_shapes(caplog: pytest.LogCaptureFixture) -> None:
-    """An exception cause keeps its traceback; a plain cause string is recorded verbatim."""
+    """Neither cause text nor chained exception details reach text or JSON logs."""
+    try:
+        try:
+            raise ValueError(_SECRET)
+        except ValueError as exc:
+            raise RuntimeError(_SECRET) from exc
+    except RuntimeError as cause:
+        exception = cause
     with caplog.at_level(logging.WARNING, logger="i3x_server.upstream"):
-        log_upstream_failure("OpcUaError", "Failed to read values", RuntimeError(_SECRET))
+        log_upstream_failure("OpcUaError", "Failed to read values", exception)
         log_upstream_failure("OpcUaError", "Failed to read values", _SECRET)
     assert [record.getMessage() for record in caplog.records] == [
-        f"upstream failure code=OpcUaError message=Failed to read values cause={_SECRET}",
-        f"upstream failure code=OpcUaError message=Failed to read values cause={_SECRET}",
+        "upstream failure code=OpcUaError message=Failed to read values cause_type=RuntimeError",
+        "upstream failure code=OpcUaError message=Failed to read values cause_type=str",
     ]
-    assert caplog.records[0].exc_info is not None
-    assert caplog.records[1].exc_info is None
+    for record in caplog.records:
+        assert record.exc_info is None
+        assert _SECRET not in TextFormatter().format(record)
+        assert _SECRET not in JsonFormatter().format(record)

@@ -511,8 +511,7 @@ async def update_historical_values_v1(
                     status_code, message = 400, "OPC UA historical write rejected by the server"
                 else:
                     status_code, message = _classify_write_error(exc)
-                # The status code is the diagnostic: the upstream wording varies by server and
-                # language, so it stays in the log instead of the per-item message.
+                # The status code is the diagnostic; upstream wording is not exposed.
                 log_upstream_failure("OpcUaHistoryWriteError", message, exc)
             except Exception as exc:
                 status_code, message = _classify_write_error(exc)

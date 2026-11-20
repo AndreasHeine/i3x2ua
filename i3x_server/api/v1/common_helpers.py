@@ -86,7 +86,7 @@ def _raise_not_found(entity_type: str, entity_id: str) -> Never:
 
 
 def _raise_opcua_error(operation: str, cause: Exception | str) -> Never:
-    """Fail the request with a 502 ``OpcUaError``; the upstream failure stays in the server log."""
+    """Fail with a 502 ``OpcUaError`` and log a classified upstream failure."""
     message = f"Failed to {operation}"
     log_upstream_failure("OpcUaError", message, cause)
     raise i3x_http_error(502, "OpcUaError", message) from (cause if isinstance(cause, Exception) else None)

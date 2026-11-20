@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import base64
 import http.server
+import inspect
 import json
 import ssl
 import threading
@@ -58,6 +59,7 @@ def _serve_https(tmp_path: Path) -> tuple[str, threading.Thread, http.server.Thr
             del format, args
 
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.load_cert_chain(cert_path, key_path)
 
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
@@ -138,6 +140,27 @@ def test_insecure_mode_verifies_nothing_and_the_default_still_verifies() -> None
     assert context.verify_mode == ssl.CERT_NONE
     assert context.check_hostname is False
     assert headless._ssl_context(insecure=False) is None
+
+
+def test_https_fixture_explicitly_requires_tls_1_2(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    minimum_version = inspect.getattr_static(ssl.SSLContext, "minimum_version")
+    assert isinstance(minimum_version, property)
+    configured: list[tuple[ssl.SSLContext, ssl.TLSVersion]] = []
+
+    def record_minimum(context: ssl.SSLContext, version: ssl.TLSVersion) -> None:
+        configured.append((context, version))
+        minimum_version.__set__(context, version)
+
+    monkeypatch.setattr(ssl.SSLContext, "minimum_version", property(minimum_version.fget, record_minimum))
+    _, thread, server = _serve_https(tmp_path)
+    try:
+        assert isinstance(server.socket, ssl.SSLSocket)
+        assert (server.socket.context, ssl.TLSVersion.TLSv1_2) in configured
+        assert server.socket.context.minimum_version == ssl.TLSVersion.TLSv1_2
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
 
 
 def test_readiness_probe_crosses_tls_and_authentication(tmp_path: Path) -> None:

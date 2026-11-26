@@ -71,6 +71,19 @@ def test_the_single_bot_covers_every_dependency_source() -> None:
     assert REQUIRED_MANAGERS <= managers, f"the bot must still manage {REQUIRED_MANAGERS - managers}"
 
 
+def test_renovate_preserves_the_claimed_interpreter_pin() -> None:
+    """The compatibility job must keep testing the version claimed by asyncua."""
+    rules = _rules_matching(_renovate_config(), "python")
+    assert any(
+        rule.get("enabled") is False
+        and rule.get("matchManagers") == ["github-actions"]
+        and rule.get("matchDepTypes") == ["uses-with"]
+        and rule.get("matchFileNames") == [".github/workflows/quality.yml"]
+        and rule.get("matchCurrentValue") == "3.13"
+        for rule in rules
+    ), "Renovate must not upgrade the compatibility job's Python 3.13 pin"
+
+
 def test_asyncua_major_and_minor_upgrades_are_not_proposed() -> None:
     """A minor or major bump can change the internals the reconnect machinery overrides."""
     blocked = _blocked_update_types(_renovate_config(), GUARDED_PACKAGE)

@@ -17,6 +17,15 @@
       "groupName": "GitHub Actions"
     },
     {
+      "matchManagers": ["github-actions"],
+      "matchDepTypes": ["uses-with"],
+      "matchPackageNames": ["python"],
+      "matchFileNames": [".github/workflows/quality.yml"],
+      "matchCurrentValue": "3.13",
+      "enabled": false,
+      "description": "The interpreter compatibility job deliberately tests the highest Python version claimed by asyncua; update this rule when that pin changes."
+    },
+    {
       "matchManagers": ["npm"],
       "groupName": "frontend dependencies"
     },

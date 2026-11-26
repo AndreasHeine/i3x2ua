@@ -73,7 +73,7 @@ def test_the_single_bot_covers_every_dependency_source() -> None:
 
 def test_renovate_preserves_the_claimed_interpreter_pin() -> None:
     """The compatibility job must keep testing the version claimed by asyncua."""
-    rules = _rules_matching(_renovate_config(), "python")
+    rules = _rules_matching(_renovate_config(), "actions/python-versions")
     assert any(
         rule.get("enabled") is False
         and rule.get("matchManagers") == ["github-actions"]

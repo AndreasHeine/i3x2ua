@@ -19,7 +19,7 @@
     {
       "matchManagers": ["github-actions"],
       "matchDepTypes": ["uses-with"],
-      "matchPackageNames": ["python"],
+      "matchPackageNames": ["actions/python-versions"],
       "matchFileNames": [".github/workflows/quality.yml"],
       "matchCurrentValue": "3.13",
       "enabled": false,

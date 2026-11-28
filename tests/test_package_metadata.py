@@ -6,9 +6,8 @@ Nothing in CI built a distribution before this job existed, so the declared setu
 published package. The validator compares the built artifacts with ``pyproject.toml`` and with the
 repository's own source tree, so an artifact cannot disagree with the repository it came from.
 
-Fixtures are written the way setuptools writes them: specifier clauses are reordered
-(``<3.16,>=3.14``, ``uvicorn<0.55,>=0.54``), so the validator must compare requirement clauses,
-not raw strings.
+Fixtures are written the way setuptools writes them: specifier clauses are reordered, so the
+validator must compare requirement clauses, not raw strings.
 """
 
 from __future__ import annotations
@@ -214,18 +213,27 @@ def test_reordered_specifier_clauses_are_accepted(tmp_path: Path, capsys: pytest
 
 
 def test_reordered_dependency_clauses_are_accepted(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    """Regression: ``uvicorn>=0.54,<0.55`` is written ``uvicorn<0.55,>=0.54``.
+    """Regression: the build backend may reorder the declared uvicorn specifier clauses.
 
     The split point must be the earliest specifier character, not the first separator tried, or the
-    name becomes ``uvicorn>=0.54,`` and every build reads as a dependency drift.
+    package name becomes part of a specifier and the build reads as dependency drift.
     """
-    assert _normalized("uvicorn>=0.54,<0.55") == "uvicorn<0.55,>=0.54"
+    declared = next(dependency for dependency in DEPENDENCIES if dependency.startswith("uvicorn"))
+    positions = [declared.find(separator) for separator in ("<", ">", "=", "!", "~") if separator in declared]
+    split_at = min(positions)
+    reordered = f"{declared[:split_at]}{','.join(reversed(declared[split_at:].split(',')))}"
+    assert reordered != declared
+    assert _normalized(reordered) == _normalized(declared)
 
     source = _source_root(tmp_path, SOURCE_MODULES)
     dist = _build_dist(
         tmp_path,
         wheel_modules=SOURCE_MODULES,
-        overrides={"wheel_metadata": _metadata(dependencies=[*DEPENDENCIES[:-1], "uvicorn>=0.54,<0.55"])},
+        overrides={
+            "wheel_metadata": _metadata(
+                dependencies=[reordered if dependency == declared else dependency for dependency in DEPENDENCIES]
+            )
+        },
     )
 
     assert _check(dist, source) == 0

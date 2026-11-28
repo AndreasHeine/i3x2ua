@@ -18,7 +18,7 @@ dependencies = [
     "prometheus-client>=0.26.0",
     "pydantic==2.14.4",
     "pydantic-settings>=2.7.0",
-    "uvicorn>=0.54,<0.55",
+    "uvicorn>=0.55,<0.56",
 ]
 
 [project.urls]
